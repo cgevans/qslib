@@ -1,15 +1,19 @@
 from __future__ import annotations
 import asyncio
-from typing import Any, Literal, Optional, List, Tuple, Mapping, Union, cast
+from typing import Any, Literal, Optional, List, Tuple, Mapping, Union
 import hmac
 import io
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import re
 import base64
 from . import data
 
+AccessLevel = Literal["Guest", "Observer", "Controller", "Administrator", "Full"]
+
+
 def _gen_auth_response(password: str, challenge_string: str) -> str:
     return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
+
 
 def _parse_argstring(argstring: str) -> Mapping[str, str]:
     unparsed = argstring.split()
@@ -29,7 +33,8 @@ def _parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
     s = re.search(r"S(\d{2})_C(\d{3})_T(\d{2})_P(\d{4})_M(\d)_X(\d)_filterdata.xml$", x)
     if s is None:
         raise ValueError
-    return (f'x{s[6]}-m{s[5]}', int(s[1]), int(s[2]), int(s[3]), int(s[4]))
+    return (f"x{s[6]}-m{s[5]}", int(s[1]), int(s[2]), int(s[3]), int(s[4]))
+
 
 def _index_to_filename_ref(i: Tuple[str, int, int, int, int]) -> str:
     x, s, c, t, p = i
@@ -39,23 +44,26 @@ def _index_to_filename_ref(i: Tuple[str, int, int, int, int]) -> str:
 class Error(Exception):
     pass
 
+
 @dataclass
 class CommandError(Error):
     command: Optional[str]
     ref_index: Optional[str]
     response: str
 
+
 def _validate_command_format(commandstring: str) -> None:
     # This is meant to validate that the command will not mess up comms
     # The command may be completely malformed otherwise
 
-    tagseq: List[Tuple[str,str,str]] = re.findall(
-        r"<(/?)([\w.]+)[ *]*>|(\n)", commandstring.rstrip()) # tuple of close?,tag,newline?
+    tagseq: List[Tuple[str, str, str]] = re.findall(
+        r"<(/?)([\w.]+)[ *]*>|(\n)", commandstring.rstrip()
+    )  # tuple of close?,tag,newline?
 
     tagstack: List[str] = []
-    for c,t,n in tagseq:
+    for c, t, n in tagseq:
         if n and not tagstack:
-            raise ValueError(f"newline outside of quotation")
+            raise ValueError("newline outside of quotation")
         elif t and not c:
             tagstack.append(t)
         elif c:
@@ -71,28 +79,32 @@ def _validate_command_format(commandstring: str) -> None:
     if tagstack:
         raise ValueError("Unclosed tags")
 
-def _parse_command_reply(responsestring: bytes, command: Optional[str] = None, 
-                         ref_index: Optional[str] = None) -> bytes:
+
+def _parse_command_reply(
+    responsestring: bytes,
+    command: Optional[str] = None,
+    ref_index: Optional[str] = None,
+) -> bytes:
     if (command is None) and (ref_index is None):
         raise TypeError("Must give either command or ref_index")
         # todo: handle commond/refindex problem here
     if responsestring.startswith(b"OK "):
-        if ref_index: 
+        if ref_index:
             ref_index_b = str(ref_index).encode()
             if not responsestring[3:].startswith(ref_index_b):
                 raise ValueError("E")  # todo
             else:
-                return responsestring[3+len(ref_index):].rstrip()
+                return responsestring[3 + len(ref_index) :].rstrip()
         elif command:
             if not responsestring[3:].startswith(command.encode()):
                 raise ValueError("E")  # todo
             else:
-                return responsestring[3+len(command.rstrip().encode())+1:].rstrip()
+                return responsestring[3 + len(command.rstrip().encode()) + 1 :].rstrip()
     elif responsestring.startswith(b"ERRor"):
         raise CommandError(command, ref_index, responsestring.decode())
-    
+
     raise NotImplementedError
-    
+
 
 class QSConnectionAsync:
     """Class for connection to a QuantStudio instrument server, using asyncio"""
@@ -105,14 +117,14 @@ class QSConnectionAsync:
         self._writer.close()
         await self._writer.wait_closed()
 
-    def __init__(self,
-                 host: str = 'localhost',
-                 port: int = 7000,
-                 authenticate_on_connect: bool = True,
-                 initial_access_level: Literal['Guest', 'Observer',
-                                               'Controller', 'Administrator', 
-                                               'Full'] = "Observer",
-                 password: Optional[str] = None):
+    def __init__(
+        self,
+        host: str = "localhost",
+        port: int = 7000,
+        authenticate_on_connect: bool = True,
+        initial_access_level: AccessLevel = "Observer",
+        password: Optional[str] = None,
+    ):
         """Create a connection to a QuantStudio Instrument Server."""
         self.host = host
         self.port = port
@@ -122,22 +134,23 @@ class QSConnectionAsync:
         self._authenticate_on_connect = authenticate_on_connect
 
     def _parse_access_line(self, aline: str) -> None:
+        # pylint: disable=attribute-defined-outside-init
         if not aline.startswith("READy"):
             raise ConnectionError(f"Server opening seems invalid: {aline}")
         args = _parse_argstring(aline[5:])
-        self.session = int(args['session'])
-        self.product = args['product']
-        self.server_version = args['version']
-        self.server_build = args['build']
-        self.server_capabilities = args['capabilities']
+        self.session = int(args["session"])
+        self.product = args["product"]
+        self.server_version = args["version"]
+        self.server_build = args["build"]
+        self.server_capabilities = args["capabilities"]
         self.server_hello_args = args
 
-    async def connect(self,
-                      authenticate: Optional[bool] = None,
-                      initial_access_level: Literal['Guest', 'Observer',
-                                                    'Controller', 'Administrator',
-                                                    'Full', None] = None,
-                      password: Optional[str] = None) -> str:
+    async def connect(
+        self,
+        authenticate: Optional[bool] = None,
+        initial_access_level: Literal[AccessLevel, None] = None,
+        password: Optional[str] = None,
+    ) -> str:
 
         if authenticate is not None:
             self._authenticate_on_connect = authenticate
@@ -163,7 +176,7 @@ class QSConnectionAsync:
 
         return resp
 
-    async def get_reply(self, timeout: Optional[float] = 10.) -> bytes:
+    async def get_reply(self, timeout: Optional[float] = 10.0) -> bytes:
         s = io.BytesIO()
 
         quote_stack = []
@@ -182,16 +195,21 @@ class QSConnectionAsync:
                 break
         return s.getvalue()
 
-    async def send_command_raw(self, command: str, timeout: Optional[float] = 10.0) -> None:
+    async def send_command_raw(
+        self, command: str, timeout: Optional[float] = 10.0
+    ) -> None:
         self._writer.write(command.encode())
         await asyncio.wait_for(self._writer.drain(), timeout)
 
-    async def run_command_to_bytes(self, command: str, 
-                                   ref_index: Optional[str] = None,
-                                   use_uuid: bool = False,
-                                   timeout: Optional[float] = 10.) -> bytes:
+    async def run_command_to_bytes(
+        self,
+        command: str,
+        ref_index: Optional[str] = None,
+        use_uuid: bool = False,
+        timeout: Optional[float] = 10.0,
+    ) -> bytes:
         command = command.rstrip()
-        
+
         _validate_command_format(command)
 
         m = re.match(r"^(\d+) ", command)
@@ -200,8 +218,8 @@ class QSConnectionAsync:
                 assert int(ref_index) == int(m[1])
             else:
                 ref_index = m[1]
-            command = command[m.endpos:]
-        
+            command = command[m.endpos :]
+
         if ref_index:
             command = str(ref_index) + " " + command
 
@@ -211,24 +229,27 @@ class QSConnectionAsync:
 
         return _parse_command_reply(resp, command, ref_index)
 
-    async def run_command(self, command: str, 
-                         ref_index: Optional[str] = None,
-                         use_uuid: bool = False,
-                         timeout: Optional[float] = 10.) -> str:
-        return (await self.run_command_to_bytes(command, ref_index, use_uuid, timeout)).decode()
-  
+    async def run_command(
+        self,
+        command: str,
+        ref_index: Optional[str] = None,
+        use_uuid: bool = False,
+        timeout: Optional[float] = 10.0,
+    ) -> str:
+        return (
+            await self.run_command_to_bytes(command, ref_index, use_uuid, timeout)
+        ).decode()
+
     async def authenticate(self, password: str) -> str:
         challenge_key = await self.run_command("CHAL?")
         auth_rep = _gen_auth_response(password, challenge_key)
         return await self.run_command(f"AUTH {auth_rep}")
 
-    async def set_access_level(self, level: Literal['Guest', 'Observer',
-                                               'Controller', 'Administrator', 
-                                               'Full']) -> str:
+    async def set_access_level(self, level: AccessLevel) -> str:
         return await self.run_command("ACC " + level)
 
     async def get_expfile_list(self, glob: str) -> List[str]:
-        fl = (await self.run_command(f"EXP:LIST? {glob}"))
+        fl = await self.run_command(f"EXP:LIST? {glob}")
         assert fl.startswith("<quote.reply>")
         assert fl.endswith("</quote.reply>")
         return fl.split("\n")[1:-1]
@@ -236,10 +257,12 @@ class QSConnectionAsync:
     async def get_run_title(self) -> str:
         return await self.run_command(f"RUNTitle?")
 
-    async def get_exp_file(self, path: str, 
-                           encoding: Literal["plain", "base64"] = "base64") -> bytes:
+    async def get_exp_file(
+        self, path: str, encoding: Literal["plain", "base64"] = "base64"
+    ) -> bytes:
         reply = await self.run_command_to_bytes(
-            f"EXP:READ? -encoding={encoding} {path}")
+            f"EXP:READ? -encoding={encoding} {path}"
+        )
         assert reply.startswith(b"<quote>\n")
         assert reply.endswith(b"</quote>")
         r = reply[8:-8]
@@ -248,8 +271,12 @@ class QSConnectionAsync:
         else:
             return r
 
-    async def get_sds_file(self, path: str, runtitle: Optional[str] = None, 
-                           encoding: Literal["base64", "plain"] = "base64") -> bytes:
+    async def get_sds_file(
+        self,
+        path: str,
+        runtitle: Optional[str] = None,
+        encoding: Literal["base64", "plain"] = "base64",
+    ) -> bytes:
         if runtitle is None:
             runtitle = await self.get_run_title()
         return await self.get_exp_file(f"{runtitle}/apldbio/sds/{path}", encoding)
@@ -257,10 +284,15 @@ class QSConnectionAsync:
     async def get_run_start_time(self) -> float:
         return float(await self.run_command("RET ${RunStartTime:--}"))
 
-    async def get_filterdata_one(self, 
-                                 filterset: Union[data.FilterSet, str], 
-                                 stage: int, cycle: int, step: int, point: int = 1, 
-                                 run: Optional[str] = None) -> data.FilterDataReading:
+    async def get_filterdata_one(
+        self,
+        filterset: Union[data.FilterSet, str],
+        stage: int,
+        cycle: int,
+        step: int,
+        point: int = 1,
+        run: Optional[str] = None,
+    ) -> data.FilterDataReading:
         if run is None:
             run = await self.get_run_title()
         if isinstance(filterset, str):
@@ -268,26 +300,36 @@ class QSConnectionAsync:
         else:
             filterset_r = filterset
 
-        fl = await self.get_exp_file(f"{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
-            f"_T{step:02}_P{point:04}_M{filterset_r.em}_X{filterset_r.ex}_filterdata.xml")
-        
+        fl = await self.get_exp_file(
+            f"{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
+            f"_T{step:02}_P{point:04}_M{filterset_r.em}"
+            f"_X{filterset_r.ex}_filterdata.xml"
+        )
+
         f = data.FilterDataReading(fl)
 
-        ql = (await self.get_expfile_list(f"{run}/apldbio/sds/quant/"
-                                          f"{f.filename_reading_string}_E*.quant"))[-1]
+        ql = (
+            await self.get_expfile_list(
+                f"{run}/apldbio/sds/quant/" f"{f.filename_reading_string}_E*.quant"
+            )
+        )[-1]
         qf = await self.get_exp_file(ql)
-    
+
         f.set_time_by_quantdata(qf.decode())
 
         return f
 
-    async def get_all_filterdata(self, 
-                                 run: Optional[str] = None) -> data.FilterDataCollection:
+    async def get_all_filterdata(
+        self, run: Optional[str] = None
+    ) -> data.FilterDataCollection:
         if run is None:
             run = await self.get_run_title()
 
-        pl = [await self.get_filterdata_one(*_parse_fd_fn(x)) 
-              for x in await self.get_expfile_list(
-            f"{run}/apldbio/sds/filter/*_filterdata.xml")]
+        pl = [
+            await self.get_filterdata_one(*_parse_fd_fn(x))
+            for x in await self.get_expfile_list(
+                f"{run}/apldbio/sds/filter/*_filterdata.xml"
+            )
+        ]
 
         return data.FilterDataCollection.from_readings(pl)  # type:ignore
