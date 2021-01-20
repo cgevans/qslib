@@ -14,7 +14,7 @@ def _parse_argstring(argstring: str) -> Mapping[str, str]:
     unparsed = argstring.split()
 
     args = dict()
-
+    # FIXME: do quotes allow spaces?
     for u in unparsed:
         m = re.match("-([^=]+)=(.*)$", u)
         if m is None:
