@@ -2,7 +2,7 @@ import pytest
 
 from qslib.data import FilterSet
 
-def test_filterset_strings():
+def test_filterset_strings() -> None:
     a = FilterSet(1,4)
 
     assert a == FilterSet.fromstring("x1-m4")
@@ -15,13 +15,13 @@ def test_filterset_strings():
 
 import qslib.qsconnection_async as qsa
 
-def test_parse_argstring():
+def test_parse_argstring() -> None:
 
     # FIXME: do quotes allow spaces?
     assert qsa._parse_argstring('-arg1=val1 -arg2="val-2"') \
          == {'arg1': 'val1', 'arg2': '"val-2"'}
 
-def test_validate_command_format():
+def test_validate_command_format() -> None:
 
     with pytest.raises(ValueError):
         qsa._validate_command_format("\nText\n<a>")
