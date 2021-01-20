@@ -1,4 +1,5 @@
-from typing import Iterable, Union, List
+from __future__ import annotations
+from typing import Iterable, Literal, Optional, Union, List, cast
 from dataclasses import dataclass, field
 from lxml import etree
 import numpy as np
@@ -12,7 +13,7 @@ class FilterSet:
     em: int
 
     @classmethod
-    def fromstring(cls, string):
+    def fromstring(cls, string: str) -> FilterSet:
         # fixme: do validation
         if string.startswith("x"):
             return cls(int(string[1]), int(string[4]))
@@ -22,18 +23,20 @@ class FilterSet:
             raise ValueError
     
     @property
-    def lowerform(self):
+    def lowerform(self) -> str:
         return f"x{self.ex}-m{self.em}"
 
     @property
-    def upperform(self):
+    def upperform(self) -> str:
         return f"M{self.em}_X{self.ex}"
     
-    def __str__(self):
+    def __str__(self) -> str:
         return self.lowerform
 
+
 class FilterDataReading:
-    def __init__(self, filterxmlstring: Union[str, bytes], time=None, set_temperatures='auto'):
+    def __init__(self, filterxmlstring: Union[str, bytes], time: Optional[float] = None, 
+                 set_temperatures: Union[Literal['auto'], None, List[float]] = 'auto'):
         if isinstance(filterxmlstring, str):
             filterxmlstring = filterxmlstring.encode()
 
@@ -43,8 +46,9 @@ class FilterDataReading:
             fxml.xpath("//Attribute/key/text()"), 
             fxml.xpath("//Attribute/value/text()"))}
 
-        self.attribs['temperature'] = np.array([float(x) 
-            for x in self.attribs['temperature'].split(',')])
+        self.attribs['temperature'] = np.array([float(x)
+                                                for x in
+                                                self.attribs['temperature'].split(',')])
         if set_temperatures == 'auto':
             self.set_temperatures = self.attribs['temperature'].round(2)
         elif set_temperatures is not None:
@@ -79,11 +83,11 @@ class FilterDataReading:
         return FilterSet.fromstring(self.attribs['filter_set'])
 
     @property
-    def temperature(self) -> List[float]:
-        return self.attribs['temperature']
+    def temperature(self) -> np.ndarray:
+        return cast(np.ndarray, self.attribs['temperature'])
 
     @property
-    def filename_reading_string(self):
+    def filename_reading_string(self) -> str:
         return f"S{self.stage:02}_C{self.cycle:03}_T{self.step:02}_P{self.point:04}_{self.filter_set.upperform}"
 
     @property
@@ -112,30 +116,30 @@ class FilterDataReading:
         return self.well_set_temperatures.reshape(self.plate_rows,self.plate_cols)
 
     @property
-    def plate_fluorescence(self):
+    def plate_fluorescence(self) -> np.ndarray:
         return self.well_fluorescence.reshape(self.plate_rows,self.plate_cols)
 
     @property
-    def stage(self):
+    def stage(self) -> int:
         return int(self.attribs['stage'])
 
     @property
-    def cycle(self):
+    def cycle(self) -> int:
         return int(self.attribs['cycle'])
 
     @property
-    def step(self):
+    def step(self) -> int:
         return int(self.attribs['step'])
 
     @property
-    def point(self):
+    def point(self) -> int:
         return int(self.attribs['point'])
 
     @property
-    def exposure(self):
+    def exposure(self) -> float:
         return float(self.attribs['exposure'])
 
-    def to_lineprotocol(self):
+    def to_lineprotocol(self) -> List[str]:
         lines = []
         gs = f"filterdata,filter_set={self.filter_set},stage={self.stage:02},cycle={self.cycle:03},step={self.step:02},point={self.point:04},"
         assert self.time
@@ -151,17 +155,17 @@ class FilterDataReading:
 
         return lines
 
-class FilterDataCollection(pd.DataFrame):
+class FilterDataCollection(pd.DataFrame):  # type: ignore
     @property
-    def _constructor(self):
+    def _constructor(self) -> type:
         return FilterDataCollection
 
     @property
-    def _constructor_sliced(self):
+    def _constructor_sliced(self) -> pd.Series:
         return pd.Series
     
     @classmethod
-    def from_readings(cls, readings: List[FilterDataReading]):
+    def from_readings(cls, readings: List[FilterDataReading]) -> pd.DataFrame:
         f = [np.concatenate((
             np.array([r.time]),
             r.well_fluorescence,
@@ -170,18 +174,21 @@ class FilterDataCollection(pd.DataFrame):
             np.array([r.exposure])
             )) for r in readings]
 
-        indices = pd.MultiIndex.from_tuples([(r.filter_set.lowerform, r.stage, 
-            r.cycle, r.step, r.point) for r in readings],
-            names=['filter_set','stage','cycle','step','point'])
+        indices = pd.MultiIndex.from_tuples([(r.filter_set.lowerform, r.stage,
+                                              r.cycle, r.step, r.point) 
+                                            for r in readings],
+                                            names=['filter_set', 'stage', 
+                                            'cycle', 'step', 'point'])
 
         fr = readings[0]
 
-        wr = [f"{r}{c:02}" for r in _UPPERS[0:fr.plate_rows] for c in range(1, fr.plate_cols+1)]
+        wr = [f"{r}{c:02}" for r in _UPPERS[0:fr.plate_rows]
+              for c in range(1, fr.plate_cols+1)]
 
         a = cls(f,
-            index=indices,
-            columns=['time']+['f_'+r for r in wr] + 
-            ['tr_'+r for r in wr] + ['ts_'+r for r in wr] + ['exposure'])
+                index=indices,
+                columns=['time']+['f_'+r for r in wr] +
+                ['tr_'+r for r in wr] + ['ts_'+r for r in wr] + ['exposure'])
 
         a.sort_index(inplace=True)
 
