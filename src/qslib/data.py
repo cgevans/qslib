@@ -1,5 +1,6 @@
 from __future__ import annotations
-from typing import Literal, Optional, Union, List, cast
+from typing import Optional, Union, List, cast
+from typing_extensions import Literal
 from dataclasses import dataclass
 from lxml import etree
 import numpy as np

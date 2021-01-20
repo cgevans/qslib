@@ -1,7 +1,10 @@
 import sys
 
-from importlib.metadata import PackageNotFoundError, version  # pragma: no cover
-
+try:
+    from importlib.metadata import PackageNotFoundError, version  # pragma: no cover
+except:
+    from importlib_metadata import PackageNotFoundError, version
+    
 from .data import *
 from .qsconnection_async import *
 
