@@ -40,13 +40,6 @@ before_script:
   # - pytest
 
 # Run in different environments
-py36:
-  image: "python:3.6"
-  <<: *test_script
-
-py37:
-  image: "python:3.7"
-  <<: *test_script
 
 py38:
   image: "python:3.8"
