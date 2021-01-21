@@ -1,7 +1,6 @@
 from __future__ import annotations
 import asyncio
-from typing import Any, Optional, List, Tuple, Mapping, Union
-from typing_extensions import Literal
+from typing import Any, Optional, List, Tuple, Mapping, Union, Literal
 import hmac
 import io
 from dataclasses import dataclass
