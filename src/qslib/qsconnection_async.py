@@ -6,7 +6,7 @@ import io
 from dataclasses import dataclass
 import re
 import base64
-from . import data
+import qslib.data as data
 
 AccessLevel = Literal["Guest", "Observer", "Controller", "Administrator", "Full"]
 
@@ -170,7 +170,7 @@ class QSConnectionAsync:
             await self.authenticate(self.password)
 
         if self._initial_access_level is not None:
-            await self.set_access_level(self._initial_access_level)
+            await self.set_access_level(self._initial_access_level)  # type: ignore
 
         self.connected = True
 
@@ -255,7 +255,7 @@ class QSConnectionAsync:
         return fl.split("\n")[1:-1]
 
     async def get_run_title(self) -> str:
-        return await self.run_command(f"RUNTitle?")
+        return await self.run_command("RUNTitle?")
 
     async def get_exp_file(
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
