@@ -50,9 +50,9 @@ py39:
   <<: *test_script
 
 
-docs:
-  script:
-    - tox -e docs
+    #docs:
+    # script:
+    #- tox -e docs
 
 # This deploy job uses a simple deploy flow to Heroku, other providers, e.g. AWS Elastic Beanstalk
 # are supported too: https://github.com/travis-ci/dpl
