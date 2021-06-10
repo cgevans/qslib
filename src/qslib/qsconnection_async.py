@@ -1,6 +1,6 @@
 from __future__ import annotations
 import asyncio
-from typing import Any, Optional, List, Tuple, Mapping, Union, Literal
+from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast
 import hmac
 import io
 from dataclasses import dataclass
@@ -15,7 +15,7 @@ def _gen_auth_response(password: str, challenge_string: str) -> str:
     return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
 
 
-def _parse_argstring(argstring: str) -> Mapping[str, str]:
+def _parse_argstring(argstring: str) -> Dict[str, str]:
     unparsed = argstring.split()
 
     args = dict()
@@ -102,8 +102,8 @@ def _parse_command_reply(
                 return responsestring[3 + len(command.rstrip().encode()) + 1 :].rstrip()
     elif responsestring.startswith(b"ERRor"):
         raise CommandError(command, ref_index, responsestring.decode())
-
-    raise NotImplementedError
+    else:
+        raise NotImplementedError(command, ref_index, responsestring.decode())
 
 
 class QSConnectionAsync:
@@ -170,7 +170,7 @@ class QSConnectionAsync:
             await self.authenticate(self.password)
 
         if self._initial_access_level is not None:
-            await self.set_access_level(self._initial_access_level)  # type: ignore
+            await self.set_access_level(cast(AccessLevel, self._initial_access_level))
 
         self.connected = True
 
@@ -260,9 +260,19 @@ class QSConnectionAsync:
     async def get_exp_file(
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
     ) -> bytes:
-        reply = await self.run_command_to_bytes(
-            f"EXP:READ? -encoding={encoding} {path}"
-        )
+        reply = await self.run_command_to_bytes(f"EXP:READ? -encoding={encoding} {path}")
+        assert reply.startswith(b"<quote>\n")
+        assert reply.endswith(b"</quote>")
+        r = reply[8:-8]
+        if encoding == "base64":
+            return base64.decodebytes(r)
+        else:
+            return r
+
+    async def get_file(
+        self, path: str, encoding: Literal["plain", "base64"] = "base64"
+    ) -> bytes:
+        reply = await self.run_command_to_bytes(f"FILE:READ? -encoding={encoding} {path}")
         assert reply.startswith(b"<quote>\n")
         assert reply.endswith(b"</quote>")
         r = reply[8:-8]
