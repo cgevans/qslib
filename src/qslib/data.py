@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Optional, Union, List, cast, Literal
+from typing import Optional, Type, Union, List, cast, Literal
 
 from dataclasses import dataclass
 from lxml import etree
@@ -46,7 +46,7 @@ class FilterDataReading:
         if isinstance(filterxmlstring, str):
             filterxmlstring = filterxmlstring.encode()
 
-        fxml = etree.fromstring(filterxmlstring)
+        fxml = etree.fromstring(filterxmlstring, parser=None)
 
         self.attribs = {
             k.lower(): v
@@ -170,28 +170,33 @@ class FilterDataReading:
     def exposure(self) -> float:
         return float(self.attribs["exposure"])
 
-    def to_lineprotocol(self) -> List[str]:
+    def to_lineprotocol(self, run_name: str = None, sample_array=None) -> List[str]:
         lines = []
-        gs = (
-            f"filterdata,filter_set={self.filter_set}"
-        )
+        gs = f"filterdata,filter_set={self.filter_set}"
         assert self.time
         es = " {}".format(int(self.time * 1e9))
 
         wr = [
-            (r, c)
-            for r in _UPPERS[0 : self.plate_rows]
+            (_UPPERS[rn], rn, c)
+            for rn in range(0, self.plate_rows)
             for c in range(1, self.plate_cols + 1)
         ]
 
-        for (r, c), f, tr, ts in zip(
+        for (r, rn, c), f, tr, ts in zip(
             wr,
             self.well_fluorescence,
             self.well_temperatures,
             self.well_set_temperatures,
         ):
-            s = (f",row={r},col={c:02} fluorescence={f},temperature_read={tr}"
-                 f",stage={self.stage:02}i,cycle={self.cycle:03}i,step={self.step:02}i,point={self.point:04}i")
+            s = (
+                f",row={r},col={c:02} fluorescence={f},temperature_read={tr}"
+                f",stage={self.stage:02}i,cycle={self.cycle:03}i"
+                f",step={self.step:02}i,point={self.point:04}i"
+            )
+            if sample_array is not None:
+                s += f',sample="{sample_array[rn,c-1]}"'
+            if run_name is not None:
+                s += f',run_name="{run_name}"'
             if self.set_temperatures is not None:
                 s += f",temperature_set={ts}"
             lines.append(gs + s + es)
@@ -205,7 +210,7 @@ class FilterDataCollection(pd.DataFrame):  # type: ignore
         return FilterDataCollection
 
     @property
-    def _constructor_sliced(self) -> pd.Series:
+    def _constructor_sliced(self) -> Type[pd.Series]:
         return pd.Series
 
     @classmethod

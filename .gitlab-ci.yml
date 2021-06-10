@@ -2,7 +2,7 @@
 # This file is a template, and might need editing before it works on your project.
 
 # Official language image. Look for the different tagged releases at:
-image: "python:3.9"
+# image: "python:2.7"
 
 # Pick zero or more services to be used on all builds.
 # Only needed when using a docker container to run your tests in.
@@ -27,8 +27,8 @@ before_script:
   - python -v                                   # Print out Python version for debugging
   # Setup git
   - apt-get install git
-  - git config --global user.email "cevans@costinet.org"
-  - git config --global user.name "Constantine Evans"
+  - git config --global user.email "you@example.com"
+  - git config --global user.name "Your Name"
   # Install dependencies for the testing environment
   - pip install -U pip setuptools
   - pip install -U tox
@@ -40,6 +40,13 @@ before_script:
   # - pytest
 
 # Run in different environments
+py36:
+  image: "python:3.6"
+  <<: *test_script
+
+py37:
+  image: "python:3.7"
+  <<: *test_script
 
 py38:
   image: "python:3.8"
