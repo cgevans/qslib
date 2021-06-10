@@ -4,6 +4,3 @@
 # sphinx_rtd_theme
 recommonmark
 sphinx>=3.2.1
-numpy
-pandas
-lxml

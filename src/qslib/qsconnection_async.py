@@ -1,11 +1,12 @@
 from __future__ import annotations
 import asyncio
-from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast
+from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast, overload
 import hmac
 import io
 from dataclasses import dataclass
 import re
 import base64
+
 import qslib.data as data
 
 AccessLevel = Literal["Guest", "Observer", "Controller", "Administrator", "Full"]
@@ -100,6 +101,8 @@ def _parse_command_reply(
                 raise ValueError("E")  # todo
             else:
                 return responsestring[3 + len(command.rstrip().encode()) + 1 :].rstrip()
+        else:
+            raise NotImplementedError("We should never get here")
     elif responsestring.startswith(b"ERRor"):
         raise CommandError(command, ref_index, responsestring.decode())
     else:
@@ -260,7 +263,9 @@ class QSConnectionAsync:
     async def get_exp_file(
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
     ) -> bytes:
-        reply = await self.run_command_to_bytes(f"EXP:READ? -encoding={encoding} {path}")
+        reply = await self.run_command_to_bytes(
+            f"EXP:READ? -encoding={encoding} {path}"
+        )
         assert reply.startswith(b"<quote>\n")
         assert reply.endswith(b"</quote>")
         r = reply[8:-8]
@@ -272,7 +277,9 @@ class QSConnectionAsync:
     async def get_file(
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
     ) -> bytes:
-        reply = await self.run_command_to_bytes(f"FILE:READ? -encoding={encoding} {path}")
+        reply = await self.run_command_to_bytes(
+            f"FILE:READ? -encoding={encoding} {path}"
+        )
         assert reply.startswith(b"<quote>\n")
         assert reply.endswith(b"</quote>")
         r = reply[8:-8]
@@ -296,7 +303,7 @@ class QSConnectionAsync:
 
     async def get_filterdata_one(
         self,
-        filterset: Union[data.FilterSet, str],
+        filterset: Union[data.FilterSet, str],  # type: ignore
         stage: int,
         cycle: int,
         step: int,
@@ -329,9 +336,19 @@ class QSConnectionAsync:
 
         return f
 
+    @overload
     async def get_all_filterdata(
-        self, run: Optional[str] = None
+        self, run: Optional[str], as_list: Literal[True]
+    ) -> List[data.FilterDataReading]:
+        ...
+
+    @overload
+    async def get_all_filterdata(
+        self, run: Optional[str], as_list: Literal[False]
     ) -> data.FilterDataCollection:
+        ...
+
+    async def get_all_filterdata(self, run=None, as_list=False):
         if run is None:
             run = await self.get_run_title()
 
@@ -341,5 +358,8 @@ class QSConnectionAsync:
                 f"{run}/apldbio/sds/filter/*_filterdata.xml"
             )
         ]
+
+        if as_list:
+            return pl
 
         return data.FilterDataCollection.from_readings(pl)  # type:ignore
