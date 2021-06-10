@@ -60,10 +60,12 @@ class FilterDataReading:
             [float(x) for x in self.attribs["temperature"].split(",")]
         )
         if set_temperatures == "auto":
-            self.set_temperatures = self.attribs["temperature"].round(2)
+            self.set_temperatures: Optional[np.ndarray] = cast(
+                np.ndarray, self.attribs["temperature"]
+            ).round(2)
         elif set_temperatures is not None:
             assert len(set_temperatures) == len(self.attribs["temperature"])
-            self.set_temperatures = set_temperatures
+            self.set_temperatures = np.array(set_temperatures)
         else:
             self.set_temperatures = None
 
@@ -76,8 +78,8 @@ class FilterDataReading:
         assert self.plate_rows * self.plate_cols == 96
         assert len(self.attribs["temperature"]) == 6
 
-        self.well_fluorescence = np.fromstring(
-            fxml.xpath("//WellData/text()")[0], sep=" "
+        self.well_fluorescence = cast(
+            np.ndarray, np.fromstring(fxml.xpath("//WellData/text()")[0], sep=" ")
         )
 
         self.time = time
@@ -107,26 +109,32 @@ class FilterDataReading:
 
     @property
     def well_temperatures(self) -> np.ndarray:
-        return self.temperature[
-            np.tile(
-                np.arange(0, len(self.attribs["temperature"])).repeat(
-                    self.plate_cols / len(self.temperature)
-                ),
-                self.plate_rows,
-            )
-        ]
+        return cast(
+            np.ndarray,
+            self.temperature[
+                np.tile(
+                    np.arange(0, len(self.attribs["temperature"])).repeat(
+                        self.plate_cols / len(self.temperature)
+                    ),
+                    self.plate_rows,
+                )
+            ],
+        )
 
     @property
     def well_set_temperatures(self) -> np.ndarray:
         if self.set_temperatures is not None:
-            return self.set_temperatures[
-                np.tile(
-                    np.arange(0, len(self.set_temperatures)).repeat(
-                        self.plate_cols / len(self.set_temperatures)
-                    ),
-                    self.plate_rows,
-                )
-            ]
+            return cast(
+                np.ndarray,
+                self.set_temperatures[
+                    np.tile(
+                        np.arange(0, len(self.set_temperatures)).repeat(
+                            self.plate_cols / len(self.set_temperatures)
+                        ),
+                        self.plate_rows,
+                    )
+                ],
+            )
         else:
             return np.full(self.plate_cols * self.plate_rows, None)
 
@@ -165,8 +173,7 @@ class FilterDataReading:
     def to_lineprotocol(self) -> List[str]:
         lines = []
         gs = (
-            f"filterdata,filter_set={self.filter_set},stage={self.stage:02},"
-            f"cycle={self.cycle:03},step={self.step:02},point={self.point:04},"
+            f"filterdata,filter_set={self.filter_set}"
         )
         assert self.time
         es = " {}".format(int(self.time * 1e9))
@@ -183,7 +190,8 @@ class FilterDataReading:
             self.well_temperatures,
             self.well_set_temperatures,
         ):
-            s = f"row={r},col={c:02} fluorescence={f},temperature_read={tr}"
+            s = (f",row={r},col={c:02} fluorescence={f},temperature_read={tr}"
+                 f",stage={self.stage:02}i,cycle={self.cycle:03}i,step={self.step:02}i,point={self.point:04}i")
             if self.set_temperatures is not None:
                 s += f",temperature_set={ts}"
             lines.append(gs + s + es)
