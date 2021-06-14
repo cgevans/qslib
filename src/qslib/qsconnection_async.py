@@ -52,6 +52,8 @@ class CommandError(Error):
     ref_index: Optional[str]
     response: str
 
+class ReplyError(IOError):
+    pass
 
 def _validate_command_format(commandstring: str) -> None:
     # This is meant to validate that the command will not mess up comms
@@ -192,8 +194,17 @@ class QSConnectionAsync:
                 if not c:
                     quote_stack.append(t)
                 else:
-                    assert quote_stack[-1] == t
-                    quote_stack.pop()
+                    # There is weird behaviour here.  Some things actually don't
+                    # count as quotes, and probably shouldn't go on the stack at all,
+                    # but I don't know how to distinguish them.  So, for now, I'll try
+                    # popping *everything* up to the open quote.
+                    # Previously had:
+                    # assert quote_stack[-1] == t
+                    # quote_stack.pop()
+                    if t not in quote_stack:
+                        raise ReplyError(f"Close quote {t} did not have open quote.")
+                    while (x := quote_stack.pop()) != t:
+                        continue
             if not quote_stack:
                 break
         return s.getvalue()
