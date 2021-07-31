@@ -2,10 +2,10 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast, overload
 import hmac
-import io
 from dataclasses import dataclass
 import re
 import base64
+from .qs_is_protocol import QS_IS_Protocol
 
 import qslib.data as data
 
@@ -52,8 +52,10 @@ class CommandError(Error):
     ref_index: Optional[str]
     response: str
 
+
 class ReplyError(IOError):
     pass
+
 
 def _validate_command_format(commandstring: str) -> None:
     # This is meant to validate that the command will not mess up comms
@@ -83,34 +85,6 @@ def _validate_command_format(commandstring: str) -> None:
         raise ValueError("Unclosed tags")
 
 
-def _parse_command_reply(
-    responsestring: bytes,
-    command: Optional[str] = None,
-    ref_index: Optional[str] = None,
-) -> bytes:
-    if (command is None) and (ref_index is None):
-        raise TypeError("Must give either command or ref_index")
-        # todo: handle commond/refindex problem here
-    if responsestring.startswith(b"OK "):
-        if ref_index:
-            ref_index_b = str(ref_index).encode()
-            if not responsestring[3:].startswith(ref_index_b):
-                raise ValueError("E")  # todo
-            else:
-                return responsestring[3 + len(ref_index) :].rstrip()
-        elif command:
-            if not responsestring[3:].startswith(command.encode()):
-                raise ValueError("E")  # todo
-            else:
-                return responsestring[3 + len(command.rstrip().encode()) + 1 :].rstrip()
-        else:
-            raise NotImplementedError("We should never get here")
-    elif responsestring.startswith(b"ERRor"):
-        raise CommandError(command, ref_index, responsestring.decode())
-    else:
-        raise NotImplementedError(command, ref_index, responsestring.decode())
-
-
 class QSConnectionAsync:
     """Class for connection to a QuantStudio instrument server, using asyncio"""
 
@@ -119,8 +93,12 @@ class QSConnectionAsync:
         return self
 
     async def __aexit__(self, exc_type: type, exc: Error, tb: Any) -> None:
-        self._writer.close()
-        await self._writer.wait_closed()
+        await self.disconnect()
+
+    async def disconnect(self):
+        await self.run_command("QUIT")
+        self._transport.close()
+        self.connected = True
 
     def __init__(
         self,
@@ -164,9 +142,15 @@ class QSConnectionAsync:
         if initial_access_level is not None:
             self._initial_access_level = initial_access_level
 
-        self._reader, self._writer = await asyncio.open_connection(self.host, self.port)
+        self.loop = asyncio.get_running_loop()
+        self._transport, proto = await self.loop.create_connection(
+            QS_IS_Protocol, self.host, self.port
+        )
 
-        resp = (await self.get_reply()).decode()
+        self._protocol: QS_IS_Protocol = self._protocol
+
+        await self._protocol.readymsg
+        resp = self._protocol.readymsg.result()
         self._parse_access_line(resp)
 
         if self._authenticate_on_connect:
@@ -181,86 +165,30 @@ class QSConnectionAsync:
 
         return resp
 
-    async def get_reply(self, timeout: Optional[float] = 10.0) -> bytes:
-        s = io.BytesIO()
-
-        quote_stack = []
-
-        while True:
-            line = await asyncio.wait_for(self._reader.readline(), timeout)
-            s.write(line)
-            m = re.findall(rb"<(/?)([\w.]+)[ *]*>", line)
-            for c, t in m:
-                if not c:
-                    quote_stack.append(t)
-                else:
-                    # There is weird behaviour here.  Some things actually don't
-                    # count as quotes, and probably shouldn't go on the stack at all,
-                    # but I don't know how to distinguish them.  So, for now, I'll try
-                    # popping *everything* up to the open quote.
-                    # Previously had:
-                    # assert quote_stack[-1] == t
-                    # quote_stack.pop()
-                    if t not in quote_stack:
-                        raise ReplyError(f"Close quote {t} did not have open quote.")
-                    while (x := quote_stack.pop()) != t:
-                        continue
-            if not quote_stack:
-                break
-        return s.getvalue()
-
-    async def send_command_raw(
-        self, command: str, timeout: Optional[float] = 10.0
-    ) -> None:
-        self._writer.write(command.encode())
-        await asyncio.wait_for(self._writer.drain(), timeout)
-
     async def run_command_to_bytes(
         self,
         command: str,
-        ref_index: Optional[str] = None,
-        use_uuid: bool = False,
-        timeout: Optional[float] = 10.0,
     ) -> bytes:
         command = command.rstrip()
 
         _validate_command_format(command)
-
-        m = re.match(r"^(\d+) ", command)
-        if m:
-            if ref_index:
-                assert int(ref_index) == int(m[1])
-            else:
-                ref_index = m[1]
-            command = command[m.endpos :]
-
-        if ref_index:
-            command = str(ref_index) + " " + command
-
-        await self.send_command_raw(command + "\n", timeout)
-
-        resp = await self.get_reply(timeout)
-
-        return _parse_command_reply(resp, command, ref_index)
+        return await self._protocol.run_command(command + "\n")
 
     async def run_command(
         self,
         command: str,
-        ref_index: Optional[str] = None,
-        use_uuid: bool = False,
-        timeout: Optional[float] = 10.0,
     ) -> str:
         return (
-            await self.run_command_to_bytes(command, ref_index, use_uuid, timeout)
+            await self.run_command_to_bytes(command)
         ).decode()
 
-    async def authenticate(self, password: str) -> str:
+    async def authenticate(self, password: str):
         challenge_key = await self.run_command("CHAL?")
         auth_rep = _gen_auth_response(password, challenge_key)
-        return await self.run_command(f"AUTH {auth_rep}")
+        await self.run_command(f"AUTH {auth_rep}")
 
-    async def set_access_level(self, level: AccessLevel) -> str:
-        return await self.run_command("ACC " + level)
+    async def set_access_level(self, level: AccessLevel):
+        await self.run_command("ACC " + level)
 
     async def get_expfile_list(self, glob: str) -> List[str]:
         fl = await self.run_command(f"EXP:LIST? {glob}")
