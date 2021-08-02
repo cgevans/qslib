@@ -1,3 +1,3 @@
 # Contributors
 
-* Constantine Evans <cevans@costinet.org>
+-   Constantine Evans <const@costinet.org>

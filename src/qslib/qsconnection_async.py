@@ -147,7 +147,7 @@ class QSConnectionAsync:
             QS_IS_Protocol, self.host, self.port
         )
 
-        self._protocol: QS_IS_Protocol = self._protocol
+        self._protocol = cast(QS_IS_Protocol, proto)
 
         await self._protocol.readymsg
         resp = self._protocol.readymsg.result()
@@ -165,22 +165,18 @@ class QSConnectionAsync:
 
         return resp
 
-    async def run_command_to_bytes(
-        self,
-        command: str,
-    ) -> bytes:
+    async def run_command_to_bytes(self, command: str, just_ack: bool = True) -> bytes:
         command = command.rstrip()
 
         _validate_command_format(command)
-        return await self._protocol.run_command(command + "\n")
-
-    async def run_command(
-        self,
-        command: str,
-    ) -> str:
         return (
-            await self.run_command_to_bytes(command)
-        ).decode()
+            await self._protocol.run_command(
+                command.rstrip().encode(), just_ack=just_ack
+            )
+        ).rstrip()
+
+    async def run_command(self, command: str, just_ack: bool = True) -> str:
+        return (await self.run_command_to_bytes(command, just_ack)).decode()
 
     async def authenticate(self, password: str):
         challenge_key = await self.run_command("CHAL?")
