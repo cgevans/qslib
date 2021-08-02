@@ -14,9 +14,7 @@ _UPPERS = "ABCDEFGHIJKLMNOP"
 
 @dataclass
 class FilterSet:
-    """
-    Representation of a filter set, potentially including the "quant" parameter used by HACFILT in SCPI protocols.
-    """
+    """Representation of a filter set, potentially including the "quant" parameter used by HACFILT in SCPI protocols."""
 
     ex: int
     em: int

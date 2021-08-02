@@ -1,5 +1,9 @@
-import sys
-from .qsconnection_async import QSConnectionAsync
+from .machine import Machine
+from .experiment import Experiment
+from . import tcprotocol as tc
+from .tcprotocol import Stage, Step, Protocol
+
+__all__ = ("Machine", "Experiment", "tc")
 
 from importlib.metadata import PackageNotFoundError, version  # pragma: no cover
 
