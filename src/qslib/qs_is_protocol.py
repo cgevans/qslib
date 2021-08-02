@@ -1,3 +1,4 @@
+from __future__ import annotations
 import asyncio, logging, re, io
 from typing import Optional
 
@@ -72,6 +73,13 @@ class QS_IS_Protocol(asyncio.Protocol):
             log.error(f"Unknown message: {ds}")
 
     def data_received(self, data: bytes) -> None:
+        """Process received data packet from instrument, keeping track of quotes. If
+        a newline occurs when the quote stack is empty, create a task to process
+        the message, but continue processing. (TODO: consider threads/processes here.)
+
+        :param data: bytes: 
+
+        """
         lastwrite = 0
         for m in NL_OR_Q.finditer(data):
             if m[0] == b"\n":
@@ -99,8 +107,14 @@ class QS_IS_Protocol(asyncio.Protocol):
         self.buffer.write(data[lastwrite:])
 
     async def run_command(
-        self, comm: bytes, ack_timeout: int = 300, just_ack: bool = True, uid=True
+        self,
+        comm: str | bytes,
+        ack_timeout: int = 300,
+        just_ack: bool = True,
+        uid: bool = True,
     ) -> bytes:
+        if isinstance(comm, str):
+            comm = comm.encode()
         log.debug(f"Running command {comm}")
         loop = asyncio.get_running_loop()
 
