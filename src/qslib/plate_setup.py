@@ -4,7 +4,7 @@ from uuid import uuid4
 
 from dataclasses import dataclass, field
 from typing import Optional, Sequence, Tuple, List, Dict, Union
-from lxml import etree
+import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import tabulate
@@ -34,12 +34,10 @@ class Sample:
     color: Tuple[int, int, int, int] = field(default=(255, 0, 0, 255))
 
     @classmethod
-    def from_platesetup_sample(cls, se: etree.Element) -> Sample:  # type: ignore
+    def from_platesetup_sample(cls, se: ET.Element) -> Sample:  # type: ignore
         return cls(
             se.find("Name").text,
-            se.xpath("(CustomProperty/Property[text()='SP_UUID'])[1]/../Value/text()")[
-                0
-            ],
+            se.find("(CustomProperty/Property[text()='SP_UUID'])[1]/../Value").text,
             _process_color_from_str_int(se.find("Color").text),
         )
 
@@ -50,10 +48,10 @@ class PlateSetup:
     sample_wells: Dict[str, List[str]]
 
     @classmethod
-    def from_platesetup_xml(cls, platexml: etree.Element) -> PlateSetup:  # type: ignore
+    def from_platesetup_xml(cls, platexml: ET.Element) -> PlateSetup:  # type: ignore
         assert platexml.find("PlateKind/Type").text == "TYPE_8X12"
 
-        sample_fvs = platexml.xpath(
+        sample_fvs = platexml.findall(
             "FeatureMap/Feature/Id[text()='sample']/../../FeatureValue"
         )
 
@@ -118,8 +116,8 @@ class PlateSetup:
         cls, c: QSConnectionAsync, runtitle: Optional[str] = None
     ) -> PlateSetup:
         s = await c.get_sds_file("plate_setup.xml", runtitle=runtitle)
-        x = etree.parse(BytesIO(s), parser=None)
-        return cls.from_platesetup_xml(x)
+        x = ET.parse(BytesIO(s), parser=None)
+        return cls.from_platesetup_xml(x.getroot())
 
     def __repr__(self) -> str:
         return f"PlateSetup(samples {self.sample_wells.keys()}))"
