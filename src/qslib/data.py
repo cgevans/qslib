@@ -1,18 +1,26 @@
 from __future__ import annotations
-from typing import Optional, Type, Union, List, cast, Literal
+from os import PathLike
+from typing import Any, Optional, Type, Union, List, cast, Literal
 
 from dataclasses import dataclass
-from lxml import etree
+import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
+from glob import glob
+import os
 
 _UPPERS = "ABCDEFGHIJKLMNOP"
 
 
 @dataclass
 class FilterSet:
+    """
+    Representation of a filter set, potentially including the "quant" parameter used by HACFILT in SCPI protocols.
+    """
+
     ex: int
     em: int
+    quant: bool = True
 
     @classmethod
     def fromstring(cls, string: str) -> FilterSet:
@@ -21,6 +29,8 @@ class FilterSet:
             return cls(int(string[1]), int(string[4]))
         elif string.startswith("M"):
             return cls(int(string[4]), int(string[1]))
+        elif string.startswith("m"):
+            return cls(int(string[4]), int(string[1]), string.endswith(",quant"))
         else:
             raise ValueError
 
@@ -32,73 +42,101 @@ class FilterSet:
     def upperform(self) -> str:
         return f"M{self.em}_X{self.ex}"
 
+    @property
+    def hacform(self) -> str:
+        return f"m{self.em},x{self.ex}" + (",quant" if self.quant else "")
+
     def __str__(self) -> str:
-        return self.lowerform
+        return self.lowerform + ("-noquant" if not self.quant else "")
 
 
 class FilterDataReading:
+    stage: int
+    step: int
+    cycle: int
+    point: int
+    timestamp: float | None
+    exposure: int
+    filter_set: FilterSet
+    well_fluorescence: np.ndarray
+    temperatures: np.ndarray
+    set_temperatures: np.ndarray | None
+
+    def __repr__(self):
+        return (
+            f"FilterDataReading(stage={self.stage}, cycle={self.cycle}, "
+            f'step={self.step}, point={self.point}, filter_set="{self.filter_set}", timestamp={self.timestamp}, ...)'
+        )
+
     def __init__(
         self,
-        filterxmlstring: Union[str, bytes],
-        time: Optional[float] = None,
+        pde: ET.Element,
+        timestamp: Optional[float] = None,
+        sds_dir: Optional[str | PathLike[str]] = None,
         set_temperatures: Union[Literal["auto"], None, List[float]] = "auto",
     ):
-        if isinstance(filterxmlstring, str):
-            filterxmlstring = filterxmlstring.encode()
 
-        fxml = etree.fromstring(filterxmlstring, parser=None)
-
-        self.attribs = {
-            k.lower(): v
+        attribs = {
+            cast(str, k.text).lower(): cast(str, v.text)
             for k, v in zip(
-                fxml.xpath("//Attribute/key/text()"),
-                fxml.xpath("//Attribute/value/text()"),
+                pde.findall("Attribute/key"),
+                pde.findall("Attribute/value"),
             )
         }
 
-        self.attribs["temperature"] = np.array(
-            [float(x) for x in self.attribs["temperature"].split(",")]
+        self.temperatures = np.array(
+            [float(x) for x in attribs["temperature"].split(",")]
         )
+
+        self.stage = int(attribs["stage"])
+        self.step = int(attribs["step"])
+        self.cycle = int(attribs["cycle"])
+        self.point = int(attribs["point"])
+        self.exposure = int(attribs["exposure"])
+        self.filter_set = FilterSet.fromstring(attribs["filter_set"])
+
         if set_temperatures == "auto":
             self.set_temperatures: Optional[np.ndarray] = cast(
-                np.ndarray, self.attribs["temperature"]
+                np.ndarray, self.temperatures
             ).round(2)
         elif set_temperatures is not None:
-            assert len(set_temperatures) == len(self.attribs["temperature"])
+            assert len(set_temperatures) == len(self.temperatures)
             self.set_temperatures = np.array(set_temperatures)
         else:
             self.set_temperatures = None
 
-        self.plate_rows = int(fxml.xpath("//PlateData/Rows/text()")[0])
-        self.plate_cols = int(fxml.xpath("//PlateData/Cols/text()")[0])
+        self.plate_rows = int(cast(str, cast(ET.Element, pde.find("Rows")).text))
+        self.plate_cols = int(cast(str, cast(ET.Element, pde.find("Cols")).text))
 
-        assert self.plate_cols % len(self.attribs["temperature"]) == 0
+        assert self.plate_cols % len(self.temperatures) == 0
 
         # todo: handle other cases
         assert self.plate_rows * self.plate_cols == 96
-        assert len(self.attribs["temperature"]) == 6
+        assert len(self.temperatures) == 6
 
         self.well_fluorescence = cast(
-            np.ndarray, np.fromstring(fxml.xpath("//WellData/text()")[0], sep=" ")
+            np.ndarray,
+            np.fromstring(cast(ET.Element, pde.find("WellData")).text, sep=" "),
         )
 
-        self.time = time
+        self.timestamp = timestamp
 
-    def set_time_by_quantdata(self, qstring: str) -> float:
+        if timestamp is None and sds_dir is not None:
+            qs = glob(
+                os.path.join(
+                    sds_dir, "quant", self.filename_reading_string + "_E*.quant"
+                )
+            )
+            qs.sort()
+            self.set_timestamp_by_quantdata(open(qs[-1]).read())
+
+    def set_timestamp_by_quantdata(self, qstring: str) -> float:
         qss = qstring.split("\n\n")[3].split("\n")
         assert len(qss) == 3
         assert qss[0] == "[conditions]"
         qd = {k: v for k, v in zip(qss[1].split("\t"), qss[2].split("\t"))}
-        self.time = float(qd["Time"])
-        return self.time
-
-    @property
-    def filter_set(self) -> FilterSet:
-        return FilterSet.fromstring(self.attribs["filter_set"])
-
-    @property
-    def temperature(self) -> np.ndarray:
-        return cast(np.ndarray, self.attribs["temperature"])
+        self.timestamp = float(qd["Time"])
+        return self.timestamp
 
     @property
     def filename_reading_string(self) -> str:
@@ -111,10 +149,10 @@ class FilterDataReading:
     def well_temperatures(self) -> np.ndarray:
         return cast(
             np.ndarray,
-            self.temperature[
+            self.temperatures[
                 np.tile(
-                    np.arange(0, len(self.attribs["temperature"])).repeat(
-                        self.plate_cols / len(self.temperature)
+                    np.arange(0, len(self.temperatures)).repeat(
+                        self.plate_cols / len(self.temperatures)
                     ),
                     self.plate_rows,
                 )
@@ -150,31 +188,11 @@ class FilterDataReading:
     def plate_fluorescence(self) -> np.ndarray:
         return self.well_fluorescence.reshape(self.plate_rows, self.plate_cols)
 
-    @property
-    def stage(self) -> int:
-        return int(self.attribs["stage"])
-
-    @property
-    def cycle(self) -> int:
-        return int(self.attribs["cycle"])
-
-    @property
-    def step(self) -> int:
-        return int(self.attribs["step"])
-
-    @property
-    def point(self) -> int:
-        return int(self.attribs["point"])
-
-    @property
-    def exposure(self) -> float:
-        return float(self.attribs["exposure"])
-
     def to_lineprotocol(self, run_name: str = None, sample_array=None) -> List[str]:
         lines = []
         gs = f"filterdata,filter_set={self.filter_set}"
-        assert self.time
-        es = " {}".format(int(self.time * 1e9))
+        assert self.timestamp
+        es = " {}".format(int(self.timestamp * 1e9))
 
         wr = [
             (_UPPERS[rn], rn, c)
@@ -218,7 +236,7 @@ class FilterDataCollection(pd.DataFrame):  # type: ignore
         f = [
             np.concatenate(
                 (
-                    np.array([r.time]),
+                    np.array([r.timestamp]),
                     r.well_fluorescence,
                     r.well_temperatures,
                     r.well_set_temperatures,
@@ -247,7 +265,7 @@ class FilterDataCollection(pd.DataFrame):  # type: ignore
         a = cls(
             f,
             index=indices,
-            columns=["time"]
+            columns=["timestamp"]
             + ["f_" + r for r in wr]
             + ["tr_" + r for r in wr]
             + ["ts_" + r for r in wr]

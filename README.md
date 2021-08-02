@@ -1,16 +1,40 @@
 # qslib
 
-Library for communicating with and using the QuantStudio qPCR machine, intended for non-qPCR uses.
-
+QSLib is a package for interacting with Applied Biosystems' QuantStudio
+qPCR machines, intended for non-qPCR uses, such as DNA computing and
+molecular programming systems.
 
 ## Description
 
-A longer description of your project goes here...
+QSLib is a package for interacting with Applied Biosystems' QuantStudio
+qPCR machines, intended for non-qPCR uses, such as DNA computing and
+molecular programming systems. It allows the creation, processing, and
+handling of experiments and experiment data, and interaction with
+machines through their network connection and SCPI interface.
 
+Amongst other features that :
 
-<!-- pyscaffold-notes -->
+-   Direct fluorescence data ("filter data") as Pandas dataframes, with
+    times and temperature readings.
 
-## Note
+-   Running-experiment data access, status information, and control.
 
-This project has been set up using PyScaffold 4.0.2. For details and usage
-information on PyScaffold see https://pyscaffold.org/.
+-   Protocol creation and manipulation, allowing functions outside of
+    AB's software. The ability to update protocols and add stages
+    mid-run is feasible and planned.
+
+-   Temperature data at one-second resolution during experiments.
+
+-   Machine control functions: immediate pauses and resumes, drawer
+    control, power, etc.
+
+-   With qslib-monitor: live monitoring of machine state information,
+    with Matrix notifications, InfluxDB storage, and Grafana dashboards.
+
+## Installation
+
+## Setup
+
+## Disclaimer
+
+This package was developed for my use.
