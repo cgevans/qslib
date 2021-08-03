@@ -1,9 +1,10 @@
 """Code for handling plate setup."""
 from __future__ import annotations
-from uuid import uuid4
+from os import name
+from uuid import uuid1
 
 from dataclasses import dataclass, field
-from typing import Optional, Sequence, Tuple, List, Dict, Union
+from typing import Iterable, Mapping, Optional, Sequence, Tuple, List, Dict, Union
 import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
@@ -27,32 +28,45 @@ def _process_color_from_str_int(x: str) -> Tuple[int, int, int, int]:
     return color_bytes
 
 
+def _color_to_str_int(x: Tuple[int, int, int, int]) -> str:
+    return str(int.from_bytes(bytes(x), "little", signed=True))
+
+
 @dataclass
 class Sample:
     name: str
-    uuid: str = field(default_factory=(lambda: uuid4().hex))
+    uuid: str = field(default_factory=(lambda: uuid1().hex))
     color: Tuple[int, int, int, int] = field(default=(255, 0, 0, 255))
 
     @classmethod
     def from_platesetup_sample(cls, se: ET.Element) -> Sample:  # type: ignore
         return cls(
-            se.find("Name").text,
-            se.find("(CustomProperty/Property[text()='SP_UUID'])[1]/../Value").text,
-            _process_color_from_str_int(se.find("Color").text),
+            se.findtext("Name"),
+            se.findtext("CustomProperty/Property[.='SP_UUID']/../Value"),
+            _process_color_from_str_int(se.findtext("Color")),
         )
+
+    def to_xml(self) -> ET.Element:
+        x = ET.Element("Sample")
+        ET.SubElement(x, "Name").text = self.name
+        ET.SubElement(x, "Color").text = _color_to_str_int(self.color)
+        u = ET.SubElement(x, "CustomProperty")
+        ET.SubElement(u, "Property").text = "SP_UUID"
+        ET.SubElement(u, "Value").text = self.uuid
+        return x
 
 
 @dataclass
 class PlateSetup:
-    samples_by_name: Dict[str, Sample]
     sample_wells: Dict[str, List[str]]
+    samples_by_name: Dict[str, Sample]
 
     @classmethod
     def from_platesetup_xml(cls, platexml: ET.Element) -> PlateSetup:  # type: ignore
         assert platexml.find("PlateKind/Type").text == "TYPE_8X12"
 
         sample_fvs = platexml.findall(
-            "FeatureMap/Feature/Id[text()='sample']/../../FeatureValue"
+            "FeatureMap/Feature/Id[.='sample']/../../FeatureValue"
         )
 
         samples_by_name: Dict[str, Sample] = dict()
@@ -73,7 +87,32 @@ class PlateSetup:
                 samples_by_uuid[sample.uuid] = sample
                 sample_wells[sample.name] = [_WELLNAMES[idx]]
 
-        return cls(samples_by_name, sample_wells)
+        return cls(sample_wells, samples_by_name)
+
+    def __init__(
+        self,
+        sample_wells: Mapping[str, str | List[str]] | None = None,
+        samples: Iterable[Sample] | Mapping[str, Sample] = tuple(),
+    ) -> None:
+        if sample_wells is None:
+            sample_wells = {}
+        self.sample_wells = {
+            k: [v] if isinstance(v, str) else v for k, v in sample_wells.items()
+        }
+        if isinstance(samples, Mapping):
+            self.samples_by_name = dict(samples)
+        else:
+            self.samples_by_name = {s.name: s for s in samples}
+        self._update_samples(delete=False)
+
+    def _update_samples(self, delete=False):
+        for k in self.sample_wells:
+            if k not in self.samples_by_name:
+                self.samples_by_name[k] = Sample(k)
+        if delete:
+            for k in self.samples_by_name:
+                if k not in self.sample_wells:
+                    del self.samples_by_name[k]
 
     @property
     def well_sample(self):
@@ -111,6 +150,29 @@ class PlateSetup:
             **kwargs,
         )
 
+    def update_xml(self, root: ET.Element):
+        samplemap = root.find("FeatureMap/Feature/Id[.='sample']/../..")
+        if not samplemap:
+            e = ET.SubElement(root, "FeatureMap")
+            v = ET.SubElement(e, "Feature")
+            ET.SubElement(v, "Id").text = "sample"
+            ET.SubElement(v, "Name").text = "sample"
+            samplemap = e
+        ws = np.array(self.well_sample)
+        for welli in range(0, 96):
+            if ws[welli]:
+                e = samplemap.find(f"FeatureValue/Index[.='{welli}']/../FeatureItem")
+                if not e:
+                    e = ET.SubElement(samplemap, "FeatureValue")
+                    ET.SubElement(e, "Index").text = str(welli)
+                    e = ET.SubElement(e, "FeatureItem")
+                if s := e.find("Sample"):
+                    e.remove(s)
+                e.append(self.samples_by_name[ws[welli]].to_xml())
+            else:
+                if e := samplemap.find(f"FeatureValue/Index[.='{welli}']/.."):
+                    samplemap.remove(e)
+
     @classmethod
     async def from_machine(
         cls, c: QSConnectionAsync, runtitle: Optional[str] = None
@@ -125,7 +187,7 @@ class PlateSetup:
     def __str__(self) -> str:
         s = ""
         if self.sample_wells:
-            s += "Plate samples:\n"
+            s += "Plate setup:\n\n"
             for sample, wells in self.sample_wells.items():
-                s += f"- {sample}: {wells}\n"
+                s += f" - {sample}: {wells}\n"
         return s

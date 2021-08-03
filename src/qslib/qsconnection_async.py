@@ -2,12 +2,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast, overload
 import hmac
-from dataclasses import dataclass
 import re
 import base64
-from .qs_is_protocol import QS_IS_Protocol
+from .qs_is_protocol import Error, QS_IS_Protocol
 
 import qslib.data as data
+import pandas as pd
+import xml.etree.ElementTree as ET
 
 AccessLevel = Literal["Guest", "Observer", "Controller", "Administrator", "Full"]
 
@@ -40,21 +41,6 @@ def _parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
 def _index_to_filename_ref(i: Tuple[str, int, int, int, int]) -> str:
     x, s, c, t, p = i
     return f"S{s:02}_C{c:03}_T{t:02}_P{p:04}_M{x[4]}_X{x[1]}"
-
-
-class Error(Exception):
-    pass
-
-
-@dataclass
-class CommandError(Error):
-    command: Optional[str]
-    ref_index: Optional[str]
-    response: str
-
-
-class ReplyError(IOError):
-    pass
 
 
 def _validate_command_format(commandstring: str) -> None:
@@ -154,9 +140,8 @@ class QSConnectionAsync:
         self._parse_access_line(resp)
 
         if self._authenticate_on_connect:
-            if self.password is None:
-                raise ValueError("no password provided")
-            await self.authenticate(self.password)
+            if self.password is not None:
+                await self.authenticate(self.password)
 
         if self._initial_access_level is not None:
             await self.set_access_level(cast(AccessLevel, self._initial_access_level))
@@ -175,7 +160,7 @@ class QSConnectionAsync:
             )
         ).rstrip()
 
-    async def run_command(self, command: str, just_ack: bool = True) -> str:
+    async def run_command(self, command: str, just_ack: bool = False) -> str:
         return (await self.run_command_to_bytes(command, just_ack)).decode()
 
     async def authenticate(self, password: str):
@@ -258,7 +243,7 @@ class QSConnectionAsync:
             f"_X{filterset_r.ex}_filterdata.xml"
         )
 
-        f = data.FilterDataReading(fl)
+        f = data.FilterDataReading(ET.parse(fl).getroot())
 
         ql = (
             await self.get_expfile_list(
@@ -267,7 +252,7 @@ class QSConnectionAsync:
         )[-1]
         qf = await self.get_exp_file(ql)
 
-        f.set_time_by_quantdata(qf.decode())
+        f.set_timestamp_by_quantdata(qf.decode())
 
         return f
 
@@ -280,7 +265,7 @@ class QSConnectionAsync:
     @overload
     async def get_all_filterdata(
         self, run: Optional[str], as_list: Literal[False]
-    ) -> data.FilterDataCollection:
+    ) -> pd.DataFrame:
         ...
 
     async def get_all_filterdata(self, run=None, as_list=False):
@@ -297,4 +282,4 @@ class QSConnectionAsync:
         if as_list:
             return pl
 
-        return data.FilterDataCollection.from_readings(pl)  # type:ignore
+        return data.df_from_readings(pl)  # type:ignore

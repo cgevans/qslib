@@ -1,12 +1,32 @@
 from __future__ import annotations
-import asyncio, logging, re, io
+import asyncio
+import logging
+import re
+import io
+from dataclasses import dataclass
 from typing import Optional
+
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
 Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")
 TIMESTAMP = re.compile(rb"(\d{8,}\.\d{3})")
 
 log = logging.getLogger("qsproto")
+
+
+class Error(Exception):
+    pass
+
+
+@dataclass
+class CommandError(Error):
+    command: Optional[str]
+    ref_index: Optional[str]
+    response: str
+
+
+class ReplyError(IOError):
+    pass
 
 
 class QS_IS_Protocol(asyncio.Protocol):
@@ -77,7 +97,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         a newline occurs when the quote stack is empty, create a task to process
         the message, but continue processing. (TODO: consider threads/processes here.)
 
-        :param data: bytes: 
+        :param data: bytes:
 
         """
         lastwrite = 0
@@ -98,7 +118,8 @@ class QS_IS_Protocol(asyncio.Protocol):
                         i = self.quote_stack.index(m[2])
                     except ValueError:
                         raise ValueError(
-                            f"Close quote {m[2]} did not have open in stack {self.quote_stack}."
+                            f"Close quote {m[2]} did not have open"
+                            f" in stack {self.quote_stack}."
                         ) from None
                     else:
                         self.quote_stack = self.quote_stack[:i]
@@ -150,6 +171,8 @@ class QS_IS_Protocol(asyncio.Protocol):
         if state == b"OK":
             return msg
         elif state == b"ERRor":
-            raise ValueError(msg.decode().rstrip()) from None
+            raise CommandError(
+                comm.decode(), commref.decode(), msg.decode().rstrip()
+            ) from None
         else:
-            raise ValueError((state, msg))
+            raise CommandError(comm.decode(), commref.decode(), state + msg)

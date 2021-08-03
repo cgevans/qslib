@@ -1,6 +1,6 @@
 from __future__ import annotations
 from os import PathLike
-from typing import Any, Optional, Type, Union, List, cast, Literal
+from typing import Optional, Union, List, cast, Literal
 
 from dataclasses import dataclass
 import xml.etree.ElementTree as ET
@@ -14,7 +14,8 @@ _UPPERS = "ABCDEFGHIJKLMNOP"
 
 @dataclass
 class FilterSet:
-    """Representation of a filter set, potentially including the "quant" parameter used by HACFILT in SCPI protocols."""
+    """Representation of a filter set, potentially including the "quant"
+    parameter used by HACFILT in SCPI protocols."""
 
     ex: int
     em: int
@@ -63,7 +64,8 @@ class FilterDataReading:
     def __repr__(self):
         return (
             f"FilterDataReading(stage={self.stage}, cycle={self.cycle}, "
-            f'step={self.step}, point={self.point}, filter_set="{self.filter_set}", timestamp={self.timestamp}, ...)'
+            f'step={self.step}, point={self.point}, filter_set="{self.filter_set}", '
+            f'timestamp={self.timestamp}, ...)'
         )
 
     def __init__(
@@ -220,56 +222,66 @@ class FilterDataReading:
         return lines
 
 
-class FilterDataCollection(pd.DataFrame):  # type: ignore
-    @property
-    def _constructor(self) -> type:
-        return FilterDataCollection
-
-    @property
-    def _constructor_sliced(self) -> Type[pd.Series]:
-        return pd.Series
-
-    @classmethod
-    def from_readings(cls, readings: List[FilterDataReading]) -> pd.DataFrame:
-        f = [
-            np.concatenate(
-                (
-                    np.array([r.timestamp]),
-                    r.well_fluorescence,
-                    r.well_temperatures,
-                    r.well_set_temperatures,
-                    np.array([r.exposure]),
-                )
+def df_from_readings(
+    readings: List[FilterDataReading], start_time: float | None = None
+) -> pd.DataFrame:
+    f = [
+        np.concatenate(
+            (
+                np.array([r.timestamp]),
+                r.well_fluorescence,
+                r.well_temperatures,
+                r.well_set_temperatures,
+                np.array([r.exposure]),
             )
-            for r in readings
-        ]
-
-        indices = pd.MultiIndex.from_tuples(
-            [
-                (r.filter_set.lowerform, r.stage, r.cycle, r.step, r.point)
-                for r in readings
-            ],
-            names=["filter_set", "stage", "cycle", "step", "point"],
         )
+        for r in readings
+    ]
 
-        fr = readings[0]
+    indices = pd.MultiIndex.from_tuples(
+        [(r.filter_set.lowerform, r.stage, r.cycle, r.step, r.point) for r in readings],
+        names=["filter_set", "stage", "cycle", "step", "point"],
+    )
 
-        wr = [
-            f"{r}{c:02}"
-            for r in _UPPERS[0 : fr.plate_rows]
-            for c in range(1, fr.plate_cols + 1)
-        ]
+    # fr = readings[0]
 
-        a = cls(
-            f,
-            index=indices,
-            columns=["timestamp"]
-            + ["f_" + r for r in wr]
-            + ["tr_" + r for r in wr]
-            + ["ts_" + r for r in wr]
-            + ["exposure"],
-        )
+    # wr = [
+    #     f"{r}{c:02}"
+    #     for r in _UPPERS[0 : fr.plate_rows]
+    #     for c in range(1, fr.plate_cols + 1)
+    # ]
 
-        a.sort_index(inplace=True)
+    a = pd.DataFrame(
+        f,
+        index=indices,
+        columns=pd.MultiIndex.from_tuples(
+            [("time", "timestamp")]
+            + [
+                (f"{r}{c:02}", v)
+                for v in ["fl", "rt", "st"]
+                for r in "ABCDEFGH"
+                for c in range(1, 13)
+            ]
+            + [("exposure", "exposure")]
+        ),
+    )
 
-        return a
+    if start_time is not None:
+        a[("time", "seconds")] = a[("time", "timestamp")] - start_time
+        a[("time", "hours")] = a[("time", "seconds")] / 3600.0
+
+    a.sort_index(inplace=True)
+
+    return a.reindex(
+        pd.MultiIndex.from_tuples(
+            [("time", v) for v in ["seconds", "hours", "timestamp"]]
+            + [
+                (f"{r}{c:02}", v)
+                for r in "ABCDEFGH"
+                for c in range(1, 13)
+                for v in ["fl", "rt", "st"]
+            ]
+            + [("exposure", "exposure")]
+        ),
+        axis=1,
+    )

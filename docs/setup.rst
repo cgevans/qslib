@@ -1,16 +1,21 @@
+.. _setup:
+
 Setup
 =====
+
+
+.. _access-and-security:
 
 Access and Security Considerations
 ----------------------------------
 
-At its base, the QuantStudio 5 has an ARM-based system running Android. It uses a standard network connection through its ethernet port, and has an SCPI interface on port 7000[#otherport].  The system's extensive and admirable use of standard and open formats and software, as well as its extensive and helpful on-machine documentation, makes it possible for the machine to be adapted for other uses beyond qPCR.
+At its base, the QuantStudio 5 has an ARM-based system running Android. It uses a standard network connection through its ethernet port, and has an SCPI interface on port 7000. [#otherport]_ The system's extensive and admirable use of standard and open formats and software, as well as its extensive and helpful on-machine documentation, makes it possible for the machine to be adapted for other uses beyond qPCR.
 
 Access to the machine is based on passwords, which could be seen as access keys: each password is associated with a maximum access level.  In order to use QSLib, you'll need passwords for your device: most functions require a password with either :term:`Observer` or :term:`Controller` level access.  **QSLib does not contain any default passwords, or mechanisms for obtaining access to arbitrary machines.**
 
 Nevertheless, **I strongly recommend that the machines not be accessible on public networks:**
 
-* **Anyone with network access to the machne can easily obtain :term:`Full` access to the SCPI interface and root shell access to the system, even if passwords and access levels on the system have been changed from their defaults.**  This **cannot be mitigated** through configuration changes on the machine[#security].
+* **Anyone with network access to the machne can easily obtain :term:`Full` access to the SCPI interface and root shell access to the system, even if passwords and access levels on the system have been changed from their defaults.**  This **cannot be mitigated** through configuration changes on the machine. [#security]_
 
 * To reiterate: any non-modified machine can be fully accessed by anyone with access to port 7000 or 2323, **including root access and a root shell on the machine**, regardless of passwords or access levels.  This extends beyond the machine itself: an attacker with access to the machine could use it as a general Linux system for other purposes, including spying on or attacking your network.  Access levels and passwords should be considered as protecting only against unintended interference and user mistakes.
 
