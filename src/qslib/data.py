@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 from glob import glob
 import os
+import xml.etree.ElementTree as ET
 
 _UPPERS = "ABCDEFGHIJKLMNOP"
 
@@ -22,7 +23,9 @@ class FilterSet:
     quant: bool = True
 
     @classmethod
-    def fromstring(cls, string: str) -> FilterSet:
+    def fromstring(cls, string: str | FilterSet) -> FilterSet:
+        if isinstance(string, FilterSet):
+            return string
         # fixme: do validation
         if string.startswith("x"):
             return cls(int(string[1]), int(string[4]))
@@ -44,6 +47,12 @@ class FilterSet:
     @property
     def hacform(self) -> str:
         return f"m{self.em},x{self.ex}" + (",quant" if self.quant else "")
+
+    def to_xml(self) -> ET.Element:
+        e = ET.Element("CollectionCondition")
+        ET.SubElement(e, "FilterSet", Emission=f"m{self.em}", Excitation=f"x{self.ex}")
+        ET.SubElement(e, "Frames").text=0
+        return e
 
     def __str__(self) -> str:
         return self.lowerform + ("-noquant" if not self.quant else "")

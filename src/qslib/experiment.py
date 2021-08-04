@@ -19,41 +19,18 @@ import re
 import pandas as pd
 from .data import df_from_readings, FilterSet, FilterDataReading
 from .version import __version__
+from .util import *
 
 TEMPLATE_NAME = "ruo"
 
-
-def _find_or_create(element: ET.Element | ET.ElementTree, path: str) -> ET.Element:
-    if isinstance(element, ET.ElementTree):
-        element = element.getroot()
-    if (m := element.find(path)) is not None:
-        return m
-    else:
-        e = element
-        for elemname in path.split("/"):
-            if te := e.find(elemname):
-                e = te
-            else:
-                e = ET.SubElement(e, elemname)
-    return e
-
-
-def _set_or_create(
-    element: ET.Element | ET.ElementTree, path: str, text=None, **kwargs
-) -> ET.Element:
-    e = _find_or_create(element, path)
-    for k, v in kwargs.items():
-        e.attrib[k] = v
-    if text is not None:
-        e.text = text
-    return e
-
-
-def _text_or_none(element: ET.Element | ET.ElementTree, path: str) -> Union[str, None]:
-    if (e := element.find(path)) is not None:
-        return e.text
-    else:
-        return None
+MANIFEST_CONTENTS = f"""Manifest-Version: 1.0
+Content-Type: Std
+Implementation-Title: QSLib
+Implementation-Version: {__version__}
+Specification-Vendor: Applied Biosystems
+Specification-Title: Experiment Document Specification
+Specification-Version: 1.3.2
+"""
 
 
 class AlreadyExistsError(ValueError):
@@ -162,6 +139,13 @@ class Experiment:
 
     There are a few differences in how QSLib and AB's software handles experiments.
 
+    * AB's software considers the run as starting when the machine indicates "Run Starting".
+      This is stored as :any:`runstarttime` in QSLib, but as it may include the lamp warmup
+      (3 minutes) and other pre-actual-protocol time, QSLib instead prefers :any:`activestarttime`,
+      which it sets from the beginning of the first real (not PRERUN) Stage, at which point
+      the machine starts its own active clock and starts ramping to the first temperature.
+      QSLib uses this as the start time reference in its data, and also includes the
+      timestamp from the machine.
     * The machine has a specific language for run protocols. QSLib uses this language.
       AB's Design and Analysis software *does not*, instead using an XML format. Not
       everything in the machine's language is possible to express in the XML format (eg,
@@ -177,7 +161,8 @@ class Experiment:
     * Immediate pause/resume, mid-run stage addition, and other functions are not supported
       by AB D&A and experiments using them may confuse the software later.
     * QSLib writes notes to XML files, and tries to create reasonable XML files for
-      AB D&A, but may still cause problems.
+      AB D&A, but may still cause problems. At the moment, it makes clear that its files
+      are its own (setting software versions in experiment.xml and Manifest.mf).
     """
 
     protocol: Protocol
@@ -193,13 +178,25 @@ class Experiment:
     The run start time as a datetime. This is taken *directly from the log*, ignoring the software-set
     value and replacing it on save if possibe.  It is defined as the moment the machine
     records "Run Starting" in its log, using its timestamp.  This may be 3 minutes before
-    the start of the protocol if the lamp needs to warm up.
+    the start of the protocol if the lamp needs to warm up.  It should be the same value as defined by
+    AB's software.
+
+    Use :any:`activestarttime` for a more accurate value.
 
     None if the file has not been updated since the start of the run
     """
     runendtime: datetime | None
     """
-    The run end time as a datetime, taken from experiment.xml.
+    The run end time as a datetime, taken from the log.  This is the end of the run, 
+    """
+    activestarttime: datetime | None
+    """
+    The actual beginning of the first stage of the run, defined as the first "Run Stage" message
+    in the log after "Stage PRERUN". This is *not* what AB's software considers the start of a run.
+    """
+    activeendtime: datetime | None
+    """
+    The actual end of the main part of the run, indicated by "Stage POSTRun" or an abort.
     """
     createdtime: datetime
     """
@@ -211,7 +208,7 @@ class Experiment:
     """
     runstate: str
     """
-    Run state, possible values INIT, COMPLETED, ABORTED.
+    Run state, possible values INIT, COMPLETE, ABORTED.
     """
     machine: Machine | None
     plate_setup: PlateSetup
@@ -229,14 +226,12 @@ class Experiment:
     Indices (multi-index) are (filter_set, stage, cycle, step, point), where filter_set
     is a string in familiar form (eg, "x1-m4") and the rest are int.
 
-    Columns (as multi-index)
-    ------------------------
+    Columns (as multi-index):
 
     ("time", ...) : float
         Time of the data collection, taken from the .quant file.  May differ for different
         filter sets.  Options are "timestamp" (unix timestamp in seconds), "seconds", and
-        "hours" (the latter two from the start of the run, which may be prior to the start
-        of the experiment protocol if the lamp needed a 3 minute warmup).
+        "hours" (the latter two from the *active* start of the run).
 
     (well, option) : float
         Data for a well, with well formatted like "A05".  Options are "rt" (read temperature
@@ -253,13 +248,12 @@ class Experiment:
     A DataFrame of temperature readings, at one second resolution, during the experiment
     (and potentially slightly before and after, if included in the message log).
 
-    Columns (as multi-index)
-    ------------------------
+    Columns (as multi-index):
 
     ("time", ...) : float
         Time of temperature reading, for choices of "timestamp" (Unix timestamp in seconds), 
-        "seconds" (seconds since start of run, possibly not start of protocol if lamp needed
-        to warm up), or "hours". The latter two may be negative.
+        "seconds" (seconds since the *active* start of the run), or "hours". The latter two may 
+        be negative, and may not be set if the run never became active.
 
     ("sample", ...) : float
         Sample temperature for blocks 1, 2, ..., 6, and average in "avg".
@@ -353,7 +347,12 @@ class Experiment:
                 + b"</message>\n"
             )
 
-    def run(self, machine: Machine | str | None = None, password=None):
+    def run(
+        self,
+        machine: Machine | str | None = None,
+        password=None,
+        require_exclusive=True,
+    ):
         """Load the run onto a machine, and start it.
 
         Parameters
@@ -372,13 +371,13 @@ class Experiment:
         log.info(f"Attempting to sat {self.runtitle_safe} on {machine.host}.")
 
         # Ensure machine isn't running:
-        if (x := machine.run_status()).state != "IDLE":
+        if (x := machine.run_status()).state.upper() != "IDLE":
             raise MachineBusyError(machine, x)
 
         if self.runstate != "INIT":
             raise ValueError
 
-        with machine.at_access("Controller", exclusive=True):
+        with machine.at_access("Controller", exclusive=require_exclusive):
             log.debug("Powering on machine and ensuring drawer/cover is closed.")
             # Ensure machine state and power.
             machine.power = True
@@ -399,7 +398,7 @@ class Experiment:
 
             log.debug(f"Sending run command.")
             # Start the run
-            machine.run_command_to_ack(f"RP {self.runtitle_safe} {self.protocol.name}")
+            machine.run_command_to_ack(f"RP {self.protocol.name} {self.runtitle_safe}")
             log.info(f"Run {self.runtitle_safe} started on {machine.host}.")
 
     def create_new_copy(self) -> Experiment:
@@ -413,7 +412,7 @@ class Experiment:
         raise NotImplementedError
 
     def collect_finished(self, machine: Machine | None = None):
-        """NOT YET IMPLEMTED
+        """NOT YET IMPLEMENTED
 
         Collect the completed (aborted/etc) experiment from a machine, reliably.  This will
         search for and recover working data if the EDS file generation on the machine failed.
@@ -623,6 +622,8 @@ class Experiment:
 
         if protocol is None:
             self.protocol = Protocol([Stage([Step(60, 25)])])
+        else:
+            self.protocol = protocol
 
         if plate_setup:
             self.plate_setup = plate_setup
@@ -635,21 +636,565 @@ class Experiment:
             self.runstarttime = None
             self.runendtime = None
             self.runstate = "INIT"
+            self.user = None
             self.writesoftware = f"QSLib {__version__}"
 
             self._new_xml_files()
             self._update_files()
 
     def _new_xml_files(self) -> None:
-        ET.ElementTree(ET.Element("Experiment")).write(
-            os.path.join(self._dir_eds, "experiment.xml")
+        os.mkdir(os.path.join(self._dir_base, "apldbio"))
+        os.mkdir(os.path.join(self._dir_base, "apldbio", "sds"))
+
+        e = ET.ElementTree(ET.Element("Experiment"))
+
+        ET.SubElement(e.getroot(), "Label").text = "ruo"
+        tp = ET.SubElement(e.getroot(), "Type")
+        ET.SubElement(tp, "Id").text = "Custom"
+        ET.SubElement(e.getroot(), "ChemistryType").text = "Other"
+        ET.SubElement(e.getroot(), "TCProtocolMode").text = "Standard"
+        ET.SubElement(e.getroot(), "DNATemplateType").text = "WET_DNA"
+        ET.SubElement(e.getroot(), "InstrumentTypeId").text = "appletini" # note cap!
+        ET.SubElement(e.getroot(), "BlockTypeID").text = "18"
+        ET.SubElement(e.getroot(), "PlateTypeID").text = "TYPE_8X12"
+
+        e.write(open(os.path.join(self._dir_eds, "experiment.xml"), "wb"))
+
+        p = ET.parse(
+            io.BytesIO(
+                b"""<Plate>
+    <Name></Name>
+    <BarCode></BarCode>
+    <Description></Description>
+    <Rows>8</Rows>
+    <Columns>12</Columns>
+    <PlateKind>
+        <Name>96-Well Plate (8x12)</Name>
+        <Type>TYPE_8X12</Type>
+        <RowCount>8</RowCount>
+        <ColumnCount>12</ColumnCount>
+    </PlateKind>
+    <FeatureMap>
+        <Feature>
+            <Id>marker-task</Id>
+            <Name>marker-task</Name>
+        </Feature>
+    </FeatureMap>
+    </Plate>"""
+            )
         )
-        ET.ElementTree(ET.Element("Plate")).write(
-            os.path.join(self._dir_eds, "plate_setup.xml")
-        )
+
+        p.write(open(os.path.join(self._dir_eds, "plate_setup.xml"), "wb"))
+
         ET.ElementTree(ET.Element("TCProtocol")).write(
-            os.path.join(self._dir_eds, "tcprotocol.xml")
+            open(os.path.join(self._dir_eds, "tcprotocol.xml"), "wb")
         )
+
+        ET.ElementTree(ET.Element("QSLTCProtocol")).write(
+            open(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"), "wb")
+        )
+
+        with open(os.path.join(self._dir_eds, "Manifest.mf"), "w") as f:
+            f.write(MANIFEST_CONTENTS)
+
+        with open(self._sdspath("analysis_protocol.xml"), "w") as f:
+            f.write(
+                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<JaxbAnalysisProtocol>
+    <Name>unnamed</Name>
+    <JaxbAnalysisSettings>
+        <Type>com.apldbio.sds.platform.core.analysis.IDetectorSettings</Type>
+        <JaxbSettingValue>
+            <Name>ConfidenceLevel</Name>
+            <JaxbValueItem type="Double">
+                <DoubleValue>99.0</DoubleValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>CreatedByUser</Name>
+            <JaxbValueItem type="Boolean">
+                <BooleanValue>true</BooleanValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>Threshold</Name>
+            <JaxbValueItem type="Double">
+                <DoubleValue>0.2</DoubleValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>AutoBaseline</Name>
+            <JaxbValueItem type="Boolean">
+                <BooleanValue>true</BooleanValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>BaselineStart</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>3</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>ObjectName</Name>
+            <JaxbValueItem type="String">
+                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>BaselineStop</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>15</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>AutoCt</Name>
+            <JaxbValueItem type="Boolean">
+                <BooleanValue>true</BooleanValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+    </JaxbAnalysisSettings>
+    <JaxbAnalysisSettings>
+        <Type>com.apldbio.sds.platform.core.analysis.IWellSettings</Type>
+        <JaxbSettingValue>
+            <Name>BaselineStart</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>3</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>ObjectName</Name>
+            <JaxbValueItem type="String">
+                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>BaselineStop</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>15</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>UseDetectorDefaults</Name>
+            <JaxbValueItem type="Boolean">
+                <BooleanValue>false</BooleanValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+    </JaxbAnalysisSettings>
+    <JaxbAnalysisSettings>
+        <Type>com.apldbio.sds.platform.core.analysis.ISignalSmoothingSettings</Type>
+        <JaxbSettingValue>
+            <Name>SignalSmoothing</Name>
+            <JaxbValueItem type="Boolean">
+                <BooleanValue>true</BooleanValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>ObjectName</Name>
+            <JaxbValueItem type="String">
+                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+    </JaxbAnalysisSettings>
+    <JaxbAnalysisSettings>
+        <Type>com.apldbio.sds.platform.core.analysis.IAlgorithmSelectSettings</Type>
+        <JaxbSettingValue>
+            <Name>AlgorithmName</Name>
+            <JaxbValueItem type="String">
+                <StringValue>default</StringValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>ObjectName</Name>
+            <JaxbValueItem type="String">
+                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+    </JaxbAnalysisSettings>
+    <JaxbAnalysisSettings>
+        <Type>com.apldbio.sds.platform.core.analysis.IAutoAnalysisSettings</Type>
+        <JaxbSettingValue>
+            <Name>AutoAnalysis</Name>
+            <JaxbValueItem type="Boolean">
+                <BooleanValue>false</BooleanValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>AutoSpectral</Name>
+            <JaxbValueItem type="Boolean">
+                <BooleanValue>false</BooleanValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>ObjectName</Name>
+            <JaxbValueItem type="String">
+                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+    </JaxbAnalysisSettings>
+    <JaxbAnalysisSettings>
+        <Type>com.apldbio.sds.platform.core.analysis.IDataSelectSettings</Type>
+        <JaxbSettingValue>
+            <Name>StepNum</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>5</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>StageNum</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>4</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>MeltStageNum</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>0</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>ObjectName</Name>
+            <JaxbValueItem type="String">
+                <StringValue>IDataSelectSettings.OBJECT_NAME</StringValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+        <JaxbSettingValue>
+            <Name>PointNum</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>5</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+    </JaxbAnalysisSettings>
+    <JaxbAnalysisSettings>
+        <Type>com.apldbio.sds.platform.core.analysis.ICrtSettings</Type>
+        <JaxbSettingValue>
+            <Name>CrtStartValue</Name>
+            <JaxbValueItem type="Integer">
+                <IntValue>1</IntValue>
+            </JaxbValueItem>
+        </JaxbSettingValue>
+    </JaxbAnalysisSettings>
+    <AnalysisSetting>
+        <Type>NHC</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>LESS_THAN 35.0</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>BPR</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>GREATER_THAN 0.6</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>DRNMIN</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>LESS_THAN 35.0</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>LESS_THAN 0.2</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>FOS</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>true</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>HSD</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>GREATER_THAN 0.5</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>CC</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>LESS_THAN 0.8</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>NA</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>LESS_THAN 0.1</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>HRN</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>GREATER_THAN 4.0</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>NS</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>GREATER_THAN 1.0</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>EW</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>true</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria4QS</Name>
+            <Type>String</Type>
+            <StringValue>LESS_THAN 100000.0</StringValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>ORG</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>true</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>EAF</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>true</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>BAF</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>true</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>TAF</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>true</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>CAF</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>true</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>ROXLOW</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>LESS_THAN 20.0</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+    <AnalysisSetting>
+        <Type>ROXDROP</Type>
+        <SettingValue>
+            <Name>enabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>true</BooleanValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>criteria</Name>
+            <Type>String</Type>
+            <StringValue>GREATER_THAN 0.04</StringValue>
+        </SettingValue>
+        <SettingValue>
+            <Name>omitEnabled</Name>
+            <Type>Boolean</Type>
+            <BooleanValue>false</BooleanValue>
+        </SettingValue>
+    </AnalysisSetting>
+</JaxbAnalysisProtocol>
+            """
+            )
+
+    def _sdspath(self, path: str) -> str:
+        return os.path.join(self._dir_eds, path)
 
     def _update_files(self) -> None:
         self._update_experiment_xml()
@@ -661,7 +1206,7 @@ class Experiment:
         self._update_from_tcprotocol_xml()
         self._update_from_platesetup_xml()
         self._update_from_log()
-        self._update_data()
+        self._update_from_data()
 
         if self._protocol_from_xml:
             self.protocol = self._protocol_from_xml
@@ -669,6 +1214,8 @@ class Experiment:
             self.protocol = self._protocol_from_log
         if self._protocol_from_qslib:
             self.protocol = self._protocol_from_qslib
+        if self._protocol_from_xml:
+            self.protocol.covertemperature = self._protocol_from_xml.covertemperature
 
     @classmethod
     def from_file(cls, file: str | os.PathLike[str] | IO[bytes]) -> "Experiment":
@@ -716,6 +1263,39 @@ class Experiment:
         exp = cls(_create_xml=False)
 
         crt = machine.current_run_name
+
+        if not crt:
+            raise ValueError("Nothing is currently running.")
+
+        z = machine.read_dir_as_zip(crt, leaf="EXP")
+
+        z.extractall(exp._dir_base)
+
+        exp._update_from_files()
+
+        return exp
+
+    @classmethod
+    def from_uncollected(cls, machine: Machine, name: str) -> "Experiment":
+        """Create an experiment from the uncollected (not yet compressed)
+        storage.
+
+        Parameters
+        ----------
+        machine : Machine
+            the machine to connect to
+
+        name: str
+            the name of the run to collect.
+
+        Returns
+        -------
+        Experiment
+            a copy of the runnig experiment
+        """
+        exp = cls(_create_xml=False)
+
+        crt = name
 
         if not crt:
             raise ValueError("Nothing is currently running.")
@@ -790,6 +1370,8 @@ class Experiment:
             sinfo = ET.SubElement(sinfo, "String")
         sinfo.text = f"QSLib {__version__}"
 
+        ET.indent(exml)
+
         exml.write(os.path.join(self._dir_eds, "experiment.xml"))
 
     def _update_from_experiment_xml(self):
@@ -809,32 +1391,39 @@ class Experiment:
 
     def _update_tcprotocol_xml(self):
         if self.protocol:
-            exml = ET.ElementTree(self.protocol.to_xml())
-            exml.write(os.path.join(self._dir_eds, "tcprotocol.xml"))
+            # exml = ET.parse(os.path.join(self._dir_eds, "tcprotocol.xml"))
+            tcxml, qstcxml = self.protocol.to_xml()
+            ET.indent(tcxml)
+            ET.indent(qstcxml)
+            tcxml.write(os.path.join(self._dir_eds, "tcprotocol.xml"))
+            qstcxml.write(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
+
 
     def _update_from_tcprotocol_xml(self):
         exml = ET.parse(os.path.join(self._dir_eds, "tcprotocol.xml"))
+        qstcxml = ET.parse(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
 
-        if (x := exml.find("QSLibProtocol")) is not None:
-            self._protocol_from_qslib = Protocol.from_repr(x.text)
-            self._protocol_from_xml = None
+        if (x := qstcxml.find("QSLibProtocolCommand")) is not None:
+            self._protocol_from_qslib = Protocol.from_command(x.text)
         else:
             self._protocol_from_qslib = None
-            try:
-                self._protocol_from_xml = Protocol.from_xml(exml.getroot())
-            except:
-                self._protocol_from_xml = None
+        # try:
+        self._protocol_from_xml = Protocol.from_xml(exml.getroot())
+        # except Exception as e:
+        #    print(e)
+        #    self._protocol_from_xml = None
 
     def _update_platesetup_xml(self):
         x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml"))
         self.plate_setup.update_xml(x.getroot())
+        ET.indent(x)
         x.write(os.path.join(self._dir_eds, "plate_setup.xml"))
 
     def _update_from_platesetup_xml(self):
         x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml")).getroot()
         self.plate_setup = PlateSetup.from_platesetup_xml(x)
 
-    def _update_data(self):
+    def _update_from_data(self):
         fdp = os.path.join(self._dir_eds, "filterdata.xml")
         if os.path.isfile(fdp):
             fdx = ET.parse(fdp)
@@ -842,7 +1431,9 @@ class Experiment:
                 FilterDataReading(x, sds_dir=self._dir_eds)
                 for x in fdx.findall(".//PlateData")
             ]
-            self.welldata = df_from_readings(fdrs, self.runstarttime.timestamp())
+            self.welldata = df_from_readings(
+                fdrs, self.activestarttime.timestamp() if self.activestarttime else None
+            )
         elif fdfs := glob(os.path.join(self._dir_eds, "filter", "*_filterdata.xml")):
             fdrs = [
                 FilterDataReading(
@@ -850,12 +1441,14 @@ class Experiment:
                 )
                 for fdf in fdfs
             ]
-            self.welldata = df_from_readings(fdrs, self.runstarttime.timestamp())
+            self.welldata = df_from_readings(
+                fdrs, self.activestarttime.timestamp() if self.activestarttime else None
+            )
         else:
             self.welldata = None
 
         if self.welldata is not None:
-            self.rawdata = _fdc_to_rawdata(self.welldata, self.runstarttime.timestamp())  # type: ignore
+            self.rawdata = _fdc_to_rawdata(self.welldata, self.activestarttime.timestamp() if self.activestarttime else None)  # type: ignore
             self.filterdata = self.rawdata
 
     def data_for_sample(self, sample: str):
@@ -896,11 +1489,36 @@ class Experiment:
                 errors="backslashreplace",
             ).read()
 
-        if m := re.search(r'^Run ([\d.]+) Starting "([^"]+)"$', msglog, re.MULTILINE):
-            self.runstarttime = datetime.fromtimestamp(float(m[1]))
-        else:
-            self.runstarttime = None
-            return
+        ms = re.finditer(
+            r"^Run (?P<ts>[\d.]+) (?P<msg>\w+)(?: (?P<ext>\S+))?", msglog, re.MULTILINE
+        )
+        self.runstarttime = None
+        self.runendtime = None
+        self.prerunstart = None
+        self.activestarttime = None
+        self.activeendtime = None
+        self.runstate = "INIT"
+        for m in ms:
+            ts = datetime.fromtimestamp(float(m["ts"]))
+            if m["msg"] == "Starting":
+                self.runstarttime = ts
+            elif (m["msg"] == "Stage") and (m["ext"] == "PRERUN"):
+                self.prerunstart = ts
+            elif (
+                (m["msg"] == "Stage")
+                and (self.activestarttime is None)
+                and (self.prerunstart is not None)
+            ):
+                self.activestarttime = ts
+            elif (m["msg"] == "Stage") and (m["ext"] == "POSTRun"):
+                self.activeendtime = ts
+            elif m["msg"] == "Ended":
+                self.runendtime = ts
+                self.runstate = "COMPLETE"
+            elif m["msg"] == "Aborted":
+                self.runstate = "ABORTED"
+                self.activeendtime = ts
+                self.runendtime = ts
 
         tt = []
 
@@ -952,12 +1570,14 @@ class Experiment:
             ),
         )
 
-        self.temperatures[("time", "seconds")] = (
-            self.temperatures[("time", "timestamp")] - self.runstarttime.timestamp()
-        )
-        self.temperatures[("time", "hours")] = (
-            self.temperatures[("time", "seconds")] / 3600.0
-        )
+        if self.activestarttime:
+            self.temperatures[("time", "seconds")] = (
+                self.temperatures[("time", "timestamp")]
+                - self.activestarttime.timestamp()
+            )
+            self.temperatures[("time", "hours")] = (
+                self.temperatures[("time", "seconds")] / 3600.0
+            )
         self.temperatures[("sample", "avg")] = self.temperatures["sample"].mean(axis=1)
         self.temperatures[("block", "avg")] = self.temperatures["block"].mean(axis=1)
 

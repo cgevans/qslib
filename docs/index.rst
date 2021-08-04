@@ -5,7 +5,6 @@ Contents
 --------
 
 .. toctree::
-    :maxdepth: 3
 
     readme
     setup
@@ -13,6 +12,10 @@ Contents
     api/qslib
     monitor
     changelog
+
+.. toctree::
+    :maxdepth: 1
+
     license
     authors
 
