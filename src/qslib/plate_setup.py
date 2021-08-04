@@ -63,7 +63,7 @@ class PlateSetup:
 
     @classmethod
     def from_platesetup_xml(cls, platexml: ET.Element) -> PlateSetup:  # type: ignore
-        assert platexml.find("PlateKind/Type").text == "TYPE_8X12"
+        #assert platexml.find("PlateKind/Type").text == "TYPE_8X12"
 
         sample_fvs = platexml.findall(
             "FeatureMap/Feature/Id[.='sample']/../../FeatureValue"

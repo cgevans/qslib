@@ -1,8 +1,9 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import InitVar, dataclass, field
+import dataclasses
 from operator import rshift
-from typing import ClassVar, Iterable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, ClassVar, Iterable, List, Optional, Sequence, Tuple, Union, cast
 from .version import __version__
 
 from qslib.data import FilterSet
@@ -13,6 +14,7 @@ import xml.etree.ElementTree as ET
 import uuid
 import pandas as pd
 import numpy as np
+from .util import *
 
 
 def _temperature_str(temperatures: Union[float, Iterable[float]]) -> str:
@@ -114,10 +116,39 @@ class BaseStep(ABC):
 
 @dataclass
 class Stage(XMLable):
-    body: Sequence[BaseStep]
+    _steps: list[BaseStep]
     repeat: int = 1
     index: int | None = None
     label: str | None = None
+    _class: str = 'Stage'
+
+    @property
+    def steps(self) -> list[BaseStep]:
+        return self._steps
+
+    @steps.setter
+    def steps(self, steps: Iterable[BaseStep] | BaseStep): # type: ignore
+        self._steps = [steps] if isinstance(steps, BaseStep) else list(steps)
+
+    def __postinit__(self):
+        self.steps = self._steps
+
+    def __repr__(self) -> str:
+        s = f"Stage(steps="
+        if len(self.steps) == 0:
+            s += "[]"
+        elif len(self.steps) == 1:
+            s += repr(self.steps[0])
+        else:
+            s += "[\n  " + "\n  ".join(repr(f) for f in self.steps) + "\n  ]"
+        if self.repeat != 1:
+            s += f", repeat={self.repeat}"
+        if self.index:
+            s += f", index={self.index}"
+        if self.label:
+            s += f", label={self.label}"
+        s += ")"
+        return s
 
     def dataframe(
         self, start_time: float = 0, previous_temperatures: list[float] | None = None
@@ -142,21 +173,21 @@ class Stage(XMLable):
             [
                 step.duration_at_cycle(i)
                 for i in range(1, self.repeat + 1)
-                for step in self.body
+                for step in self._steps
             ]
         )
         temperatures = np.array(
             [
                 step.temperatures_at_cycle(i)
                 for i in range(1, self.repeat + 1)
-                for step in self.body
+                for step in self._steps
             ]
         )
         # ramp_rates = np.array(
         #    [step.ramp_rate for _ in range(1, self.repeat + 1) for step in self.body]
         # )
         collect_data = np.array(
-            [step.collect for _ in range(1, self.repeat + 1) for step in self.body]
+            [step.collect for _ in range(1, self.repeat + 1) for step in self._steps]
         )
 
         # FIXME: is this how ramp rates actually work?
@@ -198,10 +229,10 @@ class Stage(XMLable):
             data["temperature_{}".format(i + 1)] = temperatures[:, i]
 
         data["cycle"] = [
-            c for c in range(1, self.repeat + 1) for s in range(1, len(self.body) + 1)
+            c for c in range(1, self.repeat + 1) for s in range(1, len(self._steps) + 1)
         ]
         data["step"] = [
-            s for c in range(1, self.repeat + 1) for s in range(1, len(self.body) + 1)
+            s for c in range(1, self.repeat + 1) for s in range(1, len(self._steps) + 1)
         ]
 
         data.set_index(["cycle", "step"], inplace=True)
@@ -221,7 +252,7 @@ class Stage(XMLable):
         else:
             s += f"STAGE_{self.index or stageindex} "
         s += "<multiline.stage>\n"
-        for i, step in enumerate(self.body):
+        for i, step in enumerate(self._steps):
             s += textwrap.indent(f"{step.to_command(stepindex=i+1, **kwargs)}", "\t")
         s += "\n</multiline.stage>"
         return s
@@ -236,22 +267,31 @@ class Stage(XMLable):
         for k, v in d["opts"].items():
             setattr(s, k.lower(), v)
 
-        s.body = [Step._from_command_dict(step) for step in d["body"]]
+        s._steps = [Step._from_command_dict(step) for step in d["body"]]
         return s
 
     @classmethod
     def from_xml(cls, e: ET.Element) -> Stage:
-        raise NotImplementedError
+        rep = int(e.findtext("NumOfRepetitions") or 1)
+        startcycle = int(e.findtext("StartingCycle"))
+        ade = e.findtext("AutoDeltaEnabled") == "true"
+        steps = [Step.from_xml(x, etc=startcycle, ehtc=startcycle, he=ade) for x in e.findall("TCStep")]
+        return cls(steps, rep)
 
     def to_xml(self) -> ET.Element:
         e = ET.Element("TCStage")
-        ET.SubElement(e, "StageFlag").text = "QSLIB"
+        ET.SubElement(e, "StageFlag").text = "CYCLING"
         ET.SubElement(e, "NumOfRepetitions").text = str(int(self.repeat))
-        for s in self.body:
+        scycle: set[int] = set()
+        for s in self._steps:
+            scycle.add(s.temp_incrementcycle)
+            scycle.add(s.time_incrementcycle)
             assert isinstance(s, XMLable)
             e.append(s.to_xml())
-
-        # TODO: StartingCycle, AutoDeltaEnabled
+        if len(scycle) > 1:
+            log.warn("Approx")
+        ET.SubElement(e, "StartingCycle").text = str(next(iter(scycle)))
+        ET.SubElement(e, "AutoDeltaEnabled").text = "true" 
 
         return e
 
@@ -263,19 +303,27 @@ class Stage(XMLable):
         stagestr = f"{index}. Stage with {self.repeat} cycle{adds}"
         stepstrs = [
             textwrap.indent(f"{step.info_str(i+1, self.repeat)}", "  ")
-            for i, step in enumerate(self.body)
+            for i, step in enumerate(self._steps)
         ]
         try:
-            tot_dur = sum(x.total_duration(self.repeat) for x in self.body)  # type: ignore
+            tot_dur = sum(x.total_duration(self.repeat) for x in self._steps)  # type: ignore
             stagestr += f" (total duration {_durformat(tot_dur)})"
         except KeyError:
             pass
-        stagestr += " of:\n" + "\n".join(stepstrs)
+        if len(stepstrs) > 1:
+            stagestr += " of:\n" + "\n".join(stepstrs)
+        else:
+            stagestr += " of " + " ".join(stepstrs[0].split()[1:])
         return stagestr
 
     def __str__(self) -> str:
-        self.info_str(None)
+        return self.info_str(None)
 
+    @classmethod
+    def fromdict(cls, d: dict[str, Any]) -> 'Stage':
+        s = [cast(BaseStep, Step(**x)) for x in d['_steps']]
+        del(d['_steps'])
+        return cls(s, **d)
 
 def _oxfordlist(iterable: Iterable[str]) -> str:
     x = iter(iterable)
@@ -307,11 +355,35 @@ ALLTEMPS = ["temperature_{}".format(i) for i in range(1, 7)]
 
 @dataclass
 class Protocol(XMLable):
+    """A run protocol for the QuantStudio.  Protocols encapsulate the temperature and camera
+    controls for an entire run.  They are composed of :any:`Stage`s, which may repeat for a
+    number of cycles, and the stages are in turn composed of Steps, which may be created for
+    usual cases with :any:`Step`, or from SCPI commands (TODO: implement).  Steps may repeat
+    their contents as well, but this is not yet implemeted.
+
+    Parameters
+    ----------
+    stages: Iterable[Stage]
+        The stages of the protocol, likely :any:`Stage`.
+    name: str | None
+        A protocol name. If not set, a UUID will be used, similar to AB.
+    volume: floa
+        The sample volume, in µL.
+    runmode: str | None
+        The run mode.
+    covertemperature: float (default 105.0)
+        The cover temperature
+    filters: Sequence[str]
+        A list of default filters that can be used by any collection commands
+        that don't specify their own.
+    """
     stages: Iterable[Stage]
     name: str = field(default_factory=lambda: uuid.uuid1().hex)
-    volume: float | None = None
+    volume: float = 50.0
     runmode: str | None = None
-    filters: list[str] = field(default_factory=lambda: [])
+    filters: list[str | FilterSet] = field(default_factory=lambda: [])
+    covertemperature: float = 105.0
+    _class: str = "Protocol"
 
     def to_command(self):
         s = "PROTocol "
@@ -337,7 +409,7 @@ class Protocol(XMLable):
 
     @classmethod
     def _from_command_dict(cls, d):
-        assert d["command"] == "PROT"
+        assert d["command"].lower() in ["prot", "protocol"]
         p = cls([])
         if len(d["args"]) == 1:
             p.name = d["args"][0]
@@ -447,26 +519,51 @@ class Protocol(XMLable):
 
     @classmethod
     def from_xml(cls, e: ET.Element) -> Protocol:
-        raise NotImplementedError
+        svol = e.findtext("SampleVolume")
+        runmode = e.findtext("RunMode")
+        covertemperature = float(e.findtext("CoverTemperature"))
+        protoname = e.findtext("ProtocolName")
+        filter_e = e.find("CollectionProfile")
+        filters = []
+        if filter_e:
+            for x in filter_e.findall("CollectionCondition/FilterSet"):
+                filters.append(x.attrib['Excitation']+"-"+x.attrib['Emission'])
+        stages = [Stage.from_xml(x) for x in e.findall("TCStage")]
+        return Protocol(stages, protoname, svol, runmode, filters, covertemperature)
+            
 
-    def to_xml(self) -> ET.Element:
-        e = ET.Element("TCProtocol")
-        ET.SubElement(e, "FileVersion").text = "2.0"
-        ET.SubElement(e, "ProtocolName").text = self.name
-        ET.SubElement(e, "QSLibNote").text = (
+    def to_xml(self, e: ET.Element | None = None, covertemperature=105.0) -> tuple[ET.ElementTree, ET.ElementTree]:
+        te = ET.ElementTree(ET.Element("TCProtocol"))
+        tqe = ET.ElementTree(ET.Element("QSTCProtocol"))
+
+        e = te.getroot()
+        qe = tqe.getroot()
+
+        _set_or_create(e, "FileVersion").text = "2.0"
+        _set_or_create(e, "ProtocolName").text = self.name
+        _set_or_create(qe, "QSLibNote").text = (
             "This protocol was"
             " generated by QSLib. It may be only an approximation or"
             " placeholder for the real protocol, contained as"
             " an SCPI command in QSLibProtocolCommand."
         )
-        ET.SubElement(e, "QSLibProtocolCommand").text = self.to_command()
-        ET.SubElement(e, "QSLibProtocol").text = repr(self)
-        ET.SubElement(e, "QSLibVerson").text = __version__
+        _set_or_create(qe, "QSLibProtocolCommand").text = self.to_command()
+        _set_or_create(qe, "QSLibProtocol").text = str(dataclasses.asdict(self))
+        _set_or_create(qe, "QSLibVerson").text = __version__
+        _set_or_create(e, "CoverTemperature").text = str(covertemperature)
         if self.volume is not None:
-            ET.SubElement(e, "SampleVolume").text = str(self.volume)
+            _set_or_create(e, "SampleVolume").text = str(self.volume)
         if self.runmode is not None:
-            ET.SubElement(e, "RunMode").text = str(self.runmode)
-        return e
+            _set_or_create(e, "RunMode").text = str(self.runmode)
+        if self.filters:
+            x = _set_or_create(e, "CollectionProfile", ProfileId="1")
+            for f in self.filters:
+                if not isinstance(f, FilterSet):
+                    f = FilterSet.fromstring(f)
+                x.append(f.to_xml())
+        for s in self.stages:
+            e.append(s.to_xml())
+        return te, tqe
 
     def __str__(self) -> str:
         begin = f"Run Protocol {self.name}"
@@ -477,7 +574,13 @@ class Protocol(XMLable):
             extras.append(f"run mode {self.runmode}")
         if extras:
             begin += " with " + _oxfordlist(extras)
-        begin += ":\n\n"
+        begin += ":\n"
+        if self.filters:
+            begin += (f"(default filters " 
+                + _oxfordlist(FilterSet.fromstring(f).lowerform for f in self.filters)
+                + ")\n\n")
+        else:
+            begin += "\n" 
         stagestrs = [
             textwrap.indent(stage.info_str(i + 1), "  ")
             for i, stage in enumerate(self.stages)
@@ -485,6 +588,11 @@ class Protocol(XMLable):
 
         return begin + "\n".join(stagestrs)
 
+    @classmethod
+    def fromdict(cls, d: dict[str, Any]) -> 'Protocol':
+        s = [Stage(**x) for x in d['stages']]
+        del(d['stages'])
+        return cls(s, **d)
 
 @dataclass
 class Ramp(ProtoCommand):
@@ -600,17 +708,49 @@ class Hold(ProtoCommand):
 
 @dataclass
 class Step(BaseStep, XMLable):
+    """
+    A normal protocol step.
+
+    Parameters
+    ----------
+
+    time: int
+        The step time setting, in seconds.
+    temperature: float | Sequence[float]
+        The temperature hold setting, either as a float (all zones the same) or a sequence
+        (of correct length) of floats setting the temperature for each zone.
+    collect: bool
+        Collect fluorescence data?
+    temp_increment: float
+        Amount to increment all zone temperatures per cycle on and after :any:`temp_incrementcycle`.
+    temp_incrementcycle: int (default 2)
+        First cycle to start the increment changes. Note that the default in QSLib is 2, not 1 (as in AB's software),
+        so that leaving this alone makes sense (the first cycle will be at :any:`temperature`, the next at
+        :code:`temperature + temp_incrementcycle`.
+    time_increment : float
+    time_incrementcycle : int
+        The same settings for time per cycle.
+    filters : Sequence[FilterSet | str] (default empty)
+        A list of filter pairs to collect, either using :any:`FilterSet` or a string like "x1-m4".  If collect is
+        True and this is empty, then the filters will be set by the Protocol.
+
+    Notes
+    -----
+
+    This currently does not support step-level repeats, which do exist on the machine.
+    """
     time: int
     temperature: float | Sequence[float]
     collect: bool = False
     temp_increment: float = 0.0
     temp_incrementcycle: int = 2
-    time_increment: float = 0.0
+    time_increment: int = 0
     time_incrementcycle: int = 2
-    filters: Sequence[FilterSet] = tuple()
+    filters: Sequence[FilterSet | str] = tuple()
     pcr: bool = False
     quant: bool = True
     tiff: bool = False
+    _class: str = "Step"
 
     def info_str(self, index, repeats: int = 1) -> str:
         "String describing the step."
@@ -634,7 +774,11 @@ class Step(BaseStep, XMLable):
         s = f"{index}. " + ", ".join(elems)
 
         if self.collect:
-            s += " (collects " + ", ".join(f.lowerform for f in self.filters)
+            s += " (collects "
+            if self.filters:
+                s += ", ".join(FilterSet.fromstring(f).lowerform for f in self.filters)
+            else:
+                s += "default"
             if self.pcr:
                 s += ", pcr on"
             if not self.quant:
@@ -645,7 +789,7 @@ class Step(BaseStep, XMLable):
 
         return s
 
-    def total_duration(self, repeats=1):
+    def total_duration(self, repeats: int=1):
         return sum(self.duration_at_cycle(c) for c in range(1, repeats + 1))
 
     def duration_at_cycle(self, cycle: int) -> float:  # cycle from 1
@@ -680,13 +824,9 @@ class Step(BaseStep, XMLable):
 
     @property
     def body(self) -> list[ProtoCommand]:
-        if isinstance(self.temperature, float):
-            t = [self.temperature] * 6
-        else:
-            t = self.temperature
         if self.collect:
             return [
-                Ramp(t, self.temp_increment, self.temp_incrementcycle),
+                Ramp(self.temperature_list, self.temp_increment, self.temp_incrementcycle),
                 HACFILT(self.filters),
                 HoldAndCollect(
                     self.time,
@@ -700,7 +840,7 @@ class Step(BaseStep, XMLable):
             ]
         else:
             return [
-                Ramp(t, self.temp_increment, self.temp_incrementcycle),
+                Ramp(self.temperature_list, self.temp_increment, self.temp_incrementcycle),
                 Hold(
                     self.time,
                     self.time_increment,
@@ -709,20 +849,29 @@ class Step(BaseStep, XMLable):
             ]
 
     @classmethod
-    def from_xml(cls, e: ET.Element) -> Step:
-        raise NotImplementedError
+    def from_xml(cls, e: ET.Element, *, etc=1, ehtc=1, he=False) -> Step:
+        collect = bool(int(e.findtext("CollectionFlag")))
+        ts = [float(x.text) for x in e.findall("Temperature")]
+        ht = int(e.findtext("HoldTime"))
+        et = float(e.findtext("ExtTemperature"))
+        eht = int(e.findtext("ExtHoldTime"))
+        if not he:
+            et = 0
+            eht = 0
+        return Step(ht, ts, collect, et, etc, eht, ehtc, [], True)
 
     def to_xml(self) -> ET.Element:
         e = ET.Element("TCStep")
-        ET.SubElement(e, "CollectionFlag").text = str(int(self.quant))
+        ET.SubElement(e, "CollectionFlag").text = str(int(self.collect)) # FIXME: approx
         for t in self.temperature_list:
             ET.SubElement(e, "Temperature").text = str(t)
         ET.SubElement(e, "HoldTime").text = str(self.time)
-        if self.temp_increment:
-            ET.SubElement(e, "ExtTemperature").text = str(self.temp_increment)
-        if self.time_increment:
-            ET.SubElement(e, "ExtHoldTime").text = str(self.time_increment)
-        # TODE: RampRate, RampRateUnit
+        # FIXME: does not contain cycle starts, because AB format can't handle 
+        ET.SubElement(e, "ExtTemperature").text = str(self.temp_increment)
+        ET.SubElement(e, "ExtHoldTime").text = str(self.time_increment)
+        # FIXME: RampRate, RampRateUnit
+        ET.SubElement(e, "RampRate").text = "1.6"
+        ET.SubElement(e, "RampRateUnit").text = "DEGREES_PER_SECOND"
         return e
 
     @classmethod
@@ -768,3 +917,7 @@ class Step(BaseStep, XMLable):
         else:
             raise ValueError
         return c
+    
+    @classmethod
+    def fromdict(cls, d: dict[str, Any]) -> 'Step':
+        return cls(**d)
