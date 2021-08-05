@@ -1,25 +1,28 @@
 from __future__ import annotations
+
+import base64
+import dataclasses
+import io
+import logging
+import os
+import re
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from glob import glob
-import io
-import os
-from posixpath import join
-from typing import Any, IO, Iterable, Union
+from typing import IO
 
+import pandas as pd
+import toml as toml
 from qslib.plate_setup import PlateSetup
+
+from .data import df_from_readings, FilterDataReading
 from .machine import Machine, RunStatus
 from .tcprotocol import Protocol, Stage, Step
-import tempfile
-import zipfile
-import base64
-import logging
-import xml.etree.ElementTree as ET
-import re
-import pandas as pd
-from .data import df_from_readings, FilterSet, FilterDataReading
-from .version import __version__
 from .util import *
+from .version import __version__
 
 TEMPLATE_NAME = "ruo"
 
@@ -100,7 +103,7 @@ class Experiment:
 
     Experiments can be loaded from a file:
 
-    >>> exp = Experiment.from_file("experiment.eds")
+    >>> exp: Experiment = Experiment.from_file("experiment.eds")
 
     They can also be loaded from a running experiment:
 
@@ -114,7 +117,7 @@ class Experiment:
     They can also be created from scratch:
 
     >>> exp = Experiment("an-experiment-name")
-    >>> exp.protocol = tc.Protocol([tc.Stage([tc.Step(time=60, temperature=60)])])
+    >>> exp.protocol = Protocol([Stage([Step(time=60, temperature=60)])])
     >>> exp.plate_setup = PlateSetup({"sample_name": "A5"})
 
     And they can be run on a machine:
@@ -219,29 +222,8 @@ class Experiment:
     """
     A string describing the software and version used to write the file.
     """
-    welldata: pd.DataFrame
-    """
-    A DataFrame with fluorescence reading information.
+    _welldata: pd.DataFrame | None
 
-    Indices (multi-index) are (filter_set, stage, cycle, step, point), where filter_set
-    is a string in familiar form (eg, "x1-m4") and the rest are int.
-
-    Columns (as multi-index):
-
-    ("time", ...) : float
-        Time of the data collection, taken from the .quant file.  May differ for different
-        filter sets.  Options are "timestamp" (unix timestamp in seconds), "seconds", and
-        "hours" (the latter two from the *active* start of the run).
-
-    (well, option) : float
-        Data for a well, with well formatted like "A05".  Options are "rt" (read temperature
-        from .quant file), "st" (more stable temperature), and "fl" (fluorescence).
-
-    ("exposure", "exposure") : float
-        Exposure time from filterdata.xml.  Misleading, because it only refers to the
-        longest exposure of multiple exposures.
-
-    """
     filterdata: pd.DataFrame
     temperatures: pd.DataFrame
     """
@@ -268,6 +250,36 @@ class Experiment:
         Heatsink temperature
 
     """
+
+    @property
+    def welldata(self) -> pd.DataFrame:
+        """
+            A DataFrame with fluorescence reading information.
+
+            Indices (multi-index) are (filter_set, stage, cycle, step, point), where filter_set
+            is a string in familiar form (eg, "x1-m4") and the rest are int.
+
+            Columns (as multi-index):
+
+            ("time", ...) : float
+                Time of the data collection, taken from the .quant file.  May differ for different
+                filter sets.  Options are "timestamp" (unix timestamp in seconds), "seconds", and
+                "hours" (the latter two from the *active* start of the run).
+
+            (well, option) : float
+                Data for a well, with well formatted like "A05".  Options are "rt" (read temperature
+                from .quant file), "st" (more stable temperature), and "fl" (fluorescence).
+
+            ("exposure", "exposure") : float
+                Exposure time from filterdata.xml.  Misleading, because it only refers to the
+                longest exposure of multiple exposures.
+        """
+        if self._welldata:
+            return self._welldata
+        elif self.runstate == "INIT":
+            raise ValueError("Run hasn't started yet: no data available.")
+        else:
+            raise ValueError("Experiment data is not available")
 
     def summary(self, format="markdown", plate="list") -> str:
         """Generate a summary of the experiment, with some formatting configuation. `str()`
@@ -321,11 +333,7 @@ class Experiment:
         elif c := getattr(self, "machine", None):
             return c
         else:
-            log.warn("creating new machine")
-            self.machine = Machine(
-                self.info["host"], self.info["port"], self.info["password"]
-            )
-            return self.machine
+            raise ValueError("No stored machine info for this experiment: please provide some.")
 
     def _ensure_running(self, machine: Machine):
         crt = machine.run_status()
@@ -519,9 +527,27 @@ class Experiment:
         machine = self._ensure_machine(machine)
         self._ensure_running(machine)
 
+        # Get a list of all the files in the experiment folder
+        machine_files = machine.list_files("${RunFolder}/", verbose=True, recursive=True)
+
+        # Transfer anything we don't have
+        for f in machine_files:
+            name = os.path.basename(f['path'])
+            sdspath = re.sub(".*/apldbio/sds/(.*)$", r"\1", r['path'])
+            if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(f["mtime"]):
+                continue
+            with open(self._sdspath(sdspath), "wb") as b:
+                b.write(machine.read_file(f['path']))
+            os.utime(sdspath, (f['atime'], f['mtime']))
+
+        # The message log is tricky. Ideally we'd use rsync. Instead, we're going to use
+        # wc and tail.
+
+        # Anything else: transfer anything we don't have.
+
         raise NotImplementedError("Use Experiment.from_running for now.")
 
-    def change_protocol(self, protocol: Protocol, machine: Machine | None = None):
+    def change_protocol(self, new_protocol: Protocol, machine: Machine | None = None):
         """NOT YET IMPLEMENTED
         For a running experiment and an updated protocol, check compatibility
         with the current run, and if possible, update the protocol in the experiment
@@ -539,7 +565,7 @@ class Experiment:
 
         Parameters
         ----------
-        protocol : Protocol
+        new_protocol : Protocol
             [description]
         machine : Machine, optional
             [description], by default None
@@ -547,17 +573,28 @@ class Experiment:
         """
         machine = self._ensure_machine(machine)
         self._ensure_running(machine)
-        raise NotImplementedError
+
+        runstatus = machine.run_status()
 
         # Get running protocol and status.
+        machine_proto = machine.get_running_protocol()
+
+        if machine_proto != self.protocol:
+            raise ValueError("Machine and experiment protocols differ.")
 
         # Check compatibility of changes.
+        machine_proto.check_compatible(new_protocol, runstatus)
 
         # Make changes.
+        machine.define_protocol(new_protocol)
 
         # Save changes in tcprotocol.xml
+        self.protocol = new_protocol
+
+        self._update_tcprotocol_xml()
 
         # Push new tcprotocol.xml
+        machine.send_file(self._sdspath("tcprotocol.xml"), "${LogFolder}/tcprotocol.xml")
 
     def save_file(self, file: str | IO[bytes], overwrite=False):
         """
@@ -1218,7 +1255,7 @@ class Experiment:
             self.protocol.covertemperature = self._protocol_from_xml.covertemperature
 
     @classmethod
-    def from_file(cls, file: str | os.PathLike[str] | IO[bytes]) -> "Experiment":
+    def from_file(cls, file: str | os.PathLike[str] | IO[bytes]) -> Experiment:
         """Load an experiment from an EDS file.
 
         Returns
@@ -1396,6 +1433,13 @@ class Experiment:
             ET.indent(tcxml)
             ET.indent(qstcxml)
             tcxml.write(os.path.join(self._dir_eds, "tcprotocol.xml"))
+
+            # Make new machine with stripped password:
+            if self.machine:
+                m2d = dataclasses.asdict(self.machine)
+                m2d['password'] = None
+                ET.SubElement(qstcxml.getroot(), "MachineConnection").text = toml.dumps(m2d)
+
             qstcxml.write(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
 
 
@@ -1407,6 +1451,9 @@ class Experiment:
             self._protocol_from_qslib = Protocol.from_command(x.text)
         else:
             self._protocol_from_qslib = None
+
+        if (x := qstcxml.findtext("MachineConnection")) and not self.machine:
+            self.machine = Machine(toml.loads(x))
         # try:
         self._protocol_from_xml = Protocol.from_xml(exml.getroot())
         # except Exception as e:
@@ -1431,7 +1478,7 @@ class Experiment:
                 FilterDataReading(x, sds_dir=self._dir_eds)
                 for x in fdx.findall(".//PlateData")
             ]
-            self.welldata = df_from_readings(
+            self._welldata = df_from_readings(
                 fdrs, self.activestarttime.timestamp() if self.activestarttime else None
             )
         elif fdfs := glob(os.path.join(self._dir_eds, "filter", "*_filterdata.xml")):
@@ -1441,13 +1488,13 @@ class Experiment:
                 )
                 for fdf in fdfs
             ]
-            self.welldata = df_from_readings(
+            self._welldata = df_from_readings(
                 fdrs, self.activestarttime.timestamp() if self.activestarttime else None
             )
         else:
-            self.welldata = None
+            self._welldata = None
 
-        if self.welldata is not None:
+        if self._welldata is not None:
             self.rawdata = _fdc_to_rawdata(self.welldata, self.activestarttime.timestamp() if self.activestarttime else None)  # type: ignore
             self.filterdata = self.rawdata
 
@@ -1477,7 +1524,7 @@ class Experiment:
         try:
             msglog = open(os.path.join(self._dir_eds, "messages.log"), "r").read()
         except UnicodeDecodeError as e:
-            log.warn(
+            log.warning(
                 "Decoding log failed. If <binary.reply> is present in log this may be the cause:"
                 "if so contact Constantine (<const@costinet.org>).  Continuing with failed characters replaced with backslash notation"
                 "Failure was in this area:\n"
