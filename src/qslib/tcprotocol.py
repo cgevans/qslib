@@ -1,20 +1,25 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from dataclasses import InitVar, dataclass, field
+from dataclasses import dataclass, field
 import dataclasses
-from operator import rshift
+from itertools import zip_longest
 from typing import Any, ClassVar, Iterable, List, Optional, Sequence, Tuple, Union, cast
+
+from .base import RunStatus
+
 from .version import __version__
 
 from qslib.data import FilterSet
 from . import parser as qp
-import pyparsing as pp
 import textwrap
 import xml.etree.ElementTree as ET
 import uuid
 import pandas as pd
 import numpy as np
 from .util import *
+import logging
+
+log = logging.getLogger(__name__)
 
 
 def _temperature_str(temperatures: Union[float, Iterable[float]]) -> str:
@@ -380,7 +385,7 @@ class Protocol(XMLable):
     stages: Iterable[Stage]
     name: str = field(default_factory=lambda: uuid.uuid1().hex)
     volume: float = 50.0
-    runmode: str | None = None
+    runmode: str | None = None # standard or fast... need to deal with this
     filters: list[str | FilterSet] = field(default_factory=lambda: [])
     covertemperature: float = 105.0
     _class: str = "Protocol"
@@ -594,6 +599,25 @@ class Protocol(XMLable):
         del(d['stages'])
         return cls(s, **d)
 
+    def check_compatible(self, new: Protocol, status: RunStatus):
+        # Sample sample volume? (FIXME: We can't change it right now.)
+        assert self.volume == new.volume
+        assert self.name == new.name
+
+        for i, (oldstage, newstage) in enumerate(zip_longest(self.stages, new.stages)):
+            oldstage: Stage
+            newstage: Stage
+            if i + 1 < status.stage:  # If the stage has already passed, we must be equal
+                assert oldstage == newstage
+            elif i + 1 == status.stage:  # Current stage.  Only change is # cycles, >= current
+                if newstage.repeat < status.cycle:
+                    raise ValueError
+                oldstage.repeat = newstage.repeat # for comparison
+                assert oldstage == newstage
+            else:
+                continue
+
+
 @dataclass
 class Ramp(ProtoCommand):
     temperature: Sequence[float]
@@ -619,11 +643,6 @@ class Ramp(ProtoCommand):
         p += self.temperature
         return " ".join(str(x) for x in p)
 
-    @classmethod
-    def parser(cls):
-        return parser.command_onearg(cls, "RAMP")
-
-
 @dataclass
 class HACFILT(ProtoCommand):
     filters: Sequence[FilterSet] | None
@@ -644,16 +663,6 @@ class HACFILT(ProtoCommand):
         self.filters = [
             FilterSet.fromstring(f) if isinstance(f, str) else f for f in filters
         ]
-
-    @classmethod
-    def parser(cls):
-        return (
-            pp.Keyword("HACFILT").suppress()
-            + parser.we
-            + pp.delimitedList(
-                pp.delimitedList(pp.Word(pp.alphanums), combine=True), pp.White(" ")
-            )
-        ).setParseAction(lambda tok: cls([x for x in tok]))
 
 
 @dataclass

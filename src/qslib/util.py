@@ -34,4 +34,8 @@ def _text_or_none(element: ET.Element | ET.ElementTree, path: str) -> Union[str,
     else:
         return None
 
-__all__ = ("_find_or_create", "_set_or_create", "_text_or_none")
+def _unwrap_tags(s: str) -> str:
+    return re.sub(r"^<[^>]+?>\n?(.*)\n?</[^>]+?>$", r"\1", s)
+
+
+__all__ = ("_find_or_create", "_set_or_create", "_text_or_none", "_unwrap_tags")

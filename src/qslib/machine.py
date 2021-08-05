@@ -5,11 +5,14 @@ from dataclasses import dataclass, field
 import io
 import logging
 from os import PathLike
-from typing import Any, Callable, ClassVar, IO, List, Literal, Type, TypeVar
+from typing import Any, Callable, ClassVar, IO, List, Literal, Type, TypeVar, overload
 import zipfile
 
+from qslib.parser import arglist
 from qslib.tcprotocol import Protocol
-from .qsconnection_async import AccessLevel, QSConnectionAsync
+from qslib.util import _unwrap_tags
+
+from .qsconnection_async import QSConnectionAsync
 import asyncio
 from contextlib import contextmanager
 import re
@@ -20,86 +23,9 @@ import logging
 
 nest_asyncio.apply()
 
-
-def _get_protodef_or_def(var, default):
-    return f"$[ top.getChild('PROTOcolDEFinition').variables.get('{var}'.lower(), {default}) ]".encode()
-
-
-T = TypeVar("T", bound="BaseStatus")
+from .base import RunStatus, MachineStatus, AccessLevel
 
 log = logging.getLogger(__name__)
-
-
-class BaseStatus(ABC):
-    @classmethod
-    @property
-    @abstractmethod
-    def _comlist(cls: Type[T]) -> dict[str, tuple[bytes, Callable]]:
-        ...
-
-    @classmethod
-    @property
-    @abstractmethod
-    def _com(cls: Type[T]) -> bytes:
-        ...
-
-    @classmethod
-    def from_machine(cls: Type[T], connection: "Machine") -> T:
-        out = connection.run_command_bytes(cls._com)
-        return cls.from_bytes(out)
-
-    @classmethod
-    def from_bytes(cls: Type[T], out: bytes) -> Type[T]:
-        return cls(
-            **{
-                k: inst(v)
-                for (k, (_, inst)), v in zip(
-                    cls._comlist.items(), shlex.split(out.decode())
-                )
-            }
-        )
-
-
-@dataclass
-class RunStatus(BaseStatus):
-    name: str
-    stage: int
-    num_stages: int
-    cycle: int
-    num_cycles: int
-    step: int
-    point: int
-    state: str
-
-    _comlist: ClassVar[dict[str, tuple[bytes, Callable]]] = {
-        "name": (b"${RunTitle:--}", str),
-        "stage": (b"${Stage:--1}", int),
-        "num_stages": (_get_protodef_or_def("${RunMacro}-Stages", -1), int),
-        "cycle": (b"${Cycle:--1}", int),
-        "num_cycles": (
-            _get_protodef_or_def("${RunMacro}-Stage${Stage}-Count", -1),
-            int,
-        ),
-        "step": (b"${Step:--1}", int),
-        "point": (b"${Point:--1}", int),
-        "state": (b"$(ISTAT?)", str),
-    }
-    _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
-
-
-@dataclass
-class MachineStatus(BaseStatus):
-    drawer: str
-    cover: str
-    lamp_status: str
-
-    _comlist: ClassVar[dict[str, tuple[bytes, Callable]]] = {
-        "drawer": (b"$(DRAWER?)", str),
-        "cover": (b'$[ "$(ENG?)" or "unknown" ]', str),
-        "lamp_status": (b"$(LST?)", str),
-    }
-
-    _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
 
 
 @dataclass(init=False)
@@ -160,25 +86,25 @@ class Machine:
     """
 
     host: str
-    password: str | None
-    max_access_level: AccessLevel
+    password: str | None = None
+    max_access_level: AccessLevel | str = AccessLevel.Observer
     port: int = 7000
-    _initial_access_level: AccessLevel
+    _initial_access_level: AccessLevel | str = AccessLevel.Observer
 
     def __init__(
         self,
         host,
         password: str | None = None,
-        max_access_level: AccessLevel = "Observer",
+        max_access_level: AccessLevel | str = AccessLevel.Observer,
         port: int = 7000,
         connect_now: bool = False,
-        _initial_access_level: AccessLevel = "Observer",
+        _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
         self.port = port
         self.password = password
-        self.max_access_level = max_access_level
-        self._initial_access_level = _initial_access_level
+        self.max_access_level = AccessLevel(max_access_level)
+        self._initial_access_level = AccessLevel(_initial_access_level)
 
         if connect_now:
             self.connect()
@@ -272,6 +198,33 @@ class Machine:
         x = self.run_command_bytes(f"{leaf}:ZIPREAD? {path}")
 
         return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-10])))
+
+    @overload
+    def list_files(self, path: str, *, leaf: str = "FILE", verbose: Literal[True], recursive: bool = False) -> list[dict[str, Any]]:
+        ...
+
+    @overload
+    def list_files(self, path: str, *, leaf: str = "FILE", verbose: Literal[False], recursive: bool = False) -> list[str]:
+        ...
+
+    def list_files(self, path: str, *, leaf: str = "FILE", verbose: bool = False, recursive: bool = False):
+        if not verbose:
+            if recursive:
+                raise NotImplementedError
+            return self.run_command(f"{leaf}:LIST? {path}").split("\n")[1:-1]
+        else:
+            v = self.run_command(f"{leaf}:LIST? -verbose {path}").split("\n")[1:-1]
+            v = [arglist.parseString(x) for x in v]
+            ret = []
+            for x in v:
+                d = {}
+                d['path'] = x['arglist']['args'][0]
+                d |= x['arglist']['opts']
+                if d['type'] == 'folder' and recursive:
+                    ret += self.list_files(d['path'], leaf=leaf, verbose=True, recursive=True)
+                else:
+                    ret.append(d)
+            return ret
 
     def read_file(
         self, path: str, context: str | None = None, leaf: str = "FILE"
@@ -386,16 +339,25 @@ class Machine:
         """Return information on the status of the machine."""
         return MachineStatus.from_machine(self)
 
+    def get_running_protocol(self) -> Protocol:
+        p = _unwrap_tags(self.run_command("PROT? ${Protocol}"))
+        ps = "PROT -volume=${SampleVolume} -runmode=${RunMode} " + p
+        return Protocol(ps)
+
     @typechecked
     def set_access_level(
         self,
-        access_level: Literal[
-            "Guest", "Observer", "Controller", "Administrator", "Full"
-        ],
+        access_level: AccessLevel | str,
         exclusive: bool = False,
         stealth: bool = False,
         _log: bool = True,
     ):
+        access_level = AccessLevel(access_level)
+
+        if access_level > self.max_access_level:
+            raise ValueError(f"Access level {access_level.value} is above maximum {self.max_access_level.value}."
+                             " Change max_access level to continue.")
+
         self.run_command(
             f"ACC -stealth={stealth} -exclusive={exclusive} {access_level}"
         )
@@ -406,13 +368,13 @@ class Machine:
     def get_access_level(
         self,
     ) -> tuple[
-        Literal["Guest", "Observer", "Controller", "Administrator", "Full"], bool, bool
+        AccessLevel, bool, bool
     ]:
         ret = self.run_command("ACC?")
         m = re.match(r"^-stealth=(\w+) -exclusive=(\w+) (\w+)", ret)
         if m is None:
             raise ValueError(ret)
-        return (m[3], m[2] == "True", m[1] == "True")  # type: ignore
+        return AccessLevel(m[3]), m[2] == "True", m[1] == "True"
 
     def drawer_open(self):
         """Open the machine drawer using the OPEN command. This will ensure proper

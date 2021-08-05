@@ -9,8 +9,8 @@ from .qs_is_protocol import Error, QS_IS_Protocol
 import qslib.data as data
 import pandas as pd
 import xml.etree.ElementTree as ET
+from .base import AccessLevel
 
-AccessLevel = Literal["Guest", "Observer", "Controller", "Administrator", "Full"]
 
 
 def _gen_auth_response(password: str, challenge_string: str) -> str:
@@ -169,7 +169,7 @@ class QSConnectionAsync:
         await self.run_command(f"AUTH {auth_rep}")
 
     async def set_access_level(self, level: AccessLevel):
-        await self.run_command("ACC " + level)
+        await self.run_command("ACC " + level.value)
 
     async def get_expfile_list(self, glob: str) -> List[str]:
         fl = await self.run_command(f"EXP:LIST? {glob}")
