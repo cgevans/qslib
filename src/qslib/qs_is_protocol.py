@@ -60,7 +60,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         topic = message[0:i]
         if m := TIMESTAMP.match(message, i + 1):
             timestamp = float(m[1])
-            i = m.end() + 1
+            i = m.end()
         else:
             timestamp = None
         asyncio.create_task(
