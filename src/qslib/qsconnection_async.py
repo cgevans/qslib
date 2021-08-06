@@ -78,19 +78,21 @@ class QSConnectionAsync:
         return self
 
     async def __aexit__(self, exc_type: type, exc: Error, tb: Any) -> None:
+        if self._transport.is_closing():
+            return
         await self.disconnect()
 
     async def disconnect(self):
         await self.run_command("QUIT")
         self._transport.close()
-        self.connected = True
+        self.connected = False
 
     def __init__(
         self,
         host: str = "localhost",
         port: int = 7000,
         authenticate_on_connect: bool = True,
-        initial_access_level: AccessLevel = "Observer",
+        initial_access_level: AccessLevel = AccessLevel.Observer,
         password: Optional[str] = None,
     ):
         """Create a connection to a QuantStudio Instrument Server."""
