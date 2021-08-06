@@ -12,17 +12,18 @@ import zipfile
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from glob import glob
-from typing import IO
+from typing import IO, Literal
 
 import pandas as pd
 import toml as toml
+from qslib.base import AccessLevel
 from qslib.plate_setup import PlateSetup
 
 from .data import df_from_readings, FilterDataReading
 from .machine import Machine, RunStatus
 from .tcprotocol import Protocol, Stage, Step
 from .util import *
-from .version import __version__
+from ._version import version as __version__  # type: ignore
 
 TEMPLATE_NAME = "ruo"
 
@@ -209,9 +210,9 @@ class Experiment:
     """
     The last modification time. QSLib sets this on write. AB D&A may not.
     """
-    runstate: str
+    runstate: Literal["INIT", "RUNNING", "COMPLETE", "ABORTED", "STOPPED"]
     """
-    Run state, possible values INIT, COMPLETE, ABORTED.
+    Run state, possible values INIT, RUNNING, COMPLETE, ABORTED, STOPPED(?).
     """
     machine: Machine | None
     plate_setup: PlateSetup
@@ -254,27 +255,27 @@ class Experiment:
     @property
     def welldata(self) -> pd.DataFrame:
         """
-            A DataFrame with fluorescence reading information.
+        A DataFrame with fluorescence reading information.
 
-            Indices (multi-index) are (filter_set, stage, cycle, step, point), where filter_set
-            is a string in familiar form (eg, "x1-m4") and the rest are int.
+        Indices (multi-index) are (filter_set, stage, cycle, step, point), where filter_set
+        is a string in familiar form (eg, "x1-m4") and the rest are int.
 
-            Columns (as multi-index):
+        Columns (as multi-index):
 
-            ("time", ...) : float
-                Time of the data collection, taken from the .quant file.  May differ for different
-                filter sets.  Options are "timestamp" (unix timestamp in seconds), "seconds", and
-                "hours" (the latter two from the *active* start of the run).
+        ("time", ...) : float
+            Time of the data collection, taken from the .quant file.  May differ for different
+            filter sets.  Options are "timestamp" (unix timestamp in seconds), "seconds", and
+            "hours" (the latter two from the *active* start of the run).
 
-            (well, option) : float
-                Data for a well, with well formatted like "A05".  Options are "rt" (read temperature
-                from .quant file), "st" (more stable temperature), and "fl" (fluorescence).
+        (well, option) : float
+            Data for a well, with well formatted like "A05".  Options are "rt" (read temperature
+            from .quant file), "st" (more stable temperature), and "fl" (fluorescence).
 
-            ("exposure", "exposure") : float
-                Exposure time from filterdata.xml.  Misleading, because it only refers to the
-                longest exposure of multiple exposures.
+        ("exposure", "exposure") : float
+            Exposure time from filterdata.xml.  Misleading, because it only refers to the
+            longest exposure of multiple exposures.
         """
-        if self._welldata:
+        if self._welldata is not None:
             return self._welldata
         elif self.runstate == "INIT":
             raise ValueError("Run hasn't started yet: no data available.")
@@ -333,7 +334,9 @@ class Experiment:
         elif c := getattr(self, "machine", None):
             return c
         else:
-            raise ValueError("No stored machine info for this experiment: please provide some.")
+            raise ValueError(
+                "No stored machine info for this experiment: please provide some."
+            )
 
     def _ensure_running(self, machine: Machine):
         crt = machine.run_status()
@@ -406,7 +409,10 @@ class Experiment:
 
             log.debug(f"Sending run command.")
             # Start the run
-            machine.run_command_to_ack(f"RP {self.protocol.name} {self.runtitle_safe}")
+            machine.run_command_to_ack(
+                f"RP -samplevolume={self.protocol.volume} -runmode={self.protocol.runmode}"
+                f" {self.protocol.name} {self.runtitle_safe}"
+            )  # TODO: user, cover
             log.info(f"Run {self.runtitle_safe} started on {machine.host}.")
 
     def create_new_copy(self) -> Experiment:
@@ -525,27 +531,28 @@ class Experiment:
         machine, more efficiently than reloading everything.
         """
         machine = self._ensure_machine(machine)
-        self._ensure_running(machine)
 
         # Get a list of all the files in the experiment folder
-        machine_files = machine.list_files("${RunFolder}/", verbose=True, recursive=True)
+        machine_files = machine.list_files(
+            f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True
+        )
 
         # Transfer anything we don't have
         for f in machine_files:
-            name = os.path.basename(f['path'])
-            sdspath = re.sub(".*/apldbio/sds/(.*)$", r"\1", r['path'])
-            if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(f["mtime"]):
+            name = os.path.basename(f["path"])
+            sdspath = self._sdspath(re.sub(".*/apldbio/sds/(.*)$", r"\1", f["path"]))
+            logging.debug(f"checking {f['path']} mtime {f['mtime']} to {sdspath}")
+            if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(
+                f["mtime"]
+            ):
+                logging.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
                 continue
-            with open(self._sdspath(sdspath), "wb") as b:
-                b.write(machine.read_file(f['path']))
-            os.utime(sdspath, (f['atime'], f['mtime']))
+            with open(sdspath, "wb") as b:
+                b.write(machine.read_file(f["path"]))
+            os.utime(sdspath, (f["atime"], f["mtime"]))
 
-        # The message log is tricky. Ideally we'd use rsync. Instead, we're going to use
-        # wc and tail.
-
-        # Anything else: transfer anything we don't have.
-
-        raise NotImplementedError("Use Experiment.from_running for now.")
+        # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
+        self._update_from_files()
 
     def change_protocol(self, new_protocol: Protocol, machine: Machine | None = None):
         """NOT YET IMPLEMENTED
@@ -579,22 +586,31 @@ class Experiment:
         # Get running protocol and status.
         machine_proto = machine.get_running_protocol()
 
-        if machine_proto != self.protocol:
-            raise ValueError("Machine and experiment protocols differ.")
+        # FIXME: can't just do this, may have extra default things added
+        # if machine_proto != self.protocol:
+        #    raise ValueError("Machine and experiment protocols differ.")
 
         # Check compatibility of changes.
         machine_proto.check_compatible(new_protocol, runstatus)
 
-        # Make changes.
-        machine.define_protocol(new_protocol)
+        new_protocol.name = machine_proto.name
+        new_protocol.volume = machine_proto.volume
+        new_protocol.runmode = machine_proto.runmode
 
-        # Save changes in tcprotocol.xml
-        self.protocol = new_protocol
+        with machine.at_access(AccessLevel.Controller):
+            # Make changes.
+            machine.define_protocol(new_protocol)
 
-        self._update_tcprotocol_xml()
+            # Save changes in tcprotocol.xml
+            self.protocol = new_protocol
 
-        # Push new tcprotocol.xml
-        machine.send_file(self._sdspath("tcprotocol.xml"), "${LogFolder}/tcprotocol.xml")
+            self._update_tcprotocol_xml()
+
+            # Push new tcprotocol.xml
+            machine.write_file(
+                "${LogFolder}/tcprotocol.xml",
+                open(self._sdspath("tcprotocol.xml"), "rb").read(),
+            )
 
     def save_file(self, file: str | IO[bytes], overwrite=False):
         """
@@ -652,10 +668,12 @@ class Experiment:
         self._dir_base = self._tmp_dir_obj.name
         self._dir_eds = os.path.join(self._dir_base, "apldbio", "sds")
 
+        self.machine = None
+
         if name is not None:
             self.name = name
         else:
-            self.name = datetime.now().strftime("%Y-%m-%dT%H%M")
+            self.name = _nowuuid()
 
         if protocol is None:
             self.protocol = Protocol([Stage([Step(60, 25)])])
@@ -691,7 +709,7 @@ class Experiment:
         ET.SubElement(e.getroot(), "ChemistryType").text = "Other"
         ET.SubElement(e.getroot(), "TCProtocolMode").text = "Standard"
         ET.SubElement(e.getroot(), "DNATemplateType").text = "WET_DNA"
-        ET.SubElement(e.getroot(), "InstrumentTypeId").text = "appletini" # note cap!
+        ET.SubElement(e.getroot(), "InstrumentTypeId").text = "appletini"  # note cap!
         ET.SubElement(e.getroot(), "BlockTypeID").text = "18"
         ET.SubElement(e.getroot(), "PlateTypeID").text = "TYPE_8X12"
 
@@ -1437,11 +1455,12 @@ class Experiment:
             # Make new machine with stripped password:
             if self.machine:
                 m2d = dataclasses.asdict(self.machine)
-                m2d['password'] = None
-                ET.SubElement(qstcxml.getroot(), "MachineConnection").text = toml.dumps(m2d)
+                m2d["password"] = None
+                ET.SubElement(qstcxml.getroot(), "MachineConnection").text = toml.dumps(
+                    m2d
+                )
 
             qstcxml.write(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
-
 
     def _update_from_tcprotocol_xml(self):
         exml = ET.parse(os.path.join(self._dir_eds, "tcprotocol.xml"))
@@ -1551,6 +1570,7 @@ class Experiment:
                 self.runstarttime = ts
             elif (m["msg"] == "Stage") and (m["ext"] == "PRERUN"):
                 self.prerunstart = ts
+                self.runstate = "RUNNING"
             elif (
                 (m["msg"] == "Stage")
                 and (self.activestarttime is None)
@@ -1564,6 +1584,10 @@ class Experiment:
                 self.runstate = "COMPLETE"
             elif m["msg"] == "Aborted":
                 self.runstate = "ABORTED"
+                self.activeendtime = ts
+                self.runendtime = ts
+            elif m["msg"] == "Stopped":
+                self.runstate = "STOPPED"
                 self.activeendtime = ts
                 self.runendtime = ts
 

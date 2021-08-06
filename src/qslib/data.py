@@ -51,7 +51,7 @@ class FilterSet:
     def to_xml(self) -> ET.Element:
         e = ET.Element("CollectionCondition")
         ET.SubElement(e, "FilterSet", Emission=f"m{self.em}", Excitation=f"x{self.ex}")
-        ET.SubElement(e, "Frames").text=0
+        ET.SubElement(e, "Frames").text = 0
         return e
 
     def __str__(self) -> str:
@@ -74,7 +74,7 @@ class FilterDataReading:
         return (
             f"FilterDataReading(stage={self.stage}, cycle={self.cycle}, "
             f'step={self.step}, point={self.point}, filter_set="{self.filter_set}", '
-            f'timestamp={self.timestamp}, ...)'
+            f"timestamp={self.timestamp}, ...)"
         )
 
     def __init__(

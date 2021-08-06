@@ -3,17 +3,27 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import dataclasses
 from itertools import zip_longest
-from typing import Any, ClassVar, Iterable, List, Optional, Sequence, Tuple, Union, cast
+from typing import (
+    Any,
+    ClassVar,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    cast,
+)
 
 from .base import RunStatus
 
-from .version import __version__
+from ._version import version as __version__  # type: ignore
 
 from qslib.data import FilterSet
 from . import parser as qp
 import textwrap
 import xml.etree.ElementTree as ET
-import uuid
 import pandas as pd
 import numpy as np
 from .util import *
@@ -75,7 +85,7 @@ class XMLable(ABC):
 
 class ProtoCommand(ABC):
     @abstractmethod
-    def to_command(self) -> str:
+    def to_command(self, **kwargs) -> str:
         ...
 
 
@@ -125,14 +135,31 @@ class Stage(XMLable):
     repeat: int = 1
     index: int | None = None
     label: str | None = None
-    _class: str = 'Stage'
+    _class: str = "Stage"
+
+    def __eq__(self, other: Stage):
+        if self.__class__ != other.__class__:
+            return False
+        if (
+            (self.index is not None)
+            and (other.index is not None)
+            and self.index != other.index
+        ):
+            return False
+        if (
+            (self.label is not None)
+            and (other.label is not None)
+            and self.label != other.label
+        ):
+            return False
+        return self._steps == other._steps
 
     @property
     def steps(self) -> list[BaseStep]:
         return self._steps
 
     @steps.setter
-    def steps(self, steps: Iterable[BaseStep] | BaseStep): # type: ignore
+    def steps(self, steps: Iterable[BaseStep] | BaseStep):  # type: ignore
         self._steps = [steps] if isinstance(steps, BaseStep) else list(steps)
 
     def __postinit__(self):
@@ -258,8 +285,11 @@ class Stage(XMLable):
             s += f"STAGE_{self.index or stageindex} "
         s += "<multiline.stage>\n"
         for i, step in enumerate(self._steps):
-            s += textwrap.indent(f"{step.to_command(stepindex=i+1, **kwargs)}", "\t")
-        s += "\n</multiline.stage>"
+            s += (
+                textwrap.indent(f"{step.to_command(stepindex=i+1, **kwargs)}", "\t")
+                + "\n"
+            )
+        s += "</multiline.stage>"
         return s
 
     @classmethod
@@ -278,9 +308,12 @@ class Stage(XMLable):
     @classmethod
     def from_xml(cls, e: ET.Element) -> Stage:
         rep = int(e.findtext("NumOfRepetitions") or 1)
-        startcycle = int(e.findtext("StartingCycle"))
+        startcycle = int(cast(str, e.findtext("StartingCycle")))
         ade = e.findtext("AutoDeltaEnabled") == "true"
-        steps = [Step.from_xml(x, etc=startcycle, ehtc=startcycle, he=ade) for x in e.findall("TCStep")]
+        steps = [
+            Step.from_xml(x, etc=startcycle, ehtc=startcycle, he=ade)
+            for x in e.findall("TCStep")
+        ]
         return cls(steps, rep)
 
     def to_xml(self) -> ET.Element:
@@ -296,7 +329,7 @@ class Stage(XMLable):
         if len(scycle) > 1:
             log.warn("Approx")
         ET.SubElement(e, "StartingCycle").text = str(next(iter(scycle)))
-        ET.SubElement(e, "AutoDeltaEnabled").text = "true" 
+        ET.SubElement(e, "AutoDeltaEnabled").text = "true"
 
         return e
 
@@ -325,10 +358,11 @@ class Stage(XMLable):
         return self.info_str(None)
 
     @classmethod
-    def fromdict(cls, d: dict[str, Any]) -> 'Stage':
-        s = [cast(BaseStep, Step(**x)) for x in d['_steps']]
-        del(d['_steps'])
+    def fromdict(cls, d: dict[str, Any]) -> "Stage":
+        s = [cast(BaseStep, Step(**x)) for x in d["_steps"]]
+        del d["_steps"]
         return cls(s, **d)
+
 
 def _oxfordlist(iterable: Iterable[str]) -> str:
     x = iter(iterable)
@@ -371,7 +405,7 @@ class Protocol(XMLable):
     stages: Iterable[Stage]
         The stages of the protocol, likely :any:`Stage`.
     name: str | None
-        A protocol name. If not set, a UUID will be used, similar to AB.
+        A protocol name. If not set, a timestamp will be used, unlike AB's uuid.
     volume: floa
         The sample volume, in µL.
     runmode: str | None
@@ -382,10 +416,11 @@ class Protocol(XMLable):
         A list of default filters that can be used by any collection commands
         that don't specify their own.
     """
+
     stages: Iterable[Stage]
-    name: str = field(default_factory=lambda: uuid.uuid1().hex)
+    name: str = field(default_factory=lambda: "Prot_" + _nowuuid())
     volume: float = 50.0
-    runmode: str | None = None # standard or fast... need to deal with this
+    runmode: str = "standard"  # standard or fast... need to deal with this
     filters: list[str | FilterSet] = field(default_factory=lambda: [])
     covertemperature: float = 105.0
     _class: str = "Protocol"
@@ -414,10 +449,11 @@ class Protocol(XMLable):
 
     @classmethod
     def _from_command_dict(cls, d):
+        print(d)
         assert d["command"].lower() in ["prot", "protocol"]
         p = cls([])
-        if len(d["args"]) == 1:
-            p.name = d["args"][0]
+        assert len(d["args"]) == 1
+        p.name = d["args"][0]
         for k, v in d["opts"].items():
             setattr(p, k.lower(), v)
 
@@ -532,12 +568,13 @@ class Protocol(XMLable):
         filters = []
         if filter_e:
             for x in filter_e.findall("CollectionCondition/FilterSet"):
-                filters.append(x.attrib['Excitation']+"-"+x.attrib['Emission'])
+                filters.append(x.attrib["Excitation"] + "-" + x.attrib["Emission"])
         stages = [Stage.from_xml(x) for x in e.findall("TCStage")]
         return Protocol(stages, protoname, svol, runmode, filters, covertemperature)
-            
 
-    def to_xml(self, e: ET.Element | None = None, covertemperature=105.0) -> tuple[ET.ElementTree, ET.ElementTree]:
+    def to_xml(
+        self, e: ET.Element | None = None, covertemperature=105.0
+    ) -> tuple[ET.ElementTree, ET.ElementTree]:
         te = ET.ElementTree(ET.Element("TCProtocol"))
         tqe = ET.ElementTree(ET.Element("QSTCProtocol"))
 
@@ -581,11 +618,13 @@ class Protocol(XMLable):
             begin += " with " + _oxfordlist(extras)
         begin += ":\n"
         if self.filters:
-            begin += (f"(default filters " 
+            begin += (
+                f"(default filters "
                 + _oxfordlist(FilterSet.fromstring(f).lowerform for f in self.filters)
-                + ")\n\n")
+                + ")\n\n"
+            )
         else:
-            begin += "\n" 
+            begin += "\n"
         stagestrs = [
             textwrap.indent(stage.info_str(i + 1), "  ")
             for i, stage in enumerate(self.stages)
@@ -594,28 +633,47 @@ class Protocol(XMLable):
         return begin + "\n".join(stagestrs)
 
     @classmethod
-    def fromdict(cls, d: dict[str, Any]) -> 'Protocol':
-        s = [Stage(**x) for x in d['stages']]
-        del(d['stages'])
+    def fromdict(cls, d: dict[str, Any]) -> "Protocol":
+        s = [Stage(**x) for x in d["stages"]]
+        del d["stages"]
         return cls(s, **d)
 
     def check_compatible(self, new: Protocol, status: RunStatus):
         # Sample sample volume? (FIXME: We can't change it right now.)
-        assert self.volume == new.volume
-        assert self.name == new.name
+        # assert self.volume == new.volume
+        # assert self.name == new.name
 
         for i, (oldstage, newstage) in enumerate(zip_longest(self.stages, new.stages)):
             oldstage: Stage
             newstage: Stage
-            if i + 1 < status.stage:  # If the stage has already passed, we must be equal
+            if (
+                i + 1 < status.stage
+            ):  # If the stage has already passed, we must be equal
                 assert oldstage == newstage
-            elif i + 1 == status.stage:  # Current stage.  Only change is # cycles, >= current
+            elif (
+                i + 1 == status.stage
+            ):  # Current stage.  Only change is # cycles, >= current
                 if newstage.repeat < status.cycle:
                     raise ValueError
-                oldstage.repeat = newstage.repeat # for comparison
+                oldstage.repeat = newstage.repeat  # for comparison
                 assert oldstage == newstage
             else:
                 continue
+
+
+@dataclass
+class Exposure(ProtoCommand):
+    # We don't support persistent... it doesn't seem safe
+    settings: Mapping[FilterSet, Sequence[int]]
+    state: str = "HoldAndCollect"
+
+    def to_command(self, **kwargs) -> str:
+        settingstrings = [
+            k.hacform + "," + ",".join(str(x) for x in v)
+            for k, v in self.settings.items()
+        ]
+
+        return f"EXP -state={self.state} " + " ".join(settingstrings)
 
 
 @dataclass
@@ -642,6 +700,7 @@ class Ramp(ProtoCommand):
                 p.append(f"-{f}={v}")
         p += self.temperature
         return " ".join(str(x) for x in p)
+
 
 @dataclass
 class HACFILT(ProtoCommand):
@@ -695,7 +754,7 @@ class HoldAndCollect(ProtoCommand):
 
 @dataclass
 class Hold(ProtoCommand):
-    time: int
+    time: int | None
     increment: float | None = None
     incrementcycle: int | None = None
     incrementstep: int | None = None
@@ -711,7 +770,7 @@ class Hold(ProtoCommand):
         for f in self._argfields:
             if (v := getattr(self, f)) is not None:
                 p.append(f"-{f}={v}")
-        p.append(self.time)
+        p.append(str(self.time))
         return " ".join(str(x) for x in p)
 
 
@@ -748,6 +807,7 @@ class Step(BaseStep, XMLable):
 
     This currently does not support step-level repeats, which do exist on the machine.
     """
+
     time: int
     temperature: float | Sequence[float]
     collect: bool = False
@@ -760,6 +820,38 @@ class Step(BaseStep, XMLable):
     quant: bool = True
     tiff: bool = False
     _class: str = "Step"
+
+    def __eq__(self, other: Step):
+        if self.__class__ != other.__class__:
+            return False
+        if self.temperature_list != other.temperature_list:
+            return False
+        # FIXME
+        if (self.filters) and (other.filters) and self._filtersets != other._filtersets:
+            return False
+        if self.time != other.time:
+            return False
+        if self.collect != other.collect:
+            return False
+        if self.temp_increment != other.temp_increment:
+            return False
+        if self.temp_incrementcycle != other.temp_incrementcycle:
+            return False
+        if self.time_increment != other.time_increment:
+            return False
+        if self.time_incrementcycle != other.time_incrementcycle:
+            return False
+        if self.pcr != other.pcr:
+            return False
+        if self.quant != other.quant:
+            return False
+        if self.tiff != other.tiff:
+            return False
+        return True
+
+    @property
+    def _filtersets(self):
+        return [FilterSet.fromstring(x) for x in self.filters]
 
     def info_str(self, index, repeats: int = 1) -> str:
         "String describing the step."
@@ -798,7 +890,7 @@ class Step(BaseStep, XMLable):
 
         return s
 
-    def total_duration(self, repeats: int=1):
+    def total_duration(self, repeats: int = 1):
         return sum(self.duration_at_cycle(c) for c in range(1, repeats + 1))
 
     def duration_at_cycle(self, cycle: int) -> float:  # cycle from 1
@@ -835,7 +927,9 @@ class Step(BaseStep, XMLable):
     def body(self) -> list[ProtoCommand]:
         if self.collect:
             return [
-                Ramp(self.temperature_list, self.temp_increment, self.temp_incrementcycle),
+                Ramp(
+                    self.temperature_list, self.temp_increment, self.temp_incrementcycle
+                ),
                 HACFILT(self.filters),
                 HoldAndCollect(
                     self.time,
@@ -849,7 +943,9 @@ class Step(BaseStep, XMLable):
             ]
         else:
             return [
-                Ramp(self.temperature_list, self.temp_increment, self.temp_incrementcycle),
+                Ramp(
+                    self.temperature_list, self.temp_increment, self.temp_incrementcycle
+                ),
                 Hold(
                     self.time,
                     self.time_increment,
@@ -871,11 +967,13 @@ class Step(BaseStep, XMLable):
 
     def to_xml(self) -> ET.Element:
         e = ET.Element("TCStep")
-        ET.SubElement(e, "CollectionFlag").text = str(int(self.collect)) # FIXME: approx
+        ET.SubElement(e, "CollectionFlag").text = str(
+            int(self.collect)
+        )  # FIXME: approx
         for t in self.temperature_list:
             ET.SubElement(e, "Temperature").text = str(t)
         ET.SubElement(e, "HoldTime").text = str(self.time)
-        # FIXME: does not contain cycle starts, because AB format can't handle 
+        # FIXME: does not contain cycle starts, because AB format can't handle
         ET.SubElement(e, "ExtTemperature").text = str(self.temp_increment)
         ET.SubElement(e, "ExtHoldTime").text = str(self.time_increment)
         # FIXME: RampRate, RampRateUnit
@@ -926,7 +1024,7 @@ class Step(BaseStep, XMLable):
         else:
             raise ValueError
         return c
-    
+
     @classmethod
-    def fromdict(cls, d: dict[str, Any]) -> 'Step':
+    def fromdict(cls, d: dict[str, Any]) -> "Step":
         return cls(**d)
