@@ -1,17 +1,116 @@
+from __future__ import annotations
+from dataclasses import dataclass
 import time
 import typing as tp
-from typing import Union, Dict, Tuple, cast, List
+from typing import Union, Dict, Tuple, cast, List, Optional
 from nio.client import AsyncClient
 import re
 import asyncio
-from .qsconnection_async import QSConnectionAsync
+
+from qslib.qs_is_protocol import CommandError
+from .parser import arglist
+
+from qslib.plate_setup import PlateSetup
+from qslib.qsconnection_async import QSConnectionAsync
 import logging
 
-from . import parser
 from influxdb_client import InfluxDBClient, Point  # , Point, WritePrecision
 from influxdb_client.client.write_api import ASYNCHRONOUS
 
 log = logging.getLogger("monitor")
+
+
+@dataclass
+class RunState:
+    name: Optional[str] = None
+    stage: Optional[int] = None
+    cycle: Optional[int] = None
+    step: Optional[int] = None
+    plate_setup: Optional[PlateSetup] = None
+
+    async def refresh(self, c: QSConnectionAsync):
+        runmsg = arglist.parseString(await c.run_command("RunProgress?")).asDict()
+        print(runmsg)
+        self.name = cast(str, runmsg["arglist"]["opts"]["RunTitle"])
+        if self.name == '-':
+            self.name = None
+        self.stage = cast(int, runmsg["arglist"]["opts"]["Stage"])
+        if self.stage =='-':
+            self.stage = None
+        self.cycle = cast(int, runmsg["arglist"]["opts"]["Cycle"])
+        if self.cycle =='-':
+            self.cycle = None
+        self.step = cast(
+            int, runmsg["arglist"]["opts"]["Step"] if self.stage else None
+        )
+        if self.step == '-':
+            self.step = None
+        if self.name:
+            try:
+                self.plate_setup = await PlateSetup.from_machine(c)
+            except CommandError:
+                self.plate_setup = None
+
+    @classmethod
+    async def from_machine(cls, c: QSConnectionAsync):
+        n = cls.__new__(cls)
+        await n.refresh(c)
+        return n
+
+    def statemsg(self, timestamp):
+        s = f'run_state name="{self.name}"'
+        if self.stage:
+            s += f",stage={self.stage}i,cycle={self.cycle}i,step={self.step}i"
+        else:
+            s += f",stage=0i,cycle=0i,step=0i"  # FIXME: not great
+        s += f" {timestamp}"
+        return s
+
+
+@dataclass
+class MachineState:
+    zone_targets: List[float]
+    zone_controls: List[bool]
+    cover_target: float
+    cover_control: bool
+    drawer: str
+
+    async def refresh(self, c: QSConnectionAsync):
+        targmsg = arglist.parseString(await c.run_command("TBC:SETT?"))
+        self.cover_target = cast(float, targmsg["arglist"]["opts"]["Cover"])
+        self.zone_targets = cast(
+            List[float], [targmsg["arglist"]["opts"][f"Zone{i}"] for i in range(1, 7)]
+        )
+
+        contmsg = arglist.parseString(await c.run_command("TBC:CONT?"))
+        self.cover_control = cast(bool, contmsg["arglist"]["opts"]["Cover"])
+        self.zone_controls = cast(
+            List[bool], [contmsg["arglist"]["opts"][f"Zone{i}"] for i in range(1, 7)]
+        )
+
+        self.drawer = await c.run_command("DRAW?")
+
+    @classmethod
+    async def from_machine(cls, c: QSConnectionAsync):
+        n = cls.__new__(cls)
+        await n.refresh(c)
+        return n
+
+    # def targetmsg(timestamp):
+    #    return ""
+
+
+@dataclass
+class State:
+    run: RunState
+    machine: MachineState
+
+    @classmethod
+    async def from_machine(cls, c: QSConnectionAsync):
+        n = cls.__new__(cls)
+        n.run = await RunState.from_machine(c)
+        n.machine = await MachineState.from_machine(c)
+        return n
 
 
 def parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
@@ -23,6 +122,11 @@ def parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
 def index_to_filename_ref(i: Tuple[str, int, int, int, int]) -> str:
     x, s, c, t, p = i
     return f"S{s:02}_C{c:03}_T{t:02}_P{p:04}_M{x[4]}_X{x[1]}"
+
+
+async def get_runinfo(c: QSConnectionAsync):
+    state = await State.from_machine(c)
+    return state
 
 
 class Collector:
@@ -55,6 +159,7 @@ class Collector:
     async def docollect(
         self,
         args: Dict[str, Union[str, int]],
+        state: State,
         connection: QSConnectionAsync,
     ) -> None:
         if state.run.plate_setup:
@@ -98,8 +203,8 @@ class Collector:
 
     async def handle_run_msg(self, state, c, topic, message, timestamp):
         timestamp = int(1e9 * timestamp)
-        msg = cast(dict[str, tp.Any], parser.arglist.parseString(message.decode()))
-        contents = msg["contents"]
+        msg = cast(dict[str, tp.Any], arglist.parseString(message.decode()))
+        contents = msg["arglist"]["args"]
         action = cast(str, contents[0])
         if action == "Stage":
             state.run.stage = contents[1]
@@ -207,7 +312,7 @@ class Collector:
 
     async def handle_msg(self, state, c, topic, msg, timestamp):
         timestamp = int(1e9 * timestamp)
-        args = parser.arglist.parseString(msg).asDict()
+        args = arglist.parseString(msg).asDict()["arglist"]["opts"]
         if topic == "Temperature":
             recs = []
             for i, (s, b, t) in enumerate(
@@ -274,6 +379,7 @@ class Collector:
             ] = lambda t, m, timestamp: self.handle_run_msg(state, c, t, m, timestamp)
 
             await c._protocol.lostconnection
+            log.error("Lost connection")
 
     async def reliable_monitor(self):
         log.info("starting reconnectable monitoring")
@@ -286,13 +392,16 @@ class Collector:
             except asyncio.exceptions.TimeoutError as e:
                 successive_failures = 0
                 log.warn(f"lost connection with timeout {e}")
-                await asyncio.sleep(30)
+            except OSError as e:
+                log.error(f"connectio error {e}, retrying")
             except Exception as e:
-                if self.config["machine"]["retries"] - successive_failures > 0:
+                if self.config["machine"].get("retries", 3) - successive_failures > 0:
                     log.error(
-                        f"non-timeout error {e}, retrying {self.config['machine']['retries']-successive_failures} times"  # noqa: E501
+                        f"Error {e}, retrying {self.config['machine']['retries']-successive_failures} times"  # noqa: E501
                     )
                     successive_failures += 1
-                    await asyncio.sleep(30)
                 else:
                     log.critical(f"giving up, error {e}")
+                    restart = False
+            log.debug("awaiting retry")
+            await asyncio.sleep(15)
