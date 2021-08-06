@@ -6,6 +6,7 @@ from typing import TypeVar, Callable, Type, ClassVar, cast, Literal
 
 T = TypeVar("T", bound="BaseStatus")
 
+
 class BaseStatus(ABC):
     @classmethod
     @property
@@ -35,8 +36,10 @@ class BaseStatus(ABC):
             }
         )
 
+
 def _get_protodef_or_def(var, default):
     return f"$[ top.getChild('PROTOcolDEFinition').variables.get('{var}'.lower(), {default}) ]".encode()
+
 
 @dataclass
 class RunStatus(BaseStatus):
@@ -51,7 +54,7 @@ class RunStatus(BaseStatus):
 
     _comlist: ClassVar[dict[str, tuple[bytes, Callable]]] = {
         "name": (b"${RunTitle:--}", str),
-        "stage": (b"${Stage:--1}", int),
+        "stage": (b"${Stage:--1}", lambda x: int(x) if x != "PRERUN" else 0),
         "num_stages": (_get_protodef_or_def("${RunMacro}-Stages", -1), int),
         "cycle": (b"${Cycle:--1}", int),
         "num_cycles": (
@@ -80,35 +83,41 @@ class MachineStatus(BaseStatus):
     _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
 
 
+_accesslevel_order: dict[str, int] = {
+    "Guest": 0,
+    "Observer": 1,
+    "Controller": 2,
+    "Administrator": 3,
+    "Full": 4,
+}
+
+
 class AccessLevel(Enum):
     Guest = "Guest"
     Observer = "Observer"
     Controller = "Controller"
     Administrator = "Administrator"
     Full = "Full"
-    _order: ClassVar[dict[str, int]] = {"Guest": 0,
-                                        "Observer": 1,
-                                        "Controller": 2,
-                                        "Administrator": 3,
-                                        "Full": 4}
 
     def __gt__(self, other):
         if self.__class__ == other.__class__:
-            return self._order[self.value] > cast(AccessLevel, other)._order[other.value]
+            return _accesslevel_order[self.value] > _accesslevel_order[other.value]
         raise NotImplementedError
 
     def __ge__(self, other):
         if self.__class__ == other.__class__:
-            return self._order[self.value] >= cast(AccessLevel, other)._order[other.value]
+            return _accesslevel_order[self.value] >= _accesslevel_order[other.value]
         raise NotImplementedError
 
     def __lt__(self, other):
         if self.__class__ == other.__class__:
-            return self._order[self.value] < cast(AccessLevel, other)._order[other.value]
+            return _accesslevel_order[self.value] < _accesslevel_order[other.value]
         raise NotImplementedError
 
     def __le__(self, other):
         if self.__class__ == other.__class__:
-            return self._order[self.value] <= cast(AccessLevel, other)._order[other.value]
+            return _accesslevel_order[self.value] <= _accesslevel_order[other.value]
         raise NotImplementedError
 
+    def __str__(self) -> str:
+        return self.value

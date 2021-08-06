@@ -200,14 +200,35 @@ class Machine:
         return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-10])))
 
     @overload
-    def list_files(self, path: str, *, leaf: str = "FILE", verbose: Literal[True], recursive: bool = False) -> list[dict[str, Any]]:
+    def list_files(
+        self,
+        path: str,
+        *,
+        leaf: str = "FILE",
+        verbose: Literal[True],
+        recursive: bool = False,
+    ) -> list[dict[str, Any]]:
         ...
 
     @overload
-    def list_files(self, path: str, *, leaf: str = "FILE", verbose: Literal[False], recursive: bool = False) -> list[str]:
+    def list_files(
+        self,
+        path: str,
+        *,
+        leaf: str = "FILE",
+        verbose: Literal[False],
+        recursive: bool = False,
+    ) -> list[str]:
         ...
 
-    def list_files(self, path: str, *, leaf: str = "FILE", verbose: bool = False, recursive: bool = False):
+    def list_files(
+        self,
+        path: str,
+        *,
+        leaf: str = "FILE",
+        verbose: bool = False,
+        recursive: bool = False,
+    ):
         if not verbose:
             if recursive:
                 raise NotImplementedError
@@ -218,10 +239,12 @@ class Machine:
             ret = []
             for x in v:
                 d = {}
-                d['path'] = x['arglist']['args'][0]
-                d |= x['arglist']['opts']
-                if d['type'] == 'folder' and recursive:
-                    ret += self.list_files(d['path'], leaf=leaf, verbose=True, recursive=True)
+                d["path"] = x["arglist"]["args"][0]
+                d |= x["arglist"]["opts"]
+                if d["type"] == "folder" and recursive:
+                    ret += self.list_files(
+                        d["path"], leaf=leaf, verbose=True, recursive=True
+                    )
                 else:
                     ret.append(d)
             return ret
@@ -253,6 +276,18 @@ class Machine:
         x = self.run_command_bytes(f"{leaf}:READ? {contexts}{path}")
 
         return base64.decodebytes(x[7:-10])
+
+    def write_file(self, path: str, data: str | bytes):
+        if isinstance(data, str):
+            data = data.encode()
+
+        self.run_command_bytes(
+            b"FILE:WRITE "
+            + path.encode()
+            + b" <quote.base64>\n"
+            + base64.encodebytes(data)
+            + b"\n</quote.base64>"
+        )
 
     def list_runs_in_storage(self) -> list[str]:
         """List runs in machine storage.
@@ -341,10 +376,12 @@ class Machine:
 
     def get_running_protocol(self) -> Protocol:
         p = _unwrap_tags(self.run_command("PROT? ${Protocol}"))
-        ps = "PROT -volume=${SampleVolume} -runmode=${RunMode} " + p
-        return Protocol(ps)
+        pn, svs, rm = self.run_command(
+            "RET ${Protocol} ${SampleVolume} ${RunMode}"
+        ).split()
+        p = f"PROT -volume={svs} -runmod={rm} {pn} " + p
+        return Protocol.from_command(p)
 
-    @typechecked
     def set_access_level(
         self,
         access_level: AccessLevel | str,
@@ -354,9 +391,11 @@ class Machine:
     ):
         access_level = AccessLevel(access_level)
 
-        if access_level > self.max_access_level:
-            raise ValueError(f"Access level {access_level.value} is above maximum {self.max_access_level.value}."
-                             " Change max_access level to continue.")
+        if access_level > AccessLevel(self.max_access_level):
+            raise ValueError(
+                f"Access level {access_level} is above maximum {self.max_access_level}."
+                " Change max_access level to continue."
+            )
 
         self.run_command(
             f"ACC -stealth={stealth} -exclusive={exclusive} {access_level}"
@@ -364,12 +403,9 @@ class Machine:
         if _log:
             log.info(f"Took access level {access_level} {exclusive=} {stealth=}")
 
-    @typechecked
     def get_access_level(
         self,
-    ) -> tuple[
-        AccessLevel, bool, bool
-    ]:
+    ) -> tuple[AccessLevel, bool, bool]:
         ret = self.run_command("ACC?")
         m = re.match(r"^-stealth=(\w+) -exclusive=(\w+) (\w+)", ret)
         if m is None:

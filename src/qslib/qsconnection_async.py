@@ -12,7 +12,6 @@ import xml.etree.ElementTree as ET
 from .base import AccessLevel
 
 
-
 def _gen_auth_response(password: str, challenge_string: str) -> str:
     return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
 
