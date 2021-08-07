@@ -706,6 +706,10 @@ class Experiment:
         ET.SubElement(e.getroot(), "Label").text = "ruo"
         tp = ET.SubElement(e.getroot(), "Type")
         ET.SubElement(tp, "Id").text = "Custom"
+        ET.SubElement(tp, "Name").text = "Custom"
+        ET.SubElement(tp, "Description").text = "Custom QSLib experiment"
+        ET.SubElement(tp, "ResultPersisterName").text = "scAnalysisResultPersister"
+        ET.SubElement(tp, "ContributedResultPersisterName").text = "mcAnalysisResultPersister"
         ET.SubElement(e.getroot(), "ChemistryType").text = "Other"
         ET.SubElement(e.getroot(), "TCProtocolMode").text = "Standard"
         ET.SubElement(e.getroot(), "DNATemplateType").text = "WET_DNA"
