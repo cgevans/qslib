@@ -1,4 +1,4 @@
-from .machine import Machine, RunStatus, MachineStatus
+from .machine import Machine
 from .experiment import Experiment, PlateSetup, Protocol, Stage, Step
 from . import tcprotocol as tc
 

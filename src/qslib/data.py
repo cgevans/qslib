@@ -1,14 +1,14 @@
 from __future__ import annotations
+
+import os
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from glob import glob
 from os import PathLike
 from typing import Optional, Union, List, cast, Literal
 
-from dataclasses import dataclass
-import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
-from glob import glob
-import os
-import xml.etree.ElementTree as ET
 
 _UPPERS = "ABCDEFGHIJKLMNOP"
 

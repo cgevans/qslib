@@ -7,6 +7,8 @@ from nio.client import AsyncClient
 import re
 import asyncio
 
+from nio.client.async_client import AsyncClientConfig
+
 from qslib.qs_is_protocol import CommandError
 from .parser import arglist
 
@@ -18,6 +20,10 @@ from influxdb_client import InfluxDBClient, Point  # , Point, WritePrecision
 from influxdb_client.client.write_api import ASYNCHRONOUS
 
 log = logging.getLogger("monitor")
+
+LEDSTATUS = re.compile(
+    rb"Temperature:([+\-\d.]+) Current:([+\-\d.]+) Voltage:([+\-\d.]+) JuncTemp:([+\-\d.]+)"
+)
 
 
 @dataclass
@@ -32,18 +38,16 @@ class RunState:
         runmsg = arglist.parseString(await c.run_command("RunProgress?")).asDict()
         print(runmsg)
         self.name = cast(str, runmsg["arglist"]["opts"]["RunTitle"])
-        if self.name == '-':
+        if self.name == "-":
             self.name = None
         self.stage = cast(int, runmsg["arglist"]["opts"]["Stage"])
-        if self.stage =='-':
+        if self.stage == "-":
             self.stage = None
         self.cycle = cast(int, runmsg["arglist"]["opts"]["Cycle"])
-        if self.cycle =='-':
+        if self.cycle == "-":
             self.cycle = None
-        self.step = cast(
-            int, runmsg["arglist"]["opts"]["Step"] if self.stage else None
-        )
-        if self.step == '-':
+        self.step = cast(int, runmsg["arglist"]["opts"]["Step"] if self.stage else None)
+        if self.step == "-":
             self.step = None
         if self.name:
             try:
@@ -140,8 +144,13 @@ class Collector:
         )
         self.idbw = self.idbclient.write_api(write_options=ASYNCHRONOUS)
 
+        self.matrix_config = AsyncClientConfig(
+            #encryption_enabled=True
+        )
+
         self.matrix_client = AsyncClient(
-            self.config["matrix"]["host"], self.config["matrix"]["user"]
+            self.config["matrix"]["host"], self.config["matrix"]["user"],
+            store_path='./matrix_store/', config=self.matrix_config
         )
 
     def inject(self, t):
@@ -152,6 +161,7 @@ class Collector:
             room_id=self.config["matrix"]["room"],
             message_type="m.room.message",
             content={"msgtype": "m.text", "body": msg},
+            ignore_unverified_devices=True
         )
 
         await self.matrix_client.sync()
@@ -172,7 +182,7 @@ class Collector:
         else:
             name = None
 
-        run = cast(str, args["run"])[1:-1]
+        run = cast(str, args["run"])
         del args["run"]
         for k, v in args.items():
             if k != "run":
@@ -203,7 +213,8 @@ class Collector:
 
     async def handle_run_msg(self, state, c, topic, message, timestamp):
         timestamp = int(1e9 * timestamp)
-        msg = cast(dict[str, tp.Any], arglist.parseString(message.decode()))
+        msg = arglist.parseString(message)
+        log.debug(msg)
         contents = msg["arglist"]["args"]
         action = cast(str, contents[0])
         if action == "Stage":
@@ -244,11 +255,11 @@ class Collector:
             )
         elif action == "Holding":
             self.inject(
-                f'run_action,type=Holding holdtime={msg["args"]["time"]} {timestamp}'  # noqa: E501
+                f'run_action,type=Holding holdtime={msg["arglist"]["opts"]["time"]} {timestamp}'  # noqa: E501
             )
         elif action == "Ramping":
             # TODO: check zones
-            state.machine.zone_targets = msg["args"]["targets"]
+            state.machine.zone_targets = msg["arglist"]["opts"]["targets"]
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
             )
@@ -256,25 +267,7 @@ class Collector:
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
             )
-        elif action == "Starting":
-            self.inject(
-                f'run_action,type="{action}" run_name="{state.run.name}" {timestamp}'  # noqa: E501
-            )
-            asyncio.tasks.create_task(
-                self.matrix_announce(
-                    f"{self.config['machine']['name']} status: {action} {' '.join(contents[1:])}"  # noqa: E501
-                )
-            )
-        elif action == "Ended":
-            self.inject(
-                f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
-            )
-            asyncio.tasks.create_task(
-                self.matrix_announce(
-                    f"{self.config['machine']['name']} status: {action} {' '.join(contents[1:])}"  # noqa: E501
-                )
-            )
-        elif action == "Error":
+        elif action in ["Error", "Ended", "Aborted", "Stopped", "Starting"]:
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
             )
@@ -287,13 +280,13 @@ class Collector:
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
             )
-            asyncio.tasks.create_task(self.docollect(msg["args"], state, c))
+            asyncio.tasks.create_task(self.docollect(msg["arglist"]["opts"], state, c))
         else:
             self.inject(
                 Point("run_action")
                 .tag("type", f"Other")
                 .tag("run_name", state.run.name)
-                .field("message", " ".join(contents))
+                .field("message", " ".join(str(x) for x in contents))
                 .time(timestamp)
             )
 
@@ -310,15 +303,27 @@ class Collector:
 
         self.idbw.flush()
 
+    async def handle_led(self, topic, msg, timestamp):
+        timestamp = int(1e9 * timestamp)
+        vs = [float(x) for x in LEDSTATUS.match(msg).groups()]
+        ks = ["temperature", "current", "voltage", "junctemp"]
+        p = Point("lamp")
+        for k, v in zip(ks, vs):
+            p = p.field(k, v)
+        p = p.time(timestamp)
+        self.inject(p)
+        self.idbw.flush()
+
     async def handle_msg(self, state, c, topic, msg, timestamp):
         timestamp = int(1e9 * timestamp)
-        args = arglist.parseString(msg).asDict()["arglist"]["opts"]
+        args = arglist.parseString(msg)["arglist"]["opts"]
+        log.debug(f"Handling message {topic} {msg}")
         if topic == "Temperature":
             recs = []
             for i, (s, b, t) in enumerate(
                 zip(
-                    args["sample"],
-                    args["block"],
+                    [float(x) for x in args["sample"].split(",")],
+                    [float(x) for x in args["block"].split(",")],
                     state.machine.zone_targets,
                 )
             ):
@@ -346,6 +351,8 @@ class Collector:
             log.info(msg)
 
     async def monitor(self):
+        await self.matrix_client.login(self.config["matrix"]["password"])
+
         async with QSConnectionAsync(
             host=self.config["machine"]["host"],
             port=self.config["machine"]["port"],
@@ -367,16 +374,22 @@ class Collector:
 
             self.idbw.flush()
 
-            await c.run_command("SUBS -timestamp Temperature Time Run")
+            await c.run_command("SUBS -timestamp Temperature Time Run LEDStatus")
             log.debug("subscriptions made")
 
-            for t in ["Temperature", "Time"]:
+            for t in [b"Temperature", b"Time"]:
                 c._protocol.topic_handlers[t] = lambda t, m, timestamp: self.handle_msg(
-                    state, c, t, m, timestamp
+                    state, c, t.decode(), m.decode(), timestamp
                 )
             c._protocol.topic_handlers[
-                "Run"
-            ] = lambda t, m, timestamp: self.handle_run_msg(state, c, t, m, timestamp)
+                b"Run"
+            ] = lambda t, m, timestamp: self.handle_run_msg(
+                state, c, t.decode(), m.decode(), timestamp
+            )
+
+            c._protocol.topic_handlers[b"LEDStatus"] = self.handle_led
+
+            log.info(c._protocol.topic_handlers)
 
             await c._protocol.lostconnection
             log.error("Lost connection")
