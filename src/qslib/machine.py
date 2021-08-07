@@ -1,25 +1,21 @@
 from __future__ import annotations
-from abc import ABC, abstractmethod
+
+import asyncio
 import base64
-from dataclasses import dataclass, field
 import io
 import logging
-from os import PathLike
-from typing import Any, Callable, ClassVar, IO, List, Literal, Type, TypeVar, overload
-import zipfile
-
-from qslib.parser import arglist
-from qslib.tcprotocol import Protocol
-from qslib.util import _unwrap_tags
-
-from .qsconnection_async import QSConnectionAsync
-import asyncio
-from contextlib import contextmanager
 import re
-import shlex
-from typeguard import typechecked
+import zipfile
+from contextlib import contextmanager
+from dataclasses import dataclass
+from typing import Any, IO, Literal, overload
+
 import nest_asyncio
-import logging
+
+from .parser import arglist
+from .qsconnection_async import QSConnectionAsync
+from .tcprotocol import Protocol
+from .util import _unwrap_tags
 
 nest_asyncio.apply()
 
@@ -304,7 +300,7 @@ class Machine:
         return [re.sub("^public_run_complete:", "", s) for s in a if s.endswith("eds")]
 
     def load_run_from_storage(self, path: str) -> "Experiment":  # type: ignore
-        from qslib.experiment import Experiment
+        from .experiment import Experiment
 
         """Load a run from machine storage as an Experiment
         """
@@ -510,7 +506,6 @@ class Machine:
             return out
 
     @power.setter
-    @typechecked
     def power(self, value: Literal["on", "off", True, False]):  # type: ignore
         if value is True:
             value = "on"

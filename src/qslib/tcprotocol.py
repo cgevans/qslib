@@ -131,7 +131,8 @@ class BaseStep(ABC):
 
 @dataclass
 class Stage(XMLable):
-    _steps: list[BaseStep]
+    _steps: list[BaseStep] = field(repr=False, init=False)
+    steps: list[BaseStep] | Step  # type: ignore
     repeat: int = 1
     index: int | None = None
     label: str | None = None
@@ -172,7 +173,7 @@ class Stage(XMLable):
         elif len(self.steps) == 1:
             s += repr(self.steps[0])
         else:
-            s += "[\n  " + "\n  ".join(repr(f) for f in self.steps) + "\n  ]"
+            s += "[" + ", ".join(repr(f) for f in self.steps) + "]"
         if self.repeat != 1:
             s += f", repeat={self.repeat}"
         if self.index:

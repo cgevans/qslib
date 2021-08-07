@@ -1,15 +1,16 @@
 """Code for handling plate setup."""
 from __future__ import annotations
-from os import name
+
+import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
+from io import BytesIO
+from typing import Iterable, Mapping, Optional, Sequence, Tuple, List, Dict, Union
 from uuid import uuid1
 
-from dataclasses import dataclass, field
-from typing import Iterable, Mapping, Optional, Sequence, Tuple, List, Dict, Union
-import xml.etree.ElementTree as ET
 import numpy as np
 import pandas as pd
 import tabulate
-from io import BytesIO
+
 from .qsconnection_async import QSConnectionAsync
 
 _WELLNAMES = [x + str(y) for x in "ABCDEFGH" for y in range(1, 13)]

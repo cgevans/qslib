@@ -1,8 +1,8 @@
+import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-import shlex
 from enum import Enum
-from typing import TypeVar, Callable, Type, ClassVar, cast, Literal
+from typing import TypeVar, Callable, Type, ClassVar
 
 T = TypeVar("T", bound="BaseStatus")
 

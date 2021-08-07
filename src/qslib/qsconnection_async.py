@@ -1,5 +1,6 @@
 from __future__ import annotations
 import asyncio
+import io
 from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast, overload
 import hmac
 import re
@@ -244,7 +245,7 @@ class QSConnectionAsync:
             f"_X{filterset_r.ex}_filterdata.xml"
         )
 
-        f = data.FilterDataReading(ET.parse(fl).getroot())
+        f = data.FilterDataReading(ET.parse(io.BytesIO(fl)).find("PlatePointData/PlateData"))
 
         ql = (
             await self.get_expfile_list(

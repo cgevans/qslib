@@ -4,7 +4,7 @@ import logging
 import re
 import io
 from dataclasses import dataclass
-from typing import Optional
+from typing import Callable, Coroutine, Optional
 
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
@@ -47,7 +47,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         self.waiting_commands = []
         self.buffer = io.BytesIO()
         self.quote_stack = []
-        self.topic_handlers = {}
+        self.topic_handlers: dict[bytes, Callable[[bytes, bytes, Optional[float]], Coroutine]] = {}
         pass
 
     async def _default_topic_handler(
