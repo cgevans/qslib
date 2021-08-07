@@ -10,12 +10,12 @@ Contents
     setup
     high-level
     api/qslib
-    monitor
     changelog
 
 .. toctree::
     :maxdepth: 1
 
+    api/module
     license
     authors
 

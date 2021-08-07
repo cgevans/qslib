@@ -450,7 +450,6 @@ class Protocol(XMLable):
 
     @classmethod
     def _from_command_dict(cls, d):
-        print(d)
         assert d["command"].lower() in ["prot", "protocol"]
         p = cls([])
         assert len(d["args"]) == 1

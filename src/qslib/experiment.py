@@ -13,6 +13,7 @@ from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from glob import glob
 from typing import IO, Literal
+from pathlib import Path
 
 import pandas as pd
 import toml as toml
@@ -547,6 +548,13 @@ class Experiment:
             ):
                 logging.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
                 continue
+            from pathlib import Path  # FIXME
+            cp = Path(self._dir_eds + "/calibrations")
+            if not cp.exists():
+                cp.mkdir()
+            cp = Path(self._dir_eds + "/quant")
+            if not cp.exists():
+                cp.mkdir()
             with open(sdspath, "wb") as b:
                 b.write(machine.read_file(f["path"]))
             os.utime(sdspath, (f["atime"], f["mtime"]))
@@ -667,6 +675,14 @@ class Experiment:
         self._tmp_dir_obj = tempfile.TemporaryDirectory()
         self._dir_base = self._tmp_dir_obj.name
         self._dir_eds = os.path.join(self._dir_base, "apldbio", "sds")
+
+        self._protocol_from_qslib = None
+        self._protocol_from_log = None
+        self._protocol_from_xml = None
+        self.runstarttime = None
+        self.runendtime = None
+        self.activestarttime = None
+        self.activeendtime = None
 
         self.machine = None
 
@@ -1261,10 +1277,15 @@ class Experiment:
         self._update_platesetup_xml()
 
     def _update_from_files(self) -> None:
-        self._update_from_experiment_xml()
-        self._update_from_tcprotocol_xml()
-        self._update_from_platesetup_xml()
-        self._update_from_log()
+        p = Path(self._dir_eds)
+        if (p / "experiment.xml").is_file():
+            self._update_from_experiment_xml()
+        if (p / "tcprotocol.xml").is_file():
+            self._update_from_tcprotocol_xml()
+        if (p / "plate_setup.xml").is_file():
+            self._update_from_platesetup_xml()
+        if (p / "messages.log").is_file():
+            self._update_from_log()
         self._update_from_data()
 
         if self._protocol_from_xml:
@@ -1295,7 +1316,7 @@ class Experiment:
         with zipfile.ZipFile(file) as z:
             # Ensure that this actually looks like an EDS file:
             try:
-                z.getinfo("apldbio/sds/experiment.xml")
+                z.getinfo("apldbio/sds/messages.log")
             except KeyError:
                 raise ValueError(f"{file} does not appear to be an EDS file.") from None
 
@@ -1468,15 +1489,16 @@ class Experiment:
 
     def _update_from_tcprotocol_xml(self):
         exml = ET.parse(os.path.join(self._dir_eds, "tcprotocol.xml"))
-        qstcxml = ET.parse(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
+        if os.path.isfile(os.path.join(self._dir_eds, "qsl-tcprotocol.xml")):
+            qstcxml = ET.parse(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
 
-        if (x := qstcxml.find("QSLibProtocolCommand")) is not None:
-            self._protocol_from_qslib = Protocol.from_command(x.text)
-        else:
-            self._protocol_from_qslib = None
+            if (x := qstcxml.find("QSLibProtocolCommand")) is not None:
+                self._protocol_from_qslib = Protocol.from_command(x.text)
+            else:
+                self._protocol_from_qslib = None
 
-        if (x := qstcxml.findtext("MachineConnection")) and not self.machine:
-            self.machine = Machine(toml.loads(x))
+            if (x := qstcxml.findtext("MachineConnection")) and not self.machine:
+                self.machine = Machine(toml.loads(x))
         # try:
         self._protocol_from_xml = Protocol.from_xml(exml.getroot())
         # except Exception as e:
@@ -1537,7 +1559,7 @@ class Experiment:
         pd.Dataframe
             Slice of welldata.  Will have multiple wells if sample is in multiple wells.
         """
-        wells = self.plate_setup.sample_wells[sample]
+        wells = [f"{x[0]}{int(x[1:]):02}" for x in self.plate_setup.sample_wells[sample]]
         x = self.welldata.loc[:, wells]
         return x
 
@@ -1547,7 +1569,7 @@ class Experiment:
         try:
             msglog = open(os.path.join(self._dir_eds, "messages.log"), "r").read()
         except UnicodeDecodeError as e:
-            log.warning(
+            log.debug(
                 "Decoding log failed. If <binary.reply> is present in log this may be the cause:"
                 "if so contact Constantine (<const@costinet.org>).  Continuing with failed characters replaced with backslash notation"
                 "Failure was in this area:\n"
@@ -1633,28 +1655,34 @@ class Experiment:
             r += [float(x) for x in m[5].split(",")]
             tt.append(r)
 
-        self.num_zones = int((len(tt[0]) - 3) / 2)
+        if len(tt)>0:
+            self.num_zones = int((len(tt[0]) - 3) / 2)
 
-        self.temperatures = pd.DataFrame(
-            tt,
-            columns=pd.MultiIndex.from_tuples(
-                [("time", "timestamp")]
-                + [("sample", n) for n in range(1, self.num_zones + 1)]
-                + [("other", "heatsink"), ("other", "cover")]
-                + [("block", n) for n in range(1, self.num_zones + 1)]
-            ),
-        )
+            self.temperatures = pd.DataFrame(
+                tt,
+                columns=pd.MultiIndex.from_tuples(
+                    [("time", "timestamp")]
+                    + [("sample", n) for n in range(1, self.num_zones + 1)]
+                    + [("other", "heatsink"), ("other", "cover")]
+                    + [("block", n) for n in range(1, self.num_zones + 1)]
+                ),
+            )
 
-        if self.activestarttime:
-            self.temperatures[("time", "seconds")] = (
-                self.temperatures[("time", "timestamp")]
-                - self.activestarttime.timestamp()
-            )
-            self.temperatures[("time", "hours")] = (
-                self.temperatures[("time", "seconds")] / 3600.0
-            )
-        self.temperatures[("sample", "avg")] = self.temperatures["sample"].mean(axis=1)
-        self.temperatures[("block", "avg")] = self.temperatures["block"].mean(axis=1)
+            if self.activestarttime:
+                self.temperatures[("time", "seconds")] = (
+                    self.temperatures[("time", "timestamp")]
+                    - self.activestarttime.timestamp()
+                )
+                self.temperatures[("time", "hours")] = (
+                    self.temperatures[("time", "seconds")] / 3600.0
+                )
+            self.temperatures[("sample", "avg")] = self.temperatures["sample"].mean(axis=1)
+            self.temperatures[("block", "avg")] = self.temperatures["block"].mean(axis=1)
+
+
+        else:
+            self.num_zones = None
+            self.temperatures = None
 
 
 def _fdc_to_rawdata(fdc: pd.DataFrame, start_time: float) -> pd.DataFrame:

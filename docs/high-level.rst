@@ -6,7 +6,7 @@ High-level API: Experiment, Protocol, PlateSetup, Protocol
 Class for accessing and manipulating experiments
 --------------------------------------------------
 
-.. autoclass:: qslib.Experiment
+.. autoclass:: qslib.common.Experiment
    :members:
    :undoc-members:
    :noindex:
@@ -14,22 +14,22 @@ Class for accessing and manipulating experiments
 Classes for defining experiments
 --------------------------------
 
-.. autoclass:: qslib.Protocol
+.. autoclass:: qslib.common.Protocol
     :members:
     :undoc-members:
     :noindex:
 
-.. autoclass:: qslib.Stage
+.. autoclass:: qslib.common.Stage
     :members:
     :undoc-members:
     :noindex:
 
-.. autoclass:: qslib.Step
+.. autoclass:: qslib.common.Step
     :members:
     :undoc-members:
     :noindex:
 
-.. autoclass:: qslib.PlateSetup
+.. autoclass:: qslib.common.PlateSetup
     :members:
     :undoc-members:
     :noindex:
@@ -38,17 +38,17 @@ Classes for defining experiments
 Classes for interacting with machines
 -------------------------------------
 
-.. autoclass:: qslib.Machine
+.. autoclass:: qslib.common.Machine
    :members:
    :undoc-members:
    :noindex:
 
-.. autoclass:: qslib.RunStatus
+.. autoclass:: qslib.common.RunStatus
     :members:
     :undoc-members:
     :noindex:
 
-.. autoclass:: qslib.MachineStatus
+.. autoclass:: qslib.common.MachineStatus
     :members:
     :undoc-members:
     :noindex:
