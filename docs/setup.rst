@@ -25,3 +25,10 @@ In our setup, we have machines directly connected to a dedicated ethernet interf
 
 .. [#otherport] The machine also listens on port 2323, where it has a simple console interface designed for manual use.
 .. [#security] It is possible that the machine could be security-hardened with some modifications, and I would be happy to discuss this.
+
+.. glossary::
+
+    Observer
+        Read-only access level.
+    Controller
+        Access level allowing control of the machine, but not administrative functions.

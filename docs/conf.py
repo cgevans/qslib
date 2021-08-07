@@ -21,7 +21,6 @@ __location__ = os.path.join(
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
 # documentation root, use os.path.abspath to make it absolute, like shown here.
-sys.path.insert(0, os.path.join(__location__, "../src"))
 
 # -- Run sphinx-apidoc -------------------------------------------------------
 # This hack is necessary since RTD does not issue `sphinx-apidoc` before running
@@ -65,6 +64,8 @@ except Exception as e:
 # If your documentation needs a minimal Sphinx version, state it here.
 # needs_sphinx = '1.0'
 
+import myst_parser
+
 # Add any Sphinx extension module names here, as strings. They can be extensions
 # coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
 extensions = [
@@ -78,31 +79,13 @@ extensions = [
     "sphinx.ext.ifconfig",
     "sphinx.ext.mathjax",
     "sphinx.ext.napoleon",
+    "myst_parser"
 ]
 
 # Add any paths that contain templates here, relative to this directory.
 templates_path = ["_templates"]
 
-
-# Configure AutoStructify
-# https://recommonmark.readthedocs.io/en/latest/auto_structify.html
-def setup(app):
-    from recommonmark.transform import AutoStructify
-
-    params = {
-        "enable_auto_toc_tree": True,
-        "auto_toc_tree_section": "Contents",
-        "auto_toc_maxdepth": 2,
-        "enable_eval_rst": True,
-        "enable_math": True,
-        "enable_inline_math": True,
-    }
-    app.add_config_value("recommonmark_config", params, True)
-    app.add_transform(AutoStructify)
-
-
-# Enable markdown
-extensions.append("recommonmark")
+#extensions.append("recommonmark")
 
 # The suffix of source filenames.
 source_suffix = [".rst", ".md"]
