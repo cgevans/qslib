@@ -1,10 +1,14 @@
+[![Documentation Status](https://readthedocs.org/projects/qslib/badge/?version=latest)](https://qslib.readthedocs.io/en/latest/?badge=latest)
+
 # qslib
 
 QSLib is a package for interacting with Applied Biosystems' QuantStudio
 qPCR machines, intended for non-qPCR uses, such as DNA computing and
 molecular programming systems. It allows the creation, processing, and
 handling of experiments and experiment data, and interaction with
-machines through their network connection and SCPI interface.
+machines through their network connection and SCPI interface. It currently
+functions only with QuantStudio 5 machines using a 96-well block, but
+could be made to support others as well.
 
 Amongst other features that :
 
@@ -29,7 +33,11 @@ Amongst other features that :
 
 QSLib is pure Python, and can be installed via pip:
 
-    pip3 install git+https://framagit.org/cge/qslib
+    pip3 install -U qslib
+	
+Or, for the current Github version:
+
+    pip3 install -U --pre git+https://github.com/cgevans/qslib
 
 It requires a modern (probably 3.9, at least 3.8) version of Python.
 While it uses async code at its core for communication, it can be used
@@ -42,7 +50,6 @@ access, and will need access to the machine on port 7000. I strongly
 recommend against having the machines be accessible online: use a
 restricted VPN connection or port forwarding. See the documentation for
 more information.
-
 
 
 ## Disclaimer

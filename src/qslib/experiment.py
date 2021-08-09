@@ -671,6 +671,10 @@ class Experiment:
                     fpath = os.path.join(root, file)
                     z.write(fpath, os.path.relpath(fpath, self._dir_base))
 
+    @property
+    def sample_wells(self) -> dict[str, list[str]]:
+        return self.plate_setup.sample_wells
+
     def __init__(self, name=None, protocol=None, plate_setup=None, _create_xml=True):
         self._tmp_dir_obj = tempfile.TemporaryDirectory()
         self._dir_base = self._tmp_dir_obj.name
@@ -755,7 +759,8 @@ class Experiment:
             <Name>marker-task</Name>
         </Feature>
     </FeatureMap>
-    </Plate>"""
+    </Plate>
+    """
             )
         )
 
@@ -772,10 +777,11 @@ class Experiment:
         with open(os.path.join(self._dir_eds, "Manifest.mf"), "w") as f:
             f.write(MANIFEST_CONTENTS)
 
+        # File will not load in AB without this, even though it is
+        # useless for our purposes.
         with open(self._sdspath("analysis_protocol.xml"), "w") as f:
             f.write(
-                """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<JaxbAnalysisProtocol>
+                """<JaxbAnalysisProtocol>
     <Name>unnamed</Name>
     <JaxbAnalysisSettings>
         <Type>com.apldbio.sds.platform.core.analysis.IDetectorSettings</Type>
@@ -1559,7 +1565,7 @@ class Experiment:
         pd.Dataframe
             Slice of welldata.  Will have multiple wells if sample is in multiple wells.
         """
-        wells = [f"{x[0]}{int(x[1:]):02}" for x in self.plate_setup.sample_wells[sample]]
+        wells = [f"{x[0]}{int(x[1:])}" for x in self.plate_setup.sample_wells[sample]]
         x = self.welldata.loc[:, wells]
         return x
 
@@ -1689,7 +1695,7 @@ def _fdc_to_rawdata(fdc: pd.DataFrame, start_time: float) -> pd.DataFrame:
     ret: pd.DataFrame = fdc.loc[:, (slice(None), "fl")].copy()
     ret.columns = [f"{r}{c}" for r in "ABCDEFGH" for c in range(1, 13)]
     for i in range(0, 6):
-        ret[f"temperature_{i+1}"] = fdc[f"A{(i+1)*2:02}", "rt"]
+        ret[f"temperature_{i+1}"] = fdc[f"A{(i+1)*2}", "rt"]
     ret["temperature_avg"] = ret.loc[:, slice("temperature_1", "temperature_6")].mean(
         axis=1
     )

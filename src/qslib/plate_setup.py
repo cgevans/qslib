@@ -15,7 +15,7 @@ from .qsconnection_async import QSConnectionAsync
 
 _WELLNAMES = [x + str(y) for x in "ABCDEFGH" for y in range(1, 13)]
 
-_WELLALPHREF = [(x, f"{y:02d}") for x in "ABCDEFGH" for y in range(1, 13)]
+_WELLALPHREF = [(x, f"{y}") for x in "ABCDEFGH" for y in range(1, 13)]
 
 
 def _process_color_from_str_int(x: str) -> Tuple[int, int, int, int]:
