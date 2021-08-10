@@ -28,6 +28,7 @@ import pandas as pd
 import numpy as np
 from .util import *
 import logging
+from copy import deepcopy
 
 log = logging.getLogger(__name__)
 
@@ -505,6 +506,9 @@ class Protocol(XMLable):
         alltimes[:-1:2] = d["start_time"]
         alltimes[1::2] = d["end_time"]
         return alltimes
+
+    def copy(self) -> Protocol:
+        return deepcopy(self)
 
     @property
     def all_temperatures(self) -> np.ndarray:
@@ -992,7 +996,10 @@ class Step(BaseStep, XMLable):
                 temp_incrementcycle=1,
             )
             c.collect = True
-            c.filters = [FilterSet.fromstring(x) for x in d["body"][1]["args"]]
+            if "args" in d["body"][1].keys():
+                c.filters = [FilterSet.fromstring(x) for x in d["body"][1]["args"]]
+            else:
+                c.filters = []
             for k, v in d["body"][2]["opts"].items():
                 k = k.lower()
                 if "increment" in k:

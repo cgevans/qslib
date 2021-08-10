@@ -266,7 +266,7 @@ def df_from_readings(
         columns=pd.MultiIndex.from_tuples(
             [("time", "timestamp")]
             + [
-                (f"{r}{c:02}", v)
+                (f"{r}{c}", v)
                 for v in ["fl", "rt", "st"]
                 for r in "ABCDEFGH"
                 for c in range(1, 13)
@@ -285,7 +285,7 @@ def df_from_readings(
         pd.MultiIndex.from_tuples(
             [("time", v) for v in ["seconds", "hours", "timestamp"]]
             + [
-                (f"{r}{c:02}", v)
+                (f"{r}{c}", v)
                 for r in "ABCDEFGH"
                 for c in range(1, 13)
                 for v in ["fl", "rt", "st"]

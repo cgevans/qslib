@@ -1565,7 +1565,7 @@ class Experiment:
         pd.Dataframe
             Slice of welldata.  Will have multiple wells if sample is in multiple wells.
         """
-        wells = [f"{x[0]}{int(x[1:])}" for x in self.plate_setup.sample_wells[sample]]
+        wells = ['time'] + [f"{x[0]}{int(x[1:])}" for x in self.plate_setup.sample_wells[sample]]
         x = self.welldata.loc[:, wells]
         return x
 
@@ -1629,7 +1629,7 @@ class Experiment:
         # beginning of the log as an info command, with quote.message.  Let's
         # try to grab it!
         if m := re.match(
-            r"^Info (?:[\d.]+) (<quote.message>.*?</quote.message>)", msglog, re.DOTALL
+            r"^Info (?:[\d.]+) (<quote.message>.*?</quote.message>)", msglog, re.DOTALL | re.MULTILINE
         ):
             # We can get the prot name too, and sample volume!
             rp = re.search(
