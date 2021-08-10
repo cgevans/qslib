@@ -144,14 +144,15 @@ class Collector:
         )
         self.idbw = self.idbclient.write_api(write_options=ASYNCHRONOUS)
 
-        self.matrix_config = AsyncClientConfig(
-            #encryption_enabled=True
-        )
+        if "matrix" in self.config:
+            self.matrix_config = AsyncClientConfig(
+                encryption_enabled=self.config["matrix"].get("encryption", False)
+            )
 
-        self.matrix_client = AsyncClient(
-            self.config["matrix"]["host"], self.config["matrix"]["user"],
-            store_path='./matrix_store/', config=self.matrix_config
-        )
+            self.matrix_client = AsyncClient(
+                self.config["matrix"]["host"], self.config["matrix"]["user"],
+                store_path='./matrix_store/', config=self.matrix_config
+            )
 
     def inject(self, t):
         self.idbw.write(bucket=self.config["influxdb"]["bucket"], record=t)
@@ -351,7 +352,11 @@ class Collector:
             log.info(msg)
 
     async def monitor(self):
-        await self.matrix_client.login(self.config["matrix"]["password"])
+
+        if self.matrix_client is not None:
+            await self.matrix_client.login(self.config["matrix"]["password"])
+            if self.config['matrix']['room'] not in (await self.matrix_client.joined_rooms()).rooms:
+                await self.matrix_client.join(self.config['matrix']['room'])
 
         async with QSConnectionAsync(
             host=self.config["machine"]["host"],
