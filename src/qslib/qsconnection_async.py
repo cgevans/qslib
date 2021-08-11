@@ -240,16 +240,16 @@ class QSConnectionAsync:
             filterset_r = filterset
 
         fl = await self.get_exp_file(
-            f"{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
+            f"\"{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
             f"_T{step:02}_P{point:04}_M{filterset_r.em}"
-            f"_X{filterset_r.ex}_filterdata.xml"
+            f"_X{filterset_r.ex}_filterdata.xml\""
         )
 
         f = data.FilterDataReading(ET.parse(io.BytesIO(fl)).find("PlatePointData/PlateData"))
 
         ql = (
             await self.get_expfile_list(
-                f"{run}/apldbio/sds/quant/" f"{f.filename_reading_string}_E*.quant"
+                f"\"{run}/apldbio/sds/quant/" f"{f.filename_reading_string}_E*.quant\""
             )
         )[-1]
         qf = await self.get_exp_file(ql)
