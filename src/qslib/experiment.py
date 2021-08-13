@@ -527,7 +527,7 @@ class Experiment:
         return self._ensure_running(machine)
 
     def sync_from_machine(self, machine: Machine | None = None):
-        """NOT YET IMPLEMENTED
+        """
         Try to synchronize the data in the experiment to the current state of the run on a
         machine, more efficiently than reloading everything.
         """
@@ -549,12 +549,11 @@ class Experiment:
                 logging.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
                 continue
             from pathlib import Path  # FIXME
-            cp = Path(self._dir_eds + "/calibrations")
-            if not cp.exists():
-                cp.mkdir()
-            cp = Path(self._dir_eds + "/quant")
-            if not cp.exists():
-                cp.mkdir()
+            ldir = f["path"].split("/")[-2]
+            if ldir != "sds":
+                cp = Path(self._dir_eds) / ldir
+                if not cp.exists():
+                    cp.mkdir()
             with open(sdspath, "wb") as b:
                 b.write(machine.read_file(f["path"]))
             os.utime(sdspath, (f["atime"], f["mtime"]))
@@ -563,7 +562,7 @@ class Experiment:
         self._update_from_files()
 
     def change_protocol(self, new_protocol: Protocol, machine: Machine | None = None):
-        """NOT YET IMPLEMENTED
+        """
         For a running experiment and an updated protocol, check compatibility
         with the current run, and if possible, update the protocol in the experiment
         file and on the machine, changing the current run.
