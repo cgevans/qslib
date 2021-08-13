@@ -33,12 +33,13 @@ from copy import deepcopy
 log = logging.getLogger(__name__)
 
 
-def _temperature_str(temperatures: Union[float, Iterable[float]]) -> str:
+def _temperature_str(temperatures: Union[float, Iterable[float], np.ndarray]) -> str:
     """Tries to do the right thing in generating a string for a temperature or
     list of temperatures."""
     if isinstance(temperatures, Iterable):
         temperatures = list(temperatures)
-        if len(temperatures) == 1 or len(set(temperatures)) == 1:
+        unique = np.unique(temperatures)
+        if len(temperatures) == 1 or len(unique) == 1:
             return f"{temperatures[0]:.02f}°C"
         else:
             return "[" + ", ".join(f"{x:.02f}" for x in temperatures) + "]" + "°C"
