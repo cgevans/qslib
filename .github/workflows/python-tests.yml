@@ -1,0 +1,47 @@
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: Python package
+
+on:
+  [push, pull_request]
+
+jobs:
+  tests:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: [3.9, 3.8]
+        #optionals: [none, pandas, numba]
+        #exclude:
+        #  - python-version: pypy3
+        #    optionals: pandas
+        #  - python-version: pypy3
+        #    optionals: numba
+        #  - os: macos-latest
+        #    python-version: pypy3
+        #  - os: windows-latest
+        #    python-version: pypy3
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip setuptools_scm[toml] wheel setuptools
+        python -m pip install flake8 tox mypy
+    - name: Test with tox/pytest
+      run: |
+        tox
+    #- name: Test with mypy
+    #  run: |
+    #    tox -e mypy
+    - name: "Upload coverage to Codecov"
+      uses: codecov/codecov-action@v1
+      with:
+        fail_ci_if_error: true
