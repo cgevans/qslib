@@ -93,4 +93,39 @@ def test_proto() -> None:
         volume=30,
     )
 
+    prot_explicitfilter = Protocol(
+        name="testproto",
+        stages=[
+            Stage(Step(5 * 60, 80)),
+            Stage(Step(60, 80, temp_increment=-1), repeat=27),
+            Stage(
+                Step(
+                    2 * 60,
+                    53,
+                    filters=["x1-m4", "x3-m5"],
+                    collect=True,
+                ),
+                repeat=5,
+            ),
+            Stage(
+                Step(5 * 60, temperatures, collect=True, filters=["x1-m4", "x3-m5"]),
+                repeat=20,
+            ),
+            Stage(
+                Step(10 * 60, temperatures, collect=True, filters=["x1-m4", "x3-m5"]),
+                repeat=20,
+            ),
+            Stage(
+                Step(20 * 60, temperatures, collect=True, filters=["x1-m4", "x3-m5"]),
+                repeat=100,
+            ),
+        ],
+        volume=30,
+    )
+
     assert prot.to_command() == PROTSTRING
+    assert prot.to_command() == prot_explicitfilter.to_command()
+
+    prot_fromstring = Protocol.from_command(PROTSTRING)
+
+    assert prot_explicitfilter == prot_fromstring
