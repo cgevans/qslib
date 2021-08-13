@@ -712,10 +712,10 @@ class HACFILT(ProtoCommand):
     filters: Sequence[FilterSet] | None
 
     def to_command(
-        self, filters: Iterable[FilterSet | str] | None = None, **kwargs
+        self, filters: Sequence[FilterSet | str] | None = None, **kwargs
     ) -> str:
-        if self.filters is None:
-            assert filters is not None
+        if self.filters is None or len(self.filters) == 0:
+            assert (filters is not None) and len(filters) > 0
             filters = [
                 FilterSet.fromstring(f) if isinstance(f, str) else f for f in filters
             ]
