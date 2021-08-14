@@ -11,11 +11,14 @@ from dataclasses import dataclass
 from typing import Any, IO, Literal, overload
 
 import nest_asyncio
+import paramiko.pkey
 
 from .parser import arglist
 from .qsconnection_async import QSConnectionAsync
 from .tcprotocol import Protocol
 from .util import _unwrap_tags
+
+from sshtunnel import SSHTunnelForwarder
 
 nest_asyncio.apply()
 
@@ -74,6 +77,19 @@ class Machine:
         The port to connect to. (Use the normal SCPI port, not the line-editor connection usually
         on 2323).
 
+    tunnel_host: str or tuple[str, int], optional
+        If set, to a hostname/IP string or (hostname/IP, port) tuple, create an SSH tunnel to the tunnel_host
+        in order to connect to the machine, rather than connecting directly.  This uses paramiko, and
+        will not read your ssh configuration file for any host aliases, but will use your keys if you
+        have an ssh-agent running.
+
+    tunnel_user: str, optional
+        If set, specify the user for the tunnel connection.  If unset, the local user name is used.
+
+    tunnel_key: str or paramiko.pkey.PKey, optional
+        If set, specify the filename of a private key, or the paramiko-loaded key, to use for the tunnel
+        connection.
+
     Examples
     --------
 
@@ -86,6 +102,9 @@ class Machine:
     max_access_level: AccessLevel | str = AccessLevel.Observer
     port: int = 7000
     _initial_access_level: AccessLevel | str = AccessLevel.Observer
+    tunnel_host: str | tuple[str, int] | None = None
+    tunnel_user: str | None = None
+    tunnel_key: str | "paramiko.pkey.PKey" | None = None
 
     def __init__(
         self,
@@ -94,6 +113,9 @@ class Machine:
         max_access_level: AccessLevel | str = AccessLevel.Observer,
         port: int = 7000,
         connect_now: bool = False,
+        tunnel_host: str | tuple[str, int] | None = None,
+        tunnel_user: str | None = None,
+        tunnel_key: str | "paramiko.pkey.PKey" | None = None,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
@@ -101,18 +123,42 @@ class Machine:
         self.password = password
         self.max_access_level = AccessLevel(max_access_level)
         self._initial_access_level = AccessLevel(_initial_access_level)
+        self.tunnel_host = tunnel_host
+        self.tunnel_user = tunnel_user
+        self.tunnel_key = tunnel_key
+        self._tunnel = None
+        self._qsc = None
 
         if connect_now:
             self.connect()
 
+    @property
+    def _use_tunnel(self) -> bool:
+        return self.tunnel_host is not None
+
     def connect(self):
         """Open the connection."""
         loop = asyncio.get_event_loop()
+
+        if self._use_tunnel:
+            self._tunnel = SSHTunnelForwarder(
+                self.tunnel_host,
+                ssh_username=self.tunnel_user,
+                ssh_pkey=self.tunnel_key,
+                remote_bind_address=(self.host, self.port),
+            )
+            self._tunnel.start()
+            port = self._tunnel.local_bind_port
+            host = "localhost"
+        else:
+            port = self.port
+            host = self.host
+
         self._qsc = QSConnectionAsync(
-            self.host,
-            self.port,
+            host,
+            port,
             password=self.password,
-            initial_access_level=self._initial_access_level,
+            initial_access_level=AccessLevel(self._initial_access_level),
         )
         loop.run_until_complete(self._qsc.connect())
 
@@ -139,6 +185,8 @@ class Machine:
         CommandError
             Received an Error response.
         """
+        if self._qsc is None:
+            raise ValueError("Not connected.")
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(self._qsc.run_command(command))
 
@@ -162,6 +210,8 @@ class Machine:
         CommandError
             Received an Error response.
         """
+        if self._qsc is None:
+            raise ValueError("Not connected.")
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(self._qsc.run_command(command, just_ack=True))
 
@@ -224,7 +274,7 @@ class Machine:
         leaf: str = "FILE",
         verbose: bool = False,
         recursive: bool = False,
-    ):
+    ) -> list[str] | list[dict[str, Any]]:
         if not verbose:
             if recursive:
                 raise NotImplementedError
@@ -235,8 +285,8 @@ class Machine:
             ret = []
             for x in v:
                 d = {}
-                d["path"] = x["arglist"]["args"][0]
-                d |= x["arglist"]["opts"]
+                d["path"] = x["arglist"]["args"][0]  # type: ignore (mypy weirdness)
+                d |= x["arglist"]["opts"]  # type: ignore (mypy weirdness)
                 if d["type"] == "folder" and recursive:
                     ret += self.list_files(
                         d["path"], leaf=leaf, verbose=True, recursive=True
@@ -357,6 +407,8 @@ class Machine:
         CommandError
             Received
         """
+        if self._qsc is None:
+            raise ValueError("Not connected.")
         if isinstance(command, str):
             command = command.encode()
         loop = asyncio.get_event_loop()
@@ -458,8 +510,17 @@ class Machine:
 
     def disconnect(self):
         """Cleanly disconnect from the machine."""
-        self.run_command("QUIT")
-        self._qsc._transport.close()
+        if self._qsc is None:
+            raise ValueError("Not connected.")
+
+        loop = asyncio.get_running_loop()
+
+        loop.run_until_complete(self._qsc.disconnect())
+        self._qsc = None
+
+        if self._tunnel is not None:
+            self._tunnel.stop()
+            self._tunnel = None
 
     def abort_current_run(self):
         """Abort (stop immediately) the current run."""
