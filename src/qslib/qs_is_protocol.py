@@ -4,7 +4,7 @@ import logging
 import re
 import io
 from dataclasses import dataclass
-from typing import Callable, Coroutine, Optional
+from typing import Coroutine, Optional, Protocol
 
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
@@ -29,25 +29,44 @@ class ReplyError(IOError):
     pass
 
 
+class SubHandler(Protocol):
+    def __call__(
+        self, topic: bytes, message: bytes, timestamp: float | None = None
+    ) -> Coroutine:
+        ...
+
+
 class QS_IS_Protocol(asyncio.Protocol):
     def __init__(self):
         self.default_topic_handler = self._default_topic_handler
         self.readymsg = asyncio.get_running_loop().create_future()
         self.lostconnection = asyncio.get_running_loop().create_future()
+        self.should_be_connected = False
 
     def connection_lost(self, exc: Optional[Exception]) -> None:
-        log.warn("Lost connection")
+        if self.should_be_connected:
+            log.warn("Lost connection")
+        else:
+            log.info("Connection closed")
         self.lostconnection.set_result(exc)
+        self.should_be_connected = False
+
+    async def disconnect(self):
+        self.should_be_connected = False
+        await self.run_command("QUIT")
 
     def connection_made(self, transport):
         log.info("Made connection")
+        self.should_be_connected = True
         # setup connection.
         self.transport = transport
         self.messages = []
         self.waiting_commands = []
         self.buffer = io.BytesIO()
         self.quote_stack = []
-        self.topic_handlers: dict[bytes, Callable[[bytes, bytes, Optional[float]], Coroutine]] = {}
+        self.topic_handlers: dict[
+            bytes, SubHandler
+        ] = {}
         pass
 
     async def _default_topic_handler(

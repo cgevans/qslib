@@ -409,7 +409,7 @@ class Protocol(XMLable):
         The stages of the protocol, likely :any:`Stage`.
     name: str | None
         A protocol name. If not set, a timestamp will be used, unlike AB's uuid.
-    volume: floa
+    volume: float
         The sample volume, in µL.
     runmode: str | None
         The run mode.

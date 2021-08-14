@@ -211,7 +211,7 @@ class Experiment:
     """
     The last modification time. QSLib sets this on write. AB D&A may not.
     """
-    runstate: Literal["INIT", "RUNNING", "COMPLETE", "ABORTED", "STOPPED"]
+    runstate: Literal["INIT", "RUNNING", "COMPLETE", "ABORTED", "STOPPED", "UNKNOWN"]
     """
     Run state, possible values INIT, RUNNING, COMPLETE, ABORTED, STOPPED(?).
     """
@@ -1462,13 +1462,13 @@ class Experiment:
     def _update_from_experiment_xml(self):
         exml = ET.parse(os.path.join(self._dir_eds, "experiment.xml"))
 
-        self.name = exml.findtext("Name")
+        self.name = exml.findtext("Name") or "unknown"
         self.user = _text_or_none(exml, "Operator")
         self.createdtime = datetime.fromtimestamp(float(_find_or_raise(exml, "CreatedTime").text) / 1000.0)  # type: ignore
-        self.runstate = exml.findtext("RunState")
+        self.runstate = exml.findtext("RunState") or "UNKNOWN"  # type: ignore
         self.writesoftware = exml.findtext(
             "ExperimentProperty[@type='RunInfo']/PropertyValue[@key='softwareVersion']/String"
-        )
+        ) or "UNKNOWN"
         if x := exml.findtext("RunStartTime"):
             self.runstarttime = datetime.fromtimestamp(float(x) / 1000.0)
         if x := exml.findtext("RunEndTime"):
