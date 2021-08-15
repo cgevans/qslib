@@ -186,7 +186,7 @@ class Machine:
             Received an Error response.
         """
         if self._qsc is None:
-            raise ValueError("Not connected.")
+            raise ConnectionError(f"Not connected to {self.host}.")
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(self._qsc.run_command(command))
 
@@ -211,7 +211,7 @@ class Machine:
             Received an Error response.
         """
         if self._qsc is None:
-            raise ValueError("Not connected.")
+            raise ConnectionError(f"Not connected to {self.host}")
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(self._qsc.run_command(command, just_ack=True))
 
@@ -408,7 +408,7 @@ class Machine:
             Received
         """
         if self._qsc is None:
-            raise ValueError("Not connected.")
+            raise ConnectionError(f"Not connected to {self.host}.")
         if isinstance(command, str):
             command = command.encode()
         loop = asyncio.get_event_loop()
@@ -506,12 +506,13 @@ class Machine:
         self.disconnect()
 
     def __del__(self) -> None:
-        self.disconnect()
+        if self._qsc is not None:
+            self.disconnect()
 
     def disconnect(self) -> None:
         """Cleanly disconnect from the machine."""
         if self._qsc is None:
-            raise ValueError("Not connected.")
+            raise ConnectionError(f"Not connected to {self.host}.")
 
         loop = asyncio.get_running_loop()
 
