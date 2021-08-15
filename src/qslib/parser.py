@@ -8,10 +8,6 @@ nl = (pp.Literal("\n") + pp.Optional(pp.White(" \t\r"))).suppress().setName("<ne
 fwe = pp.FollowedBy(we).suppress()
 
 
-def make_keyword(kwd_str, kwd_value):
-    return pp.Keyword(kwd_str).setParseAction(pp.replaceWith(kwd_value))
-
-
 def make_multi_keyword(kwd_str, kwd_value):
     return pp.oneOf(kwd_str).setParseAction(pp.replaceWith(kwd_value))
 

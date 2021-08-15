@@ -1,4 +1,9 @@
 [![Documentation Status](https://readthedocs.org/projects/qslib/badge/?version=latest)](https://qslib.readthedocs.io/en/latest/?badge=latest)
+![Codecov](https://img.shields.io/codecov/c/github/cgevans/qslib)
+![GitHub Workflow
+Status](https://img.shields.io/github/workflow/status/cgevans/qslib/Python%20tests)
+![PyPI](https://img.shields.io/pypi/v/qslib)
+
 
 # qslib
 
@@ -39,9 +44,10 @@ Or, for the current Github version:
 
     pip3 install -U --pre git+https://github.com/cgevans/qslib
 
-It requires a modern (probably 3.9, at least 3.8) version of Python.
-While it uses async code at its core for communication, it can be used
-conveniently in Jupyter or IPython.
+It requires at least version 3.9 of Python. While it uses async code at
+its core for communication, it can be used conveniently in Jupyter or
+IPython.
+
 
 To use the library for communication with machines, you'll need a
 machine access password with Observer (for reading data and statuses)
