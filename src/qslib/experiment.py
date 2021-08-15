@@ -283,7 +283,7 @@ class Experiment:
         else:
             raise ValueError("Experiment data is not available")
 
-    def summary(self, format="markdown", plate="list") -> str:
+    def summary(self, format: str = "markdown", plate: str = "list") -> str:
         """Generate a summary of the experiment, with some formatting configuation. `str()`
         uses this with default parameters.
 
@@ -325,7 +325,9 @@ class Experiment:
         """Run name with " " replaced by "-"."""
         return self.name.replace(" ", "-")
 
-    def _ensure_machine(self, machine: Machine | str | None, password=None) -> Machine:
+    def _ensure_machine(
+        self, machine: Machine | str | None, password: str | None = None
+    ) -> Machine:
         if isinstance(machine, Machine):
             self.machine = machine
             return machine
@@ -339,13 +341,13 @@ class Experiment:
                 "No stored machine info for this experiment: please provide some."
             )
 
-    def _ensure_running(self, machine: Machine):
+    def _ensure_running(self, machine: Machine) -> RunStatus:
         crt = machine.run_status()
         if crt.name != self.runtitle_safe:
             raise NotRunningError(machine, self.runtitle_safe, crt)
         return crt
 
-    def _populate_folder(self):
+    def _populate_folder(self) -> None:
         machine = self._ensure_machine(None)
         tempzip = io.BytesIO()
         self.save_file(tempzip)
@@ -364,7 +366,7 @@ class Experiment:
         machine: Machine | str | None = None,
         password=None,
         require_exclusive=True,
-    ):
+    ) -> None:
         """Load the run onto a machine, and start it.
 
         Parameters
@@ -426,7 +428,7 @@ class Experiment:
         """
         raise NotImplementedError
 
-    def collect_finished(self, machine: Machine | None = None):
+    def collect_finished(self, machine: Machine | None = None) -> None:
         """NOT YET IMPLEMENTED
 
         Collect the completed (aborted/etc) experiment from a machine, reliably.  This will
@@ -447,7 +449,7 @@ class Experiment:
         # Ensure run is actually done.
         raise NotImplementedError
 
-    def pause_now(self, machine: Machine | None = None):
+    def pause_now(self, machine: Machine | None = None) -> None:
         """
         If this experiment is running, pause it (immediately).
 
@@ -463,7 +465,7 @@ class Experiment:
         with machine.at_access("Controller", exclusive=True):
             machine.pause_current_run()
 
-    def resume(self, machine: Machine | None = None):
+    def resume(self, machine: Machine | None = None) -> None:
         """
         If this experiment is running, resume it.
 
@@ -479,7 +481,7 @@ class Experiment:
         with machine.at_access("Controller", exclusive=True):
             machine.resume_current_run()
 
-    def stop(self, machine: Machine | None = None):
+    def stop(self, machine: Machine | None = None) -> None:
         """
         If this experiment is running, stop it after the end of the current cycle.
 
@@ -495,7 +497,7 @@ class Experiment:
         with machine.at_access("Controller", exclusive=True):
             machine.stop_current_run()
 
-    def abort(self, machine: Machine | None = None):
+    def abort(self, machine: Machine | None = None) -> None:
         """
         If this experiment is running, abort it, stopping it immediately.
 
@@ -526,7 +528,7 @@ class Experiment:
         machine = self._ensure_machine(machine)
         return self._ensure_running(machine)
 
-    def sync_from_machine(self, machine: Machine | None = None):
+    def sync_from_machine(self, machine: Machine | None = None) -> None:
         """
         Try to synchronize the data in the experiment to the current state of the run on a
         machine, more efficiently than reloading everything.
@@ -549,6 +551,7 @@ class Experiment:
                 logging.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
                 continue
             from pathlib import Path  # FIXME
+
             ldir = f["path"].split("/")[-2]
             if ldir != "sds":
                 cp = Path(self._dir_eds) / ldir
@@ -561,7 +564,9 @@ class Experiment:
         # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
         self._update_from_files()
 
-    def change_protocol(self, new_protocol: Protocol, machine: Machine | None = None):
+    def change_protocol(
+        self, new_protocol: Protocol, machine: Machine | None = None
+    ) -> None:
         """
         For a running experiment and an updated protocol, check compatibility
         with the current run, and if possible, update the protocol in the experiment
@@ -619,7 +624,7 @@ class Experiment:
                 open(self._sdspath("tcprotocol.xml"), "rb").read(),
             )
 
-    def save_file(self, file: str | IO[bytes], overwrite=False):
+    def save_file(self, file: str | IO[bytes], overwrite: bool = False) -> None:
         """
         Save an EDS file of the experiment. This *should* be readable by AB's software,
         but makes no attempt to hide that it was written by QSLib, and contains some other
@@ -645,7 +650,9 @@ class Experiment:
                     fpath = os.path.join(root, file)
                     z.write(fpath, os.path.relpath(fpath, self._dir_base))
 
-    def save_file_without_changes(self, file: str | IO[bytes], overwrite=False):
+    def save_file_without_changes(
+        self, file: str | IO[bytes], overwrite: bool = False
+    ) -> None:
         """
         Save an EDS file of the experiment. Unlike :any:`save_file`, this will not
         update any parts of the file, so if it has not been modified elsewhere,
@@ -674,7 +681,13 @@ class Experiment:
     def sample_wells(self) -> dict[str, list[str]]:
         return self.plate_setup.sample_wells
 
-    def __init__(self, name=None, protocol=None, plate_setup=None, _create_xml=True):
+    def __init__(
+        self,
+        name: str | None = None,
+        protocol: Protocol | None = None,
+        plate_setup: PlateSetup | None = None,
+        _create_xml: bool = True,
+    ):
         self._tmp_dir_obj = tempfile.TemporaryDirectory()
         self._dir_base = self._tmp_dir_obj.name
         self._dir_eds = os.path.join(self._dir_base, "apldbio", "sds")
@@ -728,7 +741,9 @@ class Experiment:
         ET.SubElement(tp, "Name").text = "Custom"
         ET.SubElement(tp, "Description").text = "Custom QSLib experiment"
         ET.SubElement(tp, "ResultPersisterName").text = "scAnalysisResultPersister"
-        ET.SubElement(tp, "ContributedResultPersisterName").text = "mcAnalysisResultPersister"
+        ET.SubElement(
+            tp, "ContributedResultPersisterName"
+        ).text = "mcAnalysisResultPersister"
         ET.SubElement(e.getroot(), "ChemistryType").text = "Other"
         ET.SubElement(e.getroot(), "TCProtocolMode").text = "Standard"
         ET.SubElement(e.getroot(), "DNATemplateType").text = "WET_DNA"
@@ -1361,7 +1376,7 @@ class Experiment:
         return exp
 
     @classmethod
-    def from_uncollected(cls, machine: Machine, name: str) -> "Experiment":
+    def from_uncollected(cls, machine: Machine, name: str) -> Experiment:
         """Create an experiment from the uncollected (not yet compressed)
         storage.
 
@@ -1459,22 +1474,25 @@ class Experiment:
 
         exml.write(os.path.join(self._dir_eds, "experiment.xml"))
 
-    def _update_from_experiment_xml(self):
+    def _update_from_experiment_xml(self) -> None:
         exml = ET.parse(os.path.join(self._dir_eds, "experiment.xml"))
 
         self.name = exml.findtext("Name") or "unknown"
         self.user = _text_or_none(exml, "Operator")
         self.createdtime = datetime.fromtimestamp(float(_find_or_raise(exml, "CreatedTime").text) / 1000.0)  # type: ignore
         self.runstate = exml.findtext("RunState") or "UNKNOWN"  # type: ignore
-        self.writesoftware = exml.findtext(
-            "ExperimentProperty[@type='RunInfo']/PropertyValue[@key='softwareVersion']/String"
-        ) or "UNKNOWN"
+        self.writesoftware = (
+            exml.findtext(
+                "ExperimentProperty[@type='RunInfo']/PropertyValue[@key='softwareVersion']/String"
+            )
+            or "UNKNOWN"
+        )
         if x := exml.findtext("RunStartTime"):
             self.runstarttime = datetime.fromtimestamp(float(x) / 1000.0)
         if x := exml.findtext("RunEndTime"):
             self.runendtime = datetime.fromtimestamp(float(x) / 1000.0)
 
-    def _update_tcprotocol_xml(self):
+    def _update_tcprotocol_xml(self) -> None:
         if self.protocol:
             # exml = ET.parse(os.path.join(self._dir_eds, "tcprotocol.xml"))
             tcxml, qstcxml = self.protocol.to_xml()
@@ -1492,7 +1510,7 @@ class Experiment:
 
             qstcxml.write(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
 
-    def _update_from_tcprotocol_xml(self):
+    def _update_from_tcprotocol_xml(self) -> None:
         exml = ET.parse(os.path.join(self._dir_eds, "tcprotocol.xml"))
         if os.path.isfile(os.path.join(self._dir_eds, "qsl-tcprotocol.xml")):
             qstcxml = ET.parse(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
@@ -1510,17 +1528,17 @@ class Experiment:
         #    print(e)
         #    self._protocol_from_xml = None
 
-    def _update_platesetup_xml(self):
+    def _update_platesetup_xml(self) -> None:
         x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml"))
         self.plate_setup.update_xml(x.getroot())
         ET.indent(x)
         x.write(os.path.join(self._dir_eds, "plate_setup.xml"))
 
-    def _update_from_platesetup_xml(self):
+    def _update_from_platesetup_xml(self) -> None:
         x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml")).getroot()
         self.plate_setup = PlateSetup.from_platesetup_xml(x)
 
-    def _update_from_data(self):
+    def _update_from_data(self) -> None:
         fdp = os.path.join(self._dir_eds, "filterdata.xml")
         if os.path.isfile(fdp):
             fdx = ET.parse(fdp)
@@ -1548,7 +1566,7 @@ class Experiment:
             self.rawdata = _fdc_to_rawdata(self.welldata, self.activestarttime.timestamp() if self.activestarttime else None)  # type: ignore
             self.filterdata = self.rawdata
 
-    def data_for_sample(self, sample: str):
+    def data_for_sample(self, sample: str) -> pd.DataFrame:
         """Convenience function to return data for a specific sample.
 
         Finds wells using :code:`self.plate_setup.sample_wells[sample]`, then
@@ -1564,11 +1582,13 @@ class Experiment:
         pd.Dataframe
             Slice of welldata.  Will have multiple wells if sample is in multiple wells.
         """
-        wells = ['time'] + [f"{x[0]}{int(x[1:])}" for x in self.plate_setup.sample_wells[sample]]
+        wells = ["time"] + [
+            f"{x[0]}{int(x[1:])}" for x in self.plate_setup.sample_wells[sample]
+        ]
         x = self.welldata.loc[:, wells]
         return x
 
-    def _update_from_log(self):
+    def _update_from_log(self) -> None:
         if not os.path.isfile(os.path.join(self._dir_eds, "messages.log")):
             return
         try:
@@ -1628,7 +1648,9 @@ class Experiment:
         # beginning of the log as an info command, with quote.message.  Let's
         # try to grab it!
         if m := re.match(
-            r"^Info (?:[\d.]+) (<quote.message>.*?</quote.message>)", msglog, re.DOTALL | re.MULTILINE
+            r"^Info (?:[\d.]+) (<quote.message>.*?</quote.message>)",
+            msglog,
+            re.DOTALL | re.MULTILINE,
         ):
             # We can get the prot name too, and sample volume!
             rp = re.search(
@@ -1660,7 +1682,7 @@ class Experiment:
             r += [float(x) for x in m[5].split(",")]
             tt.append(r)
 
-        if len(tt)>0:
+        if len(tt) > 0:
             self.num_zones = int((len(tt[0]) - 3) / 2)
 
             self.temperatures = pd.DataFrame(
@@ -1681,9 +1703,12 @@ class Experiment:
                 self.temperatures[("time", "hours")] = (
                     self.temperatures[("time", "seconds")] / 3600.0
                 )
-            self.temperatures[("sample", "avg")] = self.temperatures["sample"].mean(axis=1)
-            self.temperatures[("block", "avg")] = self.temperatures["block"].mean(axis=1)
-
+            self.temperatures[("sample", "avg")] = self.temperatures["sample"].mean(
+                axis=1
+            )
+            self.temperatures[("block", "avg")] = self.temperatures["block"].mean(
+                axis=1
+            )
 
         else:
             self.num_zones = None

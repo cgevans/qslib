@@ -1,7 +1,7 @@
 # This workflow will install Python dependencies, run tests and lint with a variety of Python versions
 # For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
 
-name: Python package
+name: Python tests
 
 on:
   [push, pull_request]
@@ -13,7 +13,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        python-version: [3.9, 3.8]
+        python-version: [3.9]
         #optionals: [none, pandas, numba]
         #exclude:
         #  - python-version: pypy3
@@ -38,10 +38,11 @@ jobs:
     - name: Test with tox/pytest
       run: |
         tox
-    #- name: Test with mypy
-    #  run: |
-    #    tox -e mypy
+    - name: Test with mypy
+      run: |
+        tox -e mypy
+      fail_ci_if_error: false
     - name: "Upload coverage to Codecov"
       uses: codecov/codecov-action@v1
       with:
-        fail_ci_if_error: true
+        fail_ci_if_error: false

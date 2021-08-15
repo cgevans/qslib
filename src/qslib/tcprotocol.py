@@ -428,7 +428,7 @@ class Protocol(XMLable):
     covertemperature: float = 105.0
     _class: str = "Protocol"
 
-    def to_command(self):
+    def to_command(self) -> str:
         s = "PROTocol "
         if self.volume is not None:
             s += f"-volume={self.volume} "
@@ -447,11 +447,11 @@ class Protocol(XMLable):
         return s
 
     @classmethod
-    def from_command(cls, s):
+    def from_command(cls, s: str) -> Protocol:
         return cls._from_command_dict(qp.command.parseString(s)[0])
 
     @classmethod
-    def _from_command_dict(cls, d):
+    def _from_command_dict(cls, d: dict[str, Any]) -> Protocol:
         assert d["command"].lower() in ["prot", "protocol"]
         p = cls([])
         assert len(d["args"]) == 1
