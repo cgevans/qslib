@@ -38,11 +38,6 @@ jobs:
     - name: Test with tox/pytest
       run: |
         tox
-    - name: Test with mypy
-      run: |
-        tox -e mypy
-      with:
-        fail_ci_if_error: false
     - name: "Upload coverage to Codecov"
       uses: codecov/codecov-action@v1
       with:
