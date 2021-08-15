@@ -16,6 +16,8 @@ def exp_reloaded(exp: Experiment, tmp_path_factory: pytest.TempPathFactory) -> E
 def test_props(exp: Experiment, exp_reloaded: Experiment):
     assert exp.name == "2020-02-20_170706"
 
+    assert exp.summary() == str(exp)
+
 
 def test_reload(exp: Experiment, exp_reloaded: Experiment):
     assert (exp.welldata == exp_reloaded.welldata).all().all()
