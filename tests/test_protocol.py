@@ -1,7 +1,9 @@
+from os import PathLike
 import pytest  # noqa
 import qslib.tcprotocol as tc
 import numpy as np
-from qslib.tcprotocol import Stage, Step, Protocol
+from qslib.common import Stage, Step, Protocol, Experiment
+import pathlib
 
 PROTSTRING = """PROTocol -volume=30 -runmode=standard testproto <quote.message>
 \tSTAGe 1 STAGE_1 <multiline.stage>
@@ -129,3 +131,38 @@ def test_proto() -> None:
     prot_fromstring = Protocol.from_command(PROTSTRING)
 
     assert prot_explicitfilter == prot_fromstring
+
+def test_exp_saveload_proto(tmp_path: pathlib.Path):
+    temperatures = list(np.linspace(51.2, 49.4, num=6))
+    prot = Protocol(
+        name="testproto",
+        stages=[
+            Stage(Step(5 * 60, 80)),
+            Stage(Step(60, 80, temp_increment=-1), repeat=27),
+            Stage(
+                Step(
+                    2 * 60,
+                    53,
+                    collect=True,
+                ),
+                repeat=5,
+            ),
+            Stage(Step(5 * 60, temperatures, collect=True), repeat=20),
+            Stage(
+                Step(10 * 60, temperatures, collect=True, filters=["x1-m4", "x3-m5"]),
+                repeat=20,
+            ),
+            Stage(
+                Step(20 * 60, temperatures, collect=True, filters=["x1-m4", "x3-m5"]),
+                repeat=100,
+            ),
+        ],
+        filters=["x1-m4", "x3-m5"],
+        volume=30,
+    )
+    exp = Experiment(protocol=prot)
+    exp.save_file(tmp_path / "test_proto.eds")
+    exp2 = Experiment.from_file(tmp_path / "test_proto.eds")
+
+    # FIXME: for now, we don't do a great job with save/load for default filters
+    assert exp.protocol.to_command() == exp2.protocol.to_command()
