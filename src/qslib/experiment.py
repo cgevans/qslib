@@ -624,7 +624,9 @@ class Experiment:
                 open(self._sdspath("tcprotocol.xml"), "rb").read(),
             )
 
-    def save_file(self, file: str | IO[bytes], overwrite: bool = False) -> None:
+    def save_file(
+        self, file: str | os.PathLike[str] | IO[bytes], overwrite: bool = False
+    ) -> None:
         """
         Save an EDS file of the experiment. This *should* be readable by AB's software,
         but makes no attempt to hide that it was written by QSLib, and contains some other
@@ -1336,7 +1338,7 @@ class Experiment:
         with zipfile.ZipFile(file) as z:
             # Ensure that this actually looks like an EDS file:
             try:
-                z.getinfo("apldbio/sds/messages.log")
+                z.getinfo("apldbio/sds/experiment.xml")
             except KeyError:
                 raise ValueError(f"{file} does not appear to be an EDS file.") from None
 
