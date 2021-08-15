@@ -83,7 +83,7 @@ class QSConnectionAsync:
             return
         await self.disconnect()
 
-    async def disconnect(self):
+    async def disconnect(self) -> None:
         await self._protocol.disconnect()
         self._transport.close()
         self.connected = False
@@ -273,7 +273,7 @@ class QSConnectionAsync:
     ) -> pd.DataFrame:
         ...
 
-    async def get_all_filterdata(self, run=None, as_list=False):
+    async def get_all_filterdata(self, run=None, as_list: bool = False) -> pd.DataFrame:
         if run is None:
             run = await self.get_run_title()
 

@@ -8,7 +8,7 @@ import re
 import zipfile
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, IO, Literal, overload
+from typing import Any, Generator, IO, Literal, overload
 
 import nest_asyncio
 import paramiko.pkey
@@ -108,7 +108,7 @@ class Machine:
 
     def __init__(
         self,
-        host,
+        host: str,
         password: str | None = None,
         max_access_level: AccessLevel | str = AccessLevel.Observer,
         port: int = 7000,
@@ -126,8 +126,8 @@ class Machine:
         self.tunnel_host = tunnel_host
         self.tunnel_user = tunnel_user
         self.tunnel_key = tunnel_key
-        self._tunnel = None
-        self._qsc = None
+        self._tunnel: SSHTunnelForwarder | None = None
+        self._qsc: QSConnectionAsync | None = None
 
         if connect_now:
             self.connect()
@@ -136,7 +136,7 @@ class Machine:
     def _use_tunnel(self) -> bool:
         return self.tunnel_host is not None
 
-    def connect(self):
+    def connect(self) -> None:
         """Open the connection."""
         loop = asyncio.get_event_loop()
 
@@ -162,7 +162,7 @@ class Machine:
         )
         loop.run_until_complete(self._qsc.connect())
 
-    def __enter__(self):
+    def __enter__(self) -> Machine:
         self.connect()
         return self
 
@@ -215,7 +215,7 @@ class Machine:
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(self._qsc.run_command(command, just_ack=True))
 
-    def define_protocol(self, protocol: Protocol):
+    def define_protocol(self, protocol: Protocol) -> None:
         """Send a protocol to the machine. This *is not related* to a particular
         experiment.  The name on the machine is set by the protocol.
 
@@ -226,7 +226,7 @@ class Machine:
         """
         self.run_command(f"{protocol.to_command()}")
 
-    def read_dir_as_zip(self, path: str, leaf="FILE") -> zipfile.ZipFile:
+    def read_dir_as_zip(self, path: str, leaf: str = "FILE") -> zipfile.ZipFile:
         """Read a directory on the
 
         Parameters
@@ -285,8 +285,8 @@ class Machine:
             ret = []
             for x in v:
                 d = {}
-                d["path"] = x["arglist"]["args"][0]  # type: ignore (mypy weirdness)
-                d |= x["arglist"]["opts"]  # type: ignore (mypy weirdness)
+                d["path"] = x["arglist"]["args"][0]  # type: ignore
+                d |= x["arglist"]["opts"]  # type: ignore
                 if d["type"] == "folder" and recursive:
                     ret += self.list_files(
                         d["path"], leaf=leaf, verbose=True, recursive=True
@@ -323,7 +323,7 @@ class Machine:
 
         return base64.decodebytes(x[7:-10])
 
-    def write_file(self, path: str, data: str | bytes):
+    def write_file(self, path: str, data: str | bytes) -> None:
         if isinstance(data, str):
             data = data.encode()
 
@@ -357,7 +357,7 @@ class Machine:
         return Experiment.from_machine_storage(self, path)
 
     def save_run_from_storage(
-        self, machine_path: str, download_path: str | IO[bytes], overwrite=False
+        self, machine_path: str, download_path: str | IO[bytes], overwrite: bool = False
     ) -> None:
         """Download a file from run storage on the machine.
 
@@ -436,7 +436,7 @@ class Machine:
         exclusive: bool = False,
         stealth: bool = False,
         _log: bool = True,
-    ):
+    ) -> None:
         access_level = AccessLevel(access_level)
 
         if access_level > AccessLevel(self.max_access_level):
@@ -460,14 +460,14 @@ class Machine:
             raise ValueError(ret)
         return AccessLevel(m[3]), m[2] == "True", m[1] == "True"
 
-    def drawer_open(self):
+    def drawer_open(self) -> None:
         """Open the machine drawer using the OPEN command. This will ensure proper
         cover/drawer operation.  It *will not check run status*, and will open and
         close the drawer during runs and potentially during imaging.
         """
         self.run_command("OPEN")
 
-    def drawer_close(self, lower_cover: bool = False):
+    def drawer_close(self, lower_cover: bool = False) -> None:
         """Close the machine drawer using the OPEN command. This will ensure proper
         cover/drawer operation.  It *will not check run status*, and will open and
         close the drawer during runs and potentially during imaging.
@@ -497,18 +497,18 @@ class Machine:
         assert f in ["Up", "Down", "Unknown"]
         return f  # type: ignore
 
-    def cover_lower(self):
+    def cover_lower(self) -> None:
         """Lower/engage the plate cover, closing the drawer if needed."""
         self.drawer_close(lower_cover=False)
         self.run_command("COVerDOWN")
 
-    def __exit__(self, exc_type: type, exc: Exception, tb: Any):
+    def __exit__(self, exc_type: type, exc: Exception, tb: Any) -> None:
         self.disconnect()
 
-    def __del__(self):
+    def __del__(self) -> None:
         self.disconnect()
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """Cleanly disconnect from the machine."""
         if self._qsc is None:
             raise ValueError("Not connected.")
@@ -522,22 +522,22 @@ class Machine:
             self._tunnel.stop()
             self._tunnel = None
 
-    def abort_current_run(self):
+    def abort_current_run(self) -> None:
         """Abort (stop immediately) the current run."""
         self.run_command("AbortRun ${RunTitle}")
 
-    def stop_current_run(self):
+    def stop_current_run(self) -> None:
         """Stop (stop after cycle end) the current run."""
         self.run_command("StopRun ${RunTitle}")
 
-    def pause_current_run(self):
+    def pause_current_run(self) -> None:
         """Pause the current run now."""
         self.run_command_to_ack("PAUSe")
 
-    def pause_current_run_at_temperature(self):
+    def pause_current_run_at_temperature(self) -> None:
         raise NotImplementedError
 
-    def resume_current_run(self):
+    def resume_current_run(self) -> None:
         """Resume the current run."""
         self.run_command_to_ack("RESume")
 
@@ -557,6 +557,14 @@ class Machine:
         else:
             raise ValueError(f"Unexpected power status: {s}")
 
+    @power.setter
+    def power(self, value: Literal["on", "off", True, False]):  # type: ignore
+        if value is True:
+            value = "on"
+        elif value is False:
+            value = "off"
+        self.run_command(f"POW {value}")
+
     @property
     def current_run_name(self) -> str | None:
         """Name of current run, or None if no run is active."""
@@ -566,16 +574,13 @@ class Machine:
         else:
             return out
 
-    @power.setter
-    def power(self, value: Literal["on", "off", True, False]):  # type: ignore
-        if value is True:
-            value = "on"
-        elif value is False:
-            value = "off"
-        self.run_command(f"POW {value}")
-
     @contextmanager
-    def at_access(self, access_level, exclusive=False, stealth=False):
+    def at_access(
+        self,
+        access_level: AccessLevel | str,
+        exclusive: bool = False,
+        stealth: bool = False,
+    ) -> Generator[Machine, None, None]:
         fac, fex, fst = self.get_access_level()
         self.set_access_level(access_level, exclusive, stealth, _log=False)
         log.info(f"Took access level {access_level} {exclusive=} {stealth=}.")
