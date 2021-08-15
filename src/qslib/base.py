@@ -104,32 +104,39 @@ class AccessLevel(Enum):
     Administrator = "Administrator"
     Full = "Full"
 
-    def __gt__(self, other: AccessLevel | str) -> bool:
+    def __gt__(self, other: object) -> bool:
         if isinstance(other, str):
             other = AccessLevel(other)
         if isinstance(other, AccessLevel):
             return _accesslevel_order[self.value] > _accesslevel_order[other.value]
         raise NotImplementedError
 
-    def __ge__(self, other: AccessLevel | str) -> bool:
+    def __ge__(self, other: object) -> bool:
         if isinstance(other, str):
             other = AccessLevel(other)
         if isinstance(other, AccessLevel):
             return _accesslevel_order[self.value] >= _accesslevel_order[other.value]
         raise NotImplementedError
 
-    def __lt__(self, other: AccessLevel | str) -> bool:
+    def __lt__(self, other: object) -> bool:
         if isinstance(other, str):
             other = AccessLevel(other)
         if isinstance(other, AccessLevel):
             return _accesslevel_order[self.value] < _accesslevel_order[other.value]
         raise NotImplementedError
 
-    def __le__(self, other: AccessLevel | str) -> bool:
+    def __le__(self, other: object) -> bool:
         if isinstance(other, str):
             other = AccessLevel(other)
         if isinstance(other, AccessLevel):
             return _accesslevel_order[self.value] <= _accesslevel_order[other.value]
+        raise NotImplementedError
+
+    def __eq__(self, other: object) -> bool:
+        if isinstance(other, str):
+            other = AccessLevel(other)
+        if isinstance(other, AccessLevel):
+            return _accesslevel_order[self.value] == _accesslevel_order[other.value]
         raise NotImplementedError
 
     def __str__(self) -> str:

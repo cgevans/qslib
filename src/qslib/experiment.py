@@ -1378,7 +1378,7 @@ class Experiment:
         return exp
 
     @classmethod
-    def from_uncollected(cls, machine: Machine, name: str) -> Experiment:
+    def from_uncollected(cls, machine: Machine, name: str, move: bool = False) -> Experiment:
         """Create an experiment from the uncollected (not yet compressed)
         storage.
 
@@ -1398,6 +1398,9 @@ class Experiment:
         exp = cls(_create_xml=False)
 
         crt = name
+
+        if move:
+            raise NotImplementedError
 
         if not crt:
             raise ValueError("Nothing is currently running.")
