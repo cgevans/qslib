@@ -107,6 +107,7 @@ def machine_status(machine: str, tunnel_host: str, tunnel_user: str) -> None:
     m.connect()
     rs = m.run_status()
     ms = m.machine_status()
+    mn = m.run_command("SYST:SETT:NICK?")
     m.disconnect()
 
     drawer = ms.drawer
@@ -140,7 +141,7 @@ def machine_status(machine: str, tunnel_host: str, tunnel_user: str) -> None:
         state = click.style(state, fg="red")
 
 
-    click.echo(f"Machine {machine} is {state}.")
+    click.echo(f"Machine {mn} is {state}.")
     click.echo(f"Drawer is {drawer}, cover is {cover}, and lamp is {lamp}.")
     if rs.state != "Idle":
         click.echo(f"Run {rs.name}. Stage {rs.stage}/{rs.num_stages},"
