@@ -1,5 +1,15 @@
 # Changelog
 
+## Version 0.3.0
+
+- Add qslib CLI, with some basic utility functions.
+- Include calculation using 1.6°c/s ramp (standard mode default) in
+  temperature protocols, initiating from 25°c. This makes experiment
+  temperature data match reasonably well with protocol calculations.
+  It needs to be expanded to handle different ramp rates and run
+  modes, however.
+- Added some tests.
+
 ## Version 0.2.0
 
 - Add internal SSH tunnel support, so that this doesn't need to be set up

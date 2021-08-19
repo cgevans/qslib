@@ -218,7 +218,8 @@ class Stage(XMLable):
                 for step in self._steps
             ]
         )
-        # ramp_rates = np.array(
+        ramp_rates = [1.6 for _ in range(1, self.repeat + 1) for step in self._steps]
+        # np.array(
         #    [step.ramp_rate for _ in range(1, self.repeat + 1) for step in self.body]
         # )
         collect_data = np.array(
@@ -227,24 +228,23 @@ class Stage(XMLable):
 
         # FIXME: is this how ramp rates actually work?
 
-        # ramp_durations = np.zeros(len(durations))
-        # if previous_temperatures is not None:
-        #    ramp_durations[0] = (
-        #        np.max(np.abs(temperatures[0] - previous_temperatures)) / ramp_rates[0]
-        #    )
-        #
-        # ramp_durations[1:] = (
-        #    np.max(np.abs(temperatures[1:] - temperatures[:-1]), axis=1)
-        #    / ramp_rates[1:]
-        # )
+        ramp_durations = np.zeros(len(durations))
+        if previous_temperatures is not None:
+            ramp_durations[0] = (
+                np.max(np.abs(temperatures[0] - previous_temperatures)) / ramp_rates[0]
+            )
+            ramp_durations[1:] = (
+                np.max(np.abs(temperatures[1:] - temperatures[:-1]), axis=1)
+                / ramp_rates[1:]
+            )
 
-        tot_durations = durations  # + ramp_durations
+        tot_durations = durations + ramp_durations
 
         start_times = start_time + np.zeros(len(durations))
-        start_times[0] = start_time  # + ramp_durations[0]
-        start_times[1:] = start_time + np.cumsum(
-            tot_durations[:-1]
-        )  # + ramp_durations[1:]
+        start_times[0] = start_time + ramp_durations[0]
+        start_times[1:] = (
+            start_time + np.cumsum(tot_durations[:-1]) + ramp_durations[1:]
+        )
 
         end_times = start_time + np.cumsum(tot_durations)
 
@@ -470,7 +470,7 @@ class Protocol(XMLable):
 
         stage_start_time = 0.0
         stagenum = 1
-        previous_temperatures = None
+        previous_temperatures = [25.0]*6
 
         for stage in self.stages:
             dataframe = stage.dataframe(stage_start_time, previous_temperatures)
