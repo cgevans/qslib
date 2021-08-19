@@ -16,7 +16,7 @@ def cli():
 @click.option("-n", "--open/--no-open", help="Open the file after creating it.")
 @click.argument('experiment', type=click.Path(exists=True))
 def protocol_plot(experiment, output, format, actual, open) -> None:
-    """Plot the temperature protocol in the file."""
+    """Plot the temperature protocol in an experiment."""
     import matplotlib.pyplot as plt
 
     experiment = Path(experiment)
@@ -26,7 +26,7 @@ def protocol_plot(experiment, output, format, actual, open) -> None:
     if output is None:
         output = experiment.with_suffix('.' + format)
 
-    fig, ax = plt.subplots()
+    fig, ax = plt.subplots(figsize=(21.0/2.54, 15.0/2.54))
 
     exp.protocol.tcplot(ax)
 
@@ -39,7 +39,7 @@ def protocol_plot(experiment, output, format, actual, open) -> None:
 @cli.command()
 @click.argument('experiment', type=click.Path(exists=True))
 def protocol_desc(experiment: str | Path) -> None:
-    """Print a description of the protocol."""
+    """Print a description of the protocol in an experiment."""
     experiment = Path(experiment)
 
     exp = Experiment.from_file(experiment)
@@ -49,7 +49,7 @@ def protocol_desc(experiment: str | Path) -> None:
 @cli.command()
 @click.argument('experiment', type=click.Path(exists=True))
 def export_temperatures(experiment: str | Path) -> None:
-    """Export temperature readings, as a CSV file."""
+    """Export temperature readings from an experiment, as a CSV file."""
 
     experiment = Path(experiment)
 
@@ -61,7 +61,7 @@ def export_temperatures(experiment: str | Path) -> None:
 @cli.command()
 @click.argument('experiment', type=click.Path(exists=True))
 def export_data(experiment: str | Path) -> None:
-    """Export fluorescence reading data, as a CSV file."""
+    """Export fluorescence reading data from an experiment, as a CSV file."""
     experiment = Path(experiment)
 
     exp = Experiment.from_file(experiment)
@@ -84,7 +84,7 @@ def info(experiment: str) -> None:
 @click.option('-t', '--tunnel-host')
 @click.option('-u', '--tunnel-user')
 def run(experiment: str, machine: str, tunnel_host: str, tunnel_user: str) -> None:
-    """Run an ekperiment."""
+    """Run an experiment."""
     exp = Experiment.from_file(experiment)
 
     import logging
