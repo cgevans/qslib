@@ -514,7 +514,7 @@ class Machine:
         if self._qsc is None:
             raise ConnectionError(f"Not connected to {self.host}.")
 
-        loop = asyncio.get_running_loop()
+        loop = asyncio.get_event_loop()
 
         loop.run_until_complete(self._qsc.disconnect())
         self._qsc = None
