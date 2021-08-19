@@ -302,20 +302,71 @@ class Experiment:
         str
             Summary
         """
-        s = f"QS Experiment {self.name} ({self.runstate})\n\n"
+        s = f"# QS Experiment {self.name} ({self.runstate})\n\n"
         s += f"{self.protocol}\n\n"
         if plate == "list":
             s += f"{self.plate_setup}\n"
         elif plate == "table":
-            s += f"{self.plate_setup.to_table(tablefmt=_TABLE_FORMAT.get(format, format))}\n"
-        s += f"Created: {self.createdtime}\n"
+            s += f"{self.plate_setup.to_table(tablefmt=_TABLE_FORMAT.get(format, format))}\n\n"
+        s += f"- Created: {self.createdtime}\n"
         if self.runstarttime:
-            s += f"Run Started: {self.runstarttime}\n"
+            s += f"- Run Started: {self.runstarttime}\n"
         if self.runendtime:
-            s += f"Run Ended: {self.runendtime}\n"
-        s += f"Written by: {self.writesoftware}\n"
-        s += f"Read by: QSLib {__version__}\n"
+            s += f"- Run Ended: {self.runendtime}\n"
+        s += f"- Written by: {self.writesoftware}\n"
+        s += f"- Read by: QSLib {__version__}\n"
         return s
+
+    def info_html(self) -> str | ET.ElementTree | None:
+        summary = self.summary(plate='table')
+
+        import matplotlib.pyplot as plt
+        fig, ax = plt.subplots(figsize=(21.0 / 2.54, 15.0 / 2.54))
+        self.protocol.tcplot(ax)
+
+        o = io.StringIO()
+        fig.savefig(o, format='svg')
+        o = o.getvalue()
+        o = re.search("<svg.*</svg>", o, re.DOTALL)[0]
+
+        import markdown
+        ost = markdown.markdown(summary, output_format='xhtml', extensions=['tables'])
+        
+        s = f"""
+<!DOCTYPE html>
+<html>
+<head>
+<title>{self.name}</title>
+<style>
+table {{
+    font-size: 10pt;
+    border-collapse: collapse;
+    margin-left: auto;
+    margin-right: auto;
+}}
+svg {{
+    margin-left: auto;
+    margin-right: auto;
+}}
+td:first-of-type {{
+    font-weight: bold;
+}}
+table, th, td {{
+    border: 1px solid black;
+}}
+</style>
+</head>
+<body>
+{ost}
+
+{o}
+</body>
+</html>
+        """
+
+        return s
+
+        
 
     def __str__(self) -> str:
         return self.summary()
@@ -382,7 +433,7 @@ class Experiment:
             The machine already has a folder for this run in its working runs folder.
         """
         machine = self._ensure_machine(machine, password)
-        log.info(f"Attempting to sat {self.runtitle_safe} on {machine.host}.")
+        log.info(f"Attempting to start {self.runtitle_safe} on {machine.host}.")
 
         # Ensure machine isn't running:
         if (x := machine.run_status()).state.upper() != "IDLE":
@@ -1378,7 +1429,9 @@ class Experiment:
         return exp
 
     @classmethod
-    def from_uncollected(cls, machine: Machine, name: str, move: bool = False) -> Experiment:
+    def from_uncollected(
+        cls, machine: Machine, name: str, move: bool = False
+    ) -> Experiment:
         """Create an experiment from the uncollected (not yet compressed)
         storage.
 
