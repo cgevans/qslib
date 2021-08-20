@@ -149,6 +149,32 @@ def run(experiment: str, machine: str, tunnel_host: str, tunnel_user: str) -> No
 
 @cli.command()
 @click.argument("machine")
+@click.argument("state", type=click.Choice(["on", "off"]))
+@click.option("-t", "--tunnel-host")
+@click.option("-u", "--tunnel-user")
+def machine_power(machine: str, tunnel_host: str, tunnel_user: str, state: str) -> None:
+    """Turn the lamp/heat-block on or off (if idle)."""
+    m = Machine(
+        machine,
+        max_access_level="Controller",
+        tunnel_host=tunnel_host,
+        tunnel_user=tunnel_user,
+    )
+
+    with m:
+        rs = m.run_status()
+        ms = m.machine_status()
+        mn = m.run_command("SYST:SETT:NICK?")
+        
+        if rs != "Idle":
+            raise click.UsageError(f"Machine {mn} is currently running {rs.name}, not changing power state during run.")
+        else:
+            with m.at_access("Controller"):
+                m.power = {"on": True, "off": False}[state]
+
+
+@cli.command()
+@click.argument("machine")
 @click.option("-t", "--tunnel-host")
 @click.option("-u", "--tunnel-user")
 def machine_status(machine: str, tunnel_host: str, tunnel_user: str) -> None:
