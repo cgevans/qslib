@@ -183,7 +183,7 @@ class Collector:
         else:
             name = None
 
-        run = '"' + cast(str, args["run"]) + '"'
+        run = cast(str, args["run"])
         del args["run"]
         for k, v in args.items():
             if k != "run":
