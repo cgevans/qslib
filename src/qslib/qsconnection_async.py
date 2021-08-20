@@ -252,7 +252,7 @@ class QSConnectionAsync:
 
         ql = (
             await self.get_expfile_list(
-                f'"{run}/apldbio/sds/quant/' f'{f.filename_reading_string}_E*.quant"'
+                f'{run}/apldbio/sds/quant/{f.filename_reading_string}_E*.quant'
             )
         )[-1]
         qf = await self.get_exp_file(ql)
