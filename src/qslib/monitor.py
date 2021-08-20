@@ -150,8 +150,10 @@ class Collector:
             )
 
             self.matrix_client = AsyncClient(
-                self.config["matrix"]["host"], self.config["matrix"]["user"],
-                store_path='./matrix_store/', config=self.matrix_config
+                self.config["matrix"]["host"],
+                self.config["matrix"]["user"],
+                store_path="./matrix_store/",
+                config=self.matrix_config,
             )
 
     def inject(self, t):
@@ -162,7 +164,7 @@ class Collector:
             room_id=self.config["matrix"]["room"],
             message_type="m.room.message",
             content={"msgtype": "m.text", "body": msg},
-            ignore_unverified_devices=True
+            ignore_unverified_devices=True,
         )
 
         await self.matrix_client.sync()
@@ -177,11 +179,6 @@ class Collector:
             pa = state.run.plate_setup.well_samples_as_array()
         else:
             pa = None
-
-        if state.run.name:
-            name = state.run.name
-        else:
-            name = None
 
         run = cast(str, args["run"])
         del args["run"]
@@ -202,7 +199,7 @@ class Collector:
         lp: List[str] = sum(
             [
                 (await connection.get_filterdata_one(*x)).to_lineprotocol(
-                    run_name=name, sample_array=pa
+                    run_name=run, sample_array=pa
                 )
                 for x in toget
             ],
@@ -355,8 +352,11 @@ class Collector:
 
         if self.matrix_client is not None:
             await self.matrix_client.login(self.config["matrix"]["password"])
-            if self.config['matrix']['room'] not in (await self.matrix_client.joined_rooms()).rooms:
-                await self.matrix_client.join(self.config['matrix']['room'])
+            if (
+                self.config["matrix"]["room"]
+                not in (await self.matrix_client.joined_rooms()).rooms
+            ):
+                await self.matrix_client.join(self.config["matrix"]["room"])
 
         async with QSConnectionAsync(
             host=self.config["machine"]["host"],
