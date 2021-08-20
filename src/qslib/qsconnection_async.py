@@ -8,6 +8,7 @@ import base64
 from .qs_is_protocol import Error, QS_IS_Protocol
 
 import qslib.data as data
+import shlex
 import pandas as pd
 import xml.etree.ElementTree as ET
 from .base import AccessLevel
@@ -174,7 +175,7 @@ class QSConnectionAsync:
         await self.run_command("ACC " + level.value)
 
     async def get_expfile_list(self, glob: str) -> List[str]:
-        fl = await self.run_command(f"EXP:LIST? {glob}")
+        fl = await self.run_command(f"EXP:LIST? {shlex.quote(glob)}")
         assert fl.startswith("<quote.reply>")
         assert fl.endswith("</quote.reply>")
         return fl.split("\n")[1:-1]
@@ -186,7 +187,7 @@ class QSConnectionAsync:
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
     ) -> bytes:
         reply = await self.run_command_to_bytes(
-            f"EXP:READ? -encoding={encoding} {path}"
+            f"EXP:READ? -encoding={encoding} {shlex.quote(path)}"
         )
         assert reply.startswith(b"<quote>\n")
         assert reply.endswith(b"</quote>")
@@ -200,7 +201,7 @@ class QSConnectionAsync:
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
     ) -> bytes:
         reply = await self.run_command_to_bytes(
-            f"FILE:READ? -encoding={encoding} {path}"
+            f"FILE:READ? -encoding={encoding} {shlex.quote(path)}"
         )
         assert reply.startswith(b"<quote>\n")
         assert reply.endswith(b"</quote>")
@@ -239,13 +240,10 @@ class QSConnectionAsync:
         else:
             filterset_r = filterset
 
-        if " " in run and run[0] != '"':
-            run = '"' + run + '"'
-
         fl = await self.get_exp_file(
-            f'{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}'
+            f"{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
             f"_T{step:02}_P{point:04}_M{filterset_r.em}"
-            f'_X{filterset_r.ex}_filterdata.xml'
+            f"_X{filterset_r.ex}_filterdata.xml"
         )
 
         if (x := ET.parse(io.BytesIO(fl)).find("PlatePointData/PlateData")) is not None:
@@ -255,7 +253,7 @@ class QSConnectionAsync:
 
         ql = (
             await self.get_expfile_list(
-                f'{run}/apldbio/sds/quant/{f.filename_reading_string}_E*.quant'
+                f"{run}/apldbio/sds/quant/{f.filename_reading_string}_E*.quant"
             )
         )[-1]
         qf = await self.get_exp_file(ql)
