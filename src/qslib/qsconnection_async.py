@@ -240,9 +240,9 @@ class QSConnectionAsync:
             filterset_r = filterset
 
         fl = await self.get_exp_file(
-            f'"{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}'
+            f'{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}'
             f"_T{step:02}_P{point:04}_M{filterset_r.em}"
-            f'_X{filterset_r.ex}_filterdata.xml"'
+            f'_X{filterset_r.ex}_filterdata.xml'
         )
 
         if (x := ET.parse(io.BytesIO(fl)).find("PlatePointData/PlateData")) is not None:
