@@ -166,7 +166,7 @@ def machine_power(machine: str, tunnel_host: str, tunnel_user: str, state: str) 
         ms = m.machine_status()
         mn = m.run_command("SYST:SETT:NICK?")
         
-        if rs != "Idle":
+        if rs.state != "Idle":
             raise click.UsageError(f"Machine {mn} is currently running {rs.name}, not changing power state during run.")
         else:
             with m.at_access("Controller"):
