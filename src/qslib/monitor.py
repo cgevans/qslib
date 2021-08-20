@@ -181,6 +181,10 @@ class Collector:
             pa = None
 
         run = cast(str, args["run"])
+
+        if run.startswith('"'):
+            run = run[1:-1]
+
         del args["run"]
         for k, v in args.items():
             if k != "run":
