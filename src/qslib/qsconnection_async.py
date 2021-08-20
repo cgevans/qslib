@@ -181,7 +181,7 @@ class QSConnectionAsync:
         return fl.split("\n")[1:-1]
 
     async def get_run_title(self) -> str:
-        return await self.run_command("RUNTitle?")
+        return (await self.run_command("RUNTitle?")).strip('"')
 
     async def get_exp_file(
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
