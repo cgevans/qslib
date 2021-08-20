@@ -239,6 +239,9 @@ class QSConnectionAsync:
         else:
             filterset_r = filterset
 
+        if " " in run and run[0] != '"':
+            run = '"' + run + '"'
+
         fl = await self.get_exp_file(
             f'{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}'
             f"_T{step:02}_P{point:04}_M{filterset_r.em}"
