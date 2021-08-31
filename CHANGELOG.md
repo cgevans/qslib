@@ -1,5 +1,11 @@
 # Changelog
 
+## Version 0.3.1
+
+- CLI improvements.
+- Fix qs-monitor and various functions when run titles have spaces in them.
+- Improve tests and typing.
+
 ## Version 0.3.0
 
 - Add qslib CLI, with some basic utility functions.
