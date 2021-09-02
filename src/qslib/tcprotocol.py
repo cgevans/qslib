@@ -94,7 +94,7 @@ class ProtoCommand(ABC):
 class BaseStep(ABC):
     @property
     @abstractmethod
-    def body(self) -> Iterable[ProtoCommand]:
+    def body(self) -> List[ProtoCommand]:
         ...
 
     @property
@@ -107,16 +107,11 @@ class BaseStep(ABC):
     def repeat(self) -> int:
         ...
 
+    @abstractmethod
     def info_str(self, index=None, repeats=1) -> str:
-        if index is not None:
-            s = f"{index}. "
-        else:
-            s = f"- "
-        s += f"Step{' '+str(self.identifier) if self.identifier is not None else ''} of commands:\n"
-        s += "\n".join(f"  {i+1}. " + c.to_command() for i, c in enumerate(self.body))
-        return s
+        ...
 
-    def to_command(self, *, stepindex, **kwargs):
+    def to_command(self, *, stepindex: int, **kwargs) -> str:
         s = "STEP "
         if self.repeat != 1:
             s += f"-repeat={self.repeat} "
@@ -325,13 +320,15 @@ class Stage(XMLable):
         ET.SubElement(e, "NumOfRepetitions").text = str(int(self.repeat))
         scycle: set[int] = set()
         for s in self._steps:
-            scycle.add(s.temp_incrementcycle)
-            scycle.add(s.time_incrementcycle)
-            assert isinstance(s, XMLable)
-            e.append(s.to_xml())
+            if isinstance(s, Step):
+                scycle.add(s.temp_incrementcycle)
+                scycle.add(s.time_incrementcycle)
+            if isinstance(s, XMLable):
+                e.append(s.to_xml())
         if len(scycle) > 1:
             log.warn("Approx")
-        ET.SubElement(e, "StartingCycle").text = str(next(iter(scycle)))
+        if scycle:
+            ET.SubElement(e, "StartingCycle").text = str(next(iter(scycle)))
         ET.SubElement(e, "AutoDeltaEnabled").text = "true"
 
         return e
@@ -669,13 +666,13 @@ class Protocol(XMLable):
 @dataclass
 class Exposure(ProtoCommand):
     # We don't support persistent... it doesn't seem safe
-    settings: Mapping[FilterSet, Sequence[int]]
+    settings: List[Tuple[FilterSet, Sequence[int]]]
     state: str = "HoldAndCollect"
 
     def to_command(self, **kwargs) -> str:
         settingstrings = [
             k.hacform + "," + ",".join(str(x) for x in v)
-            for k, v in self.settings.items()
+            for k, v in self.settings
         ]
 
         return f"EXP -state={self.state} " + " ".join(settingstrings)
@@ -1036,3 +1033,30 @@ class Step(BaseStep, XMLable):
     @classmethod
     def fromdict(cls, d: dict[str, Any]) -> "Step":
         return cls(**d)
+
+
+@dataclass
+class CustomStep(BaseStep):
+    _body: List[ProtoCommand]
+    repeat: int = 1
+    identifier: int | str | None = None
+
+    @property
+    def body(self) -> List[ProtoCommand]:
+        return self._body
+
+    @body.setter
+    def body(self, v: Sequence[ProtoCommand]):
+        self._body = v
+
+    def total_duration(self, repeat: int = 1) -> int:
+        return 0
+
+    def info_str(self, index=None, repeats=1) -> str:
+        if index is not None:
+            s = f"{index}. "
+        else:
+            s = f"- "
+        s += f"Step{' '+str(self.identifier) if self.identifier is not None else ''} of commands:\n"
+        s += "\n".join(f"  {i+1}. " + c.to_command() for i, c in enumerate(self.body))
+        return s
