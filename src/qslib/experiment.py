@@ -331,7 +331,7 @@ class Experiment:
 
         import markdown
         ost = markdown.markdown(summary, output_format='xhtml', extensions=['tables'])
-        
+
         s = f"""
 <!DOCTYPE html>
 <html>
@@ -365,8 +365,6 @@ table, th, td {{
         """
 
         return s
-
-        
 
     def __str__(self) -> str:
         return self.summary()
@@ -565,7 +563,6 @@ table, th, td {{
             machine.abort_current_run()
 
     def get_status(self, machine: Machine | None = None) -> RunStatus:
-
         """
         Return the status of the experiment, if currently running.
 
@@ -1537,7 +1534,8 @@ table, th, td {{
 
         self.name = exml.findtext("Name") or "unknown"
         self.user = _text_or_none(exml, "Operator")
-        self.createdtime = datetime.fromtimestamp(float(_find_or_raise(exml, "CreatedTime").text) / 1000.0)  # type: ignore
+        self.createdtime = datetime.fromtimestamp(
+            float(_find_or_raise(exml, "CreatedTime").text) / 1000.0)  # type: ignore
         self.runstate = exml.findtext("RunState") or "UNKNOWN"  # type: ignore
         self.writesoftware = (
             exml.findtext(
@@ -1574,17 +1572,20 @@ table, th, td {{
             qstcxml = ET.parse(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
 
             if (x := qstcxml.find("QSLibProtocolCommand")) is not None:
-                self._protocol_from_qslib = Protocol.from_command(x.text)
+                try:
+                    self._protocol_from_qslib = Protocol.from_command(x.text)
+                except ValueError:
+                    self._protocol_from_qslib = None
             else:
                 self._protocol_from_qslib = None
 
             if (x := qstcxml.findtext("MachineConnection")) and not self.machine:
                 self.machine = Machine(toml.loads(x))
-        # try:
-        self._protocol_from_xml = Protocol.from_xml(exml.getroot())
-        # except Exception as e:
-        #    print(e)
-        #    self._protocol_from_xml = None
+        try:
+            self._protocol_from_xml = Protocol.from_xml(exml.getroot())
+        except Exception as e:
+            print(e)
+            self._protocol_from_xml = None
 
     def _update_platesetup_xml(self) -> None:
         x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml"))
@@ -1621,7 +1622,8 @@ table, th, td {{
             self._welldata = None
 
         if self._welldata is not None:
-            self.rawdata = _fdc_to_rawdata(self.welldata, self.activestarttime.timestamp() if self.activestarttime else None)  # type: ignore
+            self.rawdata = _fdc_to_rawdata(self.welldata, self.activestarttime.timestamp()
+                                           if self.activestarttime else None)  # type: ignore
             self.filterdata = self.rawdata
 
     def data_for_sample(self, sample: str) -> pd.DataFrame:
@@ -1702,28 +1704,31 @@ table, th, td {{
 
         tt = []
 
-        # In normal runs, the protocol is there without the PROT command at the
-        # beginning of the log as an info command, with quote.message.  Let's
-        # try to grab it!
-        if m := re.match(
-            r"^Info (?:[\d.]+) (<quote.message>.*?</quote.message>)",
-            msglog,
-            re.DOTALL | re.MULTILINE,
-        ):
-            # We can get the prot name too, and sample volume!
-            rp = re.search(
-                r"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?(?:-SampleVolume=(?P<sv>[\d.]+) )?([\w-]+) (?P<protoname>[\w-]+)",
+        try:
+            # In normal runs, the protocol is there without the PROT command at the
+            # beginning of the log as an info command, with quote.message.  Let's
+            # try to grab it!
+            if m := re.match(
+                r"^Info (?:[\d.]+) (<quote.message>.*?</quote.message>)",
                 msglog,
-                re.IGNORECASE,
-            )
-            if rp:
-                prot = Protocol.from_command(f"PROT {rp['protoname']} {m[1]}")
-                if rp[1]:
-                    prot.volume = float(rp["sv"])
+                re.DOTALL | re.MULTILINE,
+            ):
+                # We can get the prot name too, and sample volume!
+                rp = re.search(
+                    r"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?(?:-SampleVolume=(?P<sv>[\d.]+) )?([\w-]+) (?P<protoname>[\w-]+)",
+                    msglog,
+                    re.IGNORECASE,
+                )
+                if rp:
+                    prot = Protocol.from_command(f"PROT {rp['protoname']} {m[1]}")
+                    if rp[1]:
+                        prot.volume = float(rp["sv"])
+                else:
+                    prot = Protocol.from_command(f"PROT unknown_name {m[1]}")
+                self._protocol_from_log = prot
             else:
-                prot = Protocol.from_command(f"PROT unknown_name {m[1]}")
-            self._protocol_from_log = prot
-        else:
+                self._protocol_from_log = None
+        except ValueError:
             self._protocol_from_log = None
 
         for m in re.finditer(
