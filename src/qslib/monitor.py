@@ -14,6 +14,9 @@ from .parser import arglist
 
 from qslib.plate_setup import PlateSetup
 from qslib.qsconnection_async import QSConnectionAsync
+
+from qslib.qsconnection_async import _parse_fd_fn as parse_fd_fn
+
 import logging
 
 from influxdb_client import InfluxDBClient, Point  # , Point, WritePrecision
@@ -117,10 +120,10 @@ class State:
         return n
 
 
-def parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
-    s = re.search(r"S(\d{2})_C(\d{3})_T(\d{2})_P(\d{4})_M(\d)_X(\d)_filterdata.xml$", x)
-    assert s is not None
-    return (f"x{s[6]}-m{s[5]}", int(s[1]), int(s[2]), int(s[3]), int(s[4]))
+#def parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
+#    s = re.search(r"S(\d{2})_C(\d{3})_T(\d{2})_P(\d{4})_M(\d)_X(\d)_filterdata.xml$", x)
+#    assert s is not None
+#    return (f"x{s[6]}-m{s[5]}", int(s[1]), int(s[2]), int(s[3]), int(s[4]))
 
 
 def index_to_filename_ref(i: Tuple[str, int, int, int, int]) -> str:
