@@ -1,6 +1,11 @@
 # Changelog
 
-## Version 0.4.0
+## Version 0.3.2
+
+- Fixes to bugs inhibiting exposure setting, and some basic
+  implementations for this.
+- Fixes to qs-monitor for cycle counts > 999 (and other large stage / step 
+  / cycle counts).
 
 ## Version 0.3.1
 
