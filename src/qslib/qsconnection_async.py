@@ -33,7 +33,7 @@ def _parse_argstring(argstring: str) -> Dict[str, str]:
 
 
 def _parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
-    s = re.search(r"S(\d{2})_C(\d{3})_T(\d{2})_P(\d{4})_M(\d)_X(\d)_filterdata.xml$", x)
+    s = re.search(r"S(\d+)_C(\d+)_T(\d+)_P(\d+)_M(\d)_X(\d)_filterdata.xml$", x)
     if s is None:
         raise ValueError
     return (f"x{s[6]}-m{s[5]}", int(s[1]), int(s[2]), int(s[3]), int(s[4]))
