@@ -12,6 +12,7 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
+    Type,
     Union,
     cast,
 )
@@ -151,6 +152,24 @@ class Stage(XMLable):
         ):
             return False
         return self._steps == other._steps
+
+    @classmethod
+    def stepped_ramp(cls: Type[Stage], temp_from: float, temp_to: float, 
+                     total_time: int, nsteps: int,
+                     collect: bool=False,
+                     filters: Sequence = tuple()):
+        
+
+        step_time = int(round(total_time / nsteps))
+
+        temp_increment = round((temp_to-temp_from)/(nsteps-1), 4)
+
+        return cls(
+            Step(step_time, temp_from, collect=collect,
+            temp_increment=temp_increment, filters=filters),
+            repeat=nsteps
+        )
+
 
     @property
     def steps(self) -> list[BaseStep]:
