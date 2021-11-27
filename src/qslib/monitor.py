@@ -406,7 +406,7 @@ class Collector:
             ok = True
             while ok:
                 await asyncio.wait((c._protocol.lostconnection,), timeout=60)
-                log.info("""keepalive check""")
+
                 # Have we lost the connection?
                 if c._protocol.lostconnection.done():
                     log.error("Lost connection.")
