@@ -403,8 +403,6 @@ class Collector:
 
             log.info(c._protocol.topic_handlers)
 
-            await c._protocol.lostconnection
-
             ok = True
             while ok:
                 await asyncio.wait((c._protocol.lostconnection,), timeout=60)
