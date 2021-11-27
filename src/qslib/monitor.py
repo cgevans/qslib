@@ -120,7 +120,7 @@ class State:
         return n
 
 
-#def parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
+# def parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
 #    s = re.search(r"S(\d{2})_C(\d{3})_T(\d{2})_P(\d{4})_M(\d)_X(\d)_filterdata.xml$", x)
 #    assert s is not None
 #    return (f"x{s[6]}-m{s[5]}", int(s[1]), int(s[2]), int(s[3]), int(s[4]))
@@ -404,7 +404,25 @@ class Collector:
             log.info(c._protocol.topic_handlers)
 
             await c._protocol.lostconnection
-            log.error("Lost connection")
+
+            ok = True
+            while ok:
+                await asyncio.wait((c._protocol.lostconnection, asyncio.sleep(60)))
+
+                # Have we lost the connection?
+                if c._protocol.lostconnection.done():
+                    log.error("Lost connection.")
+                    ok = False
+
+                # No, we have a sleep timeout.  Send a test command.
+                try:
+                    await asyncio.wait_for(c.run_command("ISTAT?"), 30.0)
+                except TimeoutError:
+                    log.error(
+                        "No data received in 5 minutes and ISTAT? test timed out.  Trying to disconnect."
+                    )
+                    await c.disconnect()
+                    raise TimeoutError
 
     async def reliable_monitor(self):
         log.info("starting reconnectable monitoring")
@@ -429,4 +447,4 @@ class Collector:
                     log.critical(f"giving up, error {e}")
                     restart = False
             log.debug("awaiting retry")
-            await asyncio.sleep(15)
+            await asyncio.sleep(30)

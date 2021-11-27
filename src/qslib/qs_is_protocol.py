@@ -6,6 +6,7 @@ import re
 import io
 from dataclasses import dataclass
 from typing import Any, Coroutine, Optional, Protocol
+import time
 
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
@@ -38,11 +39,15 @@ class SubHandler(Protocol):
 
 
 class QS_IS_Protocol(asyncio.Protocol):
+    lostconnection: Future[Any]
+    last_received: float
+
     def __init__(self) -> None:
         self.default_topic_handler = self._default_topic_handler
         self.readymsg = asyncio.get_running_loop().create_future()
         self.lostconnection = asyncio.get_running_loop().create_future()
         self.should_be_connected = False
+        self.last_received = time.time()
 
     def connection_lost(self, exc: Optional[Exception]) -> None:
         if self.should_be_connected:
@@ -61,16 +66,19 @@ class QS_IS_Protocol(asyncio.Protocol):
         self.should_be_connected = True
         # setup connection.
         self.transport = transport
-        self.waiting_commands: list[tuple[bytes, None | Future[tuple[bytes, bytes]]]] = []
+        self.waiting_commands: list[
+            tuple[bytes, None | Future[tuple[bytes, bytes]]]
+        ] = []
         self.buffer = io.BytesIO()
         self.quote_stack: list[bytes] = []
         self.topic_handlers: dict[bytes, SubHandler] = {}
-        pass
+        self.last_received = time.time()
 
     async def _default_topic_handler(
         self, topic: bytes, message: bytes, timestamp: Optional[float] = None
     ) -> None:
         log.info(f"{topic.decode()} at {timestamp}: {message.decode()}")
+        self.last_received = time.time()
 
     async def handle_sub_message(self, message: bytes) -> None:
         i = message.index(b" ")
@@ -143,6 +151,7 @@ class QS_IS_Protocol(asyncio.Protocol):
                 self.buffer.write(data[lastwrite : m.end()])
                 lastwrite = m.end()
         self.buffer.write(data[lastwrite:])
+        self.last_received = time.time()
 
     async def run_command(
         self,
