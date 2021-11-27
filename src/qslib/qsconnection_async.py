@@ -75,6 +75,8 @@ def _validate_command_format(commandstring: str) -> None:
 class QSConnectionAsync:
     """Class for connection to a QuantStudio instrument server, using asyncio"""
 
+    _protocol: QS_IS_Protocol
+
     async def __aenter__(self) -> QSConnectionAsync:
         await self.connect()
         return self
@@ -274,7 +276,9 @@ class QSConnectionAsync:
     ) -> pd.DataFrame:
         ...
 
-    async def get_all_filterdata(self, run=None, as_list: bool = False) -> pd.DataFrame:
+    async def get_all_filterdata(
+        self, run=None, as_list: bool = False
+    ) -> Union[pd.DataFrame, List[data.FilterDataReading]]:
         if run is None:
             run = await self.get_run_title()
 
