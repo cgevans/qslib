@@ -408,10 +408,15 @@ class Collector:
             ok = True
             while ok:
                 await asyncio.wait((c._protocol.lostconnection,), timeout=60)
+                log.info("""keepalive check""")
                 # Have we lost the connection?
                 if c._protocol.lostconnection.done():
                     log.error("Lost connection.")
                     ok = False
+
+                # Are we actually fine?
+                if time.time() - c._protocol.last_received <= 60.0:
+                    continue
 
                 # No, we have a sleep timeout.  Send a test command.
                 try:
