@@ -6,6 +6,7 @@ from itertools import zip_longest
 from typing import (
     Any,
     ClassVar,
+    Collection,
     Iterable,
     List,
     Mapping,
@@ -154,22 +155,30 @@ class Stage(XMLable):
         return self._steps == other._steps
 
     @classmethod
-    def stepped_ramp(cls: Type[Stage], temp_from: float, temp_to: float, 
-                     total_time: int, nsteps: int,
-                     collect: bool=False,
-                     filters: Sequence = tuple()):
-        
+    def stepped_ramp(
+        cls: Type[Stage],
+        temp_from: float,
+        temp_to: float,
+        total_time: int,
+        nsteps: int,
+        collect: bool = False,
+        filters: Sequence = tuple(),
+    ):
 
         step_time = int(round(total_time / nsteps))
 
-        temp_increment = round((temp_to-temp_from)/(nsteps-1), 4)
+        temp_increment = round((temp_to - temp_from) / (nsteps - 1), 4)
 
         return cls(
-            Step(step_time, temp_from, collect=collect,
-            temp_increment=temp_increment, filters=filters),
-            repeat=nsteps
+            Step(
+                step_time,
+                temp_from,
+                collect=collect,
+                temp_increment=temp_increment,
+                filters=filters,
+            ),
+            repeat=nsteps,
         )
-
 
     @property
     def steps(self) -> list[BaseStep]:
@@ -486,7 +495,7 @@ class Protocol(XMLable):
 
         stage_start_time = 0.0
         stagenum = 1
-        previous_temperatures = [25.0]*6
+        previous_temperatures = [25.0] * 6
 
         for stage in self.stages:
             dataframe = stage.dataframe(stage_start_time, previous_temperatures)
@@ -523,6 +532,17 @@ class Protocol(XMLable):
         alltimes[:-1:2] = d["start_time"]
         alltimes[1::2] = d["end_time"]
         return alltimes
+
+    @property
+    def all_filters(self) -> Collection[FilterSet]:
+        filters = {FilterSet.fromstring(f) for f in self.filters}
+
+        for stage in self.stages:
+            for step in stage.steps:
+                if isinstance(step, Step) and step.collect:
+                    filters |= {FilterSet.fromstring(f) for f in step.filters}
+
+        return filters
 
     def copy(self) -> Protocol:
         return deepcopy(self)
@@ -690,8 +710,7 @@ class Exposure(ProtoCommand):
 
     def to_command(self, **kwargs) -> str:
         settingstrings = [
-            k.hacform + "," + ",".join(str(x) for x in v)
-            for k, v in self.settings
+            k.hacform + "," + ",".join(str(x) for x in v) for k, v in self.settings
         ]
 
         return f"EXP -state={self.state} " + " ".join(settingstrings)

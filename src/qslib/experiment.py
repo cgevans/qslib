@@ -12,7 +12,7 @@ import zipfile
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from glob import glob
-from typing import IO, Literal
+from typing import IO, Collection, Literal
 from pathlib import Path
 
 import pandas as pd
@@ -20,11 +20,14 @@ import toml as toml
 from qslib.base import AccessLevel
 from qslib.plate_setup import PlateSetup
 
-from .data import df_from_readings, FilterDataReading
+from .data import FilterSet, df_from_readings, FilterDataReading
 from .machine import Machine, RunStatus
 from .tcprotocol import Protocol, Stage, Step
 from .util import *
 from ._version import version as __version__  # type: ignore
+
+from .plots import FlPlotting
+
 
 TEMPLATE_NAME = "ruo"
 
@@ -97,7 +100,7 @@ log = logging.getLogger("experiment")
 _TABLE_FORMAT = {"markdown": "pipe", "org": "orgtbl"}
 
 
-class Experiment:
+class Experiment(FlPlotting):
     """A QuantStudio experiment / EDS file
 
     This class can create, modify, load and save experiments in several ways, run them,
@@ -254,6 +257,10 @@ class Experiment:
     """
 
     @property
+    def all_filters(self) -> Collection[FilterSet]:
+        return self.protocol.all_filters
+
+    @property
     def welldata(self) -> pd.DataFrame:
         """
         A DataFrame with fluorescence reading information.
@@ -318,19 +325,21 @@ class Experiment:
         return s
 
     def info_html(self) -> str | ET.ElementTree | None:
-        summary = self.summary(plate='table')
+        summary = self.summary(plate="table")
 
         import matplotlib.pyplot as plt
+
         fig, ax = plt.subplots(figsize=(21.0 / 2.54, 15.0 / 2.54))
         self.protocol.tcplot(ax)
 
         o = io.StringIO()
-        fig.savefig(o, format='svg')
+        fig.savefig(o, format="svg")
         o = o.getvalue()
         o = re.search("<svg.*</svg>", o, re.DOTALL)[0]
 
         import markdown
-        ost = markdown.markdown(summary, output_format='xhtml', extensions=['tables'])
+
+        ost = markdown.markdown(summary, output_format="xhtml", extensions=["tables"])
 
         s = f"""
 <!DOCTYPE html>
@@ -1535,7 +1544,8 @@ table, th, td {{
         self.name = exml.findtext("Name") or "unknown"
         self.user = _text_or_none(exml, "Operator")
         self.createdtime = datetime.fromtimestamp(
-            float(_find_or_raise(exml, "CreatedTime").text) / 1000.0)  # type: ignore
+            float(_find_or_raise(exml, "CreatedTime").text) / 1000.0
+        )  # type: ignore
         self.runstate = exml.findtext("RunState") or "UNKNOWN"  # type: ignore
         self.writesoftware = (
             exml.findtext(
@@ -1622,8 +1632,10 @@ table, th, td {{
             self._welldata = None
 
         if self._welldata is not None:
-            self.rawdata = _fdc_to_rawdata(self.welldata, self.activestarttime.timestamp()
-                                           if self.activestarttime else None)  # type: ignore
+            self.rawdata = _fdc_to_rawdata(
+                self.welldata,
+                self.activestarttime.timestamp() if self.activestarttime else None,
+            )  # type: ignore
             self.filterdata = self.rawdata
 
     def data_for_sample(self, sample: str) -> pd.DataFrame:

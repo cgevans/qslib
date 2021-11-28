@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import time
 import typing as tp
-from typing import Union, Dict, Tuple, cast, List, Optional
+from typing import Union, Dict, Tuple, cast, List, Optional, Any
 from nio.client import AsyncClient
 import re
 import asyncio
@@ -38,7 +38,10 @@ class RunState:
     plate_setup: Optional[PlateSetup] = None
 
     async def refresh(self, c: QSConnectionAsync):
-        runmsg = arglist.parseString(await c.run_command("RunProgress?")).asDict()
+        runmsg: dict[str, dict[str, Any]] = cast(
+            dict[str, dict[str, Any]],
+            arglist.parseString(await c.run_command("RunProgress?")).asDict(),
+        )
         print(runmsg)
         self.name = cast(str, runmsg["arglist"]["opts"]["RunTitle"])
         if self.name == "-":

@@ -51,6 +51,7 @@ def protocol_plot(experiment, output, format, actual, open) -> None:
     if open:
         click.launch(str(output))
 
+
 @cli.command()
 @click.option(
     "-o",
@@ -58,8 +59,13 @@ def protocol_plot(experiment, output, format, actual, open) -> None:
     help="output file name (defaults to experiment base filename + extension)",
     type=click.Path(),
 )
-
-@click.option("-n", "--open/--no-open", "openfile", help="Open the file after creating it.", default=True)
+@click.option(
+    "-n",
+    "--open/--no-open",
+    "openfile",
+    help="Open the file after creating it.",
+    default=True,
+)
 @click.argument("experiment", type=click.Path(exists=True))
 def info_html(experiment, output, openfile) -> None:
     """Plot the temperature protocol in an experiment."""
@@ -72,8 +78,8 @@ def info_html(experiment, output, openfile) -> None:
     if output is None:
         output = experiment.with_suffix(".html")
 
-    with open(output, 'w') as f:
-        f.write(exp.info_html())    
+    with open(output, "w") as f:
+        f.write(exp.info_html())
 
     if openfile:
         click.launch(str(output))
@@ -165,9 +171,11 @@ def machine_power(machine: str, tunnel_host: str, tunnel_user: str, state: str) 
         rs = m.run_status()
         ms = m.machine_status()
         mn = m.run_command("SYST:SETT:NICK?")
-        
+
         if rs.state != "Idle":
-            raise click.UsageError(f"Machine {mn} is currently running {rs.name}, not changing power state during run.")
+            raise click.UsageError(
+                f"Machine {mn} is currently running {rs.name}, not changing power state during run."
+            )
         else:
             with m.at_access("Controller"):
                 m.power = {"on": True, "off": False}[state]
