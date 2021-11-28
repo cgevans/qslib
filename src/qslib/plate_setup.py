@@ -15,6 +15,8 @@ from .qsconnection_async import QSConnectionAsync
 
 _WELLNAMES = [x + str(y) for x in "ABCDEFGH" for y in range(1, 13)]
 
+_WELLNAMESET = set(_WELLNAMES)
+
 _WELLALPHREF = [(x, f"{y}") for x in "ABCDEFGH" for y in range(1, 13)]
 
 
@@ -123,6 +125,24 @@ class PlateSetup:
                 well_sample_name.loc[w] = s
         return well_sample_name
 
+    def get_wells(self, samples_or_wells: str | Sequence[str]) -> list[str]:
+        """
+        Given a sample, well, or list of the two, returns the corresponding
+        wells.  Note that this relies on samples not having well-like names.
+        """
+        wells = []
+
+        if isinstance(samples_or_wells, str):
+            samples_or_wells = [samples_or_wells]
+
+        for sw in samples_or_wells:
+            if sw.upper() in _WELLNAMESET:
+                wells.append(sw.upper())
+            else:
+                wells += self.sample_wells[sw]
+
+        return wells
+
     def well_samples_as_array(self) -> np.ndarray:
         return self.well_sample.to_numpy().reshape((8, 12))
 
@@ -135,6 +155,16 @@ class PlateSetup:
             f'platesetup,row={r},col={c} sample="{s}"{rts} {timestamp}'
             for ((r, c), s) in zip(_WELLALPHREF, self.well_sample)
         ]
+
+    @classmethod
+    def from_array(
+        cls, array: Union[np.ndarray, pd.DataFrame], *, make_unique: bool = False
+    ) -> PlateSetup:
+        raise NotImplemented
+
+    @classmethod
+    def from_tsv(cls, tsvstr: str) -> PlateSetup:
+        raise NotImplemented
 
     def to_table(
         self,

@@ -1,5 +1,6 @@
 from .machine import Machine, MachineStatus, RunStatus
 from .experiment import Experiment, PlateSetup, Protocol, Stage, Step
+from .plots import NormToMeanPerWell
 from . import tcprotocol as tc
 
 __all__ = (
@@ -11,5 +12,6 @@ __all__ = (
     "Stage",
     "Step",
     "RunStatus",
-    "MachineStatus"
+    "MachineStatus",
+    "NormToMeanPerWell",
 )
