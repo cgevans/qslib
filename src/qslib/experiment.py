@@ -100,7 +100,7 @@ log = logging.getLogger("experiment")
 _TABLE_FORMAT = {"markdown": "pipe", "org": "orgtbl"}
 
 
-class Experiment(FlPlotting):
+class Experiment:
     """A QuantStudio experiment / EDS file
 
     This class can create, modify, load and save experiments in several ways, run them,
