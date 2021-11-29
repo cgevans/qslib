@@ -378,6 +378,12 @@ table, th, td {{
     def __str__(self) -> str:
         return self.summary()
 
+    def _repr_markdown_(self) -> str:
+        if len(self.plate_setup.sample_wells) <= 12:
+            return self.summary()
+        else:
+            return self.summary(plate="table")
+
     @property
     def runtitle_safe(self) -> str:
         """Run name with " " replaced by "-"."""

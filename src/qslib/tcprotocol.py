@@ -673,6 +673,9 @@ class Protocol(XMLable):
 
         return begin + "\n".join(stagestrs)
 
+    def _repr_markdown_(self) -> str:
+        return str(self)
+
     @classmethod
     def fromdict(cls, d: dict[str, Any]) -> "Protocol":
         s = [Stage(**x) for x in d["stages"]]

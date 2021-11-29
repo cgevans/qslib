@@ -222,3 +222,9 @@ class PlateSetup:
             for sample, wells in self.sample_wells.items():
                 s += f" - {sample}: {wells}\n"
         return s
+
+    def _repr_markdown_(self) -> str:
+        if len(self.sample_wells) < 12:
+            return str(self)
+        else:
+            return self.to_table(tablefmt="pipe")

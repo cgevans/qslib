@@ -109,6 +109,7 @@ class NormToMaxPerWell(Normalizer):
 class FlPlotting(metaclass=ABCMeta):
     plate_setup: PlateSetup
     protocol: Protocol
+    name: str
 
     @property
     @abstractmethod
@@ -157,28 +158,71 @@ class FlPlotting(metaclass=ABCMeta):
 
         return melt_stages, between_stages
 
-    def plot_annealmelt(
+    def plot_anneal_melt(
         self,
-        filters: str | FilterSet | Collection[str | FilterSet] | None,
-        samples,
+        samples: str | Sequence[str],
+        filters: str | FilterSet | Collection[str | FilterSet] | None = None,
         anneal_stages: int | Sequence[int] | None = None,
         melt_stages: int | Sequence[int] | None = None,
+        between_stages: int | Sequence[int] | None = None,
         normalization: Normalizer = NormRaw(),
         ax: plt.Axes | None = None,
         legend: bool = True,
-        figure_opts: Mapping[str, Any] | None = None,
-    ):
+        figure_kw: Mapping[str, Any] | None = None,
+    ) -> plt.Axes:
         """
         Plots anneal/melt curves.
 
+        This uses solid lines for the anneal, dashed lines for the melt, and
+        dotted lines for anything "between" the anneal and melt (for example, a temperature
+        hold).
+
+        Line labels are intended to provide full information when read in combination with
+        the axes title.  They will only include information that does not apply to all
+        lines.  For example, if every line is from the same filter set, but different
+        samples, then only the sample will be shown.  If every line is from the same sample,
+        but different filter sets, then only the filter set will be shown. Wells are shown
+        if a sample has multiple wells.
+
+        samples
+            Either a reference to a single sample (a string), or a list of sample names.
+            Well names may also be included, in which case each well will be treated without
+            regard to the sample name that may refer to it.  Note this means you cannot
+            give your samples names that correspond with well references.
 
         filters
-            If
+            Optional. A filterset (string or `FilterSet`) or list of filtersets to include in the
+            plot.  Multiple filtersets will be plotted *on the same axes*.  Optional;
+            if None, then all filtersets with data in the experiment will be included.
+
+        anneal_stages, melt_stages, between_stages: int | Sequence[int] | None
+            Optional. A stage or list of stages (integers, starting from 1), corresponding to the
+            anneal, melt, and stages between the anneal and melt (if any).  Any of these
+            may be None, in which case the function will try to determine the correct values
+            automatically.
+
+        normalization
+            Optional. A Normalizer instance to apply to the data.  By default, this is NormRaw, which
+            passes through raw fluorescence values.  NormToMeanPerWell also works well.
+
+        ax
+            Optional.  An axes to put the plot on.  If not provided, the function will
+            create a new figure.
+
+        legend
+            Optional.  Determines whether a legend is included.
+
+        figure_kw
+            Optional.  A dictionary of options passed through as keyword options to
+            the figure creation.  Only applies if ax is None.
 
         """
 
         if filters is None:
             filters = self.all_filters
+
+        if isinstance(samples, str):
+            samples = [samples]
 
         filters = _normalize_filters(filters)
 
@@ -189,16 +233,18 @@ class FlPlotting(metaclass=ABCMeta):
 
         if melt_stages is None:
             melt_stages, between_stages = self._find_melt_stages(anneal_stages)
-            anneal_stages = anneal_stages + between_stages
         elif isinstance(melt_stages, int):
             melt_stages = [melt_stages]
+
+        if between_stages is None:
+            between_stages = []
+        elif isinstance(between_stages, int):
+            between_stages = [between_stages]
 
         if ax is None:
             ax = cast(
                 plt.Axes,
-                plt.figure(
-                    **({} if figure_opts is None else figure_opts)
-                ).add_subplot(),
+                plt.figure(**({} if figure_kw is None else figure_kw)).add_subplot(),
             )
 
         data = normalization.normalize_scoped(self.welldata, "all")
@@ -214,6 +260,9 @@ class FlPlotting(metaclass=ABCMeta):
 
             annealdat: pd.DataFrame = filterdat.loc[anneal_stages, :]  # type: ignore
             meltdat: pd.DataFrame = filterdat.loc[melt_stages, :]  # type: ignore
+
+            if len(between_stages) > 0:
+                betweendat: pd.DataFrame = filterdat.loc[between_stages, :]  # type: ignore
 
             for sample in samples:
                 wells = self.plate_setup.get_wells(sample)
@@ -240,6 +289,14 @@ class FlPlotting(metaclass=ABCMeta):
                         linestyle="dashed",
                     )
 
+                    if len(between_stages) > 0:
+                        betweenlines = ax.plot(
+                            betweendat.loc[:, (well, "st")],
+                            betweendat.loc[:, (well, "fl")],
+                            color=color,
+                            linestyle="dotted",
+                        )
+
         ax.set_xlabel("temperature (°C)")
 
         # FIXME: consider normalization
@@ -248,19 +305,215 @@ class FlPlotting(metaclass=ABCMeta):
         if legend:
             ax.legend()
 
+        ax.set_title(
+            _gen_axtitle(
+                self.name,
+                anneal_stages + between_stages + melt_stages,
+                samples,
+                wells,
+                filters,
+            )
+        )
+
         return ax
 
-    def plot_time(
+    def plot_over_time(
         self,
-        filters: str | FilterSet | Collection[str | FilterSet] | None,
-        samples,
-        stages=None,
+        samples: str | Sequence[str],
+        filters: str | FilterSet | Collection[str | FilterSet] | None = None,
+        stages: slice | int | Sequence[int] = slice(None),
         normalization: Normalizer = NormRaw(),
-        ax: plt.Axes | None = None,
+        ax: plt.Axes | Sequence[plt.Axes] | None = None,
         legend: bool = True,
-        figure_opts: Mapping[str, Any] | None = None,
-    ):
-        raise NotImplemented
+        temperatures: Literal[False, "axes", "inset", "twin"] = False,
+        figure_kw: Mapping[str, Any] | None = None,
+    ) -> Sequence[plt.Axes]:
+        """
+        Plots fluorescence over time, optionally with temperatures over time.
+
+        Line labels are intended to provide full information when read in combination with
+        the axes title.  They will only include information that does not apply to all
+        lines.  For example, if every line is from the same filter set, but different
+        samples, then only the sample will be shown.  If every line is from the same sample,
+        but different filter sets, then only the filter set will be shown. Wells are shown
+        if a sample has multiple wells.
+
+        samples
+            Either a reference to a single sample (a string), or a list of sample names.
+            Well names may also be included, in which case each well will be treated without
+            regard to the sample name that may refer to it.  Note this means you cannot
+            give your samples names that correspond with well references.
+
+        filters
+            Optional. A filterset (string or `FilterSet`) or list of filtersets to include in the
+            plot.  Multiple filtersets will be plotted *on the same axes*.  Optional;
+            if None, then all filtersets with data in the experiment will be included.
+
+        stages
+            Optional.  A stage, list of stages, or slice (all using integers starting
+            from 1), to include in the plot.  By default, all stages are plotted.
+            For example, to plot stage 2, use `stages=2`; to plot stages 2 and 4, use
+            `stages=[2, 4]`, to plot stages 3 through 15, use `stages=slice(3, 16)`
+            (Python ranges are exclusive on the end).  Note that is a slice, you
+            can use `None` instead of a number to denote the beginning/end.
+
+        normalization
+            Optional. A Normalizer instance to apply to the data.  By default, this is NormRaw, which
+            passes through raw fluorescence values.  NormToMeanPerWell also works well.
+
+        temperatures
+            Optional (default False).  Several alternatives for displaying temperatures.
+            "axes" uses a separate axes (created if ax is not provided, otherwise ax must
+            be a list of two axes).
+
+            Temperatures are from Experiment.temperature, and are thus the temperatures
+            as recorded during the run, not the set temperatures.  Note that this has a
+            *very* large number of data points, something that should be dealt with at
+            some point.
+
+        ax
+            Optional.  An axes to put the plot on.  If not provided, the function will
+            create a new figure.  If `temperatures="axes"`, however, you must provide
+            a list or tuple of *two* axes, the first for fluorescence, the second
+            for temperature.
+
+        legend
+            Optional.  Determines whether a legend is included.
+
+        figure_kw
+            Optional.  A dictionary of options passed through as keyword options to
+            the figure creation.  Only applies if ax is None.
+        """
+
+        if filters is None:
+            filters = self.all_filters
+
+        filters = _normalize_filters(filters)
+
+        if isinstance(samples, str):
+            samples = [samples]
+
+        if isinstance(stages, int):
+            stages = []
+
+        fig = None
+
+        if ax is None:
+            if temperatures:
+                fig, ax = plt.subplots(
+                    2,
+                    1,
+                    sharex="all",
+                    gridspec_kw={"height_ratios": [3, 1]},
+                    **({} if figure_kw is None else figure_kw),
+                )
+            else:
+                fig, ax = plt.subplots(1, 1, **({} if figure_kw is None else figure_kw))
+                ax = [ax]
+
+        elif (not isinstance(ax, Sequence)) or isinstance(ax, plt.Axes):
+            ax = [ax]
+
+        ax = cast(Sequence[plt.Axes], ax)
+
+        data = normalization.normalize_scoped(self.welldata, "all")
+
+        all_wells = self.plate_setup.get_wells(samples) + ["time"]
+
+        reduceddata = data.loc[[f.lowerform for f in filters], all_wells]
+
+        reduceddata = normalization.normalize_scoped(reduceddata, "limited")
+
+        for filter in filters:
+            filterdat: pd.DataFrame = reduceddata.loc[filter.lowerform, :]  # type: ignore
+
+            for sample in samples:
+                wells = self.plate_setup.get_wells(sample)
+
+                for well in wells:
+                    color = next(ax[0]._get_lines.prop_cycler)["color"]
+
+                    label = _gen_label(sample, well, filter, samples, wells, filters)
+
+                    lines = ax[0].plot(
+                        filterdat.loc[stages, ("time", "hours")],
+                        filterdat.loc[stages, (well, "fl")],
+                        color=color,
+                        label=label,
+                    )
+
+        ax[-1].set_xlabel("time (hours)")
+
+        # FIXME: consider normalization
+        ax[0].set_ylabel("fluorescence")
+
+        if legend:
+            ax[0].legend()
+
+        if temperatures == "axes":
+            if len(ax) < 2:
+                raise ValueError("Temperature axes requires at least two axes in ax")
+
+            xlims = ax[0].get_xlim()
+
+            times = reduceddata.loc[(slice(None), stages), ("time", "hours")]
+            tmin, tmax = times.min(), times.max()
+
+            reltemps = self.temperatures.loc[
+                lambda x: (tmin <= x[("time", "hours")])
+                & (x[("time", "hours")] <= tmax),
+                :,
+            ]
+
+            for x in range(1, 7):
+                ax[1].plot(
+                    reltemps.loc[:, ("time", "hours")],
+                    reltemps.loc[:, ("sample", x)],
+                )
+
+            ax[0].set_xlim(xlims)
+            ax[1].set_xlim(xlims)
+
+            ax[1].set_ylabel("temperature (°C)")
+
+        ax[0].set_title(_gen_axtitle(self.name, stages, samples, wells, filters))
+
+        return ax
 
     def plot_temperatures(self):
         raise NotImplemented
+
+
+def _gen_label(sample, well, filter, samples, wells, filters) -> str:
+    label = ""
+    if len(samples) > 1:
+        label = str(sample)
+    if len(wells) > 1:
+        if len(label) > 0:
+            label += f" ({well})"
+        else:
+            label = str(well)
+    if len(filters) > 1:
+        if len(label) > 0:
+            label += f", {filter}"
+        else:
+            label = str(filter)
+
+    return label
+
+
+def _gen_axtitle(expname, stages, samples, wells, filters) -> str:
+    elems = []
+    if len(samples) == 1:
+        elems += samples
+    if len(filters) == 1:
+        elems += [str(f) for f in filters]
+
+    val = expname
+    if stages != slice(None):
+        val += f", stages {stages}"
+
+    if len(elems) > 0:
+        val += ": " + ", ".join(elems)
+
+    return val
