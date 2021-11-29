@@ -1844,8 +1844,10 @@ table, th, td {{
         between_stages: int | Sequence[int] | None = None,
         normalization: Normalizer = NormRaw(),
         ax: plt.Axes | None = None,
+        marker: str | None = None,
         legend: bool = True,
         figure_kw: Mapping[str, Any] | None = None,
+        line_kw: Mapping[str, Any] | None = None,
     ) -> plt.Axes:
         """
         Plots anneal/melt curves.
@@ -1882,6 +1884,8 @@ table, th, td {{
             Optional. A Normalizer instance to apply to the data.  By default, this is NormRaw, which
             passes through raw fluorescence values.  NormToMeanPerWell also works well.
 
+        marker
+
         ax
             Optional.  An axes to put the plot on.  If not provided, the function will
             create a new figure.
@@ -1892,6 +1896,9 @@ table, th, td {{
         figure_kw
             Optional.  A dictionary of options passed through as keyword options to
             the figure creation.  Only applies if ax is None.
+
+        line_kw
+            Optional.  A dictionary of keywords passed to all three plotting commands.
 
         """
 
@@ -1957,6 +1964,8 @@ table, th, td {{
                         annealdat.loc[:, (well, "fl")],
                         color=color,
                         label=label,
+                        marker=marker,
+                        **(line_kw if line_kw is not None else {}),
                     )
 
                     meltlines = ax.plot(
@@ -1964,6 +1973,8 @@ table, th, td {{
                         meltdat.loc[:, (well, "fl")],
                         color=color,
                         linestyle="dashed",
+                        marker=marker,
+                        **(line_kw if line_kw is not None else {}),
                     )
 
                     if len(between_stages) > 0:
@@ -1972,6 +1983,8 @@ table, th, td {{
                             betweendat.loc[:, (well, "fl")],
                             color=color,
                             linestyle="dotted",
+                            marker=marker,
+                            **(line_kw if line_kw is not None else {}),
                         )
 
         ax.set_xlabel("temperature (°C)")
@@ -2003,7 +2016,9 @@ table, th, td {{
         ax: plt.Axes | Sequence[plt.Axes] | None = None,
         legend: bool = True,
         temperatures: Literal[False, "axes", "inset", "twin"] = False,
+        marker: str | None = None,
         figure_kw: Mapping[str, Any] | None = None,
+        line_kw: Mapping[str, Any] | None = None
     ) -> Sequence[plt.Axes]:
         """
         Plots fluorescence over time, optionally with temperatures over time.
@@ -2060,6 +2075,10 @@ table, th, td {{
         figure_kw
             Optional.  A dictionary of options passed through as keyword options to
             the figure creation.  Only applies if ax is None.
+
+        line_kw
+            Optional.  A dictionary of keywords passed to fluorescence plot commands.
+
         """
 
         if filters is None:
@@ -2117,6 +2136,8 @@ table, th, td {{
                         filterdat.loc[stages, (well, "fl")],
                         color=color,
                         label=label,
+                        marker=marker,
+                        **(line_kw if line_kw is not None else {})
                     )
 
         ax[-1].set_xlabel("time (hours)")
