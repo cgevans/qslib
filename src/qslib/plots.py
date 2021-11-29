@@ -38,6 +38,11 @@ class Normalizer(metaclass=ABCMeta):
 
 
 class NormRaw(Normalizer):
+    """
+    A Normalizer that takes no arguments, and simply passes through raw
+    fluorescence values.
+    """
+
     def normalize_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         return data
 
@@ -47,6 +52,22 @@ class NormRaw(Normalizer):
 
 @dataclass(init=False)
 class NormToMeanPerWell(Normalizer):
+    """
+    A Normalizer that divides the fluorescence reading for each (filterset, well) pair
+    by the mean value of that pair within a particular selection of data.
+
+    The easiest way to use this is to give a particular stage (all data in that
+    stage will be used), or a stage and set of cycles (those cycles in that stage
+    will be used).  For example:
+
+    - To normalize to the mean stage 8 values, use `NormToMeanPerWell(stage=8)`.
+    - To normalize to the first 5 cycles of stage 2, use
+        `NormToMeanPerWell(stage=2, cycle=slice(1, 6)).
+
+    `selection` allows arbitrary Pandas indexing (without the filter_set level
+    of the MultiIndex) for unusual cases.
+    """
+
     selection: Any
     scope: ClassVar[ScopeType] = "limited"
 
