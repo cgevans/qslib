@@ -27,5 +27,7 @@ def test_pp_seqsliceint():
     assert _pp_seqsliceint(slice(1, 5)) == "1 to 5"
     assert _pp_seqsliceint(slice(5, None)) == "5 onwards"
     assert _pp_seqsliceint(slice(None, 5)) == "up to 5"
+    assert _pp_seqsliceint([1, 2, 5]) == "[1, 2, 5]"
+    assert _pp_seqsliceint(slice(1, 5, 2)) == "1 to 5 by step 2"
     with pytest.raises(TypeError):
         _pp_seqsliceint(5.5)  # type: ignore
