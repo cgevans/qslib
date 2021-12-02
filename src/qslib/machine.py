@@ -162,6 +162,13 @@ class Machine:
         )
         loop.run_until_complete(self._qsc.connect())
 
+    @property
+    def connected(self):
+        if self._qsc is None:
+            return False
+        else:
+            return self._qsc.connected
+
     def __enter__(self) -> Machine:
         self.connect()
         return self
