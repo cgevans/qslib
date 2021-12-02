@@ -1,11 +1,14 @@
 # Changelog
 
-## Version 0.3.2
+## Version 0.4.0
 
+- Much faster `Experiment.sync_from_machine`, only transferring additional log entries rather than the entire log.
+- Common plotting routines for fluorescence data.
+- More reliable monitoring.
+- `Stage.stepped_ramp` convenience function.
 - Fixes to bugs inhibiting exposure setting, and some basic
   implementations for this.
-- Fixes to qs-monitor for cycle counts > 999 (and other large stage / step 
-  / cycle counts).
+- Fixes to qs-monitor for cycle counts > 999 (and other large stage / step / cycle counts).
 
 ## Version 0.3.1
 
