@@ -42,6 +42,10 @@ def _unwrap_tags(s: str) -> str:
     return re.sub(r"^<[^>]+?>\n?(.*)\n?</[^>]+?>$", r"\1", s)
 
 
+def _unwrap_tags_bytes(s: bytes) -> bytes:
+    return re.sub(rb"^<[^>]+?>\n?(.*)\n?</[^>]+?>$", rb"\1", s)
+
+
 def _nowuuid() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
@@ -70,6 +74,7 @@ __all__ = (
     "_set_or_create",
     "_text_or_none",
     "_unwrap_tags",
+    "_unwrap_tags_bytes",
     "_nowuuid",
     "_pp_seqsliceint",
 )

@@ -598,7 +598,7 @@ table, th, td {{
         self,
         machine: Machine | None = None,
         connect: bool = False,
-        log_method: Literal["copy", "shell"] = "copy",
+        log_method: Literal["copy", "eval"] = "copy",
     ) -> None:
         """
         Try to synchronize the data in the experiment to the current state of the run on a
@@ -639,8 +639,39 @@ table, th, td {{
                 if log_method == "copy" or (not f["path"].endswith("messages.log")):
                     with open(sdspath, "wb") as b:
                         b.write(machine.read_file(f["path"]))
-                elif log_method == "shell":
-                    raise NotImplemented
+                elif log_method == "eval":
+                    with open(sdspath, "ab+") as b:
+
+                        # Seeking to the end of the file gives us the size
+                        curpos = b.seek(0, 1)
+
+                        # If we're less than 20 bytes, just copy the file:
+                        if curpos < 20:
+                            b.seek(0)
+                            b.write(machine.read_file(f["path"]))
+                        else:
+                            # Now seek 20 bytes back, and read those 20 bytes
+                            b.seek(-20, 1)
+                            checklocal = b.read(20)
+
+                            assert b.seek(0, 1) == curpos
+
+                            rdat = machine.run_command_bytes(
+                                f"eval? (lambda x: [x.seek({curpos}), x.read()][1])"
+                                f"(open('/data/vendor/IS/experiments/'+'${{runlog:12}}'))"
+                            )
+
+                            rdat: bytes = _unwrap_tags_bytes(rdat)
+
+                            if rdat[0:20] == checklocal:
+                                b.write(rdat[20:])
+                            else:
+                                log.error(
+                                    "Log comparison failure in eval method,"
+                                    f" falling back to copy. ('{checklocal}' ≠ '{rdat[0:20]}')"
+                                )
+                                b.seek(0)
+                                b.write(machine.read_file(f["path"]))
                 else:
                     raise NotImplemented
                 os.utime(sdspath, (f["atime"], f["mtime"]))
