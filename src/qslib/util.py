@@ -1,6 +1,6 @@
 from __future__ import annotations
 from datetime import datetime
-from typing import Union
+from typing import Sequence, Union
 import xml.etree.ElementTree as ET
 import re
 
@@ -46,10 +46,30 @@ def _nowuuid() -> str:
     return datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
 
 
+def _pp_seqsliceint(sss: Sequence | slice | int) -> str:
+    if isinstance(sss, int):
+        return str(sss)
+    elif isinstance(sss, Sequence):
+        return str(list(sss))
+    elif isinstance(sss, slice):
+        if sss.start is None:
+            s = f"up to {sss.stop}"
+        elif sss.stop is None:
+            s = f"{sss.start} onwards"
+        else:
+            s = f"{sss.start} to {sss.stop}"
+        if sss.step is not None:
+            s += f" by step {sss.step}"
+        return s
+    else:
+        raise TypeError
+
+
 __all__ = (
     "_find_or_create",
     "_set_or_create",
     "_text_or_none",
     "_unwrap_tags",
     "_nowuuid",
+    "_pp_seqsliceint",
 )

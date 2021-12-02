@@ -594,41 +594,62 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         return self._ensure_running(machine)
 
-    def sync_from_machine(self, machine: Machine | None = None) -> None:
+    def sync_from_machine(
+        self,
+        machine: Machine | None = None,
+        connect: bool = False,
+        log_method: Literal["copy", "shell"] = "copy",
+    ) -> None:
         """
         Try to synchronize the data in the experiment to the current state of the run on a
         machine, more efficiently than reloading everything.
         """
         machine = self._ensure_machine(machine)
 
-        # Get a list of all the files in the experiment folder
-        machine_files = machine.list_files(
-            f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True
-        )
+        disconnect = False
+        if connect and not machine.connected:
+            disconnect = True
+            machine.connect()
 
-        # Transfer anything we don't have
-        for f in machine_files:
-            name = os.path.basename(f["path"])
-            sdspath = self._sdspath(re.sub(".*/apldbio/sds/(.*)$", r"\1", f["path"]))
-            logging.debug(f"checking {f['path']} mtime {f['mtime']} to {sdspath}")
-            if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(
-                f["mtime"]
-            ):
-                logging.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
-                continue
-            from pathlib import Path  # FIXME
+        try:
+            # Get a list of all the files in the experiment folder
+            machine_files = machine.list_files(
+                f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True
+            )
 
-            ldir = f["path"].split("/")[-2]
-            if ldir != "sds":
-                cp = Path(self._dir_eds) / ldir
-                if not cp.exists():
-                    cp.mkdir()
-            with open(sdspath, "wb") as b:
-                b.write(machine.read_file(f["path"]))
-            os.utime(sdspath, (f["atime"], f["mtime"]))
+            # Transfer anything we don't have
+            for f in machine_files:
+                name = os.path.basename(f["path"])
+                sdspath = self._sdspath(
+                    re.sub(".*/apldbio/sds/(.*)$", r"\1", f["path"])
+                )
+                logging.debug(f"checking {f['path']} mtime {f['mtime']} to {sdspath}")
+                if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(
+                    f["mtime"]
+                ):
+                    logging.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
+                    continue
+                from pathlib import Path  # FIXME
 
-        # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
-        self._update_from_files()
+                ldir = f["path"].split("/")[-2]
+                if ldir != "sds":
+                    cp = Path(self._dir_eds) / ldir
+                    if not cp.exists():
+                        cp.mkdir()
+                if log_method == "copy" or (not f["path"].endswith("messages.log")):
+                    with open(sdspath, "wb") as b:
+                        b.write(machine.read_file(f["path"]))
+                elif log_method == "shell":
+                    raise NotImplemented
+                else:
+                    raise NotImplemented
+                os.utime(sdspath, (f["atime"], f["mtime"]))
+
+            # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
+            self._update_from_files()
+        finally:
+            if disconnect:
+                machine.disconnect()
 
     def change_protocol(
         self, new_protocol: Protocol, machine: Machine | None = None
@@ -2018,7 +2039,7 @@ table, th, td {{
         temperatures: Literal[False, "axes", "inset", "twin"] = False,
         marker: str | None = None,
         figure_kw: Mapping[str, Any] | None = None,
-        line_kw: Mapping[str, Any] | None = None
+        line_kw: Mapping[str, Any] | None = None,
     ) -> Sequence[plt.Axes]:
         """
         Plots fluorescence over time, optionally with temperatures over time.
@@ -2137,7 +2158,7 @@ table, th, td {{
                         color=color,
                         label=label,
                         marker=marker,
-                        **(line_kw if line_kw is not None else {})
+                        **(line_kw if line_kw is not None else {}),
                     )
 
         ax[-1].set_xlabel("time (hours)")
@@ -2217,7 +2238,7 @@ def _gen_axtitle(expname, stages, samples, wells, filters) -> str:
 
     val = expname
     if stages != slice(None):
-        val += f", stages {stages}"
+        val += f", stage {_pp_seqsliceint(stages)}"
 
     if len(elems) > 0:
         val += ": " + ", ".join(elems)
