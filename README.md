@@ -4,7 +4,6 @@
 Status](https://img.shields.io/github/workflow/status/cgevans/qslib/Python%20tests)
 ![PyPI](https://img.shields.io/pypi/v/qslib)
 
-
 # qslib
 
 QSLib is a package for interacting with Applied Biosystems' QuantStudio
@@ -15,7 +14,7 @@ machines through their network connection and SCPI interface. It currently
 functions only with QuantStudio 5 machines using a 96-well block, but
 could be made to support others as well.
 
-Amongst other features that :
+Amongst other features that it has:
 
 -   Direct fluorescence data ("filter data") as Pandas dataframes, with
     times and temperature readings.
@@ -23,8 +22,7 @@ Amongst other features that :
 -   Running-experiment data access, status information, and control.
 
 -   Protocol creation and manipulation, allowing functions outside of
-    AB's software. The ability to update protocols and add stages
-    mid-run is feasible and planned.
+    AB's software. Protocols can be modified and updated mid-run.
 
 -   Temperature data at one-second resolution during experiments.
 
@@ -48,7 +46,6 @@ It requires at least version 3.9 of Python. While it uses async code at
 its core for communication, it can be used conveniently in Jupyter or
 IPython.
 
-
 To use the library for communication with machines, you'll need a
 machine access password with Observer (for reading data and statuses)
 and/or Controller (for running experiments and controlling the machine)
@@ -56,7 +53,6 @@ access, and will need access to the machine on port 7000. I strongly
 recommend against having the machines be accessible online: use a
 restricted VPN connection or port forwarding. See the documentation for
 more information.
-
 
 ## Disclaimer
 
@@ -67,7 +63,5 @@ render your machine unusable or be used to send commands that would
 physically/electrically damage the machine or potentially be hazardous
 to you or others.
 
-I am in no way connected with Applied Biosystems, and have developed
-this package using the machine's documentation system and standard file
-formats.
-
+I am not any way connected with Applied Biosystems.  I have developed this 
+package using the machine's documentation system and standard file formats.
