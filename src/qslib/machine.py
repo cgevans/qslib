@@ -288,12 +288,25 @@ class Machine:
             return self.run_command(f"{leaf}:LIST? {path}").split("\n")[1:-1]
         else:
             v = self.run_command(f"{leaf}:LIST? -verbose {path}").split("\n")[1:-1]
-            v = [arglist.parseString(x) for x in v]
             ret = []
             for x in v:
-                d = {}
-                d["path"] = x["arglist"]["args"][0]  # type: ignore
-                d |= x["arglist"]["opts"]  # type: ignore
+                rm = re.match(
+                    r'"([^"]+)" -type=(\S+) -size=(\S+) -mtime=(\S+) -atime=(\S+) -ctime=(\S+)$',
+                    x,
+                )
+                if rm is None:
+                    x = arglist.parseString(x)
+                    d = {}
+                    d["path"] = x["arglist"]["args"][0]  # type: ignore
+                    d |= x["arglist"]["opts"]  # type: ignore
+                else:
+                    d = {}
+                    d["path"] = rm.group(1)
+                    d["type"] = rm.group(2)
+                    d["size"] = int(rm.group(3))
+                    d["mtime"] = float(rm.group(4))
+                    d["atime"] = float(rm.group(5))
+                    d["ctime"] = float(rm.group(6))
                 if d["type"] == "folder" and recursive:
                     ret += self.list_files(
                         d["path"], leaf=leaf, verbose=True, recursive=True
@@ -420,6 +433,27 @@ class Machine:
             command = command.encode()
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(self._qsc._protocol.run_command(command))
+
+    def _get_log_from_byte(self, name: str | bytes, byte: int) -> bytes:
+        logfuture = asyncio.Future()
+        if self._qsc is None:
+            raise Exception
+        if isinstance(name, bytes):
+            name = name.decode()
+        self._qsc._protocol.waiting_commands.append((b"logtransfer", logfuture))
+
+        logcommand = self._qsc._protocol.run_command(
+            f"eval? session.writeQueue.put(('OK logtransfer \<quote.base64\>\\\\n' + (lambda x: [x.seek({byte}), __import__('base64').encodestring(x.read())][1])(open('/data/vendor/IS/experiments/{name}/apldbio/sds/messages.log')) + '\</quote.base64\>\\\\n', None))",
+            ack_timeout=200,
+        )
+
+        loop = asyncio.get_event_loop()
+
+        loop.run_until_complete(logcommand)
+
+        loop.run_until_complete(logfuture)
+
+        return base64.decodebytes(logfuture.result()[1][15:-17])
 
     def run_status(self) -> RunStatus:
         """Return information on the status of any run."""
