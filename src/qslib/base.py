@@ -16,13 +16,15 @@ class BaseStatus(ABC):
     @classmethod
     @property
     @abstractmethod
-    def _comlist(cls: Type[T]) -> dict[str, tuple[bytes, Callable[[Any], Any]]]:
+    def _comlist(
+        cls: Type[T],
+    ) -> dict[str, tuple[bytes, Callable[[Any], Any]]]:  # pragma: no cover
         ...
 
     @classmethod
     @property
-    @abstractmethod
-    def _com(cls: Type[T]) -> bytes:
+    @abstractmethod  # pragma: no cover
+    def _com(cls: Type[T]) -> bytes:  # pragma: no cover
         ...
 
     @classmethod
@@ -105,39 +107,29 @@ class AccessLevel(Enum):
     Full = "Full"
 
     def __gt__(self, other: object) -> bool:
-        if isinstance(other, str):
+        if not isinstance(other, AccessLevel):
             other = AccessLevel(other)
-        if isinstance(other, AccessLevel):
-            return _accesslevel_order[self.value] > _accesslevel_order[other.value]
-        raise NotImplementedError
+        return _accesslevel_order[self.value] > _accesslevel_order[other.value]
 
     def __ge__(self, other: object) -> bool:
-        if isinstance(other, str):
+        if not isinstance(other, AccessLevel):
             other = AccessLevel(other)
-        if isinstance(other, AccessLevel):
-            return _accesslevel_order[self.value] >= _accesslevel_order[other.value]
-        raise NotImplementedError
+        return _accesslevel_order[self.value] >= _accesslevel_order[other.value]
 
     def __lt__(self, other: object) -> bool:
-        if isinstance(other, str):
+        if not isinstance(other, AccessLevel):
             other = AccessLevel(other)
-        if isinstance(other, AccessLevel):
-            return _accesslevel_order[self.value] < _accesslevel_order[other.value]
-        raise NotImplementedError
+        return _accesslevel_order[self.value] < _accesslevel_order[other.value]
 
     def __le__(self, other: object) -> bool:
-        if isinstance(other, str):
+        if not isinstance(other, AccessLevel):
             other = AccessLevel(other)
-        if isinstance(other, AccessLevel):
-            return _accesslevel_order[self.value] <= _accesslevel_order[other.value]
-        raise NotImplementedError
+        return _accesslevel_order[self.value] <= _accesslevel_order[other.value]
 
     def __eq__(self, other: object) -> bool:
-        if isinstance(other, str):
+        if not isinstance(other, AccessLevel):
             other = AccessLevel(other)
-        if isinstance(other, AccessLevel):
-            return _accesslevel_order[self.value] == _accesslevel_order[other.value]
-        raise NotImplementedError
+        return _accesslevel_order[self.value] == _accesslevel_order[other.value]
 
     def __str__(self) -> str:
         return self.value

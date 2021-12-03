@@ -57,6 +57,8 @@ def crcb(crlist):
                 await sw.drain()
                 sw.write(b"MESSage testservermessage ueao\n")
                 await sw.drain()
+                sw.write(b"MESSage testservermessage 123456789.021 ueao\n")
+                await sw.drain()
                 sw.write(b"OK " + x.group(1) + b"\n")
                 await sw.drain()
 
@@ -159,3 +161,24 @@ async def test_runtitle_not_running():
     async with srv:
         with Machine("localhost", port=53533) as m:
             assert m.current_run_name == None
+
+
+@pytest.mark.asyncio
+async def test_quote():
+    msg = "<quote>a\nu\n<quote.2>C\n</quote.2>\n  </quote>"
+    srv = await asyncio.start_server(crcb({"TESTQUOTE": msg}), "localhost", 53533)
+
+    async with srv:
+        with Machine("localhost", port=53533) as m:
+            assert m.run_command("TESTQUOTE") == msg
+
+
+@pytest.mark.asyncio
+async def test_invalid_quote():
+    msg = "<quote>a\nu\n</quote.2>\n  </quote>"
+    srv = await asyncio.start_server(crcb({"TESTQUOTE": msg}), "localhost", 53533)
+
+    async with srv:
+        with Machine("localhost", port=53533) as m:
+            with pytest.raises(ConnectionError):
+                m.run_command("TESTQUOTE")
