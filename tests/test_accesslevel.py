@@ -29,14 +29,14 @@ def test_access():
             assert (AccessLevel(l1) > l2) == (levels.index(l1) > levels.index(l2))
             assert (AccessLevel(l1) >= l2) == (levels.index(l1) >= levels.index(l2))
             assert (AccessLevel(l1) == l2) == (levels.index(l1) == levels.index(l2))
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):
             AccessLevel(l1) > invalid  # type: ignore
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):
             AccessLevel(l1) >= invalid  # type: ignore
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):
             AccessLevel(l1) < invalid  # type: ignore
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):
             AccessLevel(l1) <= invalid  # type: ignore
-        with pytest.raises(NotImplementedError):
+        with pytest.raises(ValueError):
             AccessLevel(l1) == invalid  # type: ignore
         assert str(AccessLevel(l1)) == l1

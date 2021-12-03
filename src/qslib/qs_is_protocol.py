@@ -5,7 +5,7 @@ import logging
 import re
 import io
 from dataclasses import dataclass
-from typing import Any, Coroutine, Optional, Protocol
+from typing import Any, Coroutine, Literal, Optional, Protocol
 import time
 
 
@@ -34,7 +34,7 @@ class ReplyError(IOError):
 class SubHandler(Protocol):
     def __call__(
         self, topic: bytes, message: bytes, timestamp: float | None = None
-    ) -> Coroutine[None, None, None]:
+    ) -> Coroutine[None, None, None]:  # pragma: no cover
         ...
 
 
@@ -75,7 +75,13 @@ class QS_IS_Protocol(asyncio.Protocol):
         self.transport = transport
         self.waiting_commands: list[
             tuple[
-                bytes, None | Future[tuple[bytes, bytes] | tuple[bytes, asyncio.Future]]
+                bytes,
+                None
+                | Future[
+                    tuple[
+                        bytes, None | bytes, None | asyncio.Future[tuple[bytes, bytes]]
+                    ]
+                ],
             ]
         ] = []
         self.buffer = io.BytesIO()
@@ -107,16 +113,16 @@ class QS_IS_Protocol(asyncio.Protocol):
         if ds.startswith((b"ERRor", b"OK", b"NEXT")):
             ms = ds.index(b" ")
             r = None
+            comfut_new = None
             if ds.startswith(b"NEXT"):
                 loop = asyncio.get_running_loop()
                 comfut_new = loop.create_future()
             for i, (commref, comfut) in enumerate(self.waiting_commands):
                 if ds.startswith(commref, ms + 1):
                     if comfut is not None:
-                        if ds.startswith(b"NEXT"):
-                            comfut.set_result((ds[:ms], comfut_new))
-                        else:
-                            comfut.set_result((ds[:ms], ds[ms + len(commref) + 2 :]))
+                        comfut.set_result(
+                            (ds[:ms], ds[ms + len(commref) + 2 :], comfut_new)
+                        )
                     else:
                         log.info(f"{commref!r} complete: {ds!r}")
                     r = i
@@ -183,7 +189,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         log.debug(f"Running command {comm.decode()}")
         loop = asyncio.get_running_loop()
 
-        comfut: Future[tuple[bytes, bytes]] = loop.create_future()
+        comfut = loop.create_future()
         if uid:
             import random
 
@@ -202,7 +208,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         except asyncio.CancelledError:
             raise ConnectionError
 
-        state, msg = comfut.result()
+        state, msg, comnext = comfut.result()
         log.debug(f"Received ({state!r}, {msg!r})")
 
         if state == b"NEXT":
@@ -210,9 +216,9 @@ class QS_IS_Protocol(asyncio.Protocol):
                 # self.waiting_commands.append((commref, None))
                 return b""
             else:
-                comnext = msg
                 await comnext
-                state, msg = comnext.result()
+                state, msg, comnext2 = comnext.result()
+                assert comnext2 is None
                 log.debug(f"Received ({state!r}, {msg!r})")
 
         if state == b"OK":
@@ -221,7 +227,7 @@ class QS_IS_Protocol(asyncio.Protocol):
             raise CommandError(
                 comm.decode(), commref.decode(), msg.decode().rstrip()
             ) from None
-        else:
+        else:  # pragma: no cover
             raise CommandError(
                 comm.decode(), commref.decode(), (state + b" " + msg).decode()
             )
