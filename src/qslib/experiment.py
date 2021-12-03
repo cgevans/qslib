@@ -598,7 +598,7 @@ table, th, td {{
         self,
         machine: Machine | None = None,
         connect: bool = False,
-        log_method: Literal["copy", "eval"] = "copy",
+        log_method: Literal["copy", "eval"] = "eval",
     ) -> None:
         """
         Try to synchronize the data in the experiment to the current state of the run on a
@@ -656,12 +656,9 @@ table, th, td {{
 
                             assert b.seek(0, 1) == curpos
 
-                            rdat = machine.run_command_bytes(
-                                f"eval? (lambda x: [x.seek({curpos}), x.read()][1])"
-                                f"(open('/data/vendor/IS/experiments/'+'${{runlog:12}}'))"
+                            rdat = machine._get_log_from_byte(
+                                self.runtitle_safe, curpos - 20
                             )
-
-                            rdat: bytes = _unwrap_tags_bytes(rdat)
 
                             if rdat[0:20] == checklocal:
                                 b.write(rdat[20:])
@@ -673,7 +670,7 @@ table, th, td {{
                                 b.seek(0)
                                 b.write(machine.read_file(f["path"]))
                 else:
-                    raise NotImplemented
+                    raise NotImplementedError
                 os.utime(sdspath, (f["atime"], f["mtime"]))
 
             # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
