@@ -133,6 +133,7 @@ def test_proto() -> None:
 
     assert prot_explicitfilter == prot_fromstring
 
+
 def test_exp_saveload_proto(tmp_path: pathlib.Path):
     temperatures = list(np.linspace(51.2, 49.4, num=6))
     prot = Protocol(
@@ -168,26 +169,28 @@ def test_exp_saveload_proto(tmp_path: pathlib.Path):
     # FIXME: for now, we don't do a great job with save/load for default filters
     assert exp.protocol.to_command() == exp2.protocol.to_command()
 
+
 def test_stepped_ramp_down():
-    srstage = Stage.stepped_ramp(60.0, 40.0, 60*21, 21)
+    srstage = Stage.stepped_ramp(60.0, 40.0, 60 * 21, 21)
 
     df = srstage.dataframe()
 
     assert len(df) == 21
-    assert df.iloc[-1, :]['temperature_1'] == 40.0
-    assert df.iloc[0, :]['temperature_1'] == 60.0
-    assert df.iloc[1, :]['temperature_1'] == 59.0
+    assert df.iloc[-1, :]["temperature_1"] == 40.0
+    assert df.iloc[0, :]["temperature_1"] == 60.0
+    assert df.iloc[1, :]["temperature_1"] == 59.0
 
     assert srstage == Stage(Step(60, 60.0, temp_increment=-1.0), 21)
 
+
 def test_stepped_ramp_up():
-    srstage = Stage.stepped_ramp(40.0, 60.0, 60*41, 41)
+    srstage = Stage.stepped_ramp(40.0, 60.0, 60 * 41, 41)
 
     df = srstage.dataframe()
 
     assert len(df) == 41
-    assert df.iloc[-1, :]['temperature_1'] == 60.0
-    assert df.iloc[0, :]['temperature_1'] == 40.0
-    assert df.iloc[1, :]['temperature_1'] == 40.5
+    assert df.iloc[-1, :]["temperature_1"] == 60.0
+    assert df.iloc[0, :]["temperature_1"] == 40.0
+    assert df.iloc[1, :]["temperature_1"] == 40.5
 
     assert srstage == Stage(Step(60, 40.0, temp_increment=0.5), 41)
