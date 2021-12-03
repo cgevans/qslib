@@ -264,7 +264,7 @@ def df_from_readings(
         f,
         index=indices,
         columns=pd.MultiIndex.from_tuples(
-            [("time", "timestamp")]
+            [(cast(str, "time"), cast(str, "timestamp"))]
             + [
                 (f"{r}{c}", v)
                 for v in ["fl", "rt", "st"]
@@ -282,8 +282,8 @@ def df_from_readings(
     a.sort_index(inplace=True)
 
     return a.reindex(
-        pd.MultiIndex.from_tuples(
-            [("time", v) for v in ["seconds", "hours", "timestamp"]]
+        labels=pd.MultiIndex.from_tuples(
+            [(cast(str, "time"), v) for v in ["seconds", "hours", "timestamp"]]
             + [
                 (f"{r}{c}", v)
                 for r in "ABCDEFGH"
@@ -292,5 +292,5 @@ def df_from_readings(
             ]
             + [("exposure", "exposure")]
         ),
-        axis=1,
+        axis="columns",
     )

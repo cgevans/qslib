@@ -38,6 +38,10 @@ def crcb(crlist):
                 sw.close()
                 return
 
+            if x := re.match(rb"(\d+) TESTKILLSERVER", line):
+                sw.close()
+                return
+
             for com, resp in crlist.items():
                 if x := re.match(rb"(\d+) " + re.escape(com.encode()), line):
                     sw.write(b"OK " + x.group(1) + b" " + resp.encode() + b"\n")
@@ -67,6 +71,11 @@ async def test_connection():
         m = Machine("localhost", port=53533, connect_now=True)
 
         assert m.connected is True
+
+        with pytest.raises(ConnectionError):
+            m.run_command_bytes(b"TESTKILLSERVER")
+
+        assert m.connected is False
 
 
 @pytest.mark.asyncio

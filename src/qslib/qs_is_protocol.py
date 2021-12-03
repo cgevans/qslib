@@ -13,7 +13,7 @@ NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
 Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")
 TIMESTAMP = re.compile(rb"(\d{8,}\.\d{3})")
 
-log = logging.getLogger("qsproto")
+log = logging.getLogger(__name__)
 
 
 class Error(Exception):
@@ -56,6 +56,13 @@ class QS_IS_Protocol(asyncio.Protocol):
             log.info("Connection closed")
         self.lostconnection.set_result(exc)
         self.should_be_connected = False
+
+        # Cancel all futures; we'll never recover them.
+        for _, future in self.waiting_commands:
+            if future is not None:
+                future.cancel()
+
+        self.waiting_commands = []
 
     async def disconnect(self) -> None:
         self.should_be_connected = False
@@ -179,7 +186,11 @@ class QS_IS_Protocol(asyncio.Protocol):
             commref = comm
         self.waiting_commands.append((commref, comfut))
 
-        await asyncio.wait_for(asyncio.shield(comfut), ack_timeout)
+        try:
+            await asyncio.wait_for(asyncio.shield(comfut), ack_timeout)
+        except asyncio.CancelledError:
+            raise ConnectionError
+
         state, msg = comfut.result()
         log.debug(f"Received ({state!r}, {msg!r})")
 

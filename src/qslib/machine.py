@@ -443,7 +443,7 @@ class Machine:
         self._qsc._protocol.waiting_commands.append((b"logtransfer", logfuture))
 
         logcommand = self._qsc._protocol.run_command(
-            f"eval? session.writeQueue.put(('OK logtransfer \<quote.base64\>\\\\n' + (lambda x: [x.seek({byte}), __import__('base64').encodestring(x.read())][1])(open('/data/vendor/IS/experiments/{name}/apldbio/sds/messages.log')) + '\</quote.base64\>\\\\n', None))",
+            f"eval? session.writeQueue.put(('OK logtransfer \\<quote.base64\\>\\\\n' + (lambda x: [x.seek({byte}), __import__('base64').encodestring(x.read())][1])(open('/data/vendor/IS/experiments/{name}/apldbio/sds/messages.log')) + '\\</quote.base64\\>\\\\n', None))",
             ack_timeout=200,
         )
 

@@ -12,8 +12,14 @@ import zipfile
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from glob import glob
-from typing import IO, Any, Collection, Literal, Mapping, Sequence, cast
+from typing import IO, Any, Collection, Literal, Mapping, Sequence, Union, cast
 from pathlib import Path
+
+from warnings import warn
+
+from pandas.core.base import DataError
+
+from .rawquant_compat import _fdc_to_rawdata
 
 import matplotlib.pyplot as plt
 
@@ -39,6 +45,8 @@ Specification-Vendor: Applied Biosystems
 Specification-Title: Experiment Document Specification
 Specification-Version: 1.3.2
 """
+
+log = logging.getLogger(__name__)
 
 
 class AlreadyExistsError(ValueError):
@@ -94,8 +102,6 @@ def _find_or_raise(e: ET.ElementTree | ET.Element, n: str) -> ET.Element:
     else:
         return x
 
-
-log = logging.getLogger("experiment")
 
 _TABLE_FORMAT = {"markdown": "pipe", "org": "orgtbl"}
 
@@ -229,8 +235,7 @@ class Experiment:
     """
     _welldata: pd.DataFrame | None
 
-    filterdata: pd.DataFrame
-    temperatures: pd.DataFrame
+    temperatures: pd.DataFrame | None
     """
     A DataFrame of temperature readings, at one second resolution, during the experiment
     (and potentially slightly before and after, if included in the message log).
@@ -391,6 +396,21 @@ table, th, td {{
     def runtitle_safe(self) -> str:
         """Run name with " " replaced by "-"."""
         return self.name.replace(" ", "-")
+
+    @property
+    def rawdata(self) -> pd.DataFrame:
+        warn("rawdata is deprecated; use welldata instead")
+        if (self.activestarttime is None) or (self.welldata is None):
+            raise DataError
+        return _fdc_to_rawdata(
+            self.welldata,
+            self.activestarttime.timestamp(),
+        )
+
+    @property
+    def filterdata(self) -> pd.DataFrame:
+        warn("filterdata is deprecated; use welldata instead")
+        return self.rawdata
 
     def _ensure_machine(
         self, machine: Machine | str | None, password: str | None = None
@@ -1689,13 +1709,6 @@ table, th, td {{
         else:
             self._welldata = None
 
-        if self._welldata is not None:
-            self.rawdata = _fdc_to_rawdata(
-                self.welldata,
-                self.activestarttime.timestamp() if self.activestarttime else None,
-            )  # type: ignore
-            self.filterdata = self.rawdata
-
     def data_for_sample(self, sample: str) -> pd.DataFrame:
         """Convenience function to return data for a specific sample.
 
@@ -1821,7 +1834,7 @@ table, th, td {{
             self.temperatures = pd.DataFrame(
                 tt,
                 columns=pd.MultiIndex.from_tuples(
-                    [("time", "timestamp")]
+                    [(cast(str, "time"), cast(Union[str, int], "timestamp"))]
                     + [("sample", n) for n in range(1, self.num_zones + 1)]
                     + [("other", "heatsink"), ("other", "cover")]
                     + [("block", n) for n in range(1, self.num_zones + 1)]
@@ -1963,16 +1976,22 @@ table, th, td {{
             anneal_stages = self._find_anneal_stages()
         elif isinstance(anneal_stages, int):
             anneal_stages = [anneal_stages]
+        else:
+            anneal_stages = list(anneal_stages)
 
         if melt_stages is None:
             melt_stages, between_stages = self._find_melt_stages(anneal_stages)
         elif isinstance(melt_stages, int):
             melt_stages = [melt_stages]
+        else:
+            melt_stages = list(melt_stages)
 
         if between_stages is None:
             between_stages = []
         elif isinstance(between_stages, int):
             between_stages = [between_stages]
+        else:
+            between_stages = list(between_stages)
 
         if ax is None:
             ax = cast(
@@ -2272,19 +2291,3 @@ def _gen_axtitle(expname, stages, samples, wells, filters) -> str:
         val += ": " + ", ".join(elems)
 
     return val
-
-
-def _fdc_to_rawdata(fdc: pd.DataFrame, start_time: float) -> pd.DataFrame:
-    ret: pd.DataFrame = fdc.loc[:, (slice(None), "fl")].copy()
-    ret.columns = [f"{r}{c}" for r in "ABCDEFGH" for c in range(1, 13)]
-    for i in range(0, 6):
-        ret[f"temperature_{i+1}"] = fdc[f"A{(i+1)*2}", "rt"]
-    ret["temperature_avg"] = ret.loc[:, slice("temperature_1", "temperature_6")].mean(
-        axis=1
-    )
-    ret["timestamp"] = fdc["time", "timestamp"]
-    ret["exptime"] = ret["timestamp"] - start_time
-    ret["exphrs"] = (ret["timestamp"] - start_time) / 60 / 60
-    # ret['time'] = ret['time'].astype('datetime64[s]') # fixme: should we?
-
-    return ret
