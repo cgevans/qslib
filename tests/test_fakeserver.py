@@ -3,7 +3,7 @@ import pytest
 import pytest_asyncio
 from qslib.common import Machine
 import re
-import logging
+import qslib.qs_is_protocol
 
 
 def crcb(crlist):
@@ -42,6 +42,33 @@ def crcb(crlist):
                 sw.close()
                 return
 
+            if x := re.match(rb"(\d+) TESTERRORSERVER", line):
+                sw.write(b"ERRor " + x.group(1) + b" testerror\n")
+                await sw.drain()
+
+            if x := re.match(rb"(\d+) TESTUNKNOWNRESPSERVER", line):
+                sw.write(b"UNKNOWNCOMMAND " + x.group(1) + b" testerror\n")
+                await sw.drain()
+                sw.write(b"OK " + x.group(1) + b"\n")
+                await sw.drain()
+
+            if x := re.match(rb"(\d+) TESTNEXTSERVER", line):
+                sw.write(b"NEXT " + x.group(1) + b"\n")
+                await sw.drain()
+                sw.write(b"MESSage testservermessage ueao\n")
+                await sw.drain()
+                sw.write(b"OK " + x.group(1) + b"\n")
+                await sw.drain()
+
+            if x := re.match(rb"(\d+) TESTNEXTSERVERDELAY", line):
+                sw.write(b"NEXT " + x.group(1) + b"\n")
+                await sw.drain()
+                sw.write(b"MESSage testservermessage ueao\n")
+                await asyncio.sleep(1)
+                await sw.drain()
+                sw.write(b"OK " + x.group(1) + b"\n")
+                await sw.drain()
+
             for com, resp in crlist.items():
                 if x := re.match(rb"(\d+) " + re.escape(com.encode()), line):
                     sw.write(b"OK " + x.group(1) + b" " + resp.encode() + b"\n")
@@ -49,6 +76,30 @@ def crcb(crlist):
                     break
 
     return _fakeserver_runner
+
+
+@pytest.mark.asyncio
+async def test_responses():
+    srv = await asyncio.start_server(crcb({}), "localhost", 53533)
+
+    async with srv:
+        m = Machine("localhost", port=53533)
+
+        m.connect()
+
+        with pytest.raises(qslib.qs_is_protocol.CommandError):
+            m.run_command("TESTERRORSERVER")
+
+        m.run_command("TESTUNKNOWNRESPSERVER")
+        # FIXME: this should check logs
+
+        m.run_command_to_ack("TESTNEXTSERVER")
+
+        m.run_command("TESTNEXTSERVER")
+
+        m.run_command("TESTNEXTSERVERDELAY")
+
+        m.disconnect()
 
 
 @pytest.mark.asyncio

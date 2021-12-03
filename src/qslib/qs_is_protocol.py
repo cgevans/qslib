@@ -74,7 +74,9 @@ class QS_IS_Protocol(asyncio.Protocol):
         # setup connection.
         self.transport = transport
         self.waiting_commands: list[
-            tuple[bytes, None | Future[tuple[bytes, bytes]]]
+            tuple[
+                bytes, None | Future[tuple[bytes, bytes] | tuple[bytes, asyncio.Future]]
+            ]
         ] = []
         self.buffer = io.BytesIO()
         self.quote_stack: list[bytes] = []
@@ -105,16 +107,25 @@ class QS_IS_Protocol(asyncio.Protocol):
         if ds.startswith((b"ERRor", b"OK", b"NEXT")):
             ms = ds.index(b" ")
             r = None
+            if ds.startswith(b"NEXT"):
+                loop = asyncio.get_running_loop()
+                comfut_new = loop.create_future()
             for i, (commref, comfut) in enumerate(self.waiting_commands):
                 if ds.startswith(commref, ms + 1):
                     if comfut is not None:
-                        comfut.set_result((ds[:ms], ds[ms + len(commref) + 2 :]))
+                        if ds.startswith(b"NEXT"):
+                            comfut.set_result((ds[:ms], comfut_new))
+                        else:
+                            comfut.set_result((ds[:ms], ds[ms + len(commref) + 2 :]))
                     else:
                         log.info(f"{commref!r} complete: {ds!r}")
                     r = i
                     break
             if r is None:
                 log.error(f"received unexpected command response: {ds!r}")
+            elif ds.startswith(b"NEXT"):
+                self.waiting_commands.append((self.waiting_commands[r][0], comfut_new))
+                del self.waiting_commands[r]
             else:
                 del self.waiting_commands[r]
         elif ds.startswith(b"MESSage"):
@@ -196,11 +207,10 @@ class QS_IS_Protocol(asyncio.Protocol):
 
         if state == b"NEXT":
             if just_ack:
-                self.waiting_commands.append((commref, None))
-                return msg
+                # self.waiting_commands.append((commref, None))
+                return b""
             else:
-                comnext = loop.create_future()
-                self.waiting_commands.append((commref, comnext))
+                comnext = msg
                 await comnext
                 state, msg = comnext.result()
                 log.debug(f"Received ({state!r}, {msg!r})")
