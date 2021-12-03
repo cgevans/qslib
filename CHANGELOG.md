@@ -5,6 +5,7 @@
 - Much faster `Experiment.sync_from_machine`, only transferring additional log entries rather than the entire log.
 - Common plotting routines for fluorescence data.
 - More reliable monitoring.
+- More reliable connections, and testing.
 - `Stage.stepped_ramp` convenience function.
 - Fixes to bugs inhibiting exposure setting, and some basic
   implementations for this.
