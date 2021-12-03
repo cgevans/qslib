@@ -13,6 +13,10 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 from .base import AccessLevel
 
+import logging
+
+log = logging.getLogger(__name__)
+
 
 def _gen_auth_response(password: str, challenge_string: str) -> str:
     return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
@@ -87,9 +91,20 @@ class QSConnectionAsync:
         await self.disconnect()
 
     async def disconnect(self) -> None:
+        if self._transport.is_closing():
+            return
         await self._protocol.disconnect()
         self._transport.close()
-        self.connected = False
+
+    @property
+    def connected(self) -> bool:
+        if hasattr(self, "_protocol"):
+            if self._protocol.lostconnection.done():
+                return False
+            else:
+                return True
+        else:
+            return False
 
     def __init__(
         self,
@@ -102,7 +117,6 @@ class QSConnectionAsync:
         """Create a connection to a QuantStudio Instrument Server."""
         self.host = host
         self.port = port
-        self.connected = False
         self.password = password
         self._initial_access_level = initial_access_level
         self._authenticate_on_connect = authenticate_on_connect
@@ -150,8 +164,6 @@ class QSConnectionAsync:
 
         if self._initial_access_level is not None:
             await self.set_access_level(cast(AccessLevel, self._initial_access_level))
-
-        self.connected = True
 
         return resp
 
