@@ -157,8 +157,8 @@ class QS_IS_Protocol(asyncio.Protocol):
                     lastwrite = m.end()
                     asyncio.create_task(self.parse_message(self.buffer.getvalue()))
                     self.buffer = io.BytesIO()
-                else:
-                    continue
+                # else:  # This is not actually needed
+                #     continue
             else:
                 if not m[1]:
                     self.quote_stack.append(m[2])
@@ -166,10 +166,11 @@ class QS_IS_Protocol(asyncio.Protocol):
                     try:
                         i = self.quote_stack.index(m[2])
                     except ValueError:
-                        raise ValueError(
-                            f"Close quote {m[2]!r} did not have open"
-                            f" in stack {self.quote_stack}."
-                        ) from None
+                        log.error(
+                            f"Close quote {m[2]!r} did not have open in stack {self.quote_stack}. Disconnecting to avoid corruption."
+                        )
+                        self.quote_stack = []
+                        self.connection_lost(ConnectionError())
                     else:
                         self.quote_stack = self.quote_stack[:i]
                 self.buffer.write(data[lastwrite : m.end()])
