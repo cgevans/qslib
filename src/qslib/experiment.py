@@ -15,6 +15,8 @@ from glob import glob
 from typing import IO, Any, Collection, Literal, Mapping, Sequence, Union, cast
 from pathlib import Path
 
+import numpy as np
+
 from warnings import warn
 
 from pandas.core.base import DataError
@@ -2175,7 +2177,7 @@ table, th, td {{
                 fig, ax = plt.subplots(1, 1, **({} if figure_kw is None else figure_kw))
                 ax = [ax]
 
-        elif (not isinstance(ax, Sequence)) or isinstance(ax, plt.Axes):
+        elif (not isinstance(ax, (Sequence, np.ndarray))) or isinstance(ax, plt.Axes):
             ax = [ax]
 
         ax = cast(Sequence[plt.Axes], ax)
@@ -2222,8 +2224,11 @@ table, th, td {{
 
             xlims = ax[0].get_xlim()
 
-            times = reduceddata.loc[(slice(None), stages), ("time", "hours")]
-            tmin, tmax = times.min(), times.max()
+            tmin, tmax = np.inf, 0.0
+            for i, fr in reduceddata.groupby("filter_set", as_index=False):
+                d = fr.loc[i, ("time", "hours")].loc[stages]
+                tmin = min(tmin, d.min())
+                tmax = max(tmax, d.max())
 
             reltemps = self.temperatures.loc[
                 lambda x: (tmin <= x[("time", "hours")])
