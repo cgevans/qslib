@@ -2158,7 +2158,7 @@ table, th, td {{
             samples = [samples]
 
         if isinstance(stages, int):
-            stages = []
+            stages = [stages]
 
         fig = None
 
