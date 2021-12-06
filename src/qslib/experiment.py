@@ -820,6 +820,10 @@ table, th, td {{
     def sample_wells(self) -> dict[str, list[str]]:
         return self.plate_setup.sample_wells
 
+    @sample_wells.setter
+    def sample_wells(self, new_sample_wells: dict[str, list[str]]):
+        self.plate_setup.sample_wells = new_sample_wells
+
     def __init__(
         self,
         name: str | None = None,
@@ -1901,7 +1905,7 @@ table, th, td {{
 
     def plot_anneal_melt(
         self,
-        samples: str | Sequence[str],
+        samples: str | Sequence[str] | None = None,
         filters: str | FilterSet | Collection[str | FilterSet] | None = None,
         anneal_stages: int | Sequence[int] | None = None,
         melt_stages: int | Sequence[int] | None = None,
@@ -1971,6 +1975,8 @@ table, th, td {{
 
         if isinstance(samples, str):
             samples = [samples]
+        elif samples is None:
+            samples = list(self.plate_setup.sample_wells.keys())
 
         filters = _normalize_filters(filters)
 
@@ -2024,10 +2030,7 @@ table, th, td {{
                 for well in wells:
                     color = next(ax._get_lines.prop_cycler)["color"]
 
-                    if len(wells) > 1:
-                        label = f"{sample} ({well})"
-                    else:
-                        label = sample
+                    label = _gen_label(sample, well, filter, samples, wells, filters)
 
                     anneallines = ax.plot(
                         annealdat.loc[:, (well, "st")],
@@ -2079,7 +2082,7 @@ table, th, td {{
 
     def plot_over_time(
         self,
-        samples: str | Sequence[str],
+        samples: str | Sequence[str] | None = None,
         filters: str | FilterSet | Collection[str | FilterSet] | None = None,
         stages: slice | int | Sequence[int] = slice(None),
         normalization: Normalizer = NormRaw(),
@@ -2158,6 +2161,8 @@ table, th, td {{
 
         if isinstance(samples, str):
             samples = [samples]
+        elif samples is None:
+            samples = list(self.plate_setup.sample_wells.keys())
 
         if isinstance(stages, int):
             stages = [stages]
