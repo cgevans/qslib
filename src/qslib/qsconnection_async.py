@@ -6,6 +6,7 @@ import hmac
 import re
 import base64
 from .qs_is_protocol import Error, QS_IS_Protocol
+from .parser import arglist
 
 import qslib.data as data
 import shlex
@@ -105,6 +106,99 @@ class QSConnectionAsync:
                 return True
         else:
             return False
+
+    @overload
+    async def list_files(
+        self,
+        path: str,
+        *,
+        leaf: str = "FILE",
+        verbose: Literal[True],
+        recursive: bool = False,
+    ) -> list[dict[str, Any]]:
+        ...
+
+    @overload
+    async def list_files(
+        self,
+        path: str,
+        *,
+        leaf: str = "FILE",
+        verbose: Literal[False],
+        recursive: bool = False,
+    ) -> list[str]:
+        ...
+
+    async def list_files(
+        self,
+        path: str,
+        *,
+        leaf: str = "FILE",
+        verbose: bool = False,
+        recursive: bool = False,
+    ) -> list[str] | list[dict[str, Any]]:
+        if not verbose:
+            if recursive:
+                raise NotImplementedError
+            return (await self.run_command(f"{leaf}:LIST? {path}")).split("\n")[1:-1]
+        else:
+            v = (await self.run_command(f"{leaf}:LIST? -verbose {path}")).split("\n")[
+                1:-1
+            ]
+            ret = []
+            for x in v:
+                rm = re.match(
+                    r'"([^"]+)" -type=(\S+) -size=(\S+) -mtime=(\S+) -atime=(\S+) -ctime=(\S+)$',
+                    x,
+                )
+                if rm is None:
+                    x = arglist.parseString(x)
+                    d = {}
+                    d["path"] = x["arglist"]["args"][0]  # type: ignore
+                    d |= x["arglist"]["opts"]  # type: ignore
+                else:
+                    d = {}
+                    d["path"] = rm.group(1)
+                    d["type"] = rm.group(2)
+                    d["size"] = int(rm.group(3))
+                    d["mtime"] = float(rm.group(4))
+                    d["atime"] = float(rm.group(5))
+                    d["ctime"] = float(rm.group(6))
+                if d["type"] == "folder" and recursive:
+                    ret += await self.list_files(
+                        d["path"], leaf=leaf, verbose=True, recursive=True
+                    )
+                else:
+                    ret.append(d)
+            return ret
+
+    async def compile_eds(self, run_name: str) -> None:
+        """Take a finished run directory in experiments:, compile it into an EDS, and move it to
+        public_run_complete:"""
+
+        expfiles = await self.list_files("", leaf="experiment", verbose=True)
+
+        res = [r for r in expfiles if r["path"] == run_name]
+
+        if len(res) != 1:
+            raise ValueError
+        res = res[0]
+
+        if "run" not in res:
+            raise ValueError
+
+        if ("collected" in res) and (res["collected"]):
+            raise ValueError
+
+        await self.run_command(
+            f"exp:run -asynchronous <block> zip {run_name}.eds {run_name} </block>"
+        )
+
+        await self.run_command(
+            f"file:move experiments:{run_name}.eds public_run_complete:{run_name}.eds"
+        )
+
+        await self.run_command(f"exp:attr= {run_name} collected True")
 
     def __init__(
         self,
