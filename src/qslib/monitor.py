@@ -9,6 +9,7 @@ import asyncio
 from pathlib import Path
 
 from nio.client.async_client import AsyncClientConfig
+from qslib.base import AccessLevel
 
 from qslib.qs_is_protocol import CommandError
 from .parser import arglist
@@ -176,7 +177,16 @@ class Collector:
 
         await self.matrix_client.sync()
 
-    async def sync_completed(self, name: str, connection: QSConnectionAsync):
+    async def compile_eds(self, connection: QSConnectionAsync, name: str):
+        try:
+            await connection.set_access_level(AccessLevel.Controller)
+            await connection.compile_eds(name)
+        finally:
+            await connection.set_access_level(AccessLevel.Observer)
+
+    async def sync_completed(self, connection: QSConnectionAsync, name: str):
+
+        await self.compile_eds(connection, name)
 
         dir = Path(self.config["sync"]["completed_directory"])
 
@@ -195,7 +205,7 @@ class Collector:
                 edsfile = await connection.get_file(f"public_run_complete:{name}.eds")
                 f.write(edsfile)
         except Exception as e:
-            log.error(f"Error synchronizing copmleted EDS {name}: {e}")
+            log.error(f"Error synchronizing completed EDS {name}: {e}")
             return
 
     async def docollect(
@@ -323,7 +333,7 @@ class Collector:
                         )
                     else:
                         # No sync; just compile
-                        asyncio.tasks.create_task(c.compile_eds(state.run.name))
+                        asyncio.tasks.create_task(self.compile_eds(c, state.run.name))
 
         elif action == "Collected":
             self.inject(
