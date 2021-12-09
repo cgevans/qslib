@@ -13,7 +13,6 @@ from typing import Any, Generator, IO, Literal, overload
 import nest_asyncio
 import paramiko.pkey
 
-from .parser import arglist
 from .qsconnection_async import QSConnectionAsync
 from .tcprotocol import Protocol
 from .util import _unwrap_tags
@@ -282,38 +281,11 @@ class Machine:
         verbose: bool = False,
         recursive: bool = False,
     ) -> list[str] | list[dict[str, Any]]:
-        if not verbose:
-            if recursive:
-                raise NotImplementedError
-            return self.run_command(f"{leaf}:LIST? {path}").split("\n")[1:-1]
-        else:
-            v = self.run_command(f"{leaf}:LIST? -verbose {path}").split("\n")[1:-1]
-            ret = []
-            for x in v:
-                rm = re.match(
-                    r'"([^"]+)" -type=(\S+) -size=(\S+) -mtime=(\S+) -atime=(\S+) -ctime=(\S+)$',
-                    x,
-                )
-                if rm is None:
-                    x = arglist.parseString(x)
-                    d = {}
-                    d["path"] = x["arglist"]["args"][0]  # type: ignore
-                    d |= x["arglist"]["opts"]  # type: ignore
-                else:
-                    d = {}
-                    d["path"] = rm.group(1)
-                    d["type"] = rm.group(2)
-                    d["size"] = int(rm.group(3))
-                    d["mtime"] = float(rm.group(4))
-                    d["atime"] = float(rm.group(5))
-                    d["ctime"] = float(rm.group(6))
-                if d["type"] == "folder" and recursive:
-                    ret += self.list_files(
-                        d["path"], leaf=leaf, verbose=True, recursive=True
-                    )
-                else:
-                    ret.append(d)
-            return ret
+
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(
+            self._qsc.list_files(path, leaf=leaf, verbose=verbose, recursive=recursive)
+        )
 
     def read_file(
         self, path: str, context: str | None = None, leaf: str = "FILE"

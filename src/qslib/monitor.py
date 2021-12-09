@@ -6,6 +6,7 @@ from typing import Union, Dict, Tuple, cast, List, Optional, Any
 from nio.client import AsyncClient
 import re
 import asyncio
+from pathlib import Path
 
 from nio.client.async_client import AsyncClientConfig
 
@@ -175,6 +176,28 @@ class Collector:
 
         await self.matrix_client.sync()
 
+    async def sync_completed(self, name: str, connection: QSConnectionAsync):
+
+        dir = Path(self.config["sync"]["completed_directory"])
+
+        if not dir.is_dir():
+            log.error(f"Can't sync completed EDS to invalid path {dir}.")
+            return
+
+        path = dir / (name + ".eds")
+
+        if path.exists():
+            log.error(f"Completed EDS already exists for {name}.")
+            return
+
+        try:
+            with path.open("wb") as f:
+                edsfile = await connection.get_file(f"public_run_complete:{name}.eds")
+                f.write(edsfile)
+        except Exception as e:
+            log.error(f"Error synchronizing copmleted EDS {name}: {e}")
+            return
+
     async def docollect(
         self,
         args: Dict[str, Union[str, int]],
@@ -219,7 +242,9 @@ class Collector:
         self.idbw.write(bucket=self.config["influxdb"]["bucket"], record=lp)
         self.idbw.flush()
 
-    async def handle_run_msg(self, state, c, topic, message, timestamp):
+    async def handle_run_msg(
+        self, state, c: QSConnectionAsync, topic, message, timestamp
+    ):
         timestamp = int(1e9 * timestamp)
         msg = arglist.parseString(message)
         log.debug(msg)
@@ -284,6 +309,22 @@ class Collector:
                     f"{self.config['machine']['name']} status: {action} {' '.join(contents[1:])}"  # noqa: E501
                 )
             )
+            if action == "Ended":
+                if cast(dict, self.config).get("machine", {}).get("compile", False):
+                    compdir = (
+                        cast(dict, self.config)
+                        .get("sync", {})
+                        .get("completed_directory", "")
+                    )
+                    if compdir != "":
+                        # This will need to compile and sync
+                        asyncio.tasks.create_task(
+                            self.sync_completed(c, state.run.name)
+                        )
+                    else:
+                        # No sync; just compile
+                        asyncio.tasks.create_task(c.compile_eds(state.run.name))
+
         elif action == "Collected":
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
