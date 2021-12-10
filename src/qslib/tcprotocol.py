@@ -19,7 +19,8 @@ from typing import (
 )
 
 from .base import RunStatus
-
+import matplotlib.pyplot as plt
+import math
 from ._version import version as __version__  # type: ignore
 
 from qslib.data import FilterSet
@@ -113,6 +114,19 @@ class BaseStep(ABC):
     def info_str(self, index=None, repeats=1) -> str:
         ...
 
+    @abstractmethod
+    def duration_at_cycle(self, cycle: int) -> float:  # cycle from 1
+        ...
+
+    @abstractmethod
+    def temperatures_at_cycle(self, cycle: int) -> list[float]:
+        ...
+
+    @property
+    @abstractmethod
+    def collect(self) -> bool:
+        ...
+
     def to_command(self, *, stepindex: int, **kwargs) -> str:
         s = "STEP "
         if self.repeat != 1:
@@ -131,7 +145,7 @@ class BaseStep(ABC):
 @dataclass
 class Stage(XMLable):
     _steps: list[BaseStep] = field(repr=False, init=False)
-    steps: list[BaseStep] | Step  # type: ignore
+    steps: Sequence[BaseStep] | BaseStep  # type: ignore
     repeat: int = 1
     index: int | None = None
     label: str | None = None
@@ -185,7 +199,7 @@ class Stage(XMLable):
         return self._steps
 
     @steps.setter
-    def steps(self, steps: Iterable[BaseStep] | BaseStep):  # type: ignore
+    def steps(self, steps: Iterable[BaseStep] | BaseStep):
         self._steps = [steps] if isinstance(steps, BaseStep) else list(steps)
 
     def __postinit__(self):
@@ -473,7 +487,7 @@ class Protocol(XMLable):
 
     @classmethod
     def from_command(cls, s: str) -> Protocol:
-        return cls._from_command_dict(qp.command.parseString(s)[0])
+        return cls._from_command_dict(qp.command.parseString(s)[0])  # type: ignore
 
     @classmethod
     def _from_command_dict(cls, d: dict[str, Any]) -> Protocol:
@@ -601,10 +615,12 @@ class Protocol(XMLable):
 
     @classmethod
     def from_xml(cls, e: ET.Element) -> Protocol:
-        svol = e.findtext("SampleVolume")
-        runmode = e.findtext("RunMode")
-        covertemperature = float(e.findtext("CoverTemperature"))
+        svol = float(e.findtext("SampleVolume") or 50.0)
+        runmode = e.findtext("RunMode") or "standard"
+        covertemperature = float(e.findtext("CoverTemperature") or 105.0)
         protoname = e.findtext("ProtocolName")
+        if protoname is None:
+            raise ValueError
         filter_e = e.find("CollectionProfile")
         filters = []
         if filter_e:
@@ -998,11 +1014,11 @@ class Step(BaseStep, XMLable):
 
     @classmethod
     def from_xml(cls, e: ET.Element, *, etc=1, ehtc=1, he=False) -> Step:
-        collect = bool(int(e.findtext("CollectionFlag")))
-        ts = [float(x.text) for x in e.findall("Temperature")]
-        ht = int(e.findtext("HoldTime"))
-        et = float(e.findtext("ExtTemperature"))
-        eht = int(e.findtext("ExtHoldTime"))
+        collect = bool(int(e.findtext("CollectionFlag") or 0))
+        ts = [float(x.text or math.nan) for x in e.findall("Temperature")]
+        ht = int(e.findtext("HoldTime") or 0)
+        et = float(e.findtext("ExtTemperature") or 0.0)
+        eht = int(e.findtext("ExtHoldTime") or 0)
         if not he:
             et = 0
             eht = 0
@@ -1078,7 +1094,8 @@ class Step(BaseStep, XMLable):
 
 @dataclass
 class CustomStep(BaseStep):
-    _body: List[ProtoCommand]
+    _body: List[ProtoCommand] = field(init=False, repr=False)
+    body: Sequence[ProtoCommand]  # type: ignore
     repeat: int = 1
     identifier: int | str | None = None
 
@@ -1088,7 +1105,13 @@ class CustomStep(BaseStep):
 
     @body.setter
     def body(self, v: Sequence[ProtoCommand]):
-        self._body = v
+        self._body = list(v)
+
+    def collect(self) -> bool:
+        return False
+
+    def temperatures_at_cycle(self, cycle: int) -> list[float]:
+        return 6 * [math.nan]
 
     def total_duration(self, repeat: int = 1) -> int:
         return 0

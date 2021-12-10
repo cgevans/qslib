@@ -8,12 +8,14 @@ from nio.client import AsyncClient
 import re
 import asyncio
 from pathlib import Path
+import shutil
 
 from nio.client.async_client import AsyncClientConfig
+from nio.responses import JoinedRoomsError
 from qslib.base import AccessLevel
 
 from qslib.qs_is_protocol import CommandError
-from .parser import arglist
+from .parser import ArgList
 
 from qslib.plate_setup import PlateSetup
 from qslib.qsconnection_async import FilterDataFilename, QSConnectionAsync
@@ -31,6 +33,55 @@ LEDSTATUS = re.compile(
 
 
 @dataclass
+class LEDStatus:
+    temperature: float
+    current: float
+    voltage: float
+    junctemp: float
+
+
+@dataclass(frozen=True)
+class MatrixConfig:
+    password: str
+    user: str
+    room: str
+    host: str
+    encryption: bool = False
+
+
+@dataclass(frozen=True)
+class InfluxConfig:
+    token: str
+    org: str
+    bucket: str
+    url: str
+
+
+@dataclass(frozen=True)
+class MachineConfig:
+    password: str
+    name: str
+    host: str
+    port: str
+    retries: int
+    compile: bool = False
+
+
+@dataclass(frozen=True)
+class SyncConfig:
+    completed_directory: str | None = None
+    in_progress_directory: str | None = None
+
+
+@dataclass(frozen=True)
+class Config:
+    matrix: MatrixConfig | None
+    influxdb: InfluxConfig
+    machine: MachineConfig
+    sync: SyncConfig = SyncConfig()
+
+
+@dataclass
 class RunState:
     name: Optional[str] = None
     stage: Optional[int] = None
@@ -39,21 +90,18 @@ class RunState:
     plate_setup: Optional[PlateSetup] = None
 
     async def refresh(self, c: QSConnectionAsync):
-        runmsg: dict[str, dict[str, Any]] = cast(
-            dict[str, dict[str, Any]],
-            arglist.parseString(await c.run_command("RunProgress?")).asDict(),
-        )
+        runmsg = ArgList(await c.run_command("RunProgress?"))
         print(runmsg)
-        self.name = cast(str, runmsg["arglist"]["opts"]["RunTitle"])
+        self.name = cast(str, runmsg.opts["RunTitle"])
         if self.name == "-":
             self.name = None
-        self.stage = cast(int, runmsg["arglist"]["opts"]["Stage"])
+        self.stage = cast(int, runmsg.opts["Stage"])
         if self.stage == "-":
             self.stage = None
-        self.cycle = cast(int, runmsg["arglist"]["opts"]["Cycle"])
+        self.cycle = cast(int, runmsg.opts["Cycle"])
         if self.cycle == "-":
             self.cycle = None
-        self.step = cast(int, runmsg["arglist"]["opts"]["Step"] if self.stage else None)
+        self.step = cast(int, runmsg.opts["Step"] if self.stage else None)
         if self.step == "-":
             self.step = None
         if self.name:
@@ -87,16 +135,16 @@ class MachineState:
     drawer: str
 
     async def refresh(self, c: QSConnectionAsync):
-        targmsg = arglist.parseString(await c.run_command("TBC:SETT?"))
-        self.cover_target = cast(float, targmsg["arglist"]["opts"]["Cover"])
+        targmsg = ArgList(await c.run_command("TBC:SETT?"))
+        self.cover_target = cast(float, targmsg.opts["Cover"])
         self.zone_targets = cast(
-            List[float], [targmsg["arglist"]["opts"][f"Zone{i}"] for i in range(1, 7)]
+            List[float], [targmsg.opts[f"Zone{i}"] for i in range(1, 7)]
         )
 
-        contmsg = arglist.parseString(await c.run_command("TBC:CONT?"))
-        self.cover_control = cast(bool, contmsg["arglist"]["opts"]["Cover"])
+        contmsg = ArgList(await c.run_command("TBC:CONT?"))
+        self.cover_control = cast(bool, contmsg.opts["Cover"])
         self.zone_controls = cast(
-            List[bool], [contmsg["arglist"]["opts"][f"Zone{i}"] for i in range(1, 7)]
+            List[bool], [contmsg.opts[f"Zone{i}"] for i in range(1, 7)]
         )
 
         self.drawer = await c.run_command("DRAW?")
@@ -141,24 +189,24 @@ async def get_runinfo(c: QSConnectionAsync):
 
 
 class Collector:
-    def __init__(self, config):
+    def __init__(self, config: Config):
         self.config = config
 
         self.idbclient = InfluxDBClient(
-            url=self.config["influxdb"]["url"],
-            token=self.config["influxdb"]["token"],
-            org=self.config["influxdb"]["org"],
+            url=self.config.influxdb.url,
+            token=self.config.influxdb.token,
+            org=self.config.influxdb.org,
         )
         self.idbw = self.idbclient.write_api(write_options=ASYNCHRONOUS)
 
-        if "matrix" in self.config:
+        if self.config.matrix:
             self.matrix_config = AsyncClientConfig(
-                encryption_enabled=self.config["matrix"].get("encryption", False)
+                encryption_enabled=self.config.matrix.encryption
             )
 
             self.matrix_client = AsyncClient(
-                self.config["matrix"]["host"],
-                self.config["matrix"]["user"],
+                self.config.matrix.host,
+                self.config.matrix.user,
                 store_path="./matrix_store/",
                 config=self.matrix_config,
             )
@@ -166,11 +214,12 @@ class Collector:
         self.run_log_file: TextIO | None = None
 
     def inject(self, t):
-        self.idbw.write(bucket=self.config["influxdb"]["bucket"], record=t)
+        self.idbw.write(bucket=self.config.influxdb.bucket, record=t)
 
     async def matrix_announce(self, msg: str) -> None:
+        assert self.config.matrix
         await self.matrix_client.room_send(
-            room_id=self.config["matrix"]["room"],
+            room_id=self.config.matrix.room,
             message_type="m.room.message",
             content={"msgtype": "m.text", "body": msg},
             ignore_unverified_devices=True,
@@ -182,21 +231,26 @@ class Collector:
         self,
         connection: QSConnectionAsync,
         name: str,
-        ipdir_str: str,
+        *,
         firstmsg: str | None = None,
+        overwrite: bool = False,
     ):
-        ipdir = Path(ipdir_str)
         name = name.replace(" ", "_")
 
-        if not ipdir.is_dir():
-            log.error(f"Can't open in-progress directory {ipdir}.")
+        assert self.ipdir is not None
+
+        if not self.ipdir.is_dir():
+            log.error(f"Can't open in-progress directory {self.ipdir}.")
             return
 
-        dirpath = ipdir / name
+        dirpath = self.ipdir / name
 
-        if dirpath.exists():
+        if dirpath.exists() and (not overwrite):
             log.error(f"In-progress directory for {name} already exists.")
             return
+        elif dirpath.exists():
+            assert dirpath != self.ipdir
+            shutil.rmtree(dirpath)
 
         dirpath.mkdir()
         zf = await connection.read_dir_as_zip(name, "experiment")
@@ -214,7 +268,7 @@ class Collector:
 
     @property
     def ipdir(self) -> Path | None:
-        x = self.config.get("sync", {}).get("in_progress_directory", None)
+        x = self.config.sync.in_progress_directory
         if x is None:
             return None
         else:
@@ -240,7 +294,7 @@ class Collector:
 
         await self.compile_eds(connection, name)
 
-        dir = Path(self.config["sync"]["completed_directory"])
+        dir = Path(cast(str, self.config.sync.completed_directory))
 
         if not dir.is_dir():
             log.error(f"Can't sync completed EDS to invalid path {dir}.")
@@ -270,7 +324,7 @@ class Collector:
 
     async def docollect(
         self,
-        args: Dict[str, Union[str, int]],
+        args: Dict[str, Union[str, int, bool, float]],
         state: State,
         connection: QSConnectionAsync,
     ) -> None:
@@ -321,7 +375,7 @@ class Collector:
                     run_name=run, sample_array=pa
                 )
 
-        self.idbw.write(bucket=self.config["influxdb"]["bucket"], record=lp)
+        self.idbw.write(bucket=self.config.influxdb.bucket, record=lp)
         self.idbw.flush()
 
         for path, data in files:
@@ -344,7 +398,12 @@ class Collector:
                         z.write(fpath, os.path.relpath(fpath, ipp))
 
     async def handle_run_msg(
-        self, state, c: QSConnectionAsync, topic, message, timestamp
+        self,
+        state,
+        c: QSConnectionAsync,
+        topic: str,
+        message: str,
+        timestamp: float | None,
     ):
 
         # Are we logging?
@@ -352,10 +411,11 @@ class Collector:
             self.run_log_file.write(f"{topic} {timestamp} {message}")
             self.run_log_file.flush()
 
+        assert timestamp is not None
         timestamp = int(1e9 * timestamp)
-        msg = arglist.parseString(message)
+        msg = ArgList(message)
         log.debug(msg)
-        contents = msg["arglist"]["args"]
+        contents = msg.args
         action = cast(str, contents[0])
         if action == "Stage":
             state.run.stage = contents[1]
@@ -395,11 +455,11 @@ class Collector:
             )
         elif action == "Holding":
             self.inject(
-                f'run_action,type=Holding holdtime={msg["arglist"]["opts"]["time"]} {timestamp}'  # noqa: E501
+                f'run_action,type=Holding holdtime={msg.opts["time"]} {timestamp}'  # noqa: E501
             )
         elif action == "Ramping":
             # TODO: check zones
-            state.machine.zone_targets = msg["arglist"]["opts"]["targets"]
+            state.machine.zone_targets = msg.opts["targets"]
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
             )
@@ -413,7 +473,7 @@ class Collector:
             )
             asyncio.tasks.create_task(
                 self.matrix_announce(
-                    f"{self.config['machine']['name']} status: {action} {' '.join(contents[1:])}"  # noqa: E501
+                    f"{self.config.machine.name} status: {action} {' '.join(str(x) for x in contents[1:])}"  # noqa: E501
                 )
             )
             if action == "Ended":
@@ -442,8 +502,7 @@ class Collector:
                         self.setup_new_rundir(
                             c,
                             newname,
-                            str(self.ipdir),
-                            f"\n{topic} {timestamp} {message}",
+                            firstmsg=f"\n{topic} {timestamp} {message}",
                         )
                     )
 
@@ -451,7 +510,7 @@ class Collector:
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
             )
-            asyncio.tasks.create_task(self.docollect(msg["arglist"]["opts"], state, c))
+            asyncio.tasks.create_task(self.docollect(msg.opts, state, c))
         else:
             self.inject(
                 Point("run_action")
@@ -479,13 +538,17 @@ class Collector:
         if self.run_log_file is not None:
             self.run_log_file.write(f"{topic.decode()} {timestamp} {message.decode()}")
             self.run_log_file.flush()
-        timestamp = int(1e9 * timestamp)
-        vs = [float(x) for x in LEDSTATUS.match(message).groups()]
-        ks = ["temperature", "current", "voltage", "junctemp"]
-        p = Point("lamp")
-        for k, v in zip(ks, vs):
-            p = p.field(k, v)
-        p = p.time(timestamp)
+        assert timestamp is not None
+        ls = LEDSTATUS.match(message)
+        assert ls
+        p = (
+            Point("lamp")
+            .field("temperature", ls[1])
+            .field("current", ls[2])
+            .field("voltage", ls[3])
+            .field("junctemp", ls[4])
+            .time(int(1e9 * timestamp))
+        )
         self.inject(p)
         self.idbw.flush()
 
@@ -496,15 +559,16 @@ class Collector:
         if self.run_log_file is not None:
             self.run_log_file.write(f"{topic} {timestamp} {message}")
             self.run_log_file.flush()
+        assert timestamp is not None
         timestamp = int(1e9 * timestamp)
-        args = arglist.parseString(message)["arglist"]["opts"]
+        args = ArgList(message).opts
         log.debug(f"Handling message {topic} {message}")
         if topic == "Temperature":
             recs = []
             for i, (s, b, t) in enumerate(
                 zip(
-                    [float(x) for x in args["sample"].split(",")],
-                    [float(x) for x in args["block"].split(",")],
+                    [float(x) for x in cast(str, args["sample"]).split(",")],
+                    [float(x) for x in cast(str, args["block"]).split(",")],
                     state.machine.zone_targets,
                 )
             ):
@@ -533,18 +597,21 @@ class Collector:
 
     async def monitor(self):
 
-        if self.matrix_client is not None:
-            await self.matrix_client.login(self.config["matrix"]["password"])
-            if (
-                self.config["matrix"]["room"]
-                not in (await self.matrix_client.joined_rooms()).rooms
-            ):
-                await self.matrix_client.join(self.config["matrix"]["room"])
+        if self.config.matrix is not None:
+            await self.matrix_client.login(self.config.matrix.password)
+            joinedroomresp = await self.matrix_client.joined_rooms()
+            if isinstance(joinedroomresp, JoinedRoomsError):
+                log.error(joinedroomresp)
+                joinedrooms = []
+            else:
+                joinedrooms = joinedroomresp.rooms
+            if self.config.matrix.room not in joinedrooms:
+                await self.matrix_client.join(self.config.matrix.room)
 
         async with QSConnectionAsync(
-            host=self.config["machine"]["host"],
-            port=self.config["machine"]["port"],
-            password=self.config["machine"]["password"],
+            host=self.config.machine.host,
+            port=int(self.config.machine.port),
+            password=self.config.machine.password,
         ) as c:
             log.info("monitor connected")
             # Are we currently *in* a run? If so, we'll need to get info.
@@ -561,6 +628,10 @@ class Collector:
                 )
 
             self.idbw.flush()
+
+            # Setup directory if run already started:
+            if state.run.name and self.ipdir:
+                await self.setup_new_rundir(c, state.run.name, overwrite=True)
 
             await c.run_command("SUBS -timestamp Temperature Time Run LEDStatus")
             log.debug("subscriptions made")
@@ -618,9 +689,9 @@ class Collector:
             except OSError as e:
                 log.error(f"connectio error {e}, retrying")
             except Exception as e:
-                if self.config["machine"].get("retries", 3) - successive_failures > 0:
+                if self.config.machine.retries - successive_failures > 0:
                     log.error(
-                        f"Error {e}, retrying {self.config['machine']['retries']-successive_failures} times"  # noqa: E501
+                        f"Error {e}, retrying {self.config.machine.retries-successive_failures} times"  # noqa: E501
                     )
                     successive_failures += 1
                 else:

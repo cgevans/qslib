@@ -77,6 +77,15 @@ class FilterDataReading:
             f"timestamp={self.timestamp}, ...)"
         )
 
+    @classmethod
+    def from_file(
+        cls, path: str | PathLike[str], sds_dir: str | PathLike[str] | None
+    ) -> FilterDataReading:
+        p = ET.parse(path).find(".//PlateData")
+        if p is None:
+            raise ValueError(f"File {path} is not a valid filter data file.")
+        return cls(p, sds_dir=sds_dir)
+
     def __init__(
         self,
         pde: ET.Element,
@@ -292,5 +301,5 @@ def df_from_readings(
             ]
             + [("exposure", "exposure")]
         ),
-        axis="columns",
+        axis="columns",  # type: ignore
     )

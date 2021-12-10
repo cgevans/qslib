@@ -153,6 +153,17 @@ class QSConnectionAsync:
     ) -> list[str]:
         ...
 
+    @overload
+    async def list_files(
+        self,
+        path: str,
+        *,
+        leaf: str = "FILE",
+        verbose: bool = False,
+        recursive: bool = False,
+    ) -> list[str] | list[dict[str, Any]]:
+        ...
+
     async def list_files(
         self,
         path: str,

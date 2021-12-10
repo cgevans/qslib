@@ -1,8 +1,12 @@
 import pytest  # noqa
 
-from qslib.qsconnection_async import _parse_fd_fn, _index_to_filename_ref
+from qslib.qsconnection_async import FilterDataFilename
 
 from qslib.util import _pp_seqsliceint
+
+from dataclasses import astuple
+
+from qslib.data import FilterSet
 
 
 @pytest.mark.parametrize("stage", [1, 63, 2623])
@@ -15,11 +19,11 @@ def test_fd_fn(stage, cycle, step, point, em, ex):
     fds = f"S{stage:02}_C{cycle:03}_T{step:02}" f"_P{point:04}_M{em}_X{ex}"
     fdfn = fds + "_filterdata.xml"
 
-    x = _parse_fd_fn(fdfn)
+    x = FilterDataFilename.fromstring(fdfn)
 
-    assert x == (f"x{ex}-m{em}", stage, cycle, step, point)
+    assert astuple(x) == ((ex, em, True), stage, cycle, step, point)
 
-    assert fds == _index_to_filename_ref(x)
+    assert fdfn == x.tostring()
 
 
 def test_pp_seqsliceint():

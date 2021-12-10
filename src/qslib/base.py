@@ -3,7 +3,7 @@ import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, TypeVar, Callable, Type, ClassVar
+from typing import Any, Dict, Tuple, TypeVar, Callable, Type, ClassVar
 
 T = TypeVar("T", bound="BaseStatus")
 
@@ -11,24 +11,23 @@ if False:  # for mypy
     from .machine import Machine
 
 
-@dataclass
 class BaseStatus(ABC):
-    @classmethod
     @property
+    @classmethod
     @abstractmethod
     def _comlist(
         cls: Type[T],
-    ) -> dict[str, tuple[bytes, Callable[[Any], Any]]]:  # pragma: no cover
+    ) -> Dict[str, Tuple[bytes, Callable[[Any], Any]]]:  # pragma: no cover
         ...
 
-    @classmethod
     @property
+    @classmethod
     @abstractmethod  # pragma: no cover
     def _com(cls: Type[T]) -> bytes:  # pragma: no cover
         ...
 
     @classmethod
-    def from_machine(cls: Type[T], connection: "Machine") -> T:
+    def from_machine(cls: Type[T], connection: "Machine") -> T:  # type: ignore
         out = connection.run_command_bytes(cls._com)
         return cls.from_bytes(out)
 
@@ -43,8 +42,12 @@ class BaseStatus(ABC):
             }
         )
 
+    @abstractmethod
+    def __init__(self, **kwargs: Dict[str, Any]) -> None:
+        ...
 
-def _get_protodef_or_def(var: str, default: Any):
+
+def _get_protodef_or_def(var: str, default: Any) -> bytes:
     return f"$[ top.getChild('PROTOcolDEFinition').variables.get('{var}'.lower(), {default}) ]".encode()
 
 
@@ -59,7 +62,7 @@ class RunStatus(BaseStatus):
     point: int
     state: str
 
-    _comlist: ClassVar[dict[str, tuple[bytes, Callable[[Any], Any]]]] = {
+    _comlist: ClassVar[Dict[str, Tuple[bytes, Callable[[Any], Any]]]] = {
         "name": (b"${RunTitle:--}", str),
         "stage": (b"${Stage:--1}", lambda x: int(x) if x != "PRERUN" else 0),
         "num_stages": (_get_protodef_or_def("${RunMacro}-Stages", -1), int),
@@ -81,7 +84,7 @@ class MachineStatus(BaseStatus):
     cover: str
     lamp_status: str
 
-    _comlist: ClassVar[dict[str, tuple[bytes, Callable[[Any], Any]]]] = {
+    _comlist: ClassVar[Dict[str, Tuple[bytes, Callable[[Any], Any]]]] = {
         "drawer": (b"$(DRAWER?)", str),
         "cover": (b'$[ "$(ENG?)" or "unknown" ]', str),
         "lamp_status": (b"$(LST?)", str),
@@ -90,7 +93,7 @@ class MachineStatus(BaseStatus):
     _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
 
 
-_accesslevel_order: dict[str, int] = {
+_accesslevel_order: Dict[str, int] = {
     "Guest": 0,
     "Observer": 1,
     "Controller": 2,
@@ -105,6 +108,7 @@ class AccessLevel(Enum):
     Controller = "Controller"
     Administrator = "Administrator"
     Full = "Full"
+    value: str
 
     def __gt__(self, other: object) -> bool:
         if not isinstance(other, AccessLevel):
