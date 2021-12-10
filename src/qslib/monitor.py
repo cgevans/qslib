@@ -1,9 +1,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from os import EX_CANTCREAT
 import os
 import time
-import typing as tp
 from typing import TextIO, Union, Dict, Tuple, cast, List, Optional, Any
 import zipfile
 from nio.client import AsyncClient
@@ -204,9 +202,7 @@ class Collector:
         (dirpath / "filter").mkdir(exist_ok=True)
         (dirpath / "calibrations").mkdir(exist_ok=True)
 
-        self.run_log_file = (dirpath / "apldbio" / "sds" / "messages.log").open(
-            "a", buffering=0
-        )
+        self.run_log_file = (dirpath / "apldbio" / "sds" / "messages.log").open("a")
 
     @property
     def ipdir(self) -> Path | None:
@@ -255,6 +251,14 @@ class Collector:
         except Exception as e:
             log.error(f"Error synchronizing completed EDS {name}: {e}")
             return
+
+        if self.ipdir:
+            import shutil
+
+            if (self.ipdir / name).exists():
+                shutil.rmtree(self.ipdir / name)
+            if (x := (self.ipdir / (name + ".eds"))).exists():
+                x.unlink()
 
     async def docollect(
         self,
@@ -328,6 +332,7 @@ class Collector:
         # Are we logging?
         if self.run_log_file is not None:
             self.run_log_file.write(f"{topic} {timestamp} {message}\n")
+            self.run_log_file.flush()
 
         timestamp = int(1e9 * timestamp)
         msg = arglist.parseString(message)
