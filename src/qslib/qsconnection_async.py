@@ -7,6 +7,9 @@ import re
 import base64
 from .qs_is_protocol import Error, QS_IS_Protocol
 from .parser import arglist
+import zipfile
+from dataclasses import dataclass, astuple
+
 
 import qslib.data as data
 import shlex
@@ -37,16 +40,37 @@ def _parse_argstring(argstring: str) -> Dict[str, str]:
     return args
 
 
-def _parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
-    s = re.search(r"S(\d+)_C(\d+)_T(\d+)_P(\d+)_M(\d)_X(\d)_filterdata.xml$", x)
-    if s is None:
-        raise ValueError
-    return (f"x{s[6]}-m{s[5]}", int(s[1]), int(s[2]), int(s[3]), int(s[4]))
+@dataclass(frozen=True, order=True, eq=True)
+class FilterDataFilename:
+    filterset: data.FilterSet
+    stage: int
+    cycle: int
+    step: int
+    point: int
 
+    @classmethod
+    def fromstring(cls, x: str) -> FilterDataFilename:
+        s = re.search(r"S(\d+)_C(\d+)_T(\d+)_P(\d+)_M(\d)_X(\d)_filterdata.xml$", x)
+        if s is None:
+            raise ValueError
+        return cls(
+            data.FilterSet.fromstring(f"x{s[6]}-m{s[5]}"),
+            int(s[1]),
+            int(s[2]),
+            int(s[3]),
+            int(s[4]),
+        )
 
-def _index_to_filename_ref(i: Tuple[str, int, int, int, int]) -> str:
-    x, s, c, t, p = i
-    return f"S{s:02}_C{c:03}_T{t:02}_P{p:04}_M{x[4]}_X{x[1]}"
+    def tostring(self) -> str:
+        return f"S{self.stage:02}_C{self.cycle:03}_T{self.step:02}_P{self.point:04}_M{self.filterset.em}_X{self.filterset.ex}_filterdata.xml"
+
+    def is_same_point(self, other: FilterDataFilename) -> bool:
+        return (
+            (self.stage == other.stage)
+            and (self.cycle == other.cycle)
+            and (self.step == other.step)
+            and (self.point == other.point)
+        )
 
 
 def _validate_command_format(commandstring: str) -> None:
@@ -308,6 +332,25 @@ class QSConnectionAsync:
         else:
             return r
 
+    async def read_dir_as_zip(self, path: str, leaf: str = "FILE") -> zipfile.ZipFile:
+        """Read a directory on the
+
+        Parameters
+        ----------
+        path : str
+            path on the machine
+        leaf : str, optional
+            leaf to use, by default "FILE"
+
+        Returns
+        -------
+        zipfile.ZipFile
+            the returned zip file
+        """
+        x = await self.run_command_to_bytes(f"{leaf}:ZIPREAD? {path}")
+
+        return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-10])))
+
     async def get_file(
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
     ) -> bytes:
@@ -335,27 +378,39 @@ class QSConnectionAsync:
     async def get_run_start_time(self) -> float:
         return float(await self.run_command("RET ${RunStartTime:--}"))
 
+    @overload
     async def get_filterdata_one(
         self,
-        filterset: Union[data.FilterSet, str],  # type: ignore
-        stage: int,
-        cycle: int,
-        step: int,
-        point: int = 1,
+        ref: FilterDataFilename,
+        *,
         run: Optional[str] = None,
+        return_files: Literal[True],
+    ) -> tuple[data.FilterDataReading, list[tuple[str, bytes]]]:
+        ...
+
+    @overload
+    async def get_filterdata_one(
+        self,
+        ref: FilterDataFilename,
+        *,
+        run: Optional[str] = None,
+        return_files: Literal[False] = False,
     ) -> data.FilterDataReading:
+        ...
+
+    async def get_filterdata_one(
+        self,
+        ref: FilterDataFilename,
+        *,
+        run: Optional[str] = None,
+        return_files: bool = False,
+    ) -> data.FilterDataReading | tuple[
+        data.FilterDataReading, list[tuple[str, bytes]]
+    ]:
         if run is None:
             run = await self.get_run_title()
-        if isinstance(filterset, str):
-            filterset_r = data.FilterSet.fromstring(filterset)
-        else:
-            filterset_r = filterset
 
-        fl = await self.get_exp_file(
-            f"{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
-            f"_T{step:02}_P{point:04}_M{filterset_r.em}"
-            f"_X{filterset_r.ex}_filterdata.xml"
-        )
+        fl = await self.get_exp_file(f"{run}/apldbio/sds/filter/" + ref.tostring())
 
         if (x := ET.parse(io.BytesIO(fl)).find("PlatePointData/PlateData")) is not None:
             f = data.FilterDataReading(x)
@@ -371,7 +426,15 @@ class QSConnectionAsync:
 
         f.set_timestamp_by_quantdata(qf.decode())
 
-        return f
+        if return_files:
+            files = [("filter/" + ref.tostring(), fl)]
+            qn = re.search("quant/.*$", ql[-1])
+            assert qn is not None
+            qn = qn[0]
+            files.append((qn, qf))
+            return f, files
+        else:
+            return f
 
     @overload
     async def get_all_filterdata(
@@ -392,7 +455,7 @@ class QSConnectionAsync:
             run = await self.get_run_title()
 
         pl = [
-            await self.get_filterdata_one(*_parse_fd_fn(x))
+            await self.get_filterdata_one(FilterDataFilename.fromstring(x))
             for x in await self.get_expfile_list(
                 f"{run}/apldbio/sds/filter/*_filterdata.xml"
             )
