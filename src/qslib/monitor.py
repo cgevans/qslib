@@ -25,6 +25,8 @@ import logging
 from influxdb_client import InfluxDBClient, Point  # , Point, WritePrecision
 from influxdb_client.client.write_api import ASYNCHRONOUS
 
+import functools
+
 log = logging.getLogger("monitor")
 
 LEDSTATUS = re.compile(
@@ -84,7 +86,7 @@ class Config:
 @dataclass
 class RunState:
     name: Optional[str] = None
-    stage: Optional[int] = None
+    stage: Optional[int | str] = None
     cycle: Optional[int] = None
     step: Optional[int] = None
     plate_setup: Optional[PlateSetup] = None
@@ -116,7 +118,7 @@ class RunState:
         await n.refresh(c)
         return n
 
-    def statemsg(self, timestamp):
+    def statemsg(self, timestamp: str):
         s = f'run_state name="{self.name}"'
         if self.stage:
             s += f",stage={self.stage}i,cycle={self.cycle}i,step={self.step}i"
@@ -401,7 +403,7 @@ class Collector:
 
     async def handle_run_msg(
         self,
-        state,
+        state: State,
         c: QSConnectionAsync,
         topic: str,
         message: str,
@@ -420,6 +422,7 @@ class Collector:
         contents = msg.args
         action = cast(str, contents[0])
         if action == "Stage":
+            assert isinstance(contents[1], (str, int))
             state.run.stage = contents[1]
             self.inject(
                 Point("run_action")
@@ -429,10 +432,14 @@ class Collector:
                 .to_line_protocol()
             )
             self.inject(
-                f"run_status,type={action.lower()} {action.lower()}={contents[1]}i {timestamp}"  # noqa: E501
+                Point("run_status")
+                .tag("type", action.lower())
+                .field(action.lower(), contents[1])
+                .time(timestamp)
+                .to_line_protocol()
             )
         elif action == "Cycle":
-            state.run.cycle = contents[1]
+            state.run.cycle = int(contents[1])
             self.inject(
                 Point("run_action")
                 .tag("type", action.lower())
@@ -441,12 +448,20 @@ class Collector:
                 .to_line_protocol()
             )
             self.inject(
-                f"run_status,type={action.lower()} {action.lower()}={contents[1]}i {timestamp}"  # noqa: E501
+                Point("run_status")
+                .tag("type", action.lower())
+                .field(action.lower(), contents[1])
+                .time(timestamp)
+                .to_line_protocol()
             )
         elif action == "Step":
-            state.run.step = contents[1]
+            state.run.step = int(contents[1])
             self.inject(
-                f"run_status,type={action.lower()} {action.lower()}={contents[1]}i {timestamp}"  # noqa: E501
+                Point("run_status")
+                .tag("type", action.lower())
+                .field(action.lower(), contents[1])
+                .time(timestamp)
+                .to_line_protocol()
             )
             self.inject(
                 Point("run_action")
@@ -461,7 +476,9 @@ class Collector:
             )
         elif action == "Ramping":
             # TODO: check zones
-            state.machine.zone_targets = msg.opts["targets"]
+            state.machine.zone_targets = [
+                float(x) for x in str(msg.opts["targets"]).split(",")
+            ]
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
             )
@@ -482,6 +499,7 @@ class Collector:
                 self.run_log_file = None
 
                 if cast(dict, self.config).get("machine", {}).get("compile", False):
+                    assert state.run.name
                     compdir = (
                         cast(dict, self.config)
                         .get("sync", {})
@@ -555,17 +573,21 @@ class Collector:
         self.idbw.flush()
 
     async def handle_msg(
-        self, state, c, topic: str, message: str, timestamp: float | None
+        self,
+        state: State,
+        c: QSConnectionAsync,
+        topic: bytes,
+        message: bytes,
+        timestamp: float | None,
     ):
         # Are we logging?
         if self.run_log_file is not None:
             self.run_log_file.write(f"{topic} {timestamp} {message}")
             self.run_log_file.flush()
         assert timestamp is not None
-        timestamp = int(1e9 * timestamp)
-        args = ArgList(message).opts
+        args = ArgList(message.decode()).opts
         log.debug(f"Handling message {topic} {message}")
-        if topic == "Temperature":
+        if topic == b"Temperature":
             recs = []
             for i, (s, b, t) in enumerate(
                 zip(
@@ -575,7 +597,7 @@ class Collector:
                 )
             ):
                 recs.append(
-                    f"temperature,loc=zones,zone={i} sample={s},block={b},target={t} {timestamp}"  # noqa: E501
+                    f"temperature,loc=zones,zone={i} sample={s},block={b},target={t} {int(1e9 * timestamp)}"  # noqa: E501
                 )
             recs.append(
                 Point("temperature").tag("loc", "cover").field("cover", args["cover"])
@@ -586,16 +608,14 @@ class Collector:
                 .field("heatsink", args["heatsink"])
             )
             self.inject(recs)
-        elif topic == "Time":
+        elif topic == b"Time":
             p = Point("run_time")
             for t in ["elapsed", "remaining", "active"]:
                 if t in args.keys():
                     p = p.field(t, args[t])
-                p.time(timestamp)
+                p.time(int(1e9 * timestamp))
             self.inject(p)
         self.idbw.flush()
-        if topic not in ["Temperature", "Time", "Run", "LEDStatus"]:
-            log.info(message)
 
     async def monitor(self):
 
@@ -639,15 +659,11 @@ class Collector:
             log.debug("subscriptions made")
 
             for t in [b"Temperature", b"Time"]:
-                c._protocol.topic_handlers[
-                    t
-                ] = lambda topic, message, timestamp: self.handle_msg(
-                    state, c, topic.decode(), message.decode(), timestamp
+                c._protocol.topic_handlers[t] = functools.partial(
+                    self.handle_msg, state, c
                 )
-            c._protocol.topic_handlers[
-                b"Run"
-            ] = lambda topic, message, timestamp: self.handle_run_msg(
-                state, c, topic.decode(), message.decode(), timestamp
+            c._protocol.topic_handlers[b"Run"] = functools.partial(
+                self.handle_run_msg, state, c
             )
 
             c._protocol.topic_handlers[b"LEDStatus"] = self.handle_led

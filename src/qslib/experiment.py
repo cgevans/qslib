@@ -30,11 +30,12 @@ import toml as toml
 from qslib.base import AccessLevel
 from qslib.plate_setup import PlateSetup
 
+from .base import RunStatus
 from .data import FilterSet, df_from_readings, FilterDataReading
-from .machine import Machine, RunStatus
+from .machine import Machine
 from .tcprotocol import Protocol, Stage, Step
 from .util import *
-from ._version import version as __version__  # type: ignore
+from ._version import version as __version__
 from .normalization import Normalizer, NormRaw
 
 TEMPLATE_NAME = "ruo"
@@ -341,11 +342,10 @@ class Experiment:
 
         o = io.StringIO()
         fig.savefig(o, format="svg")
-        o = o.getvalue()
-        o = re.search("<svg.*</svg>", o, re.DOTALL)
-        if o is None:
+        inner = re.search("<svg.*</svg>", o.getvalue(), re.DOTALL)
+        if inner is None:
             raise Exception
-        o = o[0]
+        innersvg = inner[0]
 
         import markdown
 
@@ -378,7 +378,7 @@ table, th, td {{
 <body>
 {ost}
 
-{o}
+{innersvg}
 </body>
 </html>
         """
@@ -423,7 +423,7 @@ table, th, td {{
         elif isinstance(machine, str):
             self.machine = Machine(machine, password=password)
             return self.machine
-        elif c := getattr(self, "machine", None):
+        elif hasattr(self, "machine") and (c := self.machine):
             return c
         else:
             raise ValueError(
@@ -453,8 +453,8 @@ table, th, td {{
     def run(
         self,
         machine: Machine | str | None = None,
-        password=None,
-        require_exclusive=True,
+        password: str | None = None,
+        require_exclusive: bool = True,
     ) -> None:
         """Load the run onto a machine, and start it.
 
@@ -687,7 +687,7 @@ table, th, td {{
                             else:
                                 log.error(
                                     "Log comparison failure in eval method,"
-                                    f" falling back to copy. ('{checklocal}' ≠ '{rdat[0:20]}')"
+                                    f" falling back to copy. ('{checklocal.decode()}' ≠ '{rdat[0:20].decode()}')"
                                 )
                                 b.seek(0)
                                 b.write(machine.read_file(f["path"]))
@@ -821,7 +821,7 @@ table, th, td {{
         return self.plate_setup.sample_wells
 
     @sample_wells.setter
-    def sample_wells(self, new_sample_wells: dict[str, list[str]]):
+    def sample_wells(self, new_sample_wells: dict[str, list[str]]) -> None:
         self.plate_setup.sample_wells = new_sample_wells
 
     def __init__(
@@ -835,15 +835,15 @@ table, th, td {{
         self._dir_base = self._tmp_dir_obj.name
         self._dir_eds = os.path.join(self._dir_base, "apldbio", "sds")
 
-        self._protocol_from_qslib = None
-        self._protocol_from_log = None
-        self._protocol_from_xml = None
-        self.runstarttime = None
-        self.runendtime = None
-        self.activestarttime = None
-        self.activeendtime = None
+        self._protocol_from_qslib: Protocol | None = None
+        self._protocol_from_log: Protocol | None = None
+        self._protocol_from_xml: Protocol | None = None
+        self.runstarttime: float | None = None
+        self.runendtime: float | None = None
+        self.activestarttime: float | None = None
+        self.activeendtime: float | None = None
 
-        self.machine = None
+        self.machine: Machine | None = None
 
         if name is not None:
             self.name = name
@@ -866,7 +866,7 @@ table, th, td {{
             self.runstarttime = None
             self.runendtime = None
             self.runstate = "INIT"
-            self.user = None
+            self.user: str | None = None
             self.writesoftware = f"QSLib {__version__}"
 
             self._new_xml_files()
@@ -1501,7 +1501,7 @@ table, th, td {{
         Returns
         -------
         Experiment
-            a copy of the runnig experiment
+            a copy of the running experiment
         """
         exp = cls(_create_xml=False)
 
@@ -1536,7 +1536,7 @@ table, th, td {{
         Returns
         -------
         Experiment
-            a copy of the runnig experiment
+            a copy of the experiment
         """
         exp = cls(_create_xml=False)
 
@@ -1568,7 +1568,7 @@ table, th, td {{
         Returns
         -------
         Experiment
-            a copy of the runnig experiment
+            a copy of the experiment
         """
         exp = cls(_create_xml=False)
 
@@ -1580,6 +1580,39 @@ table, th, td {{
 
         exp._update_from_files()
 
+        return exp
+
+    @classmethod
+    def from_machine(cls, machine: Machine | str, name: str) -> Experiment:
+        """Create an experiment from data on a machine, checking the running
+        experiment if any, the machine's public_run_complete storage, and the
+        machine's uncollected storage.
+
+        Parameters
+        ----------
+        machine : Machine | str
+            the machine to connect to, either as a Machine or a host name
+
+        name: str
+            the name of the run
+
+        Returns
+        -------
+        Experiment
+            a copy of the experiment
+        """
+        if isinstance(machine, str):
+            machine = Machine(machine)
+
+        with machine.ensured_connection():
+            if name == machine.current_run_name:
+                exp = cls.from_running(machine)
+            elif name in machine.list_runs_in_storage():
+                exp = cls.from_machine_storage(machine, name)
+            elif name in machine.list_files("", verbose=False, leaf="EXP"):
+                exp = cls.from_uncollected(machine, name)
+            else:
+                raise FileNotFoundError(f"Could not find run {name} on {machine.host}.")
         return exp
 
     def _update_experiment_xml(self) -> None:

@@ -29,7 +29,7 @@ def _gen_auth_response(password: str, challenge_string: str) -> str:
 def _parse_argstring(argstring: str) -> Dict[str, str]:
     unparsed = argstring.split()
 
-    args = dict()
+    args: dict[str, str] = dict()
     # FIXME: do quotes allow spaces?
     for u in unparsed:
         m = re.match("-([^=]+)=(.*)$", u)
@@ -180,7 +180,7 @@ class QSConnectionAsync:
             v = (await self.run_command(f"{leaf}:LIST? -verbose {path}")).split("\n")[
                 1:-1
             ]
-            ret = []
+            ret: list[dict[str, str | float | int]] = []
             for x in v:
                 rm = re.match(
                     r'"([^"]+)" -type=(\S+) -size=(\S+) -mtime=(\S+) -atime=(\S+) -ctime=(\S+)$',
@@ -188,7 +188,7 @@ class QSConnectionAsync:
                 )
                 if rm is None:
                     x = ArgList(x)
-                    d = {}
+                    d: dict[str, str | float | int] = {}
                     d["path"] = x.args[0]
                     d |= x.opts
                 else:
@@ -201,7 +201,7 @@ class QSConnectionAsync:
                     d["ctime"] = float(rm.group(6))
                 if d["type"] == "folder" and recursive:
                     ret += await self.list_files(
-                        d["path"], leaf=leaf, verbose=True, recursive=True
+                        cast(str, d["path"]), leaf=leaf, verbose=True, recursive=True
                     )
                 else:
                     ret.append(d)
@@ -295,7 +295,7 @@ class QSConnectionAsync:
                 await self.authenticate(self.password)
 
         if self._initial_access_level is not None:
-            await self.set_access_level(cast(AccessLevel, self._initial_access_level))
+            await self.set_access_level(self._initial_access_level)
 
         return resp
 
@@ -460,7 +460,7 @@ class QSConnectionAsync:
         ...
 
     async def get_all_filterdata(
-        self, run=None, as_list: bool = False
+        self, run: str | None = None, as_list: bool = False
     ) -> Union[pd.DataFrame, List[data.FilterDataReading]]:
         if run is None:
             run = await self.get_run_title()
