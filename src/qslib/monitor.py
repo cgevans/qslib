@@ -331,7 +331,7 @@ class Collector:
 
         # Are we logging?
         if self.run_log_file is not None:
-            self.run_log_file.write(f"{topic} {timestamp} {message}\n")
+            self.run_log_file.write(f"{topic} {timestamp} {message}")
             self.run_log_file.flush()
 
         timestamp = int(1e9 * timestamp)
@@ -451,9 +451,13 @@ class Collector:
 
         self.idbw.flush()
 
-    async def handle_led(self, topic, msg, timestamp):
+    async def handle_led(self, topic: bytes, message: bytes, timestamp: float | None):
+        # Are we logging?
+        if self.run_log_file is not None:
+            self.run_log_file.write(f"{topic} {timestamp} {message}")
+            self.run_log_file.flush()
         timestamp = int(1e9 * timestamp)
-        vs = [float(x) for x in LEDSTATUS.match(msg).groups()]
+        vs = [float(x) for x in LEDSTATUS.match(message).groups()]
         ks = ["temperature", "current", "voltage", "junctemp"]
         p = Point("lamp")
         for k, v in zip(ks, vs):
@@ -462,10 +466,16 @@ class Collector:
         self.inject(p)
         self.idbw.flush()
 
-    async def handle_msg(self, state, c, topic, msg, timestamp):
+    async def handle_msg(
+        self, state, c, topic: str, message: str, timestamp: float | None
+    ):
+        # Are we logging?
+        if self.run_log_file is not None:
+            self.run_log_file.write(f"{topic} {timestamp} {message}")
+            self.run_log_file.flush()
         timestamp = int(1e9 * timestamp)
-        args = arglist.parseString(msg)["arglist"]["opts"]
-        log.debug(f"Handling message {topic} {msg}")
+        args = arglist.parseString(message)["arglist"]["opts"]
+        log.debug(f"Handling message {topic} {message}")
         if topic == "Temperature":
             recs = []
             for i, (s, b, t) in enumerate(
@@ -496,7 +506,7 @@ class Collector:
             self.inject(p)
         self.idbw.flush()
         if topic not in ["Temperature", "Time", "Run", "LEDStatus"]:
-            log.info(msg)
+            log.info(message)
 
     async def monitor(self):
 
@@ -533,13 +543,15 @@ class Collector:
             log.debug("subscriptions made")
 
             for t in [b"Temperature", b"Time"]:
-                c._protocol.topic_handlers[t] = lambda t, m, timestamp: self.handle_msg(
-                    state, c, t.decode(), m.decode(), timestamp
+                c._protocol.topic_handlers[
+                    t
+                ] = lambda topic, message, timestamp: self.handle_msg(
+                    state, c, topic.decode(), message.decode(), timestamp
                 )
             c._protocol.topic_handlers[
                 b"Run"
-            ] = lambda t, m, timestamp: self.handle_run_msg(
-                state, c, t.decode(), m.decode(), timestamp
+            ] = lambda topic, message, timestamp: self.handle_run_msg(
+                state, c, topic.decode(), message.decode(), timestamp
             )
 
             c._protocol.topic_handlers[b"LEDStatus"] = self.handle_led
