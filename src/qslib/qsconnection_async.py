@@ -428,7 +428,7 @@ class QSConnectionAsync:
 
         if return_files:
             files = [("filter/" + ref.tostring(), fl)]
-            qn = re.search("quant/.*$", ql[-1])
+            qn = re.search("quant/.*$", ql)
             assert qn is not None
             qn = qn[0]
             files.append((qn, qf))

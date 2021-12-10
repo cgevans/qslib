@@ -413,16 +413,12 @@ class Collector:
                     else:
                         # No sync; just compile
                         asyncio.tasks.create_task(self.compile_eds(c, state.run.name))
-
-            if action == "Starting":
-                ipdir = (
-                    cast(dict, self.config)
-                    .get("sync", {})
-                    .get("in_progress_directory", "")
-                )
-                if ipdir != None:
+            elif action == "Starting":
+                if self.ipdir:
                     asyncio.tasks.create_task(
-                        self.setup_new_rundir(c, state.run.name, ipdir)
+                        self.setup_new_rundir(
+                            c, msg["arglist"]["opts"]["RunTitle"], str(self.ipdir)
+                        )
                     )
 
         elif action == "Collected":
