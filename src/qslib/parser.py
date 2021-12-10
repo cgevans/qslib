@@ -49,7 +49,7 @@ arglist.setParseAction(
 )
 
 
-@dataclass(init=False, frozen=True)
+@dataclass(init=False)
 class ArgList:
     opts: dict[str, bool | int | float | str]
     args: list[bool | int | float | str]
