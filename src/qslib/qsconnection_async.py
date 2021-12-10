@@ -187,6 +187,9 @@ class QSConnectionAsync:
         if "run" not in res:
             raise ValueError
 
+        if res["state"] not in ["Completed", "Terminated"]:
+            raise ValueError
+
         if ("collected" in res) and (res["collected"]):
             raise ValueError
 
