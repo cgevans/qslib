@@ -178,6 +178,8 @@ class Collector:
         await self.matrix_client.sync()
 
     async def compile_eds(self, connection: QSConnectionAsync, name: str):
+        name = name.replace(" ", "_")
+
         try:
             await connection.set_access_level(AccessLevel.Controller)
             await connection.compile_eds(name)
@@ -185,6 +187,7 @@ class Collector:
             await connection.set_access_level(AccessLevel.Observer)
 
     async def sync_completed(self, connection: QSConnectionAsync, name: str):
+        name = name.replace(" ", "_")
 
         await self.compile_eds(connection, name)
 
