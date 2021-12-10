@@ -17,6 +17,7 @@ import paramiko.pkey
 from .qsconnection_async import QSConnectionAsync
 from .tcprotocol import Protocol
 from .util import _unwrap_tags
+import shlex
 
 from sshtunnel import SSHTunnelForwarder
 
@@ -322,7 +323,7 @@ class Machine:
             contexts = context
         else:
             contexts = context + ":"
-        x = self.run_command_bytes(f"{leaf}:READ? {contexts}{path}")
+        x = self.run_command_bytes(f"{leaf}:READ? {shlex.quote(contexts+path)}")
 
         return base64.decodebytes(x[7:-10])
 
