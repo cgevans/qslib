@@ -1557,7 +1557,7 @@ table, th, td {{
         return exp
 
     @classmethod
-    def from_machine_storage(cls, machine: Machine, path: str) -> Experiment:
+    def from_machine_storage(cls, machine: Machine, name: str) -> Experiment:
         """Create an experiment from the one currently running on a machine.
 
         Parameters
@@ -1572,7 +1572,10 @@ table, th, td {{
         """
         exp = cls(_create_xml=False)
 
-        o = machine.read_file(path, context="public_run_complete")
+        try:
+            o = machine.read_file(name + ".eds", context="public_run_complete")
+        except FileNotFoundError:
+            o = machine.read_file(name, context="public_run_complete")
 
         z = zipfile.ZipFile(io.BytesIO(o))
 

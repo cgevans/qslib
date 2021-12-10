@@ -350,7 +350,9 @@ class Machine:
         """
         x = self.run_command("FILE:LIST? public_run_complete:")
         a = x.split("\n")[1:-1]
-        return [re.sub("^public_run_complete:", "", s) for s in a if s.endswith("eds")]
+        return [
+            re.sub("^public_run_complete:", "", s)[:-4] for s in a if s.endswith(".eds")
+        ]
 
     def load_run_from_storage(self, path: str) -> "Experiment":  # type: ignore
         from .experiment import Experiment
