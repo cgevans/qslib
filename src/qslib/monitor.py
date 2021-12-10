@@ -211,6 +211,8 @@ class Collector:
                 config=self.matrix_config,
             )
 
+        log.info(config.sync)
+
         self.run_log_file: TextIO | None = None
 
     def inject(self, t):
