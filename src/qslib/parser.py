@@ -12,12 +12,15 @@ fwe = pp.FollowedBy(we).suppress()
 
 
 def make_multi_keyword(kwd_str, kwd_value):
-    return pp.oneOf(kwd_str).setParseAction(pp.replaceWith(kwd_value))
+    x = pp.oneOf(kwd_str)
+    x.setParseAction(pp.replaceWith(kwd_value))
+    return x
 
 
 pbool = make_multi_keyword("true True", True) | make_multi_keyword("False false", False)
 
-qs = pp.quotedString.setParseAction(lambda toks: toks[0][1:-1])
+qs = pp.quotedString
+qs.setParseAction(lambda toks: toks[0][1:-1])
 
 optvalue = (
     (pbool + fwe)
@@ -37,7 +40,8 @@ optpair = (
 
 arg = optvalue.setResultsName("arg", listAllMatches=True)
 
-arglist = (pp.delimitedList(optpair | arg, we))("arglist").setParseAction(
+arglist = (pp.delimitedList(optpair | arg, we))("arglist")
+arglist.setParseAction(
     lambda toks: {
         "opts": {k: v for k, v in toks.get("opt", [])},
         "args": list(toks.get("arg", [])),
