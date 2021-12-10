@@ -303,18 +303,23 @@ class Collector:
         lp: List[str] = []
         files: list[tuple[str, bytes]] = []
 
-        if self.ipdir is None:
-            for fdf in toget:
-                lp += (await connection.get_filterdata_one(fdf)).to_lineprotocol(
-                    run_name=run, sample_array=pa
-                )
-        else:
+        if (
+            self.ipdir
+            and (
+                self.ipdir / run.replace(" ", "_") / "apldbio" / "sds" / "filter"
+            ).exists()
+        ):
             for fdf in toget:
                 fdr, files_one = await connection.get_filterdata_one(
                     fdf, return_files=True
                 )
                 lp += fdr.to_lineprotocol(run_name=run, sample_array=pa)
                 files += files_one
+        else:
+            for fdf in toget:
+                lp += (await connection.get_filterdata_one(fdf)).to_lineprotocol(
+                    run_name=run, sample_array=pa
+                )
 
         self.idbw.write(bucket=self.config["influxdb"]["bucket"], record=lp)
         self.idbw.flush()
@@ -324,7 +329,12 @@ class Collector:
             with fullpath.open("wb") as f:
                 f.write(data)
 
-        if self.ipdir:
+        if (
+            self.ipdir
+            and (
+                self.ipdir / run.replace(" ", "_") / "apldbio" / "sds" / "filter"
+            ).exists()
+        ):
             saferun = run.replace(" ", "_")
             ipp = self.ipdir / saferun
             with zipfile.ZipFile(self.ipdir / (saferun + ".eds"), "w") as z:
