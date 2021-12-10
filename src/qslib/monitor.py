@@ -318,7 +318,7 @@ class Collector:
 
         if self.ipdir:
             saferun = run.replace(" ", "_")
-            ipp = self.run_ip_path(saferun)
+            ipp = self.ipdir / saferun
             with zipfile.ZipFile(self.ipdir / (saferun + ".eds"), "w") as z:
                 for root, subs, zfiles in os.walk(ipp):
                     for zfile in zfiles:
