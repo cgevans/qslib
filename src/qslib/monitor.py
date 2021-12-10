@@ -198,9 +198,9 @@ class Collector:
         zf = await connection.read_dir_as_zip(name, "experiment")
         zf.extractall(dirpath)
 
-        (dirpath / "quant").mkdir(exist_ok=True)
-        (dirpath / "filter").mkdir(exist_ok=True)
-        (dirpath / "calibrations").mkdir(exist_ok=True)
+        (dirpath / "apldbio" / "sds" / "quant").mkdir(exist_ok=True)
+        (dirpath / "apldbio" / "sds" / "filter").mkdir(exist_ok=True)
+        (dirpath / "apldbio" / "sds" / "calibrations").mkdir(exist_ok=True)
 
         self.run_log_file = (dirpath / "apldbio" / "sds" / "messages.log").open("a")
 
@@ -454,7 +454,7 @@ class Collector:
     async def handle_led(self, topic: bytes, message: bytes, timestamp: float | None):
         # Are we logging?
         if self.run_log_file is not None:
-            self.run_log_file.write(f"{topic} {timestamp} {message}")
+            self.run_log_file.write(f"{topic.decode()} {timestamp} {message.decode()}")
             self.run_log_file.flush()
         timestamp = int(1e9 * timestamp)
         vs = [float(x) for x in LEDSTATUS.match(message).groups()]
