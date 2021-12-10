@@ -237,7 +237,7 @@ class Collector:
         firstmsg: str | None = None,
         overwrite: bool = False,
     ):
-        name = name.replace(" ", "_")
+        # name = name.replace(" ", "_")
 
         assert self.ipdir is not None
 
@@ -277,13 +277,13 @@ class Collector:
             return Path(x)
 
     def run_ip_path(self, name: str) -> Path:
-        name = name.replace(" ", "_")
+        # name = name.replace(" ", "_")
         if (ipdir := self.ipdir) is None:
             raise ValueError
         return ipdir / name / "apldbio" / "sds"
 
     async def compile_eds(self, connection: QSConnectionAsync, name: str):
-        name = name.replace(" ", "_")
+        # name = name.replace(" ", "_")
 
         try:
             await connection.set_access_level(AccessLevel.Controller)
@@ -292,7 +292,7 @@ class Collector:
             await connection.set_access_level(AccessLevel.Observer)
 
     async def sync_completed(self, connection: QSConnectionAsync, name: str):
-        name = name.replace(" ", "_")
+        # name = name.replace(" ", "_")
 
         await self.compile_eds(connection, name)
 
@@ -362,7 +362,7 @@ class Collector:
         if (
             self.ipdir
             and (
-                self.ipdir / run.replace(" ", "_") / "apldbio" / "sds" / "filter"
+                self.ipdir / run / "apldbio" / "sds" / "filter"  # .replace(" ", "_")
             ).exists()
         ):
             for fdf in toget:
@@ -388,10 +388,10 @@ class Collector:
         if (
             self.ipdir
             and (
-                self.ipdir / run.replace(" ", "_") / "apldbio" / "sds" / "filter"
+                self.ipdir / run / "apldbio" / "sds" / "filter"  # .replace(" ", "_")
             ).exists()
         ):
-            saferun = run.replace(" ", "_")
+            saferun = run  # .replace(" ", "_")
             ipp = self.ipdir / saferun
             with zipfile.ZipFile(self.ipdir / (saferun + ".eds"), "w") as z:
                 for root, subs, zfiles in os.walk(ipp):

@@ -229,14 +229,14 @@ class QSConnectionAsync:
             raise ValueError
 
         await self.run_command(
-            f"exp:run -asynchronous <block> zip {run_name}.eds {run_name} </block>"
+            f"exp:run -asynchronous <block> zip "{run_name}.eds" "{run_name}"" </block>"
         )
 
         await self.run_command(
-            f"file:move experiments:{run_name}.eds public_run_complete:{run_name}.eds"
+            f'file:move "experiments:{run_name}.eds" "public_run_complete:{run_name}.eds"'
         )
 
-        await self.run_command(f"exp:attr= {run_name} collected True")
+        await self.run_command(f'exp:attr= "{run_name}" collected True')
 
     def __init__(
         self,
