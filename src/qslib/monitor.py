@@ -196,20 +196,17 @@ class Collector:
             log.error(f"In-progress directory for {name} already exists.")
             return
 
-        try:
-            dirpath.mkdir()
-            zf = await connection.read_dir_as_zip(name, "experiment")
-            zf.extractall(dirpath)
+        dirpath.mkdir()
+        zf = await connection.read_dir_as_zip(name, "experiment")
+        zf.extractall(dirpath)
 
-            (dirpath / "quant").mkdir(exist_ok=True)
-            (dirpath / "filter").mkdir(exist_ok=True)
-            (dirpath / "calibrations").mkdir(exist_ok=True)
+        (dirpath / "quant").mkdir(exist_ok=True)
+        (dirpath / "filter").mkdir(exist_ok=True)
+        (dirpath / "calibrations").mkdir(exist_ok=True)
 
-            self.run_log_file = (dirpath / "apldbio" / "sds" / "messages.log").open(
-                "a", buffering=0
-            )
-        except Exception as e:
-            log.error(f"Error setting up in-progress dir {name}: {e}")
+        self.run_log_file = (dirpath / "apldbio" / "sds" / "messages.log").open(
+            "a", buffering=0
+        )
 
     @property
     def ipdir(self) -> Path | None:
