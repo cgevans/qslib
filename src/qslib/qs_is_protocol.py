@@ -5,7 +5,7 @@ import logging
 import re
 import io
 from dataclasses import dataclass
-from typing import Any, Coroutine, Literal, Optional, Protocol
+from typing import Any, Coroutine, Optional, Protocol
 import time
 
 

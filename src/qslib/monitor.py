@@ -405,19 +405,21 @@ class Collector:
         self,
         state: State,
         c: QSConnectionAsync,
-        topic: str,
-        message: str,
+        topic: bytes,
+        message: bytes,
         timestamp: float | None,
     ):
+        topic_str = topic.decode()
+        message_str = message.decode()
 
         # Are we logging?
         if self.run_log_file is not None:
-            self.run_log_file.write(f"{topic} {timestamp} {message}")
+            self.run_log_file.write(f"{topic_str} {timestamp} {message_str}")
             self.run_log_file.flush()
 
         assert timestamp is not None
         timestamp = int(1e9 * timestamp)
-        msg = ArgList(message)
+        msg = ArgList(message_str)
         log.debug(msg)
         contents = msg.args
         action = cast(str, contents[0])
@@ -522,7 +524,7 @@ class Collector:
                         self.setup_new_rundir(
                             c,
                             newname,
-                            firstmsg=f"\n{topic} {timestamp} {message}",
+                            firstmsg=f"\n{topic_str} {timestamp} {message_str}",
                         )
                     )
 
@@ -543,7 +545,7 @@ class Collector:
         await state.run.refresh(c)
         await state.machine.refresh(c)
 
-        log.info(message)
+        log.info(message_str)
         self.inject(state.run.statemsg(timestamp))
 
         if state.run.plate_setup:
