@@ -396,8 +396,8 @@ table, th, td {{
 
     @property
     def runtitle_safe(self) -> str:
-        """Run name with " " replaced by "-"."""
-        return self.name.replace(" ", "-")
+        """Run name with " " replaced by "_"."""
+        return self.name.replace(" ", "_")
 
     @property
     def rawdata(self) -> pd.DataFrame:
