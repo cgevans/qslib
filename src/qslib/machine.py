@@ -8,7 +8,7 @@ import logging
 import re
 import zipfile
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from typing import Any, Generator, IO, Literal, overload
 
 import nest_asyncio
@@ -317,15 +317,9 @@ class Machine:
         bytes
             returned file
         """
-        if not context:
-            contexts = ""
-        elif context[-1] == ":":
-            contexts = context
-        else:
-            contexts = context + ":"
-        x = self.run_command_bytes(f"{leaf}:READ? {shlex.quote(contexts+path)}")
-
-        return base64.decodebytes(x[7:-10])
+        return asyncio.get_event_loop().run_until_complete(
+            self._qsc.read_file(path, context, leaf)
+        )
 
     def write_file(self, path: str, data: str | bytes) -> None:
         if isinstance(data, str):

@@ -362,11 +362,21 @@ class QSConnectionAsync:
 
         return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-8])))
 
-    async def get_file(
-        self, path: str, encoding: Literal["plain", "base64"] = "base64"
+    async def read_file(
+        self,
+        path: str,
+        context: str | None = None,
+        leaf: str = "FILE",
+        encoding: Literal["plain", "base64"] = "base64",
     ) -> bytes:
+        if not context:
+            contexts = ""
+        elif context[-1] == ":":
+            contexts = context
+        else:
+            contexts = context + ":"
         reply = await self.run_command_to_bytes(
-            f"FILE:READ? -encoding={encoding} {shlex.quote(path)}"
+            f"{leaf}:READ? -encoding={encoding} {shlex.quote(contexts + path)}"
         )
         assert reply.startswith(b"<quote>\n")
         assert reply.endswith(b"</quote>")
