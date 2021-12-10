@@ -576,8 +576,6 @@ class Protocol(XMLable):
         #    except ModuleNotFoundError:
         #        raise "
 
-        import matplotlib.pyplot as plt
-
         if ax is None:
             _, ax = plt.subplots()
 

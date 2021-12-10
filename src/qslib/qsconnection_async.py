@@ -6,9 +6,9 @@ import hmac
 import re
 import base64
 from .qs_is_protocol import Error, QS_IS_Protocol
-from .parser import arglist
+from .parser import ArgList
 import zipfile
-from dataclasses import dataclass, astuple
+from dataclasses import dataclass
 
 
 import qslib.data as data
@@ -187,10 +187,10 @@ class QSConnectionAsync:
                     x,
                 )
                 if rm is None:
-                    x = arglist.parseString(x)
+                    x = ArgList(x)
                     d = {}
-                    d["path"] = x["arglist"]["args"][0]  # type: ignore
-                    d |= x["arglist"]["opts"]  # type: ignore
+                    d["path"] = x.args[0]
+                    d |= x.opts
                 else:
                     d = {}
                     d["path"] = rm.group(1)
