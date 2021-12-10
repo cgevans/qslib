@@ -78,7 +78,7 @@ class Config:
     matrix: MatrixConfig | None
     influxdb: InfluxConfig
     machine: MachineConfig
-    sync: SyncConfig = SyncConfig()
+    sync: SyncConfig
 
 
 @dataclass
