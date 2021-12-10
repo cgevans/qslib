@@ -349,7 +349,7 @@ class QSConnectionAsync:
         """
         x = await self.run_command_to_bytes(f"{leaf}:ZIPREAD? {path}")
 
-        return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-10])))
+        return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-8])))
 
     async def get_file(
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
