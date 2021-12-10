@@ -42,10 +42,6 @@ class BaseStatus(ABC):
             }
         )
 
-    @abstractmethod
-    def __init__(self, **kwargs: Dict[str, Any]) -> None:
-        ...
-
 
 def _get_protodef_or_def(var: str, default: Any) -> bytes:
     return f"$[ top.getChild('PROTOcolDEFinition').variables.get('{var}'.lower(), {default}) ]".encode()
