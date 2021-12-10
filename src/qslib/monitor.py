@@ -545,10 +545,10 @@ class Collector:
         assert ls
         p = (
             Point("lamp")
-            .field("temperature", ls[1])
-            .field("current", ls[2])
-            .field("voltage", ls[3])
-            .field("junctemp", ls[4])
+            .field("temperature", float(ls[1].decode()))
+            .field("current", float(ls[2].decode()))
+            .field("voltage", float(ls[3].decode()))
+            .field("junctemp", float(ls[4].decode()))
             .time(int(1e9 * timestamp))
         )
         self.inject(p)
