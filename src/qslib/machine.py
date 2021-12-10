@@ -137,6 +137,7 @@ class Machine:
         self.tunnel_user = tunnel_user
         self.tunnel_key = tunnel_key
         self._tunnel: SSHTunnelForwarder | None = None
+        self._qsc_real = None
 
         if connect_now:
             self.connect()

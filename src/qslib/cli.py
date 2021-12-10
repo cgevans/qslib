@@ -105,7 +105,9 @@ def export_temperatures(experiment: str | Path) -> None:
 
     exp = Experiment.from_file(experiment)
 
-    exp.temperatures.to_csv(click.get_text_stream("stdout"))
+    assert exp.temperatures
+
+    exp.temperatures.to_csv(path_or_buf=click.get_binary_stream("stdout"))  # type: ignore
 
 
 @cli.command()
@@ -116,7 +118,7 @@ def export_data(experiment: str | Path) -> None:
 
     exp = Experiment.from_file(experiment)
 
-    exp.welldata.to_csv(click.get_text_stream("stdout"))
+    exp.welldata.to_csv(path_or_buf=click.get_binary_stream("stdout"))  # type: ignore
 
 
 @cli.command()

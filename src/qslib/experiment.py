@@ -331,7 +331,7 @@ class Experiment:
         s += f"- Read by: QSLib {__version__}\n"
         return s
 
-    def info_html(self) -> str | ET.ElementTree | None:
+    def info_html(self) -> str:
         summary = self.summary(plate="table")
 
         import matplotlib.pyplot as plt
@@ -1628,8 +1628,8 @@ table, th, td {{
         self.name = exml.findtext("Name") or "unknown"
         self.user = _text_or_none(exml, "Operator")
         self.createdtime = datetime.fromtimestamp(
-            float(_find_or_raise(exml, "CreatedTime").text) / 1000.0
-        )  # type: ignore
+            float(_find_or_raise(exml, "CreatedTime").text) / 1000.0  # type: ignore
+        )
         self.runstate = exml.findtext("RunState") or "UNKNOWN"  # type: ignore
         self.writesoftware = (
             exml.findtext(
@@ -1665,7 +1665,9 @@ table, th, td {{
         if os.path.isfile(os.path.join(self._dir_eds, "qsl-tcprotocol.xml")):
             qstcxml = ET.parse(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
 
-            if (x := qstcxml.find("QSLibProtocolCommand")) is not None:
+            if ((x := qstcxml.find("QSLibProtocolCommand")) is not None) and (
+                x.text is not None
+            ):
                 try:
                     self._protocol_from_qslib = Protocol.from_command(x.text)
                 except ValueError:
@@ -1674,7 +1676,7 @@ table, th, td {{
                 self._protocol_from_qslib = None
 
             if (x := qstcxml.findtext("MachineConnection")) and not self.machine:
-                self.machine = Machine(toml.loads(x))
+                self.machine = Machine(**toml.loads(x))
         try:
             self._protocol_from_xml = Protocol.from_xml(exml.getroot())
         except Exception as e:
@@ -1704,10 +1706,7 @@ table, th, td {{
             )
         elif fdfs := glob(os.path.join(self._dir_eds, "filter", "*_filterdata.xml")):
             fdrs = [
-                FilterDataReading(
-                    ET.parse(fdf).find(".//PlateData"), sds_dir=self._dir_eds
-                )
-                for fdf in fdfs
+                FilterDataReading.from_file(fdf, sds_dir=self._dir_eds) for fdf in fdfs
             ]
             self._welldata = df_from_readings(
                 fdrs, self.activestarttime.timestamp() if self.activestarttime else None

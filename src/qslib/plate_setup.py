@@ -146,7 +146,7 @@ class PlateSetup:
     def well_samples_as_array(self) -> np.ndarray:
         return self.well_sample.to_numpy().reshape((8, 12))
 
-    def to_lineprotocol(self, timestamp, run_name=None):
+    def to_lineprotocol(self, timestamp: int, run_name: str | None = None) -> list[str]:
         if run_name:
             rts = f',run_name="{run_name}"'
         else:
@@ -181,7 +181,7 @@ class PlateSetup:
             **kwargs,
         )
 
-    def update_xml(self, root: ET.Element):
+    def update_xml(self, root: ET.Element) -> None:
         samplemap = root.find("FeatureMap/Feature/Id[.='sample']/../..")
         if not samplemap:
             e = ET.SubElement(root, "FeatureMap")

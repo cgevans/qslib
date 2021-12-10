@@ -1,3 +1,6 @@
+from __future__ import annotations
+from dataclasses import dataclass
+from typing import Any
 import pyparsing as pp
 
 pp.ParserElement.setDefaultWhitespaceChars("")
@@ -40,6 +43,18 @@ arglist = (pp.delimitedList(optpair | arg, we))("arglist").setParseAction(
         "args": list(toks.get("arg", [])),
     }
 )
+
+
+@dataclass(init=False, frozen=True)
+class ArgList:
+    opts: dict[str, bool | int | float | str]
+    args: list[bool | int | float | str]
+
+    def __init__(self, s: str) -> None:
+        v = arglist.parseString(s)
+        self.opts = v["arglist"]["opts"]
+        self.args = v["arglist"]["args"]
+
 
 quote_content = pp.Word(pp.alphanums + "._")
 quote_open = pp.Combine("<" + quote_content + ">")

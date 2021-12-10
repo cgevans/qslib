@@ -5,10 +5,11 @@ from typing import List
 
 from ._version import version as __version__  # type: ignore
 
-from .monitor import Collector
+from .monitor import Collector, Config
 import toml
 from pathlib import Path
 import asyncio
+from dacite.core import from_dict
 
 __author__ = "Constantine Evans"
 __copyright__ = "Constantine Evans"
@@ -80,9 +81,9 @@ def main(args: List[str]):
     parsed_args = parse_args(args)
     setup_logging(parsed_args.loglevel)
 
-    config = toml.load(parsed_args.config)
+    config = dict(toml.load(parsed_args.config))
 
-    collector = Collector(config)
+    collector = Collector(from_dict(Config, config))
 
     asyncio.run(collector.reliable_monitor())
 
