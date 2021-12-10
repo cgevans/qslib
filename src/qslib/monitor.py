@@ -179,7 +179,11 @@ class Collector:
         await self.matrix_client.sync()
 
     async def setup_new_rundir(
-        self, connection: QSConnectionAsync, name: str, ipdir_str: str
+        self,
+        connection: QSConnectionAsync,
+        name: str,
+        ipdir_str: str,
+        firstmsg: str | None = None,
     ):
         ipdir = Path(ipdir_str)
         name = name.replace(" ", "_")
@@ -203,6 +207,10 @@ class Collector:
         (dirpath / "apldbio" / "sds" / "calibrations").mkdir(exist_ok=True)
 
         self.run_log_file = (dirpath / "apldbio" / "sds" / "messages.log").open("a")
+
+        if firstmsg is not None:
+            self.run_log_file.write(firstmsg)
+            self.run_log_file.flush()
 
     @property
     def ipdir(self) -> Path | None:
@@ -421,7 +429,12 @@ class Collector:
                     newname.strip('"')
 
                     asyncio.tasks.create_task(
-                        self.setup_new_rundir(c, newname, str(self.ipdir))
+                        self.setup_new_rundir(
+                            c,
+                            newname,
+                            str(self.ipdir),
+                            f"\n{topic} {timestamp} {message}",
+                        )
                     )
 
         elif action == "Collected":
