@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import tabulate
 
+
 from .qsconnection_async import QSConnectionAsync
 
 _WELLNAMES = [x + str(y) for x in "ABCDEFGH" for y in range(1, 13)]

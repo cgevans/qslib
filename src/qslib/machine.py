@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from asyncio.futures import Future
 import base64
 import io
 import logging
@@ -113,7 +114,7 @@ class Machine:
             return self._qsc_real
 
     @_qsc.setter
-    def _qsc(self, v: QSConnectionAsync | None):
+    def _qsc(self, v: QSConnectionAsync | None) -> None:
         self._qsc_real = v
 
     def __init__(
@@ -173,7 +174,7 @@ class Machine:
         loop.run_until_complete(self._qsc.connect())
 
     @property
-    def connected(self):
+    def connected(self) -> bool:
         if self._qsc_real is None:
             return False
         else:
@@ -417,7 +418,7 @@ class Machine:
         return loop.run_until_complete(self._qsc._protocol.run_command(command))
 
     def _get_log_from_byte(self, name: str | bytes, byte: int) -> bytes:
-        logfuture = asyncio.Future()
+        logfuture: Future[tuple[bytes, bytes, None]] = asyncio.Future()
         if self._qsc is None:
             raise Exception
         if isinstance(name, bytes):
@@ -540,7 +541,7 @@ class Machine:
         loop = asyncio.get_event_loop()
 
         loop.run_until_complete(self._qsc.disconnect())
-        self._qsc = None
+        self._qsc_real = None
 
         if self._tunnel is not None:
             self._tunnel.stop()
@@ -613,3 +614,19 @@ class Machine:
         log.info(
             f"Dropped access level {access_level}, returning to {fac} exclusive={fex} stealth={fst}."
         )
+
+    @contextmanager
+    def ensured_connection(
+        self, access_level: AccessLevel = AccessLevel.Observer
+    ) -> Generator[Machine, None, None]:
+        was_connected = self.connected
+        if not was_connected:
+            self.connect()
+        old_access = self.get_access_level()
+        if old_access[0] < access_level:
+            self.set_access_level(access_level)
+        yield self
+        if not was_connected:
+            self.disconnect()
+        elif old_access < access_level:
+            self.set_access_level(*old_access)

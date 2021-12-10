@@ -10,6 +10,9 @@ from typing import Optional, Union, List, cast, Literal
 import numpy as np
 import pandas as pd
 
+import numpy.typing as npt
+
+
 _UPPERS = "ABCDEFGHIJKLMNOP"
 
 
@@ -66,9 +69,9 @@ class FilterDataReading:
     timestamp: float | None
     exposure: int
     filter_set: FilterSet
-    well_fluorescence: np.ndarray
-    temperatures: np.ndarray
-    set_temperatures: np.ndarray | None
+    well_fluorescence: npt.NDArray[np.float64]
+    temperatures: npt.NDArray[np.float64]
+    set_temperatures: npt.NDArray[np.float64] | None
 
     def __repr__(self):
         return (
@@ -103,7 +106,7 @@ class FilterDataReading:
         }
 
         self.temperatures = np.array(
-            [float(x) for x in attribs["temperature"].split(",")]
+            [float(x) for x in attribs["temperature"].split(",")], dtype=np.float64
         )
 
         self.stage = int(attribs["stage"])
