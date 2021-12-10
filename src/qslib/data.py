@@ -13,7 +13,7 @@ import pandas as pd
 _UPPERS = "ABCDEFGHIJKLMNOP"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, order=True, eq=True)
 class FilterSet:
     """Representation of a filter set, potentially including the "quant"
     parameter used by HACFILT in SCPI protocols."""
