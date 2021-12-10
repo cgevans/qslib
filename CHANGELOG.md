@@ -1,5 +1,15 @@
 # Changelog
 
+## Version 0.5.0
+
+- Implement EDS-file (in-progress and complete) synchronization for monitor.
+- Change safe titles from spaces-as-"-" to spaces-as-"_", consistent with machine.
+
+## Version 0.4.1
+
+- Allow setting of Experiment.sample_wells.
+- Improve plotting code.
+
 ## Version 0.4.0
 
 - Much faster `Experiment.sync_from_machine`, only transferring additional log 
@@ -43,13 +53,11 @@ Various small improvements and bug fixes.
 
 ## Version 0.1.0
 
-
 Initial implementation of full communication (OK/NEXT/ERRor), Experiment
 files, Machine connection interface. Adaptation of QSConnectionAsync to
 use new communication. Move of monitor system into qslib.
 
 ## Version 0.0.0 / etc
-
 
 Initial version of QSConnectionAsync and other low-level portions to
 support rawquant and qpcr\_data\_updater.
