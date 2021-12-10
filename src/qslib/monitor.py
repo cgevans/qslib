@@ -2,7 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import time
-from typing import TextIO, Union, Dict, Tuple, cast, List, Optional, Any
+from typing import Iterable, TextIO, Type, Union, Dict, Tuple, cast, List, Optional, Any
 import zipfile
 from nio.client import AsyncClient
 import re
@@ -12,7 +12,9 @@ import shutil
 
 from nio.client.async_client import AsyncClientConfig
 from nio.responses import JoinedRoomsError
-from qslib.base import AccessLevel
+import numpy as np
+import numpy.typing as npt
+from qslib.base import AccessLevel, RunStatus
 
 from qslib.qs_is_protocol import CommandError
 from .parser import ArgList
@@ -91,21 +93,29 @@ class RunState:
     step: Optional[int] = None
     plate_setup: Optional[PlateSetup] = None
 
-    async def refresh(self, c: QSConnectionAsync):
+    async def refresh(self, c: QSConnectionAsync) -> None:
         runmsg = ArgList(await c.run_command("RunProgress?"))
         print(runmsg)
-        self.name = cast(str, runmsg.opts["RunTitle"])
-        if self.name == "-":
+        name = cast(str, runmsg.opts["RunTitle"])
+        if name == "-":
             self.name = None
-        self.stage = cast(int, runmsg.opts["Stage"])
-        if self.stage == "-":
+        else:
+            self.name = name
+        stage = runmsg.opts["Stage"]
+        if stage == "-":
             self.stage = None
-        self.cycle = cast(int, runmsg.opts["Cycle"])
-        if self.cycle == "-":
+        else:
+            self.stage = cast(int, stage)
+        cycle = runmsg.opts["Cycle"]
+        if cycle == "-":
             self.cycle = None
-        self.step = cast(int, runmsg.opts["Step"] if self.stage else None)
-        if self.step == "-":
+        else:
+            self.cycle = cast(int, cycle)
+        step = runmsg.opts["Step"] if self.stage else None
+        if step == "-":
             self.step = None
+        else:
+            self.step = cast(Optional[int], step)
         if self.name:
             try:
                 self.plate_setup = await PlateSetup.from_machine(c)
@@ -113,12 +123,12 @@ class RunState:
                 self.plate_setup = None
 
     @classmethod
-    async def from_machine(cls, c: QSConnectionAsync):
-        n = cls.__new__(cls)
+    async def from_machine(cls: Type[RunState], c: QSConnectionAsync) -> RunState:
+        n = cast(RunState, cls.__new__(cls))
         await n.refresh(c)
         return n
 
-    def statemsg(self, timestamp: str):
+    def statemsg(self, timestamp: str) -> str:
         s = f'run_state name="{self.name}"'
         if self.stage:
             s += f",stage={self.stage}i,cycle={self.cycle}i,step={self.step}i"
@@ -136,7 +146,7 @@ class MachineState:
     cover_control: bool
     drawer: str
 
-    async def refresh(self, c: QSConnectionAsync):
+    async def refresh(self, c: QSConnectionAsync) -> None:
         targmsg = ArgList(await c.run_command("TBC:SETT?"))
         self.cover_target = cast(float, targmsg.opts["Cover"])
         self.zone_targets = cast(
@@ -152,8 +162,8 @@ class MachineState:
         self.drawer = await c.run_command("DRAW?")
 
     @classmethod
-    async def from_machine(cls, c: QSConnectionAsync):
-        n = cls.__new__(cls)
+    async def from_machine(cls, c: QSConnectionAsync) -> MachineState:
+        n = cast(MachineState, cls.__new__(cls))
         await n.refresh(c)
         return n
 
@@ -167,11 +177,10 @@ class State:
     machine: MachineState
 
     @classmethod
-    async def from_machine(cls, c: QSConnectionAsync):
-        n = cls.__new__(cls)
-        n.run = await RunState.from_machine(c)
-        n.machine = await MachineState.from_machine(c)
-        return n
+    async def from_machine(cls, c: QSConnectionAsync) -> State:
+        run = await RunState.from_machine(c)
+        machine = await MachineState.from_machine(c)
+        return cls(run, machine)
 
 
 # def parse_fd_fn(x: str) -> Tuple[str, int, int, int, int]:
@@ -185,7 +194,7 @@ def index_to_filename_ref(i: Tuple[str, int, int, int, int]) -> str:
     return f"S{s:02}_C{c:03}_T{t:02}_P{p:04}_M{x[4]}_X{x[1]}"
 
 
-async def get_runinfo(c: QSConnectionAsync):
+async def get_runinfo(c: QSConnectionAsync) -> State:
     state = await State.from_machine(c)
     return state
 
@@ -217,7 +226,7 @@ class Collector:
 
         self.run_log_file: TextIO | None = None
 
-    def inject(self, t):
+    def inject(self, t: str | Iterable[str | Point] | Point) -> None:
         self.idbw.write(bucket=self.config.influxdb.bucket, record=t)
 
     async def matrix_announce(self, msg: str) -> None:
@@ -238,7 +247,7 @@ class Collector:
         *,
         firstmsg: str | None = None,
         overwrite: bool = False,
-    ):
+    ) -> None:
         # name = name.replace(" ", "_")
 
         assert self.ipdir is not None
@@ -284,7 +293,7 @@ class Collector:
             raise ValueError
         return ipdir / name / "apldbio" / "sds"
 
-    async def compile_eds(self, connection: QSConnectionAsync, name: str):
+    async def compile_eds(self, connection: QSConnectionAsync, name: str) -> None:
         # name = name.replace(" ", "_")
 
         try:
@@ -293,7 +302,7 @@ class Collector:
         finally:
             await connection.set_access_level(AccessLevel.Observer)
 
-    async def sync_completed(self, connection: QSConnectionAsync, name: str):
+    async def sync_completed(self, connection: QSConnectionAsync, name: str) -> None:
         # name = name.replace(" ", "_")
 
         await self.compile_eds(connection, name)
@@ -312,7 +321,7 @@ class Collector:
 
         try:
             with path.open("wb") as f:
-                edsfile = await connection.get_file(f"public_run_complete:{name}.eds")
+                edsfile = await connection.read_file(f"public_run_complete:{name}.eds")
                 f.write(edsfile)
         except Exception as e:
             log.error(f"Error synchronizing completed EDS {name}: {e}")
@@ -333,7 +342,9 @@ class Collector:
         connection: QSConnectionAsync,
     ) -> None:
         if state.run.plate_setup:
-            pa = state.run.plate_setup.well_samples_as_array()
+            pa: npt.NDArray[
+                np.object_
+            ] | None = state.run.plate_setup.well_samples_as_array()
         else:
             pa = None
 
@@ -402,13 +413,13 @@ class Collector:
                         z.write(fpath, os.path.relpath(fpath, ipp))
 
     async def handle_run_msg(
-        self,
+        self: Collector,
         state: State,
         c: QSConnectionAsync,
         topic: bytes,
         message: bytes,
         timestamp: float | None,
-    ):
+    ) -> None:
         topic_str = topic.decode()
         message_str = message.decode()
 
@@ -500,13 +511,9 @@ class Collector:
             if action == "Ended":
                 self.run_log_file = None
 
-                if cast(dict, self.config).get("machine", {}).get("compile", False):
+                if self.config.machine.compile:
                     assert state.run.name
-                    compdir = (
-                        cast(dict, self.config)
-                        .get("sync", {})
-                        .get("completed_directory", "")
-                    )
+                    compdir = self.config.sync.completed_directory
                     if compdir != "":
                         # This will need to compile and sync
                         asyncio.tasks.create_task(
@@ -546,7 +553,7 @@ class Collector:
         await state.machine.refresh(c)
 
         log.info(message_str)
-        self.inject(state.run.statemsg(timestamp))
+        self.inject(state.run.statemsg(str(timestamp)))
 
         if state.run.plate_setup:
             self.inject(
@@ -555,7 +562,9 @@ class Collector:
 
         self.idbw.flush()
 
-    async def handle_led(self, topic: bytes, message: bytes, timestamp: float | None):
+    async def handle_led(
+        self, topic: bytes, message: bytes, timestamp: float | None
+    ) -> None:
         # Are we logging?
         if self.run_log_file is not None:
             self.run_log_file.write(f"{topic.decode()} {timestamp} {message.decode()}")
@@ -581,14 +590,14 @@ class Collector:
         topic: bytes,
         message: bytes,
         timestamp: float | None,
-    ):
+    ) -> None:
         # Are we logging?
         if self.run_log_file is not None:
-            self.run_log_file.write(f"{topic} {timestamp} {message}")
+            self.run_log_file.write(f"{topic.decode()} {timestamp} {message.decode()}")
             self.run_log_file.flush()
         assert timestamp is not None
         args = ArgList(message.decode()).opts
-        log.debug(f"Handling message {topic} {message}")
+        log.debug(f"Handling message {topic.decode()} {message.decode()}")
         if topic == b"Temperature":
             recs = []
             for i, (s, b, t) in enumerate(
@@ -612,14 +621,14 @@ class Collector:
             self.inject(recs)
         elif topic == b"Time":
             p = Point("run_time")
-            for t in ["elapsed", "remaining", "active"]:
-                if t in args.keys():
-                    p = p.field(t, args[t])
+            for key in ["elapsed", "remaining", "active"]:
+                if key in args.keys():
+                    p = p.field(key, args[key])
                 p.time(int(1e9 * timestamp))
             self.inject(p)
         self.idbw.flush()
 
-    async def monitor(self):
+    async def monitor(self) -> None:
 
         if self.config.matrix is not None:
             await self.matrix_client.login(self.config.matrix.password)
@@ -642,7 +651,7 @@ class Collector:
             state = await get_runinfo(c)
             log.info(f"status info: {state}")
 
-            self.inject(state.run.statemsg(time.time_ns()))
+            self.inject(state.run.statemsg(str(time.time_ns())))
 
             if state.run.plate_setup:
                 self.inject(
@@ -695,7 +704,7 @@ class Collector:
                     await c.disconnect()
                     raise TimeoutError
 
-    async def reliable_monitor(self):
+    async def reliable_monitor(self) -> None:
         log.info("starting reconnectable monitoring")
 
         restart = True
