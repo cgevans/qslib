@@ -12,16 +12,16 @@ if False:  # for mypy
 
 
 class BaseStatus(ABC):
-    @property
     @classmethod
+    @property
     @abstractmethod
     def _comlist(
         cls: Type[T],
     ) -> Dict[str, Tuple[bytes, Callable[[Any], Any]]]:  # pragma: no cover
         ...
 
-    @property
     @classmethod
+    @property
     @abstractmethod  # pragma: no cover
     def _com(cls: Type[T]) -> bytes:  # pragma: no cover
         ...
