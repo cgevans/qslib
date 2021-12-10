@@ -105,6 +105,17 @@ class Machine:
     tunnel_user: str | None = None
     tunnel_key: str | "paramiko.pkey.PKey" | None = None
 
+    @property
+    def _qsc(self) -> QSConnectionAsync:
+        if self._qsc_real is None:
+            raise ConnectionError
+        else:
+            return self._qsc_real
+
+    @_qsc.setter
+    def _qsc(self, v: QSConnectionAsync | None):
+        self._qsc_real = v
+
     def __init__(
         self,
         host: str,
@@ -126,7 +137,6 @@ class Machine:
         self.tunnel_user = tunnel_user
         self.tunnel_key = tunnel_key
         self._tunnel: SSHTunnelForwarder | None = None
-        self._qsc: QSConnectionAsync | None = None
 
         if connect_now:
             self.connect()
@@ -163,7 +173,7 @@ class Machine:
 
     @property
     def connected(self):
-        if self._qsc is None:
+        if self._qsc_real is None:
             return False
         else:
             return self._qsc.connected
