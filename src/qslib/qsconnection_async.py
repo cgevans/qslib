@@ -229,7 +229,7 @@ class QSConnectionAsync:
             raise ValueError
 
         await self.run_command(
-            f"exp:run -asynchronous <block> zip "{run_name}.eds" "{run_name}"" </block>"
+            f'exp:run -asynchronous <block> zip "{run_name}.eds" "{run_name}" </block>'
         )
 
         await self.run_command(
