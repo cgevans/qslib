@@ -33,7 +33,7 @@ class ReplyError(IOError):
 
 class SubHandler(Protocol):
     def __call__(
-        self, topic: bytes, message: bytes, timestamp: float | None = None
+        self, topic: bytes, message: bytes, timestamp: float | None
     ) -> Coroutine[None, None, None]:  # pragma: no cover
         ...
 
