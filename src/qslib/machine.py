@@ -257,9 +257,8 @@ class Machine:
         zipfile.ZipFile
             the returned zip file
         """
-        x = self.run_command_bytes(f"{leaf}:ZIPREAD? {path}")
-
-        return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-10])))
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self._qsc.read_dir_as_zip(path, leaf))
 
     @overload
     def list_files(

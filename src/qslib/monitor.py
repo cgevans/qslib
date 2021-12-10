@@ -1,8 +1,11 @@
 from __future__ import annotations
 from dataclasses import dataclass
+from os import EX_CANTCREAT
+import os
 import time
 import typing as tp
-from typing import Union, Dict, Tuple, cast, List, Optional, Any
+from typing import TextIO, Union, Dict, Tuple, cast, List, Optional, Any
+import zipfile
 from nio.client import AsyncClient
 import re
 import asyncio
@@ -15,9 +18,7 @@ from qslib.qs_is_protocol import CommandError
 from .parser import arglist
 
 from qslib.plate_setup import PlateSetup
-from qslib.qsconnection_async import QSConnectionAsync
-
-from qslib.qsconnection_async import _parse_fd_fn as parse_fd_fn
+from qslib.qsconnection_async import FilterDataFilename, QSConnectionAsync
 
 import logging
 
@@ -164,6 +165,8 @@ class Collector:
                 config=self.matrix_config,
             )
 
+        self.run_log_file: TextIO | None = None
+
     def inject(self, t):
         self.idbw.write(bucket=self.config["influxdb"]["bucket"], record=t)
 
@@ -176,6 +179,51 @@ class Collector:
         )
 
         await self.matrix_client.sync()
+
+    async def setup_new_rundir(
+        self, connection: QSConnectionAsync, name: str, ipdir_str: str
+    ):
+        ipdir = Path(ipdir_str)
+        name = name.replace(" ", "_")
+
+        if not ipdir.is_dir():
+            log.error(f"Can't open in-progress directory {ipdir}.")
+            return
+
+        dirpath = ipdir / name
+
+        if dirpath.exists():
+            log.error(f"In-progress directory for {name} already exists.")
+            return
+
+        try:
+            dirpath.mkdir()
+            zf = await connection.read_dir_as_zip(name, "experiment")
+            zf.extractall(dirpath)
+
+            (dirpath / "quant").mkdir(exist_ok=True)
+            (dirpath / "filter").mkdir(exist_ok=True)
+            (dirpath / "calibrations").mkdir(exist_ok=True)
+
+            self.run_log_file = (dirpath / "apldbio" / "sds" / "messages.log").open(
+                "a", buffering=0
+            )
+        except Exception as e:
+            log.error(f"Error setting up in-progress dir {name}: {e}")
+
+    @property
+    def ipdir(self) -> Path | None:
+        x = self.config.get("sync", {}).get("in_progress_directory", None)
+        if x is None:
+            return None
+        else:
+            return Path(x)
+
+    def run_ip_path(self, name: str) -> Path:
+        name = name.replace(" ", "_")
+        if (ipdir := self.ipdir) is None:
+            raise ValueError
+        return ipdir / name / "apldbio" / "sds"
 
     async def compile_eds(self, connection: QSConnectionAsync, name: str):
         name = name.replace(" ", "_")
@@ -232,7 +280,7 @@ class Collector:
             if k != "run":
                 args[k] = int(v)
         pl = [
-            parse_fd_fn(x)
+            FilterDataFilename.fromstring(x)
             for x in await connection.get_expfile_list(
                 "{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
                 "_T{step:02}_P{point:04}_*_filterdata.xml".format(
@@ -241,23 +289,49 @@ class Collector:
             )
         ]
         pl.sort()
-        toget = [x for x in pl if x[1:] == pl[-1][1:]]
-        lp: List[str] = sum(
-            [
-                (await connection.get_filterdata_one(*x)).to_lineprotocol(
+        toget = [x for x in pl if x.is_same_point(pl[-1])]
+
+        lp: List[str] = []
+        files: list[tuple[str, bytes]] = []
+
+        if self.ipdir is None:
+            for fdf in toget:
+                lp += (await connection.get_filterdata_one(fdf)).to_lineprotocol(
                     run_name=run, sample_array=pa
                 )
-                for x in toget
-            ],
-            [],
-        )
+        else:
+            for fdf in toget:
+                fdr, files_one = await connection.get_filterdata_one(
+                    fdf, return_files=True
+                )
+                lp += fdr.to_lineprotocol(run_name=run, sample_array=pa)
+                files += files_one
 
         self.idbw.write(bucket=self.config["influxdb"]["bucket"], record=lp)
         self.idbw.flush()
 
+        for path, data in files:
+            fullpath = self.run_ip_path(run) / path
+            with fullpath.open("wb") as f:
+                f.write(data)
+
+        if self.ipdir:
+            saferun = run.replace(" ", "_")
+            ipp = self.run_ip_path(saferun)
+            with zipfile.ZipFile(self.ipdir / (saferun + ".eds"), "w") as z:
+                for root, subs, zfiles in os.walk(ipp):
+                    for zfile in zfiles:
+                        fpath = os.path.join(root, zfile)
+                        z.write(fpath, os.path.relpath(fpath, ipp))
+
     async def handle_run_msg(
         self, state, c: QSConnectionAsync, topic, message, timestamp
     ):
+
+        # Are we logging?
+        if self.run_log_file is not None:
+            self.run_log_file.write(f"{topic} {timestamp} {message}\n")
+
         timestamp = int(1e9 * timestamp)
         msg = arglist.parseString(message)
         log.debug(msg)
@@ -323,6 +397,8 @@ class Collector:
                 )
             )
             if action == "Ended":
+                self.run_log_file = None
+
                 if cast(dict, self.config).get("machine", {}).get("compile", False):
                     compdir = (
                         cast(dict, self.config)
@@ -337,6 +413,17 @@ class Collector:
                     else:
                         # No sync; just compile
                         asyncio.tasks.create_task(self.compile_eds(c, state.run.name))
+
+            if action == "Starting":
+                ipdir = (
+                    cast(dict, self.config)
+                    .get("sync", {})
+                    .get("in_progress_directory", "")
+                )
+                if ipdir != None:
+                    asyncio.tasks.create_task(
+                        self.setup_new_rundir(c, state.run.name, ipdir)
+                    )
 
         elif action == "Collected":
             self.inject(
