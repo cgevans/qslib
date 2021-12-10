@@ -69,13 +69,13 @@ class MachineConfig:
 
 @dataclass(frozen=True)
 class SyncConfig:
-    completed_directory: str | None = None
-    in_progress_directory: str | None = None
+    completed_directory: Union[str, None] = None
+    in_progress_directory: Union[str, None] = None
 
 
 @dataclass(frozen=True)
 class Config:
-    matrix: MatrixConfig | None
+    matrix: Union[MatrixConfig, None]
     influxdb: InfluxConfig
     machine: MachineConfig
     sync: SyncConfig
