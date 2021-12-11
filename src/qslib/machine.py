@@ -527,7 +527,7 @@ class Machine:
         self.disconnect()
 
     def __del__(self) -> None:
-        if self._qsc is not None:
+        if self.connected:
             self.disconnect()
 
     def disconnect(self) -> None:
@@ -625,5 +625,5 @@ class Machine:
         yield self
         if not was_connected:
             self.disconnect()
-        elif old_access < access_level:
+        elif old_access[0] < access_level:
             self.set_access_level(*old_access)

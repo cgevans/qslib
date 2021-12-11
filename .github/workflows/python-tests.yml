@@ -37,7 +37,7 @@ jobs:
         python -m pip install flake8 tox mypy
     - name: Test with tox/pytest
       run: |
-        tox
+        tox -- -k 'not test_real'
     - name: "Upload coverage to Codecov"
       uses: codecov/codecov-action@v1
       with:

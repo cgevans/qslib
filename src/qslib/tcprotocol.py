@@ -21,7 +21,7 @@ from typing import (
 from .base import RunStatus
 import matplotlib.pyplot as plt
 import math
-from ._version import version as __version__  # type: ignore
+from . import __version__
 
 from qslib.data import FilterSet
 from . import parser as qp
@@ -36,7 +36,9 @@ from copy import deepcopy
 log = logging.getLogger(__name__)
 
 
-def _temperature_str(temperatures: Union[float, Iterable[float], np.ndarray]) -> str:
+def _temperature_str(
+    temperatures: Union[float, Iterable[float], np.ndarray[Any, np.float64]]
+) -> str:
     """Tries to do the right thing in generating a string for a temperature or
     list of temperatures."""
     if isinstance(temperatures, Iterable):
@@ -176,7 +178,7 @@ class Stage(XMLable):
         total_time: int,
         nsteps: int,
         collect: bool = False,
-        filters: Sequence = tuple(),
+        filters: Sequence[str | FilterSet] = tuple(),
     ):
 
         step_time = int(round(total_time / nsteps))
@@ -1102,7 +1104,7 @@ class CustomStep(BaseStep):
         return self._body
 
     @body.setter
-    def body(self, v: Sequence[ProtoCommand]):
+    def body(self, v: Sequence[ProtoCommand]) -> None:
         self._body = list(v)
 
     def collect(self) -> bool:
@@ -1114,7 +1116,7 @@ class CustomStep(BaseStep):
     def total_duration(self, repeat: int = 1) -> int:
         return 0
 
-    def info_str(self, index=None, repeats=1) -> str:
+    def info_str(self, index: None | int = None, repeats: int = 1) -> str:
         if index is not None:
             s = f"{index}. "
         else:

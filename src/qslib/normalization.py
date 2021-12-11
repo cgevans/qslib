@@ -1,12 +1,9 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any, ClassVar, Collection, Literal, Mapping, Sequence, cast
+from typing import Any, ClassVar, Literal, Sequence
 import pandas as pd
-from .data import FilterSet
-from abc import abstractmethod, abstractproperty, ABCMeta
-from .plate_setup import PlateSetup
-from .tcprotocol import Protocol
-import matplotlib.pyplot as plt
+from abc import abstractmethod, ABCMeta
+
 
 ScopeType = Literal["all", "limited"]
 

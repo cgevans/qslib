@@ -3,7 +3,7 @@ import logging
 import sys
 from typing import List
 
-from ._version import version as __version__  # type: ignore
+from . import __version__
 
 from .monitor import Collector, Config
 import toml
