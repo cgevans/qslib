@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast, overl
 import hmac
 import re
 import base64
-from .qs_is_protocol import Error, QS_IS_Protocol
+from .qs_is_protocol import CommandError, Error, QS_IS_Protocol
 from .parser import ArgList
 import zipfile
 from dataclasses import dataclass
@@ -187,10 +187,10 @@ class QSConnectionAsync:
                     x,
                 )
                 if rm is None:
-                    x = ArgList(x)
+                    ag = ArgList(x)
                     d: dict[str, str | float | int] = {}
-                    d["path"] = x.args[0]
-                    d |= x.opts
+                    d["path"] = ag.args[0]
+                    d |= ag.opts
                 else:
                     d = {}
                     d["path"] = rm.group(1)
@@ -213,11 +213,11 @@ class QSConnectionAsync:
 
         expfiles = await self.list_files("", leaf="experiment", verbose=True)
 
-        res = [r for r in expfiles if r["path"] == run_name]
+        results = [r for r in expfiles if r["path"] == run_name]
 
-        if len(res) != 1:
+        if len(results) != 1:
             raise ValueError
-        res = res[0]
+        res = results[0]
 
         if "run" not in res:
             raise ValueError
@@ -312,16 +312,24 @@ class QSConnectionAsync:
     async def run_command(self, command: str, just_ack: bool = False) -> str:
         return (await self.run_command_to_bytes(command, just_ack)).decode()
 
-    async def authenticate(self, password: str):
+    async def authenticate(self, password: str) -> None:
         challenge_key = await self.run_command("CHAL?")
         auth_rep = _gen_auth_response(password, challenge_key)
         await self.run_command(f"AUTH {auth_rep}")
 
-    async def set_access_level(self, level: AccessLevel):
+    async def set_access_level(self, level: AccessLevel) -> None:
         await self.run_command("ACC " + level.value)
 
-    async def get_expfile_list(self, glob: str) -> List[str]:
-        fl = await self.run_command(f"EXP:LIST? {shlex.quote(glob)}")
+    async def get_expfile_list(
+        self, glob: str, allow_nomatch: bool = False
+    ) -> List[str]:
+        try:
+            fl = await self.run_command(f"EXP:LIST? {shlex.quote(glob)}")
+        except CommandError as ce:
+            if "[NoMatch]" in ce.response:
+                if allow_nomatch:
+                    return []
+                raise ce from None
         assert fl.startswith("<quote.reply>")
         assert fl.endswith("</quote.reply>")
         return fl.split("\n")[1:-1]
@@ -451,8 +459,7 @@ class QSConnectionAsync:
             files = [("filter/" + ref.tostring(), fl)]
             qn = re.search("quant/.*$", ql)
             assert qn is not None
-            qn = qn[0]
-            files.append((qn, qf))
+            files.append((qn[0], qf))
             return f, files
         else:
             return f
@@ -485,4 +492,4 @@ class QSConnectionAsync:
         if as_list:
             return pl
 
-        return data.df_from_readings(pl)  # type:ignore
+        return data.df_from_readings(pl)

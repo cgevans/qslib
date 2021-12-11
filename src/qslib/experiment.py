@@ -35,7 +35,7 @@ from .data import FilterSet, df_from_readings, FilterDataReading
 from .machine import Machine
 from .tcprotocol import Protocol, Stage, Step
 from .util import *
-from ._version import version as __version__
+from . import __version__
 from .normalization import Normalizer, NormRaw
 
 TEMPLATE_NAME = "ruo"
@@ -473,39 +473,40 @@ table, th, td {{
         machine = self._ensure_machine(machine, password)
         log.info(f"Attempting to start {self.runtitle_safe} on {machine.host}.")
 
-        # Ensure machine isn't running:
-        if (x := machine.run_status()).state.upper() != "IDLE":
-            raise MachineBusyError(machine, x)
+        with machine.ensured_connection():
+            # Ensure machine isn't running:
+            if (x := machine.run_status()).state.upper() != "IDLE":
+                raise MachineBusyError(machine, x)
 
-        if self.runstate != "INIT":
-            raise ValueError
+            if self.runstate != "INIT":
+                raise ValueError
 
-        with machine.at_access("Controller", exclusive=require_exclusive):
-            log.debug("Powering on machine and ensuring drawer/cover is closed.")
-            # Ensure machine state and power.
-            machine.power = True
-            machine.drawer_close(lower_cover=True)
+            with machine.at_access("Controller", exclusive=require_exclusive):
+                log.debug("Powering on machine and ensuring drawer/cover is closed.")
+                # Ensure machine state and power.
+                machine.power = True
+                machine.drawer_close(lower_cover=True)
 
-            # Check existence of previous run folder
-            if self.runtitle_safe + "/" in machine.run_command("EXP:LIST?"):
-                raise AlreadyExistsError(self.runtitle_safe)
+                # Check existence of previous run folder
+                if self.runtitle_safe + "/" in machine.run_command("EXP:LIST?"):
+                    raise AlreadyExistsError(self.runtitle_safe)
 
-            log.debug(f"Creating experiment folder {self.runtitle_safe}.")
-            machine.run_command(f"EXP:NEW {self.runtitle_safe} {TEMPLATE_NAME}")
+                log.debug(f"Creating experiment folder {self.runtitle_safe}.")
+                machine.run_command(f"EXP:NEW {self.runtitle_safe} {TEMPLATE_NAME}")
 
-            log.debug(f"Populating experiment folder.")
-            self._populate_folder()
+                log.debug(f"Populating experiment folder.")
+                self._populate_folder()
 
-            log.debug(f"Sending protocol.")
-            machine.define_protocol(self.protocol)
+                log.debug(f"Sending protocol.")
+                machine.define_protocol(self.protocol)
 
-            log.debug(f"Sending run command.")
-            # Start the run
-            machine.run_command_to_ack(
-                f"RP -samplevolume={self.protocol.volume} -runmode={self.protocol.runmode}"
-                f" {self.protocol.name} {self.runtitle_safe}"
-            )  # TODO: user, cover
-            log.info(f"Run {self.runtitle_safe} started on {machine.host}.")
+                log.debug(f"Sending run command.")
+                # Start the run
+                machine.run_command_to_ack(
+                    f"RP -samplevolume={self.protocol.volume} -runmode={self.protocol.runmode}"
+                    f" {self.protocol.name} {self.runtitle_safe}"
+                )  # TODO: user, cover
+                log.info(f"Run {self.runtitle_safe} started on {machine.host}.")
 
     def create_new_copy(self) -> Experiment:
         """Create a copy of the experiment, with data and run information removed, suitable
@@ -515,27 +516,6 @@ table, th, td {{
         -------
         Experiment
         """
-        raise NotImplementedError
-
-    def collect_finished(self, machine: Machine | None = None) -> None:
-        """NOT YET IMPLEMENTED
-
-        Collect the completed (aborted/etc) experiment from a machine, reliably.  This will
-        search for and recover working data if the EDS file generation on the machine failed.
-
-        Parameters
-        ----------
-        machine : Machine, optional
-            [description], by default None
-
-        Raises
-        ------
-        NotImplementedError
-            [description]
-        """
-        machine = self._ensure_machine(machine)
-
-        # Ensure run is actually done.
         raise NotImplementedError
 
     def pause_now(self, machine: Machine | None = None) -> None:
@@ -550,9 +530,10 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        self._ensure_running(machine)
-        with machine.at_access("Controller", exclusive=True):
-            machine.pause_current_run()
+        with machine.ensured_connection():
+            self._ensure_running(machine)
+            with machine.at_access("Controller", exclusive=True):
+                machine.pause_current_run()
 
     def resume(self, machine: Machine | None = None) -> None:
         """
@@ -566,9 +547,10 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        self._ensure_running(machine)
-        with machine.at_access("Controller", exclusive=True):
-            machine.resume_current_run()
+        with machine.ensured_connection():
+            self._ensure_running(machine)
+            with machine.at_access("Controller", exclusive=True):
+                machine.resume_current_run()
 
     def stop(self, machine: Machine | None = None) -> None:
         """
@@ -582,9 +564,10 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        self._ensure_running(machine)
-        with machine.at_access("Controller", exclusive=True):
-            machine.stop_current_run()
+        with machine.ensured_connection():
+            self._ensure_running(machine)
+            with machine.at_access("Controller", exclusive=True):
+                machine.stop_current_run()
 
     def abort(self, machine: Machine | None = None) -> None:
         """
@@ -598,9 +581,10 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        self._ensure_running(machine)
-        with machine.at_access("Controller", exclusive=True):
-            machine.abort_current_run()
+        with machine.ensured_connection():
+            self._ensure_running(machine)
+            with machine.at_access("Controller", exclusive=True):
+                machine.abort_current_run()
 
     def get_status(self, machine: Machine | None = None) -> RunStatus:
         """
@@ -614,12 +598,12 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        return self._ensure_running(machine)
+        with machine.ensured_connection():
+            return self._ensure_running(machine)
 
     def sync_from_machine(
         self,
         machine: Machine | None = None,
-        connect: bool = False,
         log_method: Literal["copy", "eval"] = "eval",
     ) -> None:
         """
@@ -628,12 +612,7 @@ table, th, td {{
         """
         machine = self._ensure_machine(machine)
 
-        disconnect = False
-        if connect and not machine.connected:
-            disconnect = True
-            machine.connect()
-
-        try:
+        with machine.ensured_connection():
             # Get a list of all the files in the experiment folder
             machine_files = machine.list_files(
                 f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True
@@ -697,9 +676,6 @@ table, th, td {{
 
             # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
             self._update_from_files()
-        finally:
-            if disconnect:
-                machine.disconnect()
 
     def change_protocol(
         self, new_protocol: Protocol, machine: Machine | None = None
@@ -728,25 +704,25 @@ table, th, td {{
 
         """
         machine = self._ensure_machine(machine)
-        self._ensure_running(machine)
+        with machine.ensured_connection(AccessLevel.Controller):
+            self._ensure_running(machine)
 
-        runstatus = machine.run_status()
+            runstatus = machine.run_status()
 
-        # Get running protocol and status.
-        machine_proto = machine.get_running_protocol()
+            # Get running protocol and status.
+            machine_proto = machine.get_running_protocol()
 
-        # FIXME: can't just do this, may have extra default things added
-        # if machine_proto != self.protocol:
-        #    raise ValueError("Machine and experiment protocols differ.")
+            # FIXME: can't just do this, may have extra default things added
+            # if machine_proto != self.protocol:
+            #    raise ValueError("Machine and experiment protocols differ.")
 
-        # Check compatibility of changes.
-        machine_proto.check_compatible(new_protocol, runstatus)
+            # Check compatibility of changes.
+            machine_proto.check_compatible(new_protocol, runstatus)
 
-        new_protocol.name = machine_proto.name
-        new_protocol.volume = machine_proto.volume
-        new_protocol.runmode = machine_proto.runmode
+            new_protocol.name = machine_proto.name
+            new_protocol.volume = machine_proto.volume
+            new_protocol.runmode = machine_proto.runmode
 
-        with machine.at_access(AccessLevel.Controller):
             # Make changes.
             machine.define_protocol(new_protocol)
 
@@ -784,7 +760,7 @@ table, th, td {{
         self._update_files()
 
         with zipfile.ZipFile(file, mode) as z:
-            for root, subs, files in os.walk(self._dir_base):
+            for root, _, files in os.walk(self._dir_base):
                 for file in files:
                     fpath = os.path.join(root, file)
                     z.write(fpath, os.path.relpath(fpath, self._dir_base))
@@ -811,7 +787,7 @@ table, th, td {{
             mode = "x"
 
         with zipfile.ZipFile(file, mode) as z:
-            for root, subs, files in os.walk(self._dir_base):
+            for root, _, files in os.walk(self._dir_base):
                 for file in files:
                     fpath = os.path.join(root, file)
                     z.write(fpath, os.path.relpath(fpath, self._dir_base))

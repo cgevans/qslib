@@ -1,9 +1,96 @@
+#[build-system]
+#requires = ["pdm-pep517"]
+#build-backend = "pdm.pep517.api"
+
 [build-system]
-# AVOID CHANGING REQUIRES: IT WILL BE UPDATED BY PYSCAFFOLD!
 requires = ["setuptools>=46.1.0", "setuptools_scm[toml]>=5", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
-# See configuration details in https://github.com/pypa/setuptools_scm
 version_scheme = "no-guess-dev"
-write_to = "src/qslib/_version.py"
+
+[tool.pdm]
+version = {use_scm = true}
+
+[project]
+name = "qslib"
+requires-python = ">=3.9"
+description = "Library for communicating with and using the QuantStudio qPCR machine, intended for non-qPCR uses."
+license = {file = "LICENSE.txt"}
+readme = "README.md"
+authors = [{name="Constantine Evans", email="const@costi.eu"}]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Natural Language :: English",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Typing :: Typed",
+    "Programming Language :: Python :: 3.9",
+    "Framework :: Matplotlib",
+    "Framework :: Jupyter" ]
+
+dynamic = ["version"]
+
+dependencies = [
+"pandas >= 1",
+"numpy >= 1",
+"tabulate >= 0.8",
+"pyparsing >= 2",
+"typeguard >= 2",
+"nest_asyncio >= 1.5",
+"click >=8.0,<9.0",
+"toml",
+"sshtunnel",
+"paramiko",
+"matplotlib",
+"markdown",
+"dacite"
+]
+
+[project.optional-dependencies]
+# Add here additional requirements for extra features, to install with:
+# `pip install qslib[PDF]` like:
+# PDF = ReportLab; RXP
+monitor = [ 
+    "matrix-nio",
+    "influxdb_client",
+    "toml",
+    "lxml"
+    ]
+docs = [
+    "myst_parser",
+    "influxdb_client",
+    "toml",
+    "lxml"
+    ]    
+# Add here test requirements (semicolon/line-separated)
+testing = [
+    "setuptools",
+    "pytest",
+    "pytest-cov",
+    "pytest-asyncio"
+    ]
+
+[project.urls]    
+homepage = "https://github.com/cgevans/qslib/"
+documentation = "https://qslib.readthedocs.org/"
+source = "https://github.com/cgevans/qslib/"
+changelog = "https://github.com/cgevans/qslib/blob/main/CHANGELOG.md"
+tracker = "https://github.com/cgevans/qslib/issues"
+download = "https://github.com/cgevans/qslib/releases"
+
+[project.scripts]
+qs-monitor = "qslib.monitor_cli:run"
+qslib = "qslib.cli:cli"
+
+[tool.pytest.ini_options]
+addopts = "--cov qslib --cov-report term-missing --verbose"
+norecursedirs = [
+    "dist",
+    "build",
+    ".tox"]
+testpaths = ["tests"]

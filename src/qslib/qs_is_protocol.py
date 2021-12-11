@@ -41,10 +41,17 @@ class SubHandler(Protocol):
 class QS_IS_Protocol(asyncio.Protocol):
     lostconnection: Future[Any]
     last_received: float
+    waiting_commands: list[
+        tuple[
+            bytes,
+            None
+            | Future[tuple[bytes, bytes, None | Future[tuple[bytes, bytes, None]]]],
+        ]
+    ]
 
     def __init__(self) -> None:
         self.default_topic_handler = self._default_topic_handler
-        self.readymsg = asyncio.get_running_loop().create_future()
+        self.readymsg: Future[str] = asyncio.get_running_loop().create_future()
         self.lostconnection = asyncio.get_running_loop().create_future()
         self.should_be_connected = False
         self.last_received = time.time()
@@ -73,17 +80,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         self.should_be_connected = True
         # setup connection.
         self.transport = transport
-        self.waiting_commands: list[
-            tuple[
-                bytes,
-                None
-                | Future[
-                    tuple[
-                        bytes, None | bytes, None | asyncio.Future[tuple[bytes, bytes]]
-                    ]
-                ],
-            ]
-        ] = []
+        self.waiting_commands = []
         self.buffer = io.BytesIO()
         self.quote_stack: list[bytes] = []
         self.topic_handlers: dict[bytes, SubHandler] = {}
@@ -190,7 +187,9 @@ class QS_IS_Protocol(asyncio.Protocol):
         log.debug(f"Running command {comm.decode()}")
         loop = asyncio.get_running_loop()
 
-        comfut = loop.create_future()
+        comfut: Future[
+            tuple[bytes, bytes, None | Future[tuple[bytes, bytes, None]]]
+        ] = loop.create_future()
         if uid:
             import random
 
@@ -217,6 +216,7 @@ class QS_IS_Protocol(asyncio.Protocol):
                 # self.waiting_commands.append((commref, None))
                 return b""
             else:
+                assert comnext is not None
                 await comnext
                 state, msg, comnext2 = comnext.result()
                 assert comnext2 is None

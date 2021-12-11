@@ -16,7 +16,7 @@ PROTSTRING = """PROTocol -volume=30 -runmode=standard testproto <quote.message>
 \tSTAGe -repeat=27 2 STAGE_2 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
 \t\t\tRAMP -increment=-1 -incrementcycle=2 80 80 80 80 80 80
-\t\t\tHOLD -increment=0 -incrementcycle=2 60
+\t\t\tHOLD -increment=0 -incrementcycle=2 144000
 \t\t</multiline.step>
 \t</multiline.stage>
 \tSTAGe -repeat=5 3 STAGE_3 <multiline.stage>
@@ -30,7 +30,7 @@ PROTSTRING = """PROTocol -volume=30 -runmode=standard testproto <quote.message>
 \t\tSTEP 1 <multiline.step>
 \t\t\tRAMP -increment=0.0 -incrementcycle=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
 \t\t\tHACFILT m4,x1,quant m5,x3,quant
-\t\t\tHoldAndCollect -increment=0 -incrementcycle=2 -tiff=False -quant=True -pcr=False 300
+\t\t\tHoldAndCollect -increment=0 -incrementcycle=2 -tiff=False -quant=True -pcr=False 64800000
 \t\t</multiline.step>
 \t</multiline.stage>
 \tSTAGe -repeat=20 5 STAGE_5 <multiline.stage>
@@ -73,7 +73,7 @@ def test_proto() -> None:
         name="testproto",
         stages=[
             Stage(Step(5 * 60, 80)),
-            Stage(Step(60, 80, temp_increment=-1), repeat=27),
+            Stage(Step(40 * 60 * 60, 80, temp_increment=-1), repeat=27),
             Stage(
                 Step(
                     2 * 60,
@@ -82,7 +82,7 @@ def test_proto() -> None:
                 ),
                 repeat=5,
             ),
-            Stage(Step(5 * 60, temperatures, collect=True), repeat=20),
+            Stage(Step(5 * 60 * 60 * 60 * 60, temperatures, collect=True), repeat=20),
             Stage(
                 Step(10 * 60, temperatures, collect=True, filters=["x1-m4", "x3-m5"]),
                 repeat=20,
@@ -100,7 +100,7 @@ def test_proto() -> None:
         name="testproto",
         stages=[
             Stage(Step(5 * 60, 80)),
-            Stage(Step(60, 80, temp_increment=-1), repeat=27),
+            Stage(Step(40 * 60 * 60, 80, temp_increment=-1), repeat=27),
             Stage(
                 Step(
                     2 * 60,
@@ -111,7 +111,12 @@ def test_proto() -> None:
                 repeat=5,
             ),
             Stage(
-                Step(5 * 60, temperatures, collect=True, filters=["x1-m4", "x3-m5"]),
+                Step(
+                    5 * 60 * 60 * 60 * 60,
+                    temperatures,
+                    collect=True,
+                    filters=["x1-m4", "x3-m5"],
+                ),
                 repeat=20,
             ),
             Stage(
@@ -128,6 +133,8 @@ def test_proto() -> None:
 
     assert prot.to_command() == PROTSTRING
     assert prot.to_command() == prot_explicitfilter.to_command()
+
+    assert str(prot) != str(prot_explicitfilter)
 
     prot_fromstring = Protocol.from_command(PROTSTRING)
 

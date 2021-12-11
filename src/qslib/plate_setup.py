@@ -4,7 +4,7 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from io import BytesIO
-from typing import Iterable, Mapping, Optional, Sequence, Tuple, List, Dict, Union
+from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple, List, Dict, Union
 from uuid import uuid1
 
 import numpy as np
@@ -144,7 +144,7 @@ class PlateSetup:
 
         return wells
 
-    def well_samples_as_array(self) -> np.ndarray:
+    def well_samples_as_array(self) -> np.ndarray[Any, Any]:
         return self.well_sample.to_numpy().reshape((8, 12))
 
     def to_lineprotocol(self, timestamp: int, run_name: str | None = None) -> list[str]:

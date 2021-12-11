@@ -63,11 +63,11 @@ class InfluxConfig:
 
 @dataclass(frozen=True)
 class MachineConfig:
-    password: str
-    name: str
-    host: str
-    port: str
-    retries: int
+    password: Union[str, None] = None
+    name: str = "localhost"
+    host: str = "localhost"
+    port: str = "7000"
+    retries: int = 3
     compile: bool = False
 
 
@@ -79,10 +79,10 @@ class SyncConfig:
 
 @dataclass(frozen=True)
 class Config:
-    matrix: Union[MatrixConfig, None]
-    influxdb: InfluxConfig
-    machine: MachineConfig
-    sync: SyncConfig
+    matrix: Union[MatrixConfig, None] = None
+    influxdb: Union[InfluxConfig, None] = None
+    machine: MachineConfig = MachineConfig()
+    sync: SyncConfig = SyncConfig()
 
 
 @dataclass
@@ -124,7 +124,7 @@ class RunState:
 
     @classmethod
     async def from_machine(cls: Type[RunState], c: QSConnectionAsync) -> RunState:
-        n = cast(RunState, cls.__new__(cls))
+        n = cls.__new__(cls)
         await n.refresh(c)
         return n
 
@@ -203,12 +203,15 @@ class Collector:
     def __init__(self, config: Config):
         self.config = config
 
-        self.idbclient = InfluxDBClient(
-            url=self.config.influxdb.url,
-            token=self.config.influxdb.token,
-            org=self.config.influxdb.org,
-        )
-        self.idbw = self.idbclient.write_api(write_options=ASYNCHRONOUS)
+        if self.config.influxdb:
+            self.idbclient = InfluxDBClient(
+                url=self.config.influxdb.url,
+                token=self.config.influxdb.token,
+                org=self.config.influxdb.org,
+            )
+            self.idbw = self.idbclient.write_api(write_options=ASYNCHRONOUS)
+        else:
+            self.idbw = None
 
         if self.config.matrix:
             self.matrix_config = AsyncClientConfig(
@@ -226,8 +229,15 @@ class Collector:
 
         self.run_log_file: TextIO | None = None
 
-    def inject(self, t: str | Iterable[str | Point] | Point) -> None:
-        self.idbw.write(bucket=self.config.influxdb.bucket, record=t)
+    def inject(
+        self, t: str | Iterable[str | Point] | Point, flush: bool = False
+    ) -> None:
+        if self.idbw:
+            self.idbw.write(bucket=self.config.influxdb.bucket, record=t)
+            if flush:
+                self.idbw.flush()
+        else:
+            pass
 
     async def matrix_announce(self, msg: str) -> None:
         assert self.config.matrix
@@ -363,7 +373,8 @@ class Collector:
                 "{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
                 "_T{step:02}_P{point:04}_*_filterdata.xml".format(
                     run=run, **cast(Dict[str, int], args)
-                )
+                ),
+                allow_nomatch=True,
             )
         ]
         pl.sort()
@@ -390,8 +401,7 @@ class Collector:
                     run_name=run, sample_array=pa
                 )
 
-        self.idbw.write(bucket=self.config.influxdb.bucket, record=lp)
-        self.idbw.flush()
+        self.inject(lp, flush=True)
 
         for path, data in files:
             fullpath = self.run_ip_path(run) / path
@@ -407,7 +417,7 @@ class Collector:
             saferun = run  # .replace(" ", "_")
             ipp = self.ipdir / saferun
             with zipfile.ZipFile(self.ipdir / (saferun + ".eds"), "w") as z:
-                for root, subs, zfiles in os.walk(ipp):
+                for root, _, zfiles in os.walk(ipp):
                     for zfile in zfiles:
                         fpath = os.path.join(root, zfile)
                         z.write(fpath, os.path.relpath(fpath, ipp))
@@ -560,7 +570,8 @@ class Collector:
                 state.run.plate_setup.to_lineprotocol(timestamp, state.run.name)
             )
 
-        self.idbw.flush()
+        if self.idbw:
+            self.idbw.flush()
 
     async def handle_led(
         self, topic: bytes, message: bytes, timestamp: float | None
@@ -580,8 +591,7 @@ class Collector:
             .field("junctemp", float(ls[4].decode()))
             .time(int(1e9 * timestamp))
         )
-        self.inject(p)
-        self.idbw.flush()
+        self.inject(p, flush=True)
 
     async def handle_msg(
         self,
@@ -626,9 +636,10 @@ class Collector:
                     p = p.field(key, args[key])
                 p.time(int(1e9 * timestamp))
             self.inject(p)
-        self.idbw.flush()
+        if self.idbw:
+            self.idbw.flush()
 
-    async def monitor(self) -> None:
+    async def monitor(self, connected_fut: asyncio.Future[bool] | None = None) -> None:
 
         if self.config.matrix is not None:
             await self.matrix_client.login(self.config.matrix.password)
@@ -660,7 +671,8 @@ class Collector:
                     )
                 )
 
-            self.idbw.flush()
+            if self.idbw:
+                self.idbw.flush()
 
             # Setup directory if run already started:
             if state.run.name and self.ipdir:
@@ -680,6 +692,9 @@ class Collector:
             c._protocol.topic_handlers[b"LEDStatus"] = self.handle_led
 
             log.info(c._protocol.topic_handlers)
+
+            if connected_fut is not None:
+                connected_fut.set_result(True)
 
             ok = True
             while ok:
@@ -704,14 +719,16 @@ class Collector:
                     await c.disconnect()
                     raise TimeoutError
 
-    async def reliable_monitor(self) -> None:
+    async def reliable_monitor(
+        self, connected_fut: asyncio.Future[bool] | None = None
+    ) -> None:
         log.info("starting reconnectable monitoring")
 
         restart = True
         successive_failures = 0
         while restart:
             try:
-                await self.monitor()
+                await self.monitor(connected_fut=connected_fut)
             except asyncio.exceptions.TimeoutError as e:
                 successive_failures = 0
                 log.warn(f"lost connection with timeout {e}")
