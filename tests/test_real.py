@@ -4,13 +4,14 @@ import pytest_asyncio
 import uuid
 
 from qslib.common import *
-from qslib.monitor import Collector, Config
 
 import asyncio
 
 
 @pytest.mark.asyncio
-async def test_experiment():
+async def test_real_experiment():
+
+    from qslib.monitor import Collector, Config
 
     mon = Collector(Config())
 
