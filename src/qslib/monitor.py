@@ -95,7 +95,6 @@ class RunState:
 
     async def refresh(self, c: QSConnectionAsync) -> None:
         runmsg = ArgList(await c.run_command("RunProgress?"))
-        print(runmsg)
         name = cast(str, runmsg.opts["RunTitle"])
         if name == "-":
             self.name = None
