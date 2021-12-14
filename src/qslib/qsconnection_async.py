@@ -40,6 +40,14 @@ def _parse_argstring(argstring: str) -> Dict[str, str]:
     return args
 
 
+class AlreadyCollectedError(BaseException):
+    ...
+
+
+class RunNotFinishedError(BaseException):
+    ...
+
+
 @dataclass(frozen=True, order=True, eq=True)
 class FilterDataFilename:
     filterset: data.FilterSet
@@ -220,13 +228,13 @@ class QSConnectionAsync:
         res = results[0]
 
         if "run" not in res:
-            raise ValueError
+            raise FileNotFoundError(res)
 
         if res["state"] not in ["Completed", "Terminated"]:
-            raise ValueError
+            raise RunNotFinishedError(res)
 
         if ("collected" in res) and (res["collected"]):
-            raise ValueError
+            raise AlreadyCollectedError(res)
 
         await self.run_command(
             f'exp:run -asynchronous <block> zip "{run_name}.eds" "{run_name}" </block>'
@@ -329,10 +337,11 @@ class QSConnectionAsync:
             if "[NoMatch]" in ce.response:
                 if allow_nomatch:
                     return []
-                raise ce from None
-        assert fl.startswith("<quote.reply>")
-        assert fl.endswith("</quote.reply>")
-        return fl.split("\n")[1:-1]
+            raise ce from None
+        else:
+            assert fl.startswith("<quote.reply>")
+            assert fl.endswith("</quote.reply>")
+            return fl.split("\n")[1:-1]
 
     async def get_run_title(self) -> str:
         return (await self.run_command("RUNTitle?")).strip('"')

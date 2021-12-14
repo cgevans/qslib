@@ -232,7 +232,7 @@ class Collector:
         self, t: str | Iterable[str | Point] | Point, flush: bool = False
     ) -> None:
         if self.idbw:
-            self.idbw.write(bucket=self.config.influxdb.bucket, record=t)
+            self.idbw.write(bucket=self.config.influxdb.bucket, record=t)  # type:ignore
             if flush:
                 self.idbw.flush()
         else:
@@ -305,16 +305,24 @@ class Collector:
     async def compile_eds(self, connection: QSConnectionAsync, name: str) -> None:
         # name = name.replace(" ", "_")
 
+        # Wait 5 minutes in case machine compiles it (AB sofware run)
+        await asyncio.sleep(300.0)
+
         try:
             await connection.set_access_level(AccessLevel.Controller)
             await connection.compile_eds(name)
+        except FileNotFoundError as e:
+            raise e
         finally:
             await connection.set_access_level(AccessLevel.Observer)
 
     async def sync_completed(self, connection: QSConnectionAsync, name: str) -> None:
         # name = name.replace(" ", "_")
 
-        await self.compile_eds(connection, name)
+        try:
+            await self.compile_eds(connection, name)
+        except FileNotFoundError:
+            pass
 
         dir = Path(cast(str, self.config.sync.completed_directory))
 
@@ -523,6 +531,7 @@ class Collector:
                 if self.config.machine.compile:
                     assert state.run.name
                     compdir = self.config.sync.completed_directory
+
                     if compdir != "":
                         # This will need to compile and sync
                         asyncio.tasks.create_task(
