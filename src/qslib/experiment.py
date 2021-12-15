@@ -415,13 +415,18 @@ table, th, td {{
         return self.rawdata
 
     def _ensure_machine(
-        self, machine: Machine | str | None, password: str | None = None
+        self,
+        machine: Machine | str | None,
+        password: str | None = None,
+        needed_level: AccessLevel = AccessLevel.Observer,
     ) -> Machine:
         if isinstance(machine, Machine):
             self.machine = machine
             return machine
         elif isinstance(machine, str):
-            self.machine = Machine(machine, password=password)
+            self.machine = Machine(
+                machine, password=password, max_access_level=needed_level
+            )
             return self.machine
         elif hasattr(self, "machine") and (c := self.machine):
             return c
@@ -441,7 +446,7 @@ table, th, td {{
         tempzip = io.BytesIO()
         self.save_file(tempzip)
         exppath = self.runtitle_safe + "/"
-        with machine.at_access("Controller"):
+        with machine.at_access(AccessLevel.Controller):
             machine.run_command_bytes(
                 b"EXP:ZIPWRITE "
                 + exppath.encode()
@@ -470,7 +475,9 @@ table, th, td {{
         AlreadyExistsError
             The machine already has a folder for this run in its working runs folder.
         """
-        machine = self._ensure_machine(machine, password)
+        machine = self._ensure_machine(
+            machine, password, needed_level=AccessLevel.Controller
+        )
         log.info(f"Attempting to start {self.runtitle_safe} on {machine.host}.")
 
         with machine.ensured_connection():
@@ -481,7 +488,7 @@ table, th, td {{
             if self.runstate != "INIT":
                 raise ValueError
 
-            with machine.at_access("Controller", exclusive=require_exclusive):
+            with machine.at_access(AccessLevel.Controller, exclusive=require_exclusive):
                 log.debug("Powering on machine and ensuring drawer/cover is closed.")
                 # Ensure machine state and power.
                 machine.power = True
@@ -532,7 +539,7 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         with machine.ensured_connection():
             self._ensure_running(machine)
-            with machine.at_access("Controller", exclusive=True):
+            with machine.at_access(AccessLevel.Controller, exclusive=True):
                 machine.pause_current_run()
 
     def resume(self, machine: Machine | None = None) -> None:
@@ -549,7 +556,7 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         with machine.ensured_connection():
             self._ensure_running(machine)
-            with machine.at_access("Controller", exclusive=True):
+            with machine.at_access(AccessLevel.Controller, exclusive=True):
                 machine.resume_current_run()
 
     def stop(self, machine: Machine | None = None) -> None:
@@ -566,7 +573,7 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         with machine.ensured_connection():
             self._ensure_running(machine)
-            with machine.at_access("Controller", exclusive=True):
+            with machine.at_access(AccessLevel.Controller, exclusive=True):
                 machine.stop_current_run()
 
     def abort(self, machine: Machine | None = None) -> None:
@@ -583,7 +590,7 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         with machine.ensured_connection():
             self._ensure_running(machine)
-            with machine.at_access("Controller", exclusive=True):
+            with machine.at_access(AccessLevel.Controller, exclusive=True):
                 machine.abort_current_run()
 
     def get_status(self, machine: Machine | None = None) -> RunStatus:
@@ -814,10 +821,10 @@ table, th, td {{
         self._protocol_from_qslib: Protocol | None = None
         self._protocol_from_log: Protocol | None = None
         self._protocol_from_xml: Protocol | None = None
-        self.runstarttime: float | None = None
-        self.runendtime: float | None = None
-        self.activestarttime: float | None = None
-        self.activeendtime: float | None = None
+        self.runstarttime: datetime | None = None
+        self.runendtime: datetime | None = None
+        self.activestarttime: datetime | None = None
+        self.activeendtime: datetime | None = None
 
         self.machine: Machine | None = None
 

@@ -196,6 +196,25 @@ class Stage(XMLable):
             repeat=nsteps,
         )
 
+    @classmethod
+    def hold_for(
+        cls: Type[Stage],
+        temps: float | Sequence[float],
+        total_time: int,
+        step_time: int,
+        collect: bool = False,
+        filters: Sequence[str | FilterSet] = tuple(),
+    ):
+        return cls(
+            Step(
+                step_time,
+                temps,
+                collect=collect,
+                filters=filters,
+            ),
+            repeat=round(total_time / step_time),
+        )
+
     @property
     def steps(self) -> list[BaseStep]:
         return self._steps
