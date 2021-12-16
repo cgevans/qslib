@@ -425,7 +425,9 @@ table, th, td {{
             return machine
         elif isinstance(machine, str):
             self.machine = Machine(
-                machine, password=password, max_access_level=needed_level
+                machine,
+                password=password,
+                max_access_level=needed_level,
             )
             return self.machine
         elif hasattr(self, "machine") and (c := self.machine):
@@ -710,7 +712,7 @@ table, th, td {{
             [description], by default None
 
         """
-        machine = self._ensure_machine(machine)
+        machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
 
