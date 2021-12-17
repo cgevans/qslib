@@ -25,7 +25,7 @@ qs.setParseAction(lambda toks: toks[0][1:-1])
 optvalue = (
     (pbool + fwe)
     | (ppc.number + fwe)
-    | (pp.Word(pp.alphanums + "_.,-") + fwe)
+    | (pp.Word(pp.pyparsing_unicode.alphanums + "_.,-") + fwe)
     | (qs + fwe)
 ).setParseAction(lambda toks: toks[0])
 
@@ -60,7 +60,7 @@ class ArgList:
         self.args = v["arglist"]["args"]
 
 
-quote_content = pp.Word(pp.alphanums + "._")
+quote_content = pp.Word(pp.pyparsing_unicode.alphanums + "._")
 quote_open = pp.Combine("<" + quote_content + ">")
 quote_close = pp.Combine("</" + pp.matchPreviousExpr(quote_content) + ">")
 
