@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any, Coroutine, Optional, Protocol
 import time
 
+from qslib.base import AccessLevel
+
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
 Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")
@@ -20,11 +22,78 @@ class Error(Exception):
     pass
 
 
-@dataclass
 class CommandError(Error):
+    @staticmethod
+    def parse(command: str, ref_index: str, response: str) -> CommandError:
+        m = re.match(r"\[(\w+)\] (.*)", response)
+        if (not m) or (m[1] not in COM_ERRORS):
+            return UnparsedCommandError(command, ref_index, response)
+        try:
+            return COM_ERRORS[m[1]].parse(command, m[2])
+        except ValueError:
+            return UnparsedCommandError(command, ref_index, response)
+
+
+@dataclass
+class UnparsedCommandError(CommandError):
     command: Optional[str]
     ref_index: Optional[str]
     response: str
+
+
+@dataclass
+class InsufficientAccess(CommandError):
+    command: str
+    requiredAccess: AccessLevel
+    currentAccess: AccessLevel
+    message: str
+
+    @classmethod
+    def parse(cls, command: str, message: str) -> InsufficientAccess:
+        m = re.match(
+            r'-requiredAccess="(\w+)" -currentAccess="(\w+)" --> (.*)', message
+        )
+        if not m:
+            raise ValueError
+        return cls(command, AccessLevel(m[1]), AccessLevel(m[2]), m[3])
+
+
+@dataclass
+class AuthError(CommandError):
+    command: str
+    message: str
+
+    @classmethod
+    def parse(cls, command: str, message: str) -> AuthError:
+        m = re.match(r"--> (.*)", message)
+        if not m:
+            raise ValueError
+        return cls(command, m[1])
+
+
+@dataclass
+class AccessLevelExceeded(CommandError):
+    command: str
+    accessLimit: AccessLevel
+    message: str
+
+    @classmethod
+    def parse(cls, command: str, message: str) -> AccessLevelExceeded:
+        m = re.match(r'-accessLimit="(\w+)" --> (.*)', message)
+        if not m:
+            raise ValueError
+        return cls(command, AccessLevel(m[1]), m[2])
+
+
+class InvocationError(CommandError):
+    message: str
+
+
+COM_ERRORS = {
+    "InsufficientAccess": InsufficientAccess,
+    "AuthError": AuthError,
+    "AccessLevelExceeded": AccessLevelExceeded,
+}
 
 
 class ReplyError(IOError):
@@ -194,10 +263,12 @@ class QS_IS_Protocol(asyncio.Protocol):
             import random
 
             commref = str(random.randint(1, 2 ** 30)).encode()
-            comm = commref + b" " + comm
-        self.transport.write((comm + b"\n"))
-        log.debug(f"Sent command {comm!r}")
-        if m := re.match(rb"^(\d+) ", comm):
+            comm_with_ref = commref + b" " + comm
+        else:
+            comm_with_ref = comm
+        self.transport.write((comm_with_ref + b"\n"))
+        log.debug(f"Sent command {comm_with_ref!r}")
+        if m := re.match(rb"^(\d+) ", comm_with_ref):
             commref = m[1]
         else:
             commref = comm
@@ -225,10 +296,10 @@ class QS_IS_Protocol(asyncio.Protocol):
         if state == b"OK":
             return msg
         elif state == b"ERRor":
-            raise CommandError(
+            raise CommandError.parse(
                 comm.decode(), commref.decode(), msg.decode().rstrip()
             ) from None
         else:  # pragma: no cover
-            raise CommandError(
+            raise CommandError.parse(
                 comm.decode(), commref.decode(), (state + b" " + msg).decode()
             )

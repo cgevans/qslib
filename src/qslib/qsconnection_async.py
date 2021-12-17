@@ -8,7 +8,7 @@ import base64
 from .qs_is_protocol import CommandError, Error, QS_IS_Protocol
 from .parser import ArgList
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 
 import qslib.data as data
@@ -40,11 +40,11 @@ def _parse_argstring(argstring: str) -> Dict[str, str]:
     return args
 
 
-class AlreadyCollectedError(BaseException):
+class AlreadyCollectedError(Exception):
     ...
 
 
-class RunNotFinishedError(BaseException):
+class RunNotFinishedError(Exception):
     ...
 
 
@@ -311,14 +311,22 @@ class QSConnectionAsync:
         command = command.rstrip()
 
         _validate_command_format(command)
-        return (
-            await self._protocol.run_command(
-                command.rstrip().encode(), just_ack=just_ack
-            )
-        ).rstrip()
+        try:
+            return (
+                await self._protocol.run_command(
+                    command.rstrip().encode(), just_ack=just_ack
+                )
+            ).rstrip()
+        except CommandError as e:
+            e.__traceback__ = None
+            raise e
 
     async def run_command(self, command: str, just_ack: bool = False) -> str:
-        return (await self.run_command_to_bytes(command, just_ack)).decode()
+        try:
+            return (await self.run_command_to_bytes(command, just_ack)).decode()
+        except CommandError as e:
+            e.__traceback__ = None
+            raise e
 
     async def authenticate(self, password: str) -> None:
         challenge_key = await self.run_command("CHAL?")

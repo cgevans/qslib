@@ -14,6 +14,8 @@ from typing import Any, Generator, IO, Literal, overload
 import nest_asyncio
 import paramiko.pkey
 
+from qslib.qs_is_protocol import CommandError
+
 from .qsconnection_async import QSConnectionAsync
 from .tcprotocol import Protocol
 from .util import _unwrap_tags
@@ -207,7 +209,11 @@ class Machine:
         if self._qsc is None:
             raise ConnectionError(f"Not connected to {self.host}.")
         loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self._qsc.run_command(command))
+        try:
+            return loop.run_until_complete(self._qsc.run_command(command))
+        except CommandError as e:
+            e.__traceback__ = None
+            raise e
 
     def run_command_to_ack(self, command: str) -> str:
         """Run an SCPI command, and return the response as a string.
@@ -232,7 +238,13 @@ class Machine:
         if self._qsc is None:
             raise ConnectionError(f"Not connected to {self.host}")
         loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self._qsc.run_command(command, just_ack=True))
+        try:
+            return loop.run_until_complete(
+                self._qsc.run_command(command, just_ack=True)
+            )
+        except CommandError as e:
+            e.__traceback__ = None
+            raise e
 
     def define_protocol(self, protocol: Protocol) -> None:
         """Send a protocol to the machine. This *is not related* to a particular
