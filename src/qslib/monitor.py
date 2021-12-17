@@ -745,7 +745,7 @@ class Collector:
             except Exception as e:
                 if self.config.machine.retries - successive_failures > 0:
                     log.error(
-                        f"Error {e}, retrying {self.config.machine.retries-successive_failures} times"  # noqa: E501
+                        f"Error {repr(e)}, retrying {self.config.machine.retries-successive_failures} times"  # noqa: E501
                     )
                     successive_failures += 1
                 else:
