@@ -22,9 +22,19 @@ pbool = make_multi_keyword("true True", True) | make_multi_keyword("False false"
 qs = pp.quotedString
 qs.setParseAction(lambda toks: toks[0][1:-1])
 
+quote_content = pp.Word(pp.pyparsing_unicode.alphanums + "._")
+quote_open = pp.Combine("<" + quote_content + ">")
+quote_close = pp.Combine("</" + pp.matchPreviousExpr(quote_content) + ">")
+
 optvalue = (
     (pbool + fwe)
     | (ppc.number + fwe)
+    | (
+        quote_open.suppress()
+        + pp.Word(pp.pyparsing_unicode.alphanums + "_.,-")
+        + quote_close.suppress()
+        + fwe
+    )
     | (pp.Word(pp.pyparsing_unicode.alphanums + "_.,-") + fwe)
     | (qs + fwe)
 ).setParseAction(lambda toks: toks[0])
@@ -59,10 +69,6 @@ class ArgList:
         self.opts = v["arglist"]["opts"]
         self.args = v["arglist"]["args"]
 
-
-quote_content = pp.Word(pp.pyparsing_unicode.alphanums + "._")
-quote_open = pp.Combine("<" + quote_content + ">")
-quote_close = pp.Combine("</" + pp.matchPreviousExpr(quote_content) + ">")
 
 mlf = pp.Forward()
 
