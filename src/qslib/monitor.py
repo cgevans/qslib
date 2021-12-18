@@ -99,7 +99,7 @@ class RunState:
         if name == "-":
             self.name = None
         else:
-            self.name = name
+            self.name = re.sub(r"(<([\w.]+)>)?([^<]+)(</[\w.]+>)?", r"\3", name)
         stage = runmsg.opts["Stage"]
         if stage == "-":
             self.stage = None
