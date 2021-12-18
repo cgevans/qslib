@@ -9,6 +9,7 @@ from pyparsing import pyparsing_common as ppc
 we = (pp.White(" \t\r") | pp.StringEnd() | pp.FollowedBy("\n")).suppress()
 nl = (pp.Literal("\n") + pp.Optional(pp.White(" \t\r"))).suppress().setName("<newline>")
 fwe = pp.FollowedBy(we).suppress()
+fweq = pp.FollowedBy(we | "<").suppress()
 
 
 def make_multi_keyword(kwd_str, kwd_value):
@@ -25,18 +26,20 @@ qs.setParseAction(lambda toks: toks[0][1:-1])
 quote_content = pp.Word(pp.pyparsing_unicode.alphanums + "._")
 quote_open = pp.Combine("<" + quote_content + ">")
 quote_close = pp.Combine("</" + pp.matchPreviousExpr(quote_content) + ">")
+quote_close_any = pp.Combine("</" + quote_content + ">")
+
 
 optvalue = (
-    (pbool + fwe)
-    | (ppc.number + fwe)
+    (pbool + fweq)
+    | (ppc.number + fweq)
     | (
         quote_open.suppress()
         + pp.Word(pp.pyparsing_unicode.alphanums + "_.,-")
         + quote_close.suppress()
-        + fwe
+        + fweq
     )
-    | (pp.Word(pp.pyparsing_unicode.alphanums + "_.,-") + fwe)
-    | (qs + fwe)
+    | (pp.Word(pp.pyparsing_unicode.alphanums + "_.,-") + fweq)
+    | (qs + fweq)
 ).setParseAction(lambda toks: toks[0])
 
 optkey = ppc.identifier("key")
@@ -52,7 +55,8 @@ arg = optvalue.setResultsName("arg", listAllMatches=True)
 
 arglist = (
     pp.delimitedList(
-        optpair | (quote_open.suppress() + optpair + quote_close.suppress()) | arg, we
+        optpair | (quote_open.suppress() + optpair + quote_close.suppress()) | arg,
+        we,
     )
 )("arglist")
 arglist.setParseAction(
