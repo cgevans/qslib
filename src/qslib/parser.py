@@ -50,7 +50,11 @@ optpair = (
 
 arg = optvalue.setResultsName("arg", listAllMatches=True)
 
-arglist = (pp.delimitedList(optpair | arg, we))("arglist")
+arglist = (
+    pp.delimitedList(
+        optpair | (quote_open.suppress() + optpair + quote_close.suppress()) | arg, we
+    )
+)("arglist")
 arglist.setParseAction(
     lambda toks: {
         "opts": {k: v for k, v in toks.get("opt", [])},
