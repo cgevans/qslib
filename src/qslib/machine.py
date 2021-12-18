@@ -108,6 +108,7 @@ class Machine:
     tunnel_host: str | tuple[str, int] | None = None
     tunnel_user: str | None = None
     tunnel_key: str | "paramiko.pkey.PKey" | None = None
+    _qsc_real: QSConnectionAsync | None
 
     @property
     def _qsc(self) -> QSConnectionAsync:
