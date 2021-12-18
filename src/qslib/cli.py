@@ -2,6 +2,12 @@ from __future__ import annotations
 import click
 from pathlib import Path
 from qslib.common import Experiment, Machine
+from qslib.machine import AccessLevel
+from qslib.qs_is_protocol import InsufficientAccess, AuthError, AccessLevelExceeded
+import click
+from dataclasses import dataclass
+import time
+import sys
 
 
 @click.group()
@@ -288,6 +294,237 @@ def copy_stored(
     with m:
         exp = Experiment.from_machine_storage(m, experiment)
         exp.save_file_without_changes(output)
+
+
+@dataclass
+class OutP:
+    level: bool
+
+    def verbose(self, s: str):
+        if self.level:
+            click.secho(s, fg="blue")
+
+    def out(self, s: str):
+        click.secho(s, nl=False)
+
+    def good(self, s: str):
+        click.secho(s, fg="green")
+
+    def warn(self, s: str):
+        click.secho(s, fg="yellow")
+
+    def error(self, s: str):
+        click.secho(s, fg="red")
+
+
+class NoNewAccess(BaseException):
+    ...
+
+
+class NoAccess(BaseException):
+    ...
+
+
+def set_default_access(m: Machine, p: OutP):
+    limitcontexts = m.run_command("CONF* access accessLimits").split()
+
+    p.verbose("Current access:")
+    for lc in limitcontexts:
+        al = m.run_command(f"CONF? access accessLimits {lc}")
+        p.verbose(f"\t{lc}: {al}")
+
+    p.out("Setting default (passwordless) maximum access level to CONTROLLER: ")
+    m.run_command("CONF= access accessLimits default CONTROLLER")
+    m.run_command("CONF= access accessLimits eth0 CONTROLLER")
+    p.good("done.")
+
+
+def add_controller_password(m: Machine, p: OutP, newpass: str):
+    p.verbose("Current password information:")
+    passwords = m.run_command("CONF* access secrets").split()
+    for password in passwords:
+        pp = m.run_command(f"CONF? access secrets {password}")
+        p.verbose(f"\t{password} : {pp}")
+    p.out("Adding controller password: ")
+    m.run_command(f"CONF= -createMissing access secrets {newpass} CONTROLLER")
+    p.good("done.")
+
+
+def add_administrator_password(m: Machine, p: OutP, newpass: str):
+    p.verbose("Current password information:")
+    passwords = m.run_command("CONF* access secrets").split()
+    for password in passwords:
+        pp = m.run_command(f"CONF? access secrets {password}")
+        p.verbose(f"\t{password} : {pp}")
+    p.out("Adding administrator password: ")
+    m.run_command(f"CONF= -createMissing access secrets {newpass} ADMINISTRATOR")
+    p.good("done.")
+
+
+def start_ssh_backup(m: Machine, p: OutP, sshpass: str):
+    p.out("Starting SSH in case of failure: ")
+    m.run_command(f"SYST:EXEC 'dropbear -Y appletini &'")
+    psout = m.run_command("SYST:EXEC -verbose 'ps'")
+    assert "dropbear" in psout
+    p.good("done.")
+    p.warn(
+        f"If procedure fails, SSH is running with user root and password {sshpass}"
+        " (but note options required to connect)."
+    )
+
+
+def check_access(
+    host: str,
+    p: OutP,
+    controller_pw: str | None,
+    admin_pw: str | None,
+    default_controller: bool,
+):
+    errs = []
+    if controller_pw is not None:
+        p.out("Checking controller password (machine LED should turn yellow): ")
+        m = Machine(
+            host, max_access_level=AccessLevel.Controller, password=controller_pw
+        )
+        try:
+            with m.ensured_connection(AccessLevel.Controller):
+                m.run_command("LED:YELLOWON")
+                time.sleep(2)
+                m.run_command("LED:BLUEON")
+            p.good("succeeded.")
+        except AuthError as e:
+            p.error("Controller password was not set successfully.")
+            errs.append(e)
+
+    if admin_pw is not None:
+        p.out("Checking administrator password (machine LED should turn red): ")
+        m = Machine(host, max_access_level=AccessLevel.Administrator, password=admin_pw)
+        try:
+            with m.ensured_connection(AccessLevel.Administrator):
+                m.run_command("LED:REDON")
+                time.sleep(2)
+                m.run_command("LED:BLUEON")
+            p.good("succeeded.")
+        except AuthError as e:
+            p.error("Administrator password was not set successfully.")
+            errs.append(e)
+
+    if default_controller:
+        p.out(
+            "Checking passwordless controller access (machine LED should turn green): "
+        )
+        m = Machine(host, max_access_level=AccessLevel.Controller)
+        try:
+            with m.ensured_connection(AccessLevel.Controller):
+                m.run_command("LED:GREENON")
+                time.sleep(2)
+                m.run_command("LED:BLUEON")
+            p.good("succeeded.")
+        except AccessLevelExceeded as e:
+            p.error("Setting passwordless controller access failed.")
+            errs.append(e)
+
+    if errs:
+        raise NoNewAccess
+
+
+def stop_ssh_backup(m: Machine, p: OutP):
+    p.out("Stopping SSH: ")
+    m.run_command(f"SYST:EXEC 'killall dropbear'")
+    psout = m.run_command("SYST:EXEC -verbose 'ps'")
+    assert "dropbear" not in psout
+    p.good("done.")
+
+
+def error_ssh(m: Machine, p: OutP):
+    raise NotImplementedError
+
+
+def restart_is(m: Machine, p: OutP):
+    p.out("Restarting zygote on machine: ")
+    with m:
+        with m.at_access(AccessLevel.Controller):
+            try:
+                m.run_command("SYST:EXEC 'killall zygote'")
+            except ConnectionError:
+                p.good("succeeded.")
+            else:
+                p.good("command succeeded.")
+    p.out("Waiting 30 seconds for restart: ")
+    time.sleep(30)
+    p.good("done.")
+    p.out("Checking connection: ")
+    with m:
+        pass
+    p.good("succeeded.")
+
+
+@cli.command()
+@click.argument("host")
+@click.argument("current_password")
+@click.option("-c", "--controller-password", default=None)
+@click.option("-a", "--admin-password", default=None)
+@click.option("-d", "--default-controller/--no-default-controller", default=False)
+@click.option("-v", "--verbose/--no-verbose", default=False)
+def setup_machine(
+    host: str,
+    current_password: str,
+    controller_password: str | None,
+    admin_password: str | None,
+    default_controller: bool,
+    verbose: bool,
+):
+    p = OutP(verbose)
+
+    m = Machine(
+        host, password=current_password, max_access_level=AccessLevel.Controller
+    )
+
+    try:
+        with m.ensured_connection(AccessLevel.Controller):
+            start_ssh_backup(m, p, "emergencypassword")
+            if controller_password:
+                add_controller_password(m, p, controller_password)
+            if admin_password:
+                add_administrator_password(m, p, admin_password)
+            if default_controller:
+                set_default_access(m, p)
+    except AuthError as e:
+        p.error(f"Current password was not valid.")
+        if verbose:
+            p.error(str(e))
+    except InsufficientAccess as e:
+        p.error(
+            f"Current password was valid, but insufficient.  This script needs at least Controller access."
+        )
+        p.error(str(e))
+    restart_is(m, p)
+
+    try:
+        check_access(host, p, controller_password, admin_password, default_controller)
+
+        with m:
+            with m.at_access(AccessLevel.Controller):
+                stop_ssh_backup(m, p)
+    except NoNewAccess:
+        # Do we have *any* access?
+        try:
+            with Machine(
+                host, password=current_password, max_access_level=AccessLevel.Controller
+            ) as m:
+                stop_ssh_backup(m, p)
+        except Exception as e:
+            p.error("Access failed even with old password.")
+            p.error(f"Error was {e}")
+            p.error("Machine can be accessed directly via SSH using:")
+            p.error(
+                f"    ssh root@{host} -p 2222 -o KexAlgorithms=diffie-hellman-group1-sha1"
+                " -o HostKeyAlgorithms='+ssh-rsa'"
+            )
+            p.error(f"Password is 'emergencypassword'.")
+            p.error("DO NOT REBOOT THE MACHINE or SSH access will be lost.")
+        else:
+            p.error("New access failed, but old password still works.")
 
 
 if __name__ == "__main__":

@@ -1697,7 +1697,10 @@ table, th, td {{
                 self._protocol_from_qslib = None
 
             if (x := qstcxml.findtext("MachineConnection")) and not self.machine:
-                self.machine = Machine(**toml.loads(x))
+                try:
+                    self.machine = Machine(**toml.loads(x))
+                except Exception:
+                    pass
         try:
             self._protocol_from_xml = Protocol.from_xml(exml.getroot())
         except Exception as e:
