@@ -606,7 +606,7 @@ class Machine:
         if out == "-":
             return None
         else:
-            return out
+            return re.sub(r"(<([\w.]+)>)?([^<]+)(</[\w.]+>)?", r"\3", out)
 
     @contextmanager
     def at_access(
