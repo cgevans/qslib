@@ -102,13 +102,21 @@ class Machine:
 
     host: str
     password: str | None = None
-    max_access_level: AccessLevel | str = AccessLevel.Observer
+    max_access_level: AccessLevel = AccessLevel.Observer
     port: int = 7000
-    _initial_access_level: AccessLevel | str = AccessLevel.Observer
-    tunnel_host: str | tuple[str, int] | None = None
-    tunnel_user: str | None = None
-    tunnel_key: str | "paramiko.pkey.PKey" | None = None
-    _qsc_real: QSConnectionAsync | None
+    _initial_access_level: AccessLevel = AccessLevel.Observer
+    _qsc_real: QSConnectionAsync | None = None
+
+    def asdict(self, password: bool = False) -> dict[str, str | int]:
+        d: dict[str, str | int] = {"host": self.host}
+        if self.password and password:
+            d["password"] = self.password
+        if self.max_access_level != Machine.max_access_level:
+            d["max_access_level"] = self.max_access_level.value
+        if self.port != Machine.port:
+            d["port"] = self.port
+
+        return d
 
     @property
     def _qsc(self) -> QSConnectionAsync:
@@ -128,9 +136,6 @@ class Machine:
         max_access_level: AccessLevel | str = AccessLevel.Observer,
         port: int = 7000,
         connect_now: bool = False,
-        tunnel_host: str | tuple[str, int] | None = None,
-        tunnel_user: str | None = None,
-        tunnel_key: str | "paramiko.pkey.PKey" | None = None,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
@@ -138,48 +143,26 @@ class Machine:
         self.password = password
         self.max_access_level = AccessLevel(max_access_level)
         self._initial_access_level = AccessLevel(_initial_access_level)
-        self.tunnel_host = tunnel_host
-        self.tunnel_user = tunnel_user
-        self.tunnel_key = tunnel_key
-        self._tunnel: SSHTunnelForwarder | None = None
         self._qsc_real = None
 
         if connect_now:
             self.connect()
 
-    @property
-    def _use_tunnel(self) -> bool:
-        return self.tunnel_host is not None
-
     def connect(self) -> None:
         """Open the connection."""
         loop = asyncio.get_event_loop()
 
-        if self._use_tunnel:
-            self._tunnel = SSHTunnelForwarder(
-                self.tunnel_host,
-                ssh_username=self.tunnel_user,
-                ssh_pkey=self.tunnel_key,
-                remote_bind_address=(self.host, self.port),
-            )
-            self._tunnel.start()
-            port = self._tunnel.local_bind_port
-            host = "localhost"
-        else:
-            port = self.port
-            host = self.host
-
         self._qsc = QSConnectionAsync(
-            host,
-            port,
+            self.host,
+            self.port,
             password=self.password,
-            initial_access_level=AccessLevel(self._initial_access_level),
+            initial_access_level=self._initial_access_level,
         )
         loop.run_until_complete(self._qsc.connect())
 
     @property
     def connected(self) -> bool:
-        if self._qsc_real is None:
+        if (not hasattr(self, "_qsc_real")) or (self._qsc_real is None):
             return False
         else:
             return self._qsc.connected
@@ -428,7 +411,9 @@ class Machine:
         return loop.run_until_complete(self._qsc._protocol.run_command(command))
 
     def _get_log_from_byte(self, name: str | bytes, byte: int) -> bytes:
-        logfuture: Future[tuple[bytes, bytes, None]] = asyncio.Future()
+        logfuture: Future[
+            tuple[bytes, bytes, Future[tuple[bytes, bytes, None]] | None]
+        ] = asyncio.Future()
         if self._qsc is None:
             raise Exception
         if isinstance(name, bytes):

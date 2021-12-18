@@ -1673,8 +1673,7 @@ table, th, td {{
 
             # Make new machine with stripped password:
             if self.machine:
-                m2d = dataclasses.asdict(self.machine)
-                m2d["password"] = None
+                m2d = self.machine.asdict(password=False)
                 ET.SubElement(qstcxml.getroot(), "MachineConnection").text = toml.dumps(
                     m2d
                 )
