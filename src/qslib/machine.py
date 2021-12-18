@@ -538,10 +538,6 @@ class Machine:
         loop.run_until_complete(self._qsc.disconnect())
         self._qsc_real = None
 
-        if self._tunnel is not None:
-            self._tunnel.stop()
-            self._tunnel = None
-
     def abort_current_run(self) -> None:
         """Abort (stop immediately) the current run."""
         self.run_command("AbortRun ${RunTitle}")
