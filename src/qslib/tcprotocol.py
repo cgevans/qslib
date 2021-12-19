@@ -19,7 +19,6 @@ from typing import (
 )
 
 from .base import RunStatus
-import matplotlib.pyplot as plt
 import math
 from . import __version__
 
@@ -200,8 +199,8 @@ class Stage(XMLable):
     def hold_for(
         cls: Type[Stage],
         temps: float | Sequence[float],
-        total_time: int,
-        step_time: int,
+        total_time: int | pint.Quantity,
+        step_time: int | pint.Quantity,
         collect: bool = False,
         filters: Sequence[str | FilterSet] = tuple(),
     ):
@@ -592,6 +591,9 @@ class Protocol(XMLable):
         self, ax: Optional["plt.Axes"] = None
     ) -> Tuple["plt.Axes", Tuple[List["plt.Line2D"], List["plt.Line2D"]]]:
         "A plot of the temperature and data collection points."
+
+        import matplotlib.pyplot as plt
+
         #    try:
 
         #    except ModuleNotFoundError:

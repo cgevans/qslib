@@ -1,6 +1,7 @@
 from pathlib import Path
 import pytest
 from qslib.common import Experiment
+from qslib.normalization import NormToMaxPerWell, NormToMeanPerWell
 
 
 @pytest.fixture(scope="module")
@@ -20,7 +21,7 @@ def exp_reloaded(
 def test_props(exp: Experiment, exp_reloaded: Experiment):
     assert exp.name == "2020-02-20_170706"
 
-    assert exp.summary() == str(exp)
+    assert exp.info() == str(exp)
 
 
 def test_reload(exp: Experiment, exp_reloaded: Experiment):
@@ -31,6 +32,12 @@ def test_reload(exp: Experiment, exp_reloaded: Experiment):
 
 
 def test_plots(exp: Experiment):
-    exp.plot_over_time(samples="Sample 1", temperatures="axes")
+    exp.plot_over_time(
+        samples="Sample 1", temperatures="axes", normalization=NormToMeanPerWell()
+    )
     exp.plot_anneal_melt(samples="Sample 1")
     exp.protocol.tcplot()
+
+
+def test_rawquant(exp: Experiment):
+    exp.rawdata.loc[:, :]
