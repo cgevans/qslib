@@ -23,7 +23,7 @@ pbool = make_multi_keyword("true True", True) | make_multi_keyword("False false"
 qs = pp.quotedString
 qs.setParseAction(lambda toks: toks[0][1:-1])
 
-quote_content = pp.Word(pp.pyparsing_unicode.alphanums + "._")
+quote_content = pp.Word(pp.alphanums + "._")
 quote_open = pp.Combine("<" + quote_content + ">")
 quote_close = pp.Combine("</" + pp.matchPreviousExpr(quote_content) + ">")
 quote_close_any = pp.Combine("</" + quote_content + ">")
@@ -32,13 +32,8 @@ quote_close_any = pp.Combine("</" + quote_content + ">")
 optvalue = (
     (pbool + fweq)
     | (ppc.number + fweq)
-    | (
-        quote_open.suppress()
-        + pp.Word(pp.pyparsing_unicode.alphanums + "_.,-")
-        + quote_close.suppress()
-        + fweq
-    )
-    | (pp.Word(pp.pyparsing_unicode.alphanums + "_.,-") + fweq)
+    | (quote_open.suppress() + pp.Regex(r"[^ \t\n<]+") + quote_close.suppress() + fweq)
+    | (pp.Regex(r"[^ \t\n<\"']+") + fweq)
     | (qs + fweq)
 ).setParseAction(lambda toks: toks[0])
 

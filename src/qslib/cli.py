@@ -134,7 +134,7 @@ def info(experiment: str) -> None:
 
     exp = Experiment.from_file(experiment)
 
-    click.echo(exp.summary())
+    click.echo(exp.info())
 
 
 @cli.command()
@@ -153,8 +153,6 @@ def run(experiment: str, machine: str, tunnel_host: str, tunnel_user: str) -> No
     m = Machine(
         machine,
         max_access_level="Controller",
-        tunnel_host=tunnel_host,
-        tunnel_user=tunnel_user,
     )
 
     with m:
@@ -171,8 +169,6 @@ def machine_power(machine: str, tunnel_host: str, tunnel_user: str, state: str) 
     m = Machine(
         machine,
         max_access_level="Controller",
-        tunnel_host=tunnel_host,
-        tunnel_user=tunnel_user,
     )
 
     with m:
@@ -198,8 +194,6 @@ def machine_status(machine: str, tunnel_host: str, tunnel_user: str) -> None:
     m = Machine(
         machine,
         max_access_level="Observer",
-        tunnel_host=tunnel_host,
-        tunnel_user=tunnel_user,
     )
 
     m.connect()
@@ -258,8 +252,6 @@ def list_stored(machine: str, tunnel_host: str, tunnel_user: str) -> None:
     m = Machine(
         machine,
         max_access_level="Observer",
-        tunnel_host=tunnel_host,
-        tunnel_user=tunnel_user,
     )
 
     with m:
@@ -273,7 +265,7 @@ def list_stored(machine: str, tunnel_host: str, tunnel_user: str) -> None:
 @click.option("-u", "--tunnel-user")
 @click.argument("experiment")
 @click.option("-o", "--output", type=click.Path())
-def copy_stored(
+def copy(
     machine: str,
     tunnel_host: str,
     tunnel_user: str,
@@ -284,15 +276,13 @@ def copy_stored(
     m = Machine(
         machine,
         max_access_level="Observer",
-        tunnel_host=tunnel_host,
-        tunnel_user=tunnel_user,
     )
 
     if output is None:
         output = experiment
 
     with m:
-        exp = Experiment.from_machine_storage(m, experiment)
+        exp = Experiment.from_machine(m, experiment)
         exp.save_file_without_changes(output)
 
 

@@ -23,7 +23,6 @@ from pandas.core.base import DataError
 
 from .rawquant_compat import _fdc_to_rawdata
 
-import matplotlib.pyplot as plt
 
 import pandas as pd
 import toml as toml
@@ -54,6 +53,9 @@ log = logging.getLogger(__name__)
 
 class AlreadyExistsError(ValueError):
     pass
+
+
+MachineReference = Union[str, Machine]
 
 
 @dataclass
@@ -299,6 +301,9 @@ class Experiment:
             raise ValueError("Experiment data is not available")
 
     def summary(self, format: str = "markdown", plate: str = "list") -> str:
+        return self.info(format, plate)
+
+    def info(self, format: str = "markdown", plate: str = "list") -> str:
         """Generate a summary of the experiment, with some formatting configuation. `str()`
         uses this with default parameters.
 
@@ -333,7 +338,7 @@ class Experiment:
         return s
 
     def info_html(self) -> str:
-        summary = self.summary(plate="table")
+        summary = self.info(plate="table")
 
         import matplotlib.pyplot as plt
 
@@ -386,13 +391,13 @@ table, th, td {{
         return s
 
     def __str__(self) -> str:
-        return self.summary()
+        return self.info()
 
     def _repr_markdown_(self) -> str:
         if len(self.plate_setup.sample_wells) <= 12:
-            return self.summary()
+            return self.info()
         else:
-            return self.summary(plate="table")
+            return self.info(plate="table")
 
     @property
     def runtitle_safe(self) -> str:
@@ -416,7 +421,7 @@ table, th, td {{
 
     def _ensure_machine(
         self,
-        machine: Machine | str | None,
+        machine: MachineReference | None,
         password: str | None = None,
         needed_level: AccessLevel = AccessLevel.Observer,
     ) -> Machine:
@@ -443,24 +448,21 @@ table, th, td {{
             raise NotRunningError(machine, self.runtitle_safe, crt)
         return crt
 
-    def _populate_folder(self) -> None:
-        machine = self._ensure_machine(None)
+    def _populate_folder(self, machine: Machine) -> None:
         tempzip = io.BytesIO()
         self.save_file(tempzip)
         exppath = self.runtitle_safe + "/"
-        with machine.at_access(AccessLevel.Controller):
-            machine.run_command_bytes(
-                b"EXP:ZIPWRITE "
-                + exppath.encode()
-                + b" <message>\n"
-                + base64.encodebytes(tempzip.getvalue())
-                + b"</message>\n"
-            )
+        machine.run_command_bytes(
+            b"EXP:ZIPWRITE "
+            + exppath.encode()
+            + b" <message>\n"
+            + base64.encodebytes(tempzip.getvalue())
+            + b"</message>\n"
+        )
 
     def run(
         self,
-        machine: Machine | str | None = None,
-        password: str | None = None,
+        machine: MachineReference | None = None,
         require_exclusive: bool = True,
     ) -> None:
         """Load the run onto a machine, and start it.
@@ -477,9 +479,7 @@ table, th, td {{
         AlreadyExistsError
             The machine already has a folder for this run in its working runs folder.
         """
-        machine = self._ensure_machine(
-            machine, password, needed_level=AccessLevel.Controller
-        )
+        machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         log.info(f"Attempting to start {self.runtitle_safe} on {machine.host}.")
 
         with machine.ensured_connection():
@@ -504,7 +504,7 @@ table, th, td {{
                 machine.run_command(f"EXP:NEW {self.runtitle_safe} {TEMPLATE_NAME}")
 
                 log.debug(f"Populating experiment folder.")
-                self._populate_folder()
+                self._populate_folder(machine)
 
                 log.debug(f"Sending protocol.")
                 machine.define_protocol(self.protocol)
@@ -517,17 +517,7 @@ table, th, td {{
                 )  # TODO: user, cover
                 log.info(f"Run {self.runtitle_safe} started on {machine.host}.")
 
-    def create_new_copy(self) -> Experiment:
-        """Create a copy of the experiment, with data and run information removed, suitable
-        for rerunning.
-
-        Returns
-        -------
-        Experiment
-        """
-        raise NotImplementedError
-
-    def pause_now(self, machine: Machine | None = None) -> None:
+    def pause_now(self, machine: MachineReference | None = None) -> None:
         """
         If this experiment is running, pause it (immediately).
 
@@ -538,13 +528,12 @@ table, th, td {{
         NotRunningError
             the experiment is not currently running
         """
-        machine = self._ensure_machine(machine)
-        with machine.ensured_connection():
+        machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
+        with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
-            with machine.at_access(AccessLevel.Controller, exclusive=True):
-                machine.pause_current_run()
+            machine.pause_current_run()
 
-    def resume(self, machine: Machine | None = None) -> None:
+    def resume(self, machine: MachineReference | None = None) -> None:
         """
         If this experiment is running, resume it.
 
@@ -555,13 +544,12 @@ table, th, td {{
         NotRunningError
             the experiment is not currently running
         """
-        machine = self._ensure_machine(machine)
-        with machine.ensured_connection():
+        machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
+        with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
-            with machine.at_access(AccessLevel.Controller, exclusive=True):
-                machine.resume_current_run()
+            machine.resume_current_run()
 
-    def stop(self, machine: Machine | None = None) -> None:
+    def stop(self, machine: MachineReference | None = None) -> None:
         """
         If this experiment is running, stop it after the end of the current cycle.
 
@@ -572,13 +560,12 @@ table, th, td {{
         NotRunningError
             the experiment is not currently running
         """
-        machine = self._ensure_machine(machine)
-        with machine.ensured_connection():
+        machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
+        with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
-            with machine.at_access(AccessLevel.Controller, exclusive=True):
-                machine.stop_current_run()
+            machine.stop_current_run()
 
-    def abort(self, machine: Machine | None = None) -> None:
+    def abort(self, machine: MachineReference | None = None) -> None:
         """
         If this experiment is running, abort it, stopping it immediately.
 
@@ -590,12 +577,11 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        with machine.ensured_connection():
+        with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
-            with machine.at_access(AccessLevel.Controller, exclusive=True):
-                machine.abort_current_run()
+            machine.abort_current_run()
 
-    def get_status(self, machine: Machine | None = None) -> RunStatus:
+    def get_status(self, machine: MachineReference | None = None) -> RunStatus:
         """
         Return the status of the experiment, if currently running.
 
@@ -607,12 +593,12 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        with machine.ensured_connection():
+        with machine.ensured_connection(AccessLevel.Observer):
             return self._ensure_running(machine)
 
     def sync_from_machine(
         self,
-        machine: Machine | None = None,
+        machine: MachineReference | None = None,
         log_method: Literal["copy", "eval"] = "eval",
     ) -> None:
         """
@@ -621,7 +607,7 @@ table, th, td {{
         """
         machine = self._ensure_machine(machine)
 
-        with machine.ensured_connection():
+        with machine.ensured_connection(AccessLevel.Observer):
             # Get a list of all the files in the experiment folder
             machine_files = machine.list_files(
                 f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True
@@ -687,7 +673,10 @@ table, th, td {{
             self._update_from_files()
 
     def change_protocol(
-        self, new_protocol: Protocol, machine: Machine | None = None
+        self,
+        new_protocol: Protocol,
+        machine: MachineReference | None = None,
+        force: bool = False,
     ) -> None:
         """
         For a running experiment and an updated protocol, check compatibility
@@ -714,7 +703,8 @@ table, th, td {{
         """
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         with machine.ensured_connection(AccessLevel.Controller):
-            self._ensure_running(machine)
+            if not force:
+                self._ensure_running(machine)
 
             runstatus = machine.run_status()
 
@@ -725,8 +715,9 @@ table, th, td {{
             # if machine_proto != self.protocol:
             #    raise ValueError("Machine and experiment protocols differ.")
 
-            # Check compatibility of changes.
-            machine_proto.check_compatible(new_protocol, runstatus)
+            if not force:
+                # Check compatibility of changes.
+                machine_proto.check_compatible(new_protocol, runstatus)
 
             new_protocol.name = machine_proto.name
             new_protocol.volume = machine_proto.volume
@@ -1475,7 +1466,7 @@ table, th, td {{
         return exp
 
     @classmethod
-    def from_running(cls, machine: Machine) -> "Experiment":
+    def from_running(cls, machine: MachineReference) -> "Experiment":
         """Create an experiment from the one currently running on a machine.
 
         Parameters
@@ -1490,22 +1481,25 @@ table, th, td {{
         """
         exp = cls(_create_xml=False)
 
-        crt = machine.current_run_name
+        machine = exp._ensure_machine(machine)
 
-        if not crt:
-            raise ValueError("Nothing is currently running.")
+        with machine.ensured_connection():
+            crt = machine.current_run_name
 
-        z = machine.read_dir_as_zip(crt, leaf="EXP")
+            if not crt:
+                raise ValueError("Nothing is currently running.")
 
-        z.extractall(exp._dir_base)
+            z = machine.read_dir_as_zip(crt, leaf="EXP")
 
-        exp._update_from_files()
+            z.extractall(exp._dir_base)
+
+            exp._update_from_files()
 
         return exp
 
     @classmethod
     def from_uncollected(
-        cls, machine: Machine, name: str, move: bool = False
+        cls, machine: MachineReference, name: str, move: bool = False
     ) -> Experiment:
         """Create an experiment from the uncollected (not yet compressed)
         storage.
@@ -1525,24 +1519,27 @@ table, th, td {{
         """
         exp = cls(_create_xml=False)
 
-        crt = name
+        machine = exp._ensure_machine(machine)
 
-        if move:
-            raise NotImplementedError
+        with machine.ensured_connection():
+            crt = name
 
-        if not crt:
-            raise ValueError("Nothing is currently running.")
+            if move:
+                raise NotImplementedError
 
-        z = machine.read_dir_as_zip(crt, leaf="EXP")
+            if not crt:
+                raise ValueError("Nothing is currently running.")
 
-        z.extractall(exp._dir_base)
+            z = machine.read_dir_as_zip(crt, leaf="EXP")
 
-        exp._update_from_files()
+            z.extractall(exp._dir_base)
+
+            exp._update_from_files()
 
         return exp
 
     @classmethod
-    def from_machine_storage(cls, machine: Machine, name: str) -> Experiment:
+    def from_machine_storage(cls, machine: MachineReference, name: str) -> Experiment:
         """Create an experiment from the one currently running on a machine.
 
         Parameters
@@ -1557,21 +1554,24 @@ table, th, td {{
         """
         exp = cls(_create_xml=False)
 
-        try:
-            o = machine.read_file(name + ".eds", context="public_run_complete")
-        except FileNotFoundError:
-            o = machine.read_file(name, context="public_run_complete")
+        machine = exp._ensure_machine(machine)
 
-        z = zipfile.ZipFile(io.BytesIO(o))
+        with machine.ensured_connection():
+            try:
+                o = machine.read_file(name + ".eds", context="public_run_complete")
+            except FileNotFoundError:
+                o = machine.read_file(name, context="public_run_complete")
 
-        z.extractall(exp._dir_base)
+            z = zipfile.ZipFile(io.BytesIO(o))
 
-        exp._update_from_files()
+            z.extractall(exp._dir_base)
+
+            exp._update_from_files()
 
         return exp
 
     @classmethod
-    def from_machine(cls, machine: Machine | str, name: str) -> Experiment:
+    def from_machine(cls, machine: MachineReference, name: str) -> Experiment:
         """Create an experiment from data on a machine, checking the running
         experiment if any, the machine's public_run_complete storage, and the
         machine's uncollected storage.
@@ -1597,7 +1597,7 @@ table, th, td {{
                 exp = cls.from_running(machine)
             elif name in machine.list_runs_in_storage():
                 exp = cls.from_machine_storage(machine, name)
-            elif name in machine.list_files("", verbose=False, leaf="EXP"):
+            elif name + "/" in machine.list_files("", verbose=False, leaf="EXP"):
                 exp = cls.from_uncollected(machine, name)
             else:
                 raise FileNotFoundError(f"Could not find run {name} on {machine.host}.")
@@ -1992,6 +1992,8 @@ table, th, td {{
 
         """
 
+        import matplotlib.pyplot as plt
+
         if filters is None:
             filters = self.all_filters
 
@@ -2175,6 +2177,8 @@ table, th, td {{
             Optional.  A dictionary of keywords passed to fluorescence plot commands.
 
         """
+
+        import matplotlib.pyplot as plt
 
         if filters is None:
             filters = self.all_filters

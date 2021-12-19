@@ -26,14 +26,17 @@ async def test_real_experiment():
         [Stage.stepped_ramp(50, 30, 120, 5, True)], filters=["x1-m4", "x3-m5"]
     )
 
-    exp = Experiment(uuid.uuid1().hex, proto)
+    exp = Experiment(uuid.uuid1().hex, proto, PlateSetup({"s": "A1"}))
 
     m = Machine("localhost", port=7000, max_access_level="Controller")
 
-    with m:
-        exp.run(m)
+    exp.run("localhost")
 
     exp.sync_from_machine(m)
+
+    exp.pause_now()
+
+    await asyncio.sleep(3)
 
     proto2 = Protocol(
         [
@@ -46,7 +49,21 @@ async def test_real_experiment():
     assert proto != proto2
     assert proto != 5
 
-    with m:
-        exp.change_protocol(proto2, m)
+    exp.change_protocol(proto2)
+
+    exp2 = Experiment.from_running("localhost")
+
+    # assert exp.protocol == exp2.protocol
+    assert exp.name == exp2.name
+
+    exp.resume()
+
+    exp.get_status()
+
+    exp.sync_from_machine(m)
 
     await asyncio.sleep(10)
+
+    exp3 = Experiment.from_machine("localhost", exp.name)
+
+    assert exp2.name == exp3.name
