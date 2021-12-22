@@ -12,7 +12,17 @@ import zipfile
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from glob import glob
-from typing import IO, Any, Collection, Literal, Mapping, Sequence, Union, cast
+from typing import (
+    IO,
+    Any,
+    Collection,
+    Literal,
+    Mapping,
+    Sequence,
+    Union,
+    cast,
+    ForwardRef,
+)
 from pathlib import Path
 
 import numpy as np
@@ -128,7 +138,7 @@ class Experiment:
 
     Or from the machine's storage:
 
-    >>> exp = Experiment.from_machine_storage(machine, "experiment.eds")
+    >>> exp = Experiment.from_machine(machine, "experiment")
 
     They can also be created from scratch:
 
@@ -463,7 +473,7 @@ table, th, td {{
     def run(
         self,
         machine: MachineReference | None = None,
-        require_exclusive: bool = True,
+        require_exclusive: bool = False,
     ) -> None:
         """Load the run onto a machine, and start it.
 

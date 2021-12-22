@@ -3,18 +3,18 @@ import pytest
 from qslib.common import Experiment, Machine
 
 
-def test_drawer(monkeypatch):
-    def patchrun(self, value: str) -> str:
-        if value == "CLOSE":
-            return ""
-        else:
-            raise ValueError
+# def test_drawer(monkeypatch):
+#     def patchrun(self, value: str) -> str:
+#         if value == "CLOSE":
+#             return ""
+#         else:
+#             raise ValueError
 
-    monkeypatch.setattr(Machine, "run_command", patchrun)
+#     monkeypatch.setattr(Machine, "run_command", patchrun)
 
-    m = Machine("none")
+#     m = Machine("none")
 
-    m.drawer_close()
+#     m.drawer_close()
 
 
 # @pytest.mark.parametrize(

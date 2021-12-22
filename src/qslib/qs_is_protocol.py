@@ -1,6 +1,7 @@
 from __future__ import annotations
 import asyncio
 from asyncio.futures import Future
+from email import message
 import logging
 import re
 import io
@@ -85,7 +86,15 @@ class AccessLevelExceeded(CommandError):
         return cls(command, AccessLevel(m[1]), m[2])
 
 
+@dataclass
 class InvocationError(CommandError):
+    command: str
+    message: str
+
+
+@dataclass
+class NoMatch(CommandError):
+    command: str
     message: str
 
 
@@ -93,6 +102,8 @@ COM_ERRORS = {
     "InsufficientAccess": InsufficientAccess,
     "AuthError": AuthError,
     "AccessLevelExceeded": AccessLevelExceeded,
+    "InvocationError": InvocationError,
+    "NoMatch": NoMatch,
 }
 
 
