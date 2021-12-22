@@ -5,7 +5,7 @@ from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast, overl
 import hmac
 import re
 import base64
-from .qs_is_protocol import CommandError, Error, QS_IS_Protocol
+from .qs_is_protocol import CommandError, Error, QS_IS_Protocol, NoMatch
 from .parser import ArgList
 import zipfile
 from dataclasses import dataclass, asdict
@@ -341,11 +341,11 @@ class QSConnectionAsync:
     ) -> List[str]:
         try:
             fl = await self.run_command(f"EXP:LIST? {shlex.quote(glob)}")
-        except CommandError as ce:
-            if "[NoMatch]" in ce.response:
-                if allow_nomatch:
-                    return []
-            raise ce from None
+        except NoMatch as ce:
+            if allow_nomatch:
+                return []
+            else:
+                raise ce
         else:
             assert fl.startswith("<quote.reply>")
             assert fl.endswith("</quote.reply>")

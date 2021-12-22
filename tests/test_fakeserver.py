@@ -138,13 +138,13 @@ async def test_connection():
 
         assert m.connected is False
 
-        m = Machine("localhost", port=53533, connect_now=True)
+        m = Machine("localhost", port=53533)
 
         assert m.connected is True
 
-        assert m._qsc is not None
+        assert m._connection is not None
 
-        m._qsc._protocol.waiting_commands.append((b"12345", None))
+        m._connection._protocol.waiting_commands.append((b"12345", None))
 
         with pytest.raises(ConnectionError):
             m.run_command_bytes(b"TESTKILLSERVER")

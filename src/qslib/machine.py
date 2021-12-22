@@ -3,13 +3,14 @@ from __future__ import annotations
 import asyncio
 from asyncio.futures import Future
 import base64
+from functools import wraps
 import io
 import logging
 import re
 import zipfile
 from contextlib import contextmanager
 from dataclasses import astuple, dataclass
-from typing import Any, Generator, IO, Literal, overload
+from typing import Any, Callable, Generator, IO, Literal, overload
 
 import nest_asyncio
 import paramiko.pkey
@@ -28,6 +29,21 @@ nest_asyncio.apply()
 from .base import RunStatus, MachineStatus, AccessLevel
 
 log = logging.getLogger(__name__)
+
+
+def _ensure_connection(level: AccessLevel = AccessLevel.Observer):
+    def wrap(func):
+        @wraps(func)
+        def wrapped(m: Machine, *args, **kwargs):
+            if m.automatic:
+                with m.ensured_connection(level):
+                    return func(m, *args, **kwargs)
+            else:
+                return func(m, *args, **kwargs)
+
+        return wrapped
+
+    return wrap
 
 
 @dataclass(init=False)
@@ -80,19 +96,6 @@ class Machine:
         The port to connect to. (Use the normal SCPI port, not the line-editor connection usually
         on 2323).
 
-    tunnel_host: str or tuple[str, int], optional
-        If set, to a hostname/IP string or (hostname/IP, port) tuple, create an SSH tunnel to the tunnel_host
-        in order to connect to the machine, rather than connecting directly.  This uses paramiko, and
-        will not read your ssh configuration file for any host aliases, but will use your keys if you
-        have an ssh-agent running.
-
-    tunnel_user: str, optional
-        If set, specify the user for the tunnel connection.  If unset, the local user name is used.
-
-    tunnel_key: str or paramiko.pkey.PKey, optional
-        If set, specify the filename of a private key, or the paramiko-loaded key, to use for the tunnel
-        connection.
-
     Examples
     --------
 
@@ -102,75 +105,90 @@ class Machine:
 
     host: str
     password: str | None = None
-    max_access_level: AccessLevel = AccessLevel.Observer
+    automatic: bool = True
+    _max_access_level: AccessLevel = AccessLevel.Controller
     port: int = 7000
     _initial_access_level: AccessLevel = AccessLevel.Observer
-    _qsc_real: QSConnectionAsync | None = None
+    _current_access_level: AccessLevel = AccessLevel.Guest
+    _connection: QSConnectionAsync | None = None
 
     def asdict(self, password: bool = False) -> dict[str, str | int]:
         d: dict[str, str | int] = {"host": self.host}
         if self.password and password:
             d["password"] = self.password
-        if self.max_access_level != Machine.max_access_level:
+        if self.max_access_level != Machine._max_access_level:
             d["max_access_level"] = self.max_access_level.value
         if self.port != Machine.port:
             d["port"] = self.port
+        if self.automatic != Machine.automatic:
+            d["automatic"] = self.automatic
 
         return d
 
     @property
-    def _qsc(self) -> QSConnectionAsync:
-        if self._qsc_real is None:
+    def connection(self) -> QSConnectionAsync:
+        if self._connection is None:
             raise ConnectionError
         else:
-            return self._qsc_real
+            return self._connection
 
-    @_qsc.setter
-    def _qsc(self, v: QSConnectionAsync | None) -> None:
-        self._qsc_real = v
+    @connection.setter
+    def connection(self, v: QSConnectionAsync | None) -> None:
+        self._connection = v
+
+    @property
+    def max_access_level(self) -> AccessLevel:
+        return self._max_access_level
+
+    @max_access_level.setter
+    def max_access_level(self, v: AccessLevel | str):
+        if not isinstance(v, AccessLevel):
+            self._max_access_level = AccessLevel(v)
+        else:
+            self._max_access_level = v
 
     def __init__(
         self,
         host: str,
         password: str | None = None,
-        max_access_level: AccessLevel | str = AccessLevel.Observer,
+        automatic: bool = True,
+        max_access_level: AccessLevel | str = AccessLevel.Controller,
         port: int = 7000,
-        connect_now: bool = False,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
         self.port = port
         self.password = password
-        self.max_access_level = AccessLevel(max_access_level)
+        self.automatic = automatic
+        self.max_access_level = max_access_level
         self._initial_access_level = AccessLevel(_initial_access_level)
-        self._qsc_real = None
-
-        if connect_now:
-            self.connect()
+        self._connection = None
 
     def connect(self) -> None:
         """Open the connection."""
         loop = asyncio.get_event_loop()
 
-        self._qsc = QSConnectionAsync(
+        self.connection = QSConnectionAsync(
             self.host,
             self.port,
             password=self.password,
             initial_access_level=self._initial_access_level,
         )
-        loop.run_until_complete(self._qsc.connect())
+        loop.run_until_complete(self.connection.connect())
+        self._current_access_level = self.get_access_level()[0]
 
     @property
     def connected(self) -> bool:
-        if (not hasattr(self, "_qsc_real")) or (self._qsc_real is None):
+        if (not hasattr(self, "_connection")) or (self._connection is None):
             return False
         else:
-            return self._qsc.connected
+            return self.connection.connected
 
     def __enter__(self) -> Machine:
         self.connect()
         return self
 
+    @_ensure_connection(AccessLevel.Guest)
     def run_command(self, command: str) -> str:
         """Run a SCPI command, and return the response as a string.
         Waits for OK, not just NEXT.
@@ -190,15 +208,16 @@ class Machine:
         CommandError
             Received an Error response.
         """
-        if self._qsc is None:
+        if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}.")
         loop = asyncio.get_event_loop()
         try:
-            return loop.run_until_complete(self._qsc.run_command(command))
+            return loop.run_until_complete(self.connection.run_command(command))
         except CommandError as e:
             e.__traceback__ = None
             raise e
 
+    @_ensure_connection(AccessLevel.Guest)
     def run_command_to_ack(self, command: str) -> str:
         """Run an SCPI command, and return the response as a string.
         Returns after the command is processed (OK or NEXT), but potentially
@@ -219,17 +238,46 @@ class Machine:
         CommandError
             Received an Error response.
         """
-        if self._qsc is None:
+        if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}")
         loop = asyncio.get_event_loop()
         try:
             return loop.run_until_complete(
-                self._qsc.run_command(command, just_ack=True)
+                self.connection.run_command(command, just_ack=True)
             )
         except CommandError as e:
             e.__traceback__ = None
             raise e
 
+    @_ensure_connection(AccessLevel.Guest)
+    def run_command_bytes(self, command: str | bytes) -> bytes:
+        """Run an SCPI command, and return the response as bytes (undecoded).
+        Returns after the command is processed (OK or NEXT), but potentially
+        before it has completed (NEXT).
+
+        Parameters
+        ----------
+        command : str | bytes
+            command to run
+
+        Returns
+        -------
+        bytes
+            Response message (after "OK" or "NEXT", likely "" in latter case)
+
+        Raises
+        ------
+        CommandError
+            Received
+        """
+        if self.connection is None:
+            raise ConnectionError(f"Not connected to {self.host}.")
+        if isinstance(command, str):
+            command = command.encode()
+        loop = asyncio.get_event_loop()
+        return loop.run_until_complete(self.connection._protocol.run_command(command))
+
+    @_ensure_connection(AccessLevel.Controller)
     def define_protocol(self, protocol: Protocol) -> None:
         """Send a protocol to the machine. This *is not related* to a particular
         experiment.  The name on the machine is set by the protocol.
@@ -241,6 +289,7 @@ class Machine:
         """
         self.run_command(f"{protocol.to_command()}")
 
+    @_ensure_connection(AccessLevel.Observer)
     def read_dir_as_zip(self, path: str, leaf: str = "FILE") -> zipfile.ZipFile:
         """Read a directory on the
 
@@ -257,7 +306,7 @@ class Machine:
             the returned zip file
         """
         loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self._qsc.read_dir_as_zip(path, leaf))
+        return loop.run_until_complete(self.connection.read_dir_as_zip(path, leaf))
 
     @overload
     def list_files(
@@ -281,6 +330,7 @@ class Machine:
     ) -> list[str]:
         ...
 
+    @_ensure_connection(AccessLevel.Observer)
     def list_files(
         self,
         path: str,
@@ -292,9 +342,12 @@ class Machine:
 
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(
-            self._qsc.list_files(path, leaf=leaf, verbose=verbose, recursive=recursive)
+            self.connection.list_files(
+                path, leaf=leaf, verbose=verbose, recursive=recursive
+            )
         )
 
+    @_ensure_connection(AccessLevel.Observer)
     def read_file(
         self, path: str, context: str | None = None, leaf: str = "FILE"
     ) -> bytes:
@@ -314,9 +367,10 @@ class Machine:
             returned file
         """
         return asyncio.get_event_loop().run_until_complete(
-            self._qsc.read_file(path, context, leaf)
+            self.connection.read_file(path, context, leaf)
         )
 
+    @_ensure_connection(AccessLevel.Controller)
     def write_file(self, path: str, data: str | bytes) -> None:
         if isinstance(data, str):
             data = data.encode()
@@ -329,6 +383,7 @@ class Machine:
             + b"\n</quote.base64>"
         )
 
+    @_ensure_connection(AccessLevel.Observer)
     def list_runs_in_storage(self) -> list[str]:
         """List runs in machine storage.
 
@@ -345,6 +400,7 @@ class Machine:
             re.sub("^public_run_complete:", "", s)[:-4] for s in a if s.endswith(".eds")
         ]
 
+    @_ensure_connection(AccessLevel.Observer)
     def load_run_from_storage(self, path: str) -> "Experiment":  # type: ignore
         from .experiment import Experiment
 
@@ -352,6 +408,7 @@ class Machine:
         """
         return Experiment.from_machine_storage(self, path)
 
+    @_ensure_connection(AccessLevel.Guest)
     def save_run_from_storage(
         self, machine_path: str, download_path: str | IO[bytes], overwrite: bool = False
     ) -> None:
@@ -383,44 +440,18 @@ class Machine:
             finally:
                 file.close()
 
-    def run_command_bytes(self, command: str | bytes) -> bytes:
-        """Run an SCPI command, and return the response as bytes (undecoded).
-        Returns after the command is processed (OK or NEXT), but potentially
-        before it has completed (NEXT).
-
-        Parameters
-        ----------
-        command : str | bytes
-            command to run
-
-        Returns
-        -------
-        bytes
-            Response message (after "OK" or "NEXT", likely "" in latter case)
-
-        Raises
-        ------
-        CommandError
-            Received
-        """
-        if self._qsc is None:
-            raise ConnectionError(f"Not connected to {self.host}.")
-        if isinstance(command, str):
-            command = command.encode()
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self._qsc._protocol.run_command(command))
-
+    @_ensure_connection(AccessLevel.Observer)
     def _get_log_from_byte(self, name: str | bytes, byte: int) -> bytes:
         logfuture: Future[
             tuple[bytes, bytes, Future[tuple[bytes, bytes, None]] | None]
         ] = asyncio.Future()
-        if self._qsc is None:
+        if self.connection is None:
             raise Exception
         if isinstance(name, bytes):
             name = name.decode()
-        self._qsc._protocol.waiting_commands.append((b"logtransfer", logfuture))
+        self.connection._protocol.waiting_commands.append((b"logtransfer", logfuture))
 
-        logcommand = self._qsc._protocol.run_command(
+        logcommand = self.connection._protocol.run_command(
             f"eval? session.writeQueue.put(('OK logtransfer \\<quote.base64\\>\\\\n' + (lambda x: [x.seek({byte}), __import__('base64').encodestring(x.read())][1])(open('/data/vendor/IS/experiments/{name}/apldbio/sds/messages.log')) + '\\</quote.base64\\>\\\\n', None))",
             ack_timeout=200,
         )
@@ -433,14 +464,17 @@ class Machine:
 
         return base64.decodebytes(logfuture.result()[1][15:-17])
 
+    @_ensure_connection(AccessLevel.Observer)
     def run_status(self) -> RunStatus:
         """Return information on the status of any run."""
         return RunStatus.from_machine(self)
 
+    @_ensure_connection(AccessLevel.Observer)
     def machine_status(self) -> MachineStatus:
         """Return information on the status of the machine."""
         return MachineStatus.from_machine(self)
 
+    @_ensure_connection(AccessLevel.Observer)
     def get_running_protocol(self) -> Protocol:
         p = _unwrap_tags(self.run_command("PROT? ${Protocol}"))
         pn, svs, rm = self.run_command(
@@ -454,7 +488,6 @@ class Machine:
         access_level: AccessLevel | str,
         exclusive: bool = False,
         stealth: bool = False,
-        _log: bool = True,
     ) -> None:
         access_level = AccessLevel(access_level)
 
@@ -467,8 +500,8 @@ class Machine:
         self.run_command(
             f"ACC -stealth={stealth} -exclusive={exclusive} {access_level}"
         )
-        if _log:
-            log.info(f"Took access level {access_level} {exclusive=} {stealth=}")
+        log.debug(f"Took access level {access_level} {exclusive=} {stealth=}")
+        self._current_access_level = access_level
 
     def get_access_level(
         self,
@@ -477,8 +510,20 @@ class Machine:
         m = re.match(r"^-stealth=(\w+) -exclusive=(\w+) (\w+)", ret)
         if m is None:
             raise ValueError(ret)
-        return AccessLevel(m[3]), m[2] == "True", m[1] == "True"
+        level = AccessLevel(m[3])
+        self._current_access_level = level
+        return level, m[2] == "True", m[1] == "True"
 
+    @property
+    def access_level(self) -> AccessLevel:
+        return self._current_access_level
+
+    @access_level.setter
+    @_ensure_connection(AccessLevel.Guest)
+    def access_level(self, v: AccessLevel | str) -> None:
+        self.set_access_level(v)
+
+    @_ensure_connection(AccessLevel.Controller)
     def drawer_open(self) -> None:
         """Open the machine drawer using the OPEN command. This will ensure proper
         cover/drawer operation.  It *will not check run status*, and will open and
@@ -486,29 +531,33 @@ class Machine:
         """
         self.run_command("OPEN")
 
-    def drawer_close(self, lower_cover: bool = False) -> None:
+    @_ensure_connection(AccessLevel.Controller)
+    def drawer_close(self, lower_cover: bool = True) -> None:
         """Close the machine drawer using the OPEN command. This will ensure proper
         cover/drawer operation.  It *will not check run status*, and will open and
         close the drawer during runs and potentially during imaging.
 
-        By default, it will not lower the cover automaticaly after closing, use
-        lower_cover=True to do so.
+        By default, it will lower the cover automaticaly after closing, use
+        lower_cover=False to not do so.
         """
         self.run_command("CLOSE")
         if lower_cover:
             self.cover_lower()
 
     @property
+    @_ensure_connection(AccessLevel.Observer)
     def status(self) -> RunStatus:
         """Return the current status of the run."""
         return RunStatus.from_machine(self)
 
     @property
+    @_ensure_connection(AccessLevel.Observer)
     def drawer_position(self) -> Literal["Open", "Closed", "Unknown"]:
         """Return the drawer position from the DRAW? command."""
         return self.run_command("DRAW?")  # type: ignore
 
     @property
+    @_ensure_connection(AccessLevel.Observer)
     def cover_position(self) -> Literal["Up", "Down", "Unknown"]:
         """Return the cover position from the ENG? command. Note that
         this does not always seem to work."""
@@ -516,6 +565,7 @@ class Machine:
         assert f in ["Up", "Down", "Unknown"]
         return f  # type: ignore
 
+    @_ensure_connection(AccessLevel.Controller)
     def cover_lower(self) -> None:
         """Lower/engage the plate cover, closing the drawer if needed."""
         self.drawer_close(lower_cover=False)
@@ -530,34 +580,41 @@ class Machine:
 
     def disconnect(self) -> None:
         """Cleanly disconnect from the machine."""
-        if self._qsc is None:
+        if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}.")
 
         loop = asyncio.get_event_loop()
 
-        loop.run_until_complete(self._qsc.disconnect())
-        self._qsc_real = None
+        loop.run_until_complete(self.connection.disconnect())
+        self._connection = None
+        self._current_access_level = AccessLevel.Guest
 
+    @_ensure_connection(AccessLevel.Controller)
     def abort_current_run(self) -> None:
         """Abort (stop immediately) the current run."""
         self.run_command("AbortRun ${RunTitle}")
 
+    @_ensure_connection(AccessLevel.Controller)
     def stop_current_run(self) -> None:
         """Stop (stop after cycle end) the current run."""
         self.run_command("StopRun ${RunTitle}")
 
+    @_ensure_connection(AccessLevel.Controller)
     def pause_current_run(self) -> None:
         """Pause the current run now."""
         self.run_command_to_ack("PAUSe")
 
+    @_ensure_connection(AccessLevel.Controller)
     def pause_current_run_at_temperature(self) -> None:
         raise NotImplementedError
 
+    @_ensure_connection(AccessLevel.Controller)
     def resume_current_run(self) -> None:
         """Resume the current run."""
         self.run_command_to_ack("RESume")
 
     @property
+    @_ensure_connection(AccessLevel.Observer)
     def power(self) -> bool:
         """Get and set the machine's operational power (lamp, etc) as a bool.
 
@@ -574,6 +631,7 @@ class Machine:
             raise ValueError(f"Unexpected power status: {s}")
 
     @power.setter
+    @_ensure_connection(AccessLevel.Controller)
     def power(self, value: Literal["on", "off", True, False]):  # type: ignore
         if value is True:
             value = "on"
@@ -582,6 +640,7 @@ class Machine:
         self.run_command(f"POW {value}")
 
     @property
+    @_ensure_connection(AccessLevel.Observer)
     def current_run_name(self) -> str | None:
         """Name of current run, or None if no run is active."""
         out = self.run_command("RUNTitle?")
@@ -598,11 +657,11 @@ class Machine:
         stealth: bool = False,
     ) -> Generator[Machine, None, None]:
         fac, fex, fst = self.get_access_level()
-        self.set_access_level(access_level, exclusive, stealth, _log=False)
-        log.info(f"Took access level {access_level} {exclusive=} {stealth=}.")
+        self.set_access_level(access_level, exclusive, stealth)
+        log.debug(f"Took access level {access_level} {exclusive=} {stealth=}.")
         yield self
-        self.set_access_level(fac, fex, fst, _log=False)
-        log.info(
+        self.set_access_level(fac, fex, fst)
+        log.debug(
             f"Dropped access level {access_level}, returning to {fac} exclusive={fex} stealth={fst}."
         )
 
@@ -610,14 +669,17 @@ class Machine:
     def ensured_connection(
         self, access_level: AccessLevel = AccessLevel.Observer
     ) -> Generator[Machine, None, None]:
-        was_connected = self.connected
-        if not was_connected:
-            self.connect()
-        old_access = self.get_access_level()
-        if old_access[0] < access_level:
-            self.set_access_level(access_level)
-        yield self
-        if not was_connected:
-            self.disconnect()
-        elif old_access[0] < access_level:
-            self.set_access_level(*old_access)
+        if self.automatic:
+            was_connected = self.connected
+            if not was_connected:
+                self.connect()
+            old_access = self.access_level
+            if old_access < access_level:
+                self.set_access_level(access_level)
+            yield self
+            if not was_connected:
+                self.disconnect()
+            elif old_access < access_level:
+                self.set_access_level(old_access)
+        else:
+            yield self
