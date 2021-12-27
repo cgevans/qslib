@@ -1,5 +1,5 @@
-import textwrap
 from __future__ import annotations
+import textwrap
 import dataclasses
 import shlex
 from typing import Protocol, Sequence, Type
