@@ -4,16 +4,14 @@ import asyncio
 from asyncio.futures import Future
 import base64
 from functools import wraps
-import io
 import logging
 import re
 import zipfile
 from contextlib import contextmanager
-from dataclasses import astuple, dataclass
-from typing import Any, Callable, Generator, IO, Literal, overload
+from dataclasses import dataclass
+from typing import Any, Generator, IO, Literal, overload
 
 import nest_asyncio
-import paramiko.pkey
 
 from qslib.qs_is_protocol import CommandError
 from qslib.scpi_proto_commands import SCPICommand
@@ -21,9 +19,6 @@ from qslib.scpi_proto_commands import SCPICommand
 from .qsconnection_async import QSConnectionAsync
 from .tcprotocol import Protocol
 from .util import _unwrap_tags
-import shlex
-
-from sshtunnel import SSHTunnelForwarder
 
 nest_asyncio.apply()
 
