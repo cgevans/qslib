@@ -16,6 +16,7 @@ import nest_asyncio
 import paramiko.pkey
 
 from qslib.qs_is_protocol import CommandError
+from qslib.scpi_proto_commands import SCPICommand
 
 from .qsconnection_async import QSConnectionAsync
 from .tcprotocol import Protocol
@@ -189,7 +190,7 @@ class Machine:
         return self
 
     @_ensure_connection(AccessLevel.Guest)
-    def run_command(self, command: str) -> str:
+    def run_command(self, command: str | SCPICommand) -> str:
         """Run a SCPI command, and return the response as a string.
         Waits for OK, not just NEXT.
 
@@ -218,7 +219,7 @@ class Machine:
             raise e
 
     @_ensure_connection(AccessLevel.Guest)
-    def run_command_to_ack(self, command: str) -> str:
+    def run_command_to_ack(self, command: str | SCPICommand) -> str:
         """Run an SCPI command, and return the response as a string.
         Returns after the command is processed (OK or NEXT), but potentially
         before it has completed (NEXT).
@@ -250,7 +251,7 @@ class Machine:
             raise e
 
     @_ensure_connection(AccessLevel.Guest)
-    def run_command_bytes(self, command: str | bytes) -> bytes:
+    def run_command_bytes(self, command: str | bytes | SCPICommand) -> bytes:
         """Run an SCPI command, and return the response as bytes (undecoded).
         Returns after the command is processed (OK or NEXT), but potentially
         before it has completed (NEXT).
@@ -287,7 +288,7 @@ class Machine:
         protocol : Protocol
             protocol to send
         """
-        self.run_command(f"{protocol.to_command()}")
+        self.run_command(protocol.to_scpicommand())
 
     @_ensure_connection(AccessLevel.Observer)
     def read_dir_as_zip(self, path: str, leaf: str = "FILE") -> zipfile.ZipFile:

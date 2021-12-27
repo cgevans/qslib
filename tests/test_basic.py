@@ -2,6 +2,7 @@ import pytest
 
 from qslib.data import FilterSet
 import qslib.qsconnection_async as qsa
+import qslib.qs_is_protocol as qsp
 
 
 def test_filterset_strings() -> None:
@@ -28,28 +29,28 @@ def test_parse_argstring() -> None:
 def test_validate_command_format() -> None:
     # pylint: disable=protected-access
     with pytest.raises(ValueError):
-        qsa._validate_command_format("\nText\n<a>")
+        qsp._validate_command_format(b"\nText\n<a>")
 
     with pytest.raises(ValueError):
-        qsa._validate_command_format("\nText")
+        qsp._validate_command_format(b"\nText")
 
     with pytest.raises(ValueError):
-        qsa._validate_command_format("<a>\n\n")
+        qsp._validate_command_format(b"<a>\n\n")
 
     with pytest.raises(ValueError):
-        qsa._validate_command_format("<a>\nText\n</b><a>")
+        qsp._validate_command_format(b"<a>\nText\n</b><a>")
 
     with pytest.raises(ValueError):
-        qsa._validate_command_format("<a>\nText\n</a><a>")
+        qsp._validate_command_format(b"<a>\nText\n</a><a>")
 
     with pytest.raises(ValueError):
-        qsa._validate_command_format("<a>\nText\n<a></a>")
+        qsp._validate_command_format(b"<a>\nText\n<a></a>")
 
-    assert qsa._validate_command_format("Text") is None
+    assert qsp._validate_command_format(b"Text") is None
 
-    assert qsa._validate_command_format("Text\n") is None
+    assert qsp._validate_command_format(b"Text\n") is None
 
     assert (
-        qsa._validate_command_format("<a>Text<a>Text</a>\n" "<b>Text\n\n\n</b></a>")
+        qsp._validate_command_format(b"<a>Text<a>Text</a>\n" b"<b>Text\n\n\n</b></a>")
         is None
     )

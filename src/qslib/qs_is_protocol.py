@@ -6,8 +6,10 @@ import logging
 import re
 import io
 from dataclasses import dataclass
-from typing import Any, Coroutine, Optional, Protocol
+from typing import Any, Coroutine, Optional, Protocol, Type
 import time
+
+from .scpi_proto_commands import SCPICommand
 
 from qslib.base import AccessLevel
 
@@ -17,6 +19,34 @@ Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")
 TIMESTAMP = re.compile(rb"(\d{8,}\.\d{3})")
 
 log = logging.getLogger(__name__)
+
+
+def _validate_command_format(commandstring: bytes) -> None:
+    # This is meant to validate that the command will not mess up comms
+    # The command may be completely malformed otherwise
+
+    tagseq: list[tuple[bytes, bytes, bytes]] = re.findall(
+        rb"<(/?)([\w.]+)[ *]*>|(\n)", commandstring.rstrip()
+    )  # tuple of close?,tag,newline?
+
+    tagstack: list[bytes] = []
+    for c, t, n in tagseq:
+        if n and not tagstack:
+            raise ValueError("newline outside of quotation")
+        elif t and not c:
+            tagstack.append(t)
+        elif c:
+            if not tagstack:
+                raise ValueError(f"unbalanced tag <{c}{t}>")
+            opentag = tagstack.pop()
+            if opentag != t:
+                raise ValueError(f"unbalanced tags <{opentag}> <{c}{t}>")
+        elif n:
+            continue
+        else:
+            raise ValueError("Unknown")
+    if tagstack:
+        raise ValueError("Unclosed tags")
 
 
 class Error(Exception):
@@ -30,7 +60,7 @@ class CommandError(Error):
         if (not m) or (m[1] not in COM_ERRORS):
             return UnparsedCommandError(command, ref_index, response)
         try:
-            return COM_ERRORS[m[1]].parse(command, m[2])
+            return COM_ERRORS[m[1]].parse(command, ref_index, m[2])
         except ValueError:
             return UnparsedCommandError(command, ref_index, response)
 
@@ -50,7 +80,7 @@ class InsufficientAccess(CommandError):
     message: str
 
     @classmethod
-    def parse(cls, command: str, message: str) -> InsufficientAccess:
+    def parse(cls, command: str, ref_index: str, message: str) -> InsufficientAccess:
         m = re.match(
             r'-requiredAccess="(\w+)" -currentAccess="(\w+)" --> (.*)', message
         )
@@ -65,7 +95,7 @@ class AuthError(CommandError):
     message: str
 
     @classmethod
-    def parse(cls, command: str, message: str) -> AuthError:
+    def parse(cls, command: str, ref_index: str, message: str) -> AuthError:
         m = re.match(r"--> (.*)", message)
         if not m:
             raise ValueError
@@ -79,7 +109,7 @@ class AccessLevelExceeded(CommandError):
     message: str
 
     @classmethod
-    def parse(cls, command: str, message: str) -> AccessLevelExceeded:
+    def parse(cls, command: str, ref_index: str, message: str) -> AccessLevelExceeded:
         m = re.match(r'-accessLimit="(\w+)" --> (.*)', message)
         if not m:
             raise ValueError
@@ -91,14 +121,22 @@ class InvocationError(CommandError):
     command: str
     message: str
 
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> InvocationError:
+        return cls(command, message)
+
 
 @dataclass
 class NoMatch(CommandError):
     command: str
     message: str
 
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> NoMatch:
+        return cls(command, message)
 
-COM_ERRORS = {
+
+COM_ERRORS: dict[str, Type[CommandError]] = {
     "InsufficientAccess": InsufficientAccess,
     "AuthError": AuthError,
     "AccessLevelExceeded": AccessLevelExceeded,
@@ -257,13 +295,17 @@ class QS_IS_Protocol(asyncio.Protocol):
 
     async def run_command(
         self,
-        comm: str | bytes,
+        comm: str | bytes | SCPICommand,
         ack_timeout: int = 300,
         just_ack: bool = True,
         uid: bool = True,
     ) -> bytes:
         if isinstance(comm, str):
             comm = comm.encode()
+        elif isinstance(comm, SCPICommand):
+            comm = comm.to_command_string().encode()
+        comm = comm.rstrip()
+        _validate_command_format(comm)
         log.debug(f"Running command {comm.decode()}")
         loop = asyncio.get_running_loop()
 

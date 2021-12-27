@@ -1,10 +1,14 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
+from asyncio.base_subprocess import BaseSubprocessTransport
+from audioop import ratecv
 from dataclasses import dataclass, field
 import dataclasses
 from itertools import zip_longest
+from sqlite3 import converters
 from typing import (
     Any,
+    Callable,
     ClassVar,
     Collection,
     Iterable,
@@ -17,6 +21,8 @@ from typing import (
     Union,
     cast,
 )
+
+from docstring_to_markdown import convert
 
 from .base import RunStatus
 import math
@@ -31,39 +37,100 @@ import numpy as np
 from .util import *
 import logging
 from copy import deepcopy
+from .scpi_proto_commands import SCPICommand, SCPICommandLike
+
+import attr
+import pint
+
+NZONES = 6
+
+UR: pint.UnitRegistry = pint.UnitRegistry(
+    autoconvert_offset_to_baseunit=True, auto_reduce_dimensions=True
+)
+
 
 log = logging.getLogger(__name__)
 
 
-def _temperature_str(
-    temperatures: Union[float, Iterable[float], np.ndarray[Any, np.float64]]
-) -> str:
-    """Tries to do the right thing in generating a string for a temperature or
-    list of temperatures."""
-    if isinstance(temperatures, Iterable):
-        temperatures = list(temperatures)
-        unique = np.unique(temperatures)
-        if len(temperatures) == 1 or len(unique) == 1:
-            return f"{temperatures[0]:.02f}°C"
+def _wrapunit(
+    unit: pint.Unit | str,
+) -> Callable[[int | float | str | pint.Quantity[Any]], pint.Quantity[Any]]:
+    if isinstance(unit, str):
+        unit = UR(unit)
+
+    def _wrapper(val: int | float | str | pint.Quantity[Any]) -> pint.Quantity[Any]:
+        if isinstance(val, str):
+            uv = UR(val)
+            uv.check(unit)
+        elif isinstance(val, pint.Quantity):
+            uv = val
+            uv.check(unit)
         else:
-            return "[" + ", ".join(f"{x:.02f}" for x in temperatures) + "]" + "°C"
-    else:
-        return f"{temperatures:.02f}°C"
+            uv = UR.Quantity(val, unit)
+        return uv
+
+    return _wrapper
 
 
-def _durformat(time: Union[int, float]) -> str:
+def _wrapunitmaybelist(
+    unit: pint.Unit | str,
+) -> Callable[
+    [
+        int
+        | float
+        | str
+        | pint.Quantity[Any]
+        | Sequence[int | float | str | pint.Quantity[Any]]
+    ],
+    pint.Quantity[float] | pint.Quantity[np.ndarray],
+]:
+    if isinstance(unit, str):
+        unit = UR(unit)
+
+    def _wrapper(
+        val: int
+        | float
+        | str
+        | pint.Quantity[Any]
+        | Sequence[int | float | str | pint.Quantity[Any]],
+    ) -> pint.Quantity[Any]:
+        if isinstance(val, pint.Quantity):
+            uv = val
+            uv.check(unit)
+        elif isinstance(val, Sequence):
+            m = []
+            for x in val:
+                if isinstance(x, pint.Quantity):
+                    m.append(x.to(unit).magnitude)
+                elif isinstance(x, str):
+                    m.append(UR(x).to(unit).magnitude)
+                else:
+                    m.append(x)
+            return UR.Quantity(m, unit)
+        elif isinstance(val, str):
+            uv = UR(val)
+            uv.check(unit)
+        else:
+            uv = UR.Quantity(val, unit)
+        return uv
+
+    return _wrapper
+
+
+def _durformat(time: pint.Quantity[int]) -> str:
+    time_s: int = time.to(UR.seconds).magnitude
     """Convert time in seconds to a nice string"""
     s = ""
     # <= 2 minutes: stay as seconds
-    if time <= 2 * 60:
-        s = "{}s".format(int(time)) + s
+    if time_s <= 2 * 60:
+        s = "{}s".format(int(time_s)) + s
         return s
 
-    if (time % 60) != 0:
-        s = "{}s".format(int(time % 60)) + s
-    rtime = int(time // 60)
+    if (time_s % 60) != 0:
+        s = "{}s".format(int(time_s % 60)) + s
+    rtime = int(time_s // 60)
     # <= 2 hours: stay as minutes
-    if time <= 2 * 60 * 60:
+    if time_s <= 2 * 60 * 60:
         s = "{}m".format(rtime) + s
         return s
 
@@ -71,7 +138,7 @@ def _durformat(time: Union[int, float]) -> str:
         s = "{}m".format(rtime % 60) + s
     rtime = rtime // 60
     # <= 3 days: stay as hours
-    if time <= 3 * 24 * 3600:
+    if time_s <= 3 * 24 * 3600:
         if (rtime % 24) != 0:
             s = "{}h".format(rtime) + s
         return s
@@ -83,15 +150,129 @@ def _durformat(time: Union[int, float]) -> str:
     return s
 
 
-class XMLable(ABC):
+class ProtoCommand(ABC):
     @abstractmethod
-    def to_xml(self) -> ET.Element:
+    def to_scpicommand(self, **kwargs) -> SCPICommand:
         ...
 
 
-class ProtoCommand(ABC):
+@attr.define
+class Ramp(ProtoCommand):
+    temperature: pint.Quantity[np.ndarray] = attr.field(
+        converter=_wrapunitmaybelist("degC"), on_setattr=attr.setters.convert
+    )
+    increment: pint.Quantity[float] | None = attr.field(
+        converter=(lambda x: _wrapunit("delta_degC")(x) if x else None),
+        on_setattr=attr.setters.convert,
+        default=None,
+    )
+    incrementcycle: int | None = None
+    incrementstep: int | None = None
+    rate: pint.Quantity[float] | None = None
+    cover: pint.Quantity[float] | None = None
+
+    def to_scpicommand(self, **kwargs) -> SCPICommand:
+        opts = {}
+
+        if self.increment is not None:
+            opts["increment"] = self.increment.to("delta_degC").magnitude
+        if self.incrementcycle is not None:
+            opts["incrementcycle"] = self.incrementcycle
+        if self.incrementstep is not None:
+            opts["incrementstep"] = self.incrementstep
+        if self.rate is not None:
+            opts["rate"] = self.rate.to("delta_degC / second").magnitude  # FIXME
+        if self.cover is not None:
+            opts["cover"] = self.cover.to("degC").magnitude
+
+        return SCPICommand("RAMP", *self.temperature.to("degC").magnitude, **opts)
+
+
+@dataclass
+class Exposure(ProtoCommand):
+    # We don't support persistent... it doesn't seem safe
+    settings: List[Tuple[FilterSet, Sequence[int]]]
+    state: str = "HoldAndCollect"
+
+    def to_scpicommand(self, **kwargs) -> SCPICommand:
+        settingstrings = [
+            k.hacform + "," + ",".join(str(x) for x in v) for k, v in self.settings
+        ]
+
+        return SCPICommand(
+            "EXP",
+            *[[k.hacform] + [str(x) for x in v] for k, v in self.settings],
+            state=self.state,
+        )
+
+
+@attr.define
+class HACFILT(ProtoCommand):
+    filters: Sequence[FilterSet] = attr.field(
+        converter=lambda x: [FilterSet.fromstring(f) for f in x],
+        on_setattr=attr.setters.convert,
+    )
+
+    def to_scpicommand(self, default_filters=None, **kwargs) -> SCPICommand:
+        return SCPICommand(
+            "HACFILT",
+            *(
+                f.hacform for f in (self.filters if self.filters else default_filters)
+            ),  # FIXME
+        )
+
+
+@dataclass
+class HoldAndCollect(ProtoCommand):
+    time: pint.Quantity[int]
+    increment: pint.Quantity[int] | None = None
+    incrementcycle: int | None = None
+    incrementstep: int | None = None
+    tiff: bool = False
+    quant: bool = True
+    pcr: bool = False
+
+    def to_scpicommand(self, **kwargs) -> SCPICommand:
+        opts = {}
+        if self.increment:
+            opts["increment"] = self.increment.to("seconds").magnitude
+        if self.incrementcycle is not None:
+            opts["incrementcycle"] = self.incrementcycle
+        if self.incrementstep is not None:
+            opts["incrementstep"] = self.incrementstep
+        opts["tiff"] = self.tiff
+        opts["quant"] = self.quant
+        opts["pcr"] = self.pcr
+        return SCPICommand(
+            "HoldAndCollect", int(self.time.to("seconds").magnitude), **opts
+        )
+
+
+@dataclass
+class Hold(ProtoCommand):
+    time: pint.Quantity[int] | None
+    increment: pint.Quantity[int] | None = None
+    incrementcycle: int | None = None
+    incrementstep: int | None = None
+
+    def to_scpicommand(self, **kwargs) -> SCPICommand:
+        opts = {}
+        if self.increment:
+            opts["increment"] = self.increment.to("seconds").magnitude
+        if self.incrementcycle is not None:
+            opts["incrementcycle"] = self.incrementcycle
+        if self.incrementstep is not None:
+            opts["incrementstep"] = self.incrementstep
+        return SCPICommand(
+            "HOLD",
+            int(self.time.to("seconds").magnitude) if self.time is not None else "",
+            **opts,
+        )
+
+
+class XMLable(ABC):
     @abstractmethod
-    def to_command(self, **kwargs) -> str:
+    def to_xml(self) -> ET.Element:
         ...
 
 
@@ -116,41 +297,368 @@ class BaseStep(ABC):
         ...
 
     @abstractmethod
-    def duration_at_cycle(self, cycle: int) -> float:  # cycle from 1
+    def duration_at_cycle(self, cycle: int) -> pint.Quantity[int]:  # cycle from 1
         ...
 
     @abstractmethod
-    def temperatures_at_cycle(self, cycle: int) -> list[float]:
+    def temperatures_at_cycle(self, cycle: int) -> pint.Quantity[np.ndarray]:
         ...
+
+    def total_duration(self, repeat: int = 1) -> pint.Quantity[np.ndarray]:
+        return 0 * UR.seconds
 
     @property
     @abstractmethod
     def collect(self) -> bool:
         ...
 
-    def to_command(self, *, stepindex: int, **kwargs) -> str:
-        s = "STEP "
+    def to_scpicommand(self, *, stepindex: int, **kwargs) -> SCPICommand:
+        opts = {}
+        args = []
         if self.repeat != 1:
-            s += f"-repeat={self.repeat} "
-        if self.identifier is not None:
-            s += f"{self.identifier} "
+            opts["repeat"] = self.repeat
+        if self.identifier:
+            args.append(self.identifier)
         else:
-            s += f"{stepindex} "
-        s += "<multiline.step>\n"
-        for com in self.body:
-            s += f"\t{com.to_command(**kwargs)}\n"
-        s += "</multiline.step>"
-        return s
+            args.append(stepindex)
+
+        args.append([com.to_scpicommand(**kwargs) for com in self.body])
+
+        return SCPICommand("STEP", *args, **opts)
 
 
 @dataclass
+class CustomStep(BaseStep):
+    _body: List[ProtoCommand] = field(init=False, repr=False)
+    body: Sequence[ProtoCommand]  # type: ignore
+    repeat: int = 1
+    identifier: int | str | None = None
+
+    @property
+    def body(self) -> List[ProtoCommand]:
+        return self._body
+
+    @body.setter
+    def body(self, v: Sequence[ProtoCommand]) -> None:
+        self._body = list(v)
+
+    def collect(self) -> bool:
+        return False
+
+    def temperatures_at_cycle(self, cycle: int) -> np.ndarray:
+        return np.array(6 * [math.nan])
+
+    def total_duration(self, repeat: int = 1) -> int:
+        return 0
+
+    def info_str(self, index: None | int = None, repeats: int = 1) -> str:
+        if index is not None:
+            s = f"{index}. "
+        else:
+            s = f"- "
+        s += f"Step{' '+str(self.identifier) if self.identifier is not None else ''} of commands:\n"
+        s += "\n".join(
+            f"  {i+1}. " + c.to_scpicommand().to_command_string()
+            for i, c in enumerate(self.body)
+        )
+        return s
+
+
+@attr.define
+class Step(BaseStep, XMLable):
+    """
+    A normal protocol step.
+
+    Parameters
+    ----------
+
+    time: int
+        The step time setting, in seconds.
+    temperature: float | Sequence[float]
+        The temperature hold setting, either as a float (all zones the same) or a sequence
+        (of correct length) of floats setting the temperature for each zone.
+    collect: bool
+        Collect fluorescence data?
+    temp_increment: float
+        Amount to increment all zone temperatures per cycle on and after :any:`temp_incrementcycle`.
+    temp_incrementcycle: int (default 2)
+        First cycle to start the increment changes. Note that the default in QSLib is 2, not 1 (as in AB's software),
+        so that leaving this alone makes sense (the first cycle will be at :any:`temperature`, the next at
+        :code:`temperature + temp_incrementcycle`.
+    time_increment : float
+    time_incrementcycle : int
+        The same settings for time per cycle.
+    filters : Sequence[FilterSet | str] (default empty)
+        A list of filter pairs to collect, either using :any:`FilterSet` or a string like "x1-m4".  If collect is
+        True and this is empty, then the filters will be set by the Protocol.
+
+    Notes
+    -----
+
+    This currently does not support step-level repeats, which do exist on the machine.
+    """
+
+    time: pint.Quantity[int] = attr.field(
+        converter=_wrapunit("second"), on_setattr=attr.setters.convert
+    )
+    temperature: pint.Quantity[Any] = attr.field(
+        converter=_wrapunitmaybelist("degC"), on_setattr=attr.setters.convert
+    )
+    collect: bool = False
+    temp_increment: pint.Quantity[float] = attr.field(
+        default=UR.Quantity(0.0, UR.delta_degC),
+        converter=_wrapunit("delta_degC"),
+        on_setattr=attr.setters.convert,
+    )
+    temp_incrementcycle: int = 2
+    time_increment: pint.Quantity[int] = attr.field(
+        default=UR.Quantity(0, UR.second),
+        converter=_wrapunit("second"),
+        on_setattr=attr.setters.convert,
+    )
+    time_incrementcycle: int = 2
+    filters: Sequence[FilterSet] = attr.field(
+        default=tuple(),
+        converter=(lambda y: [FilterSet.fromstring(x) for x in y]),
+        on_setattr=attr.setters.convert,
+    )
+    pcr: bool = False
+    quant: bool = True
+    tiff: bool = False
+    _classname: ClassVar[str] = "Step"
+
+    def __eq__(self, other: Step):
+        if self.__class__ != other.__class__:
+            return False
+        if np.all(self.temperature_list != other.temperature_list):
+            return False
+        # FIXME
+        if (self.filters) and (other.filters) and self._filtersets != other._filtersets:
+            return False
+        if self.time != other.time:
+            return False
+        if self.collect != other.collect:
+            return False
+        if self.temp_increment != other.temp_increment:
+            return False
+        if self.temp_incrementcycle != other.temp_incrementcycle:
+            return False
+        if self.time_increment != other.time_increment:
+            return False
+        if self.time_incrementcycle != other.time_incrementcycle:
+            return False
+        if self.pcr != other.pcr:
+            return False
+        if self.quant != other.quant:
+            return False
+        if self.tiff != other.tiff:
+            return False
+        return True
+
+    @property
+    def _filtersets(self):
+        return [FilterSet.fromstring(x) for x in self.filters]
+
+    def info_str(self, index, repeats: int = 1) -> str:
+        "String describing the step."
+
+        tempstr = "{:~}".format(self.temperatures_at_cycle(1))
+        if (repeats > 1) and (self.temp_increment != 0.0):
+            t = "{:~}".format(self.temperatures_at_cycle(repeats))
+            tempstr += f" to {t}"
+
+        elems = [f"{tempstr} for {self.time}/cycle"]
+        if self.temp_increment != 0.0:
+            elems.append(f"{self.temp_increment}°C/cycle")
+            if self.temp_incrementcycle > 1:
+                elems[-1] += f" from cycle {self.temp_incrementcycle}"
+        if self.time_increment != 0.0:
+            elems.append(f"{_durformat(self.time_increment)}/cycle")
+            if self.time_incrementcycle != 2:
+                elems[-1] += f" from cycle {self.time_incrementcycle}"
+        # if self.ramp_rate != 1.6:
+        #    elems.append(f"{self.ramp_rate} °C/s ramp")
+        s = f"{index}. " + ", ".join(elems)
+
+        if self.collect:
+            s += " (collects "
+            if self.filters:
+                s += ", ".join(FilterSet.fromstring(f).lowerform for f in self.filters)
+            else:
+                s += "default"
+            if self.pcr:
+                s += ", pcr on"
+            if not self.quant:
+                s += ", quant off"
+            if self.tiff:
+                s += ", keeps images"
+            s += ")"
+
+        return s
+
+    def total_duration(self, repeats: int = 1) -> pint.Quantity:
+        return sum(
+            (self.duration_at_cycle(c) for c in range(1, repeats + 1)), 0 * UR.seconds
+        )
+
+    def duration_at_cycle(self, cycle: int) -> pint.Quantity:  # cycle from 1
+        "Duration of the step (excluding ramp) at `cycle` (from 1)"
+        inccycles = max(0, cycle + 1 - self.time_incrementcycle)
+        return self.time + inccycles * self.time_increment
+        # FIXME: is this right?
+
+    def temperatures_at_cycle(self, cycle: int) -> pint.Quantity[np.ndarray]:
+        "Temperatures of the step at `cycle` (from 1)"
+        inccycles = max(0, cycle + 1 - self.temp_incrementcycle)
+        return self.temperature_list + inccycles * self.temp_increment
+
+    @property
+    def repeat(self) -> int:
+        return 1
+
+    @property
+    def identifier(self) -> None:
+        return None
+
+    @property
+    def temperature_list(self) -> pint.Quantity[np.ndarray]:
+        mag = self.temperature.to("degC").magnitude  # FIXME
+        if isinstance(mag, np.ndarray):
+            return UR.Quantity(mag, "degC")
+        else:
+            return UR.Quantity(NZONES * [mag], "degC")
+
+    @property
+    def body(self) -> list[ProtoCommand]:
+        if self.collect:
+            return [
+                Ramp(
+                    self.temperature_list, self.temp_increment, self.temp_incrementcycle
+                ),
+                HACFILT(self.filters),
+                HoldAndCollect(
+                    self.time,
+                    self.time_increment,
+                    self.time_incrementcycle,
+                    None,
+                    self.tiff,
+                    self.quant,
+                    self.pcr,
+                ),
+            ]
+        else:
+            return [
+                Ramp(
+                    self.temperature_list, self.temp_increment, self.temp_incrementcycle
+                ),
+                Hold(
+                    self.time,
+                    self.time_increment,
+                    self.time_incrementcycle,
+                ),
+            ]
+
+    @classmethod
+    def from_xml(cls, e: ET.Element, *, etc=1, ehtc=1, he=False) -> Step:
+        collect = bool(int(e.findtext("CollectionFlag") or 0))
+        ts: pint.Quantity[np.ndarray] = UR.Quantity(
+            [float(x.text or math.nan) for x in e.findall("Temperature")], "degC"
+        )
+        ht: pint.Quantity[int] = int(e.findtext("HoldTime") or 0) * UR("seconds")
+        et: pint.Quantity[float] = float(e.findtext("ExtTemperature") or 0.0) * UR(
+            "delta_degC"
+        )
+        eht: pint.Quantity[int] = int(e.findtext("ExtHoldTime") or 0) * UR("seconds")
+        if not he:
+            et = 0 * UR("seconds")
+            eht = 0 * UR("seconds")
+        return Step(ht, ts, collect, et, etc, eht, ehtc, [], True)
+
+    def to_xml(self) -> ET.Element:
+        e = ET.Element("TCStep")
+        ET.SubElement(e, "CollectionFlag").text = str(
+            int(self.collect)
+        )  # FIXME: approx
+        for t in self.temperature_list.to("°C").magnitude:
+            ET.SubElement(e, "Temperature").text = str(t)
+        ET.SubElement(e, "HoldTime").text = str(int(self.time.to("seconds").magnitude))
+        # FIXME: does not contain cycle starts, because AB format can't handle
+        ET.SubElement(e, "ExtTemperature").text = str(
+            self.temp_increment.to("delta_degC").magnitude
+        )
+        ET.SubElement(e, "ExtHoldTime").text = str(
+            int(self.time_increment.to("seconds").magnitude)
+        )
+        # FIXME: RampRate, RampRateUnit
+        ET.SubElement(e, "RampRate").text = "1.6"
+        ET.SubElement(e, "RampRateUnit").text = "DEGREES_PER_SECOND"
+        return e
+
+    @classmethod
+    def _from_command_dict(cls, d):
+        coms = [x["command"] for x in d["body"]]
+        if coms == ["RAMP", "HACFILT", "HoldAndCollect"]:
+            c = cls(
+                d["body"][2]["args"][0],
+                d["body"][0]["args"],
+                time_incrementcycle=1,
+                temp_incrementcycle=1,
+            )
+            c.collect = True
+            if "args" in d["body"][1].keys():
+                c.filters = [FilterSet.fromstring(x) for x in d["body"][1]["args"]]
+            else:
+                c.filters = []
+            for k, v in d["body"][2]["opts"].items():
+                k = k.lower()
+                if "increment" in k:
+                    k = "time_" + k
+                setattr(c, k.lower(), v)
+            for k, v in d["body"][0]["opts"].items():
+                k = k.lower()
+                if "increment" in k:
+                    k = "temp_" + k
+                setattr(c, k.lower(), v)
+        elif coms == ["RAMP", "HOLD"]:
+            c = cls(
+                d["body"][1]["args"][0],
+                d["body"][0]["args"],
+                time_incrementcycle=1,
+                temp_incrementcycle=1,
+            )
+            c.collect = False
+            for k, v in d["body"][1]["opts"].items():
+                k = k.lower()
+                if "increment" in k:
+                    k = "time_" + k
+                setattr(c, k.lower(), v)
+            for k, v in d["body"][0]["opts"].items():
+                k = k.lower()
+                if "increment" in k:
+                    k = "temp_" + k
+                setattr(c, k.lower(), v)
+        else:
+            raise ValueError
+        return c
+
+    @classmethod
+    def fromdict(cls, d: dict[str, Any]) -> "Step":
+        return cls(**d)
+
+
+def _bsl(x: Iterable[BaseStep] | BaseStep) -> Sequence[BaseStep]:
+    return list(x) if isinstance(x, Iterable) else [x]
+
+
+@attr.define
 class Stage(XMLable):
-    _steps: list[BaseStep] = field(repr=False, init=False)
-    steps: Sequence[BaseStep] | BaseStep  # type: ignore
+    steps: Sequence[BaseStep] = attr.field(
+        converter=(lambda x: [x] if not isinstance(x, Sequence) else list(x))
+    )
     repeat: int = 1
     index: int | None = None
     label: str | None = None
-    _class: str = "Stage"
+    _classname: ClassVar[str] = "Stage"
 
     def __eq__(self, other: Stage):
         if self.__class__ != other.__class__:
@@ -167,31 +675,37 @@ class Stage(XMLable):
             and self.label != other.label
         ):
             return False
-        return self._steps == other._steps
+        return self.steps == other.steps
 
     @classmethod
     def stepped_ramp(
         cls: Type[Stage],
-        temp_from: float,
-        temp_to: float,
-        total_time: int,
+        temp_from: float | pint.Quantity[float],
+        temp_to: float | pint.Quantity[float],
+        total_time: int | pint.Quantity[int],
         nsteps: int,
         collect: bool = False,
         filters: Sequence[str | FilterSet] = tuple(),
     ):
 
-        step_time = int(round(total_time / nsteps))
+        temp_from = _wrapunit("degC")(temp_from)
+        temp_to = _wrapunit("degC")(temp_to)
+        total_time = _wrapunit("seconds")(total_time)
 
-        temp_increment = round((temp_to - temp_from) / (nsteps - 1), 4)
+        step_time = (total_time / nsteps).round()
+
+        temp_increment = ((temp_to - temp_from) / (nsteps - 1)).round(4)
 
         return cls(
-            Step(
-                step_time,
-                temp_from,
-                collect=collect,
-                temp_increment=temp_increment,
-                filters=filters,
-            ),
+            [
+                Step(
+                    step_time,
+                    temp_from,
+                    collect=collect,
+                    temp_increment=temp_increment,
+                    filters=filters,
+                )
+            ],
             repeat=nsteps,
         )
 
@@ -199,31 +713,22 @@ class Stage(XMLable):
     def hold_for(
         cls: Type[Stage],
         temps: float | Sequence[float],
-        total_time: int | pint.Quantity,
-        step_time: int | pint.Quantity,
+        total_time: int | pint.Quantity[int],
+        step_time: int | pint.Quantity[int],
         collect: bool = False,
         filters: Sequence[str | FilterSet] = tuple(),
     ):
         return cls(
-            Step(
-                step_time,
-                temps,
-                collect=collect,
-                filters=filters,
-            ),
+            [
+                Step(
+                    _wrapunit("second")(total_time),
+                    _wrapunitmaybelist("degC")(temps),
+                    collect=collect,
+                    filters=filters,
+                )
+            ],
             repeat=round(total_time / step_time),
         )
-
-    @property
-    def steps(self) -> list[BaseStep]:
-        return self._steps
-
-    @steps.setter
-    def steps(self, steps: Iterable[BaseStep] | BaseStep):
-        self._steps = [steps] if isinstance(steps, BaseStep) else list(steps)
-
-    def __postinit__(self):
-        self.steps = self._steps
 
     def __repr__(self) -> str:
         s = f"Stage(steps="
@@ -263,24 +768,24 @@ class Stage(XMLable):
 
         durations = np.array(
             [
-                step.duration_at_cycle(i)
+                step.duration_at_cycle(i).to("seconds").magnitude
                 for i in range(1, self.repeat + 1)
-                for step in self._steps
+                for step in self.steps
             ]
         )
         temperatures = np.array(
             [
-                step.temperatures_at_cycle(i)
+                step.temperatures_at_cycle(i).to("°C").magnitude
                 for i in range(1, self.repeat + 1)
-                for step in self._steps
+                for step in self.steps
             ]
         )
-        ramp_rates = [1.6 for _ in range(1, self.repeat + 1) for step in self._steps]
+        ramp_rates = [1.6 for _ in range(1, self.repeat + 1) for step in self.steps]
         # np.array(
         #    [step.ramp_rate for _ in range(1, self.repeat + 1) for step in self.body]
         # )
         collect_data = np.array(
-            [step.collect for _ in range(1, self.repeat + 1) for step in self._steps]
+            [step.collect for _ in range(1, self.repeat + 1) for step in self.steps]
         )
 
         # FIXME: is this how ramp rates actually work?
@@ -321,36 +826,31 @@ class Stage(XMLable):
             data["temperature_{}".format(i + 1)] = temperatures[:, i]
 
         data["cycle"] = [
-            c for c in range(1, self.repeat + 1) for s in range(1, len(self._steps) + 1)
+            c for c in range(1, self.repeat + 1) for s in range(1, len(self.steps) + 1)
         ]
         data["step"] = [
-            s for c in range(1, self.repeat + 1) for s in range(1, len(self._steps) + 1)
+            s for c in range(1, self.repeat + 1) for s in range(1, len(self.steps) + 1)
         ]
 
         data.set_index(["cycle", "step"], inplace=True)
 
         return data
 
-    def to_command(self, stageindex=None, **kwargs):
-        s = "STAGe "
+    def to_scpicommand(self, stageindex=None, **kwargs) -> SCPICommand:
+        opts = {}
+        args = []
         if self.repeat != 1:
-            s += f"-repeat={self.repeat} "
-        if self.index is not None:
-            s += f"{self.index} "
-        else:
-            s += f"{stageindex} "
-        if self.label:
-            s += self.label + " "
-        else:
-            s += f"STAGE_{self.index or stageindex} "
-        s += "<multiline.stage>\n"
-        for i, step in enumerate(self._steps):
-            s += (
-                textwrap.indent(f"{step.to_command(stepindex=i+1, **kwargs)}", "\t")
-                + "\n"
-            )
-        s += "</multiline.stage>"
-        return s
+            opts["repeat"] = self.repeat
+        args.append(self.index or stageindex)
+        args.append(self.label or f"STAGE_{self.index or stageindex}")
+        args.append(
+            [
+                step.to_scpicommand(stepindex=i + 1, **kwargs)
+                for i, step in enumerate(self.steps)
+            ]
+        )
+
+        return SCPICommand("STAGe", *args, **opts)
 
     @classmethod
     def _from_command_dict(cls, d) -> Stage:
@@ -362,7 +862,7 @@ class Stage(XMLable):
         for k, v in d["opts"].items():
             setattr(s, k.lower(), v)
 
-        s._steps = [Step._from_command_dict(step) for step in d["body"]]
+        s.steps = [Step._from_command_dict(step) for step in d["body"]]
         return s
 
     @classmethod
@@ -370,7 +870,7 @@ class Stage(XMLable):
         rep = int(e.findtext("NumOfRepetitions") or 1)
         startcycle = int(cast(str, e.findtext("StartingCycle")))
         ade = e.findtext("AutoDeltaEnabled") == "true"
-        steps = [
+        steps: list[BaseStep] = [
             Step.from_xml(x, etc=startcycle, ehtc=startcycle, he=ade)
             for x in e.findall("TCStep")
         ]
@@ -381,7 +881,7 @@ class Stage(XMLable):
         ET.SubElement(e, "StageFlag").text = "CYCLING"
         ET.SubElement(e, "NumOfRepetitions").text = str(int(self.repeat))
         scycle: set[int] = set()
-        for s in self._steps:
+        for s in self.steps:
             if isinstance(s, Step):
                 scycle.add(s.temp_incrementcycle)
                 scycle.add(s.time_incrementcycle)
@@ -403,10 +903,13 @@ class Stage(XMLable):
         stagestr = f"{index}. Stage with {self.repeat} cycle{adds}"
         stepstrs = [
             textwrap.indent(f"{step.info_str(i+1, self.repeat)}", "  ")
-            for i, step in enumerate(self._steps)
+            for i, step in enumerate(self.steps)
         ]
         try:
-            tot_dur = sum(x.total_duration(self.repeat) for x in self._steps)  # type: ignore
+            tot_dur = sum(
+                (x.total_duration(self.repeat) for x in self.steps),
+                UR.Quantity(0, UR.seconds),
+            )
             stagestr += f" (total duration {_durformat(tot_dur)})"
         except KeyError:
             pass
@@ -454,7 +957,7 @@ def _oxfordlist(iterable: Iterable[str]) -> str:
 ALLTEMPS = ["temperature_{}".format(i) for i in range(1, 7)]
 
 
-@dataclass
+@attr.define
 class Protocol(XMLable):
     """A run protocol for the QuantStudio.  Protocols encapsulate the temperature and camera
     controls for an entire run.  They are composed of :any:`Stage`s, which may repeat for a
@@ -480,30 +983,34 @@ class Protocol(XMLable):
     """
 
     stages: Iterable[Stage]
-    name: str = field(default_factory=lambda: "Prot_" + _nowuuid())
+    name: str = attr.field(factory=lambda: "Prot_" + _nowuuid())
     volume: float = 50.0
     runmode: str = "standard"  # standard or fast... need to deal with this
-    filters: list[str | FilterSet] = field(default_factory=lambda: [])
+    filters: Sequence[FilterSet] = attr.field(
+        factory=lambda: [],
+        converter=(lambda x: [FilterSet.fromstring(f) for f in x]),
+        on_setattr=attr.setters.convert,
+    )
     covertemperature: float = 105.0
-    _class: str = "Protocol"
+    _classname: str = "Protocol"
 
-    def to_command(self) -> str:
-        s = "PROTocol "
+    def to_scpicommand(self) -> SCPICommand:
+        args = []
+        opts = {}
         if self.volume is not None:
-            s += f"-volume={self.volume} "
+            opts["volume"] = self.volume
         if self.runmode is not None:
-            s += f"-runmode={self.runmode} "
-        s += self.name + " "
-        s += "<quote.message>\n"
-        for i, stage in enumerate(self.stages):
-            s += (
-                textwrap.indent(
-                    stage.to_command(filters=self.filters, stageindex=i + 1), "\t"
+            opts["runmode"] = self.runmode
+        args.append(self.name)
+        args.append(
+            [
+                stage.to_scpicommand(
+                    filters=self.filters, stageindex=i + 1, default_filters=self.filters
                 )
-                + "\n"
-            )
-        s += "</quote.message>"
-        return s
+                for i, stage in enumerate(self.stages)
+            ]
+        )
+        return SCPICommand("PROTocol", *args, **opts)
 
     @classmethod
     def from_command(cls, s: str) -> Protocol:
@@ -532,7 +1039,7 @@ class Protocol(XMLable):
         previous_temperatures = [25.0] * 6
 
         for stage in self.stages:
-            dataframe = stage.dataframe(stage_start_time, previous_temperatures)
+            dataframe = stage.dataframe(stage_start_time, list(previous_temperatures))
             stagenum += 1
             previous_temperatures = dataframe.iloc[-1].loc[ALLTEMPS].to_numpy()
             stage_start_time = cast(float, dataframe["end_time"].iloc[-1])
@@ -588,8 +1095,8 @@ class Protocol(XMLable):
         return np.repeat(d["temperature_avg":], 2)
 
     def tcplot(
-        self, ax: Optional["plt.Axes"] = None
-    ) -> Tuple["plt.Axes", Tuple[List["plt.Line2D"], List["plt.Line2D"]]]:
+        self, ax: Optional["plt.Axes"] = None  # type: ignore
+    ) -> Tuple["plt.Axes", Tuple[List["plt.Line2D"], List["plt.Line2D"]]]:  # type: ignore
         "A plot of the temperature and data collection points."
 
         import matplotlib.pyplot as plt
@@ -667,8 +1174,10 @@ class Protocol(XMLable):
             " placeholder for the real protocol, contained as"
             " an SCPI command in QSLibProtocolCommand."
         )
-        _set_or_create(qe, "QSLibProtocolCommand").text = self.to_command()
-        _set_or_create(qe, "QSLibProtocol").text = str(dataclasses.asdict(self))
+        _set_or_create(
+            qe, "QSLibProtocolCommand"
+        ).text = self.to_scpicommand().to_command_string()
+        _set_or_create(qe, "QSLibProtocol").text = str(attr.asdict(self))
         _set_or_create(qe, "QSLibVerson").text = __version__
         _set_or_create(e, "CoverTemperature").text = str(covertemperature)
         if self.volume is not None:
@@ -740,408 +1249,3 @@ class Protocol(XMLable):
                 assert oldstage == newstage
             else:
                 continue
-
-
-@dataclass
-class Exposure(ProtoCommand):
-    # We don't support persistent... it doesn't seem safe
-    settings: List[Tuple[FilterSet, Sequence[int]]]
-    state: str = "HoldAndCollect"
-
-    def to_command(self, **kwargs) -> str:
-        settingstrings = [
-            k.hacform + "," + ",".join(str(x) for x in v) for k, v in self.settings
-        ]
-
-        return f"EXP -state={self.state} " + " ".join(settingstrings)
-
-
-@dataclass
-class Ramp(ProtoCommand):
-    temperature: Sequence[float]
-    increment: float | None = None
-    incrementcycle: int | None = None
-    incrementstep: int | None = None
-    rate: float | None = None
-    cover: float | None = None
-    _argfields: ClassVar[tuple[str, ...]] = (
-        "increment",
-        "incrementcycle",
-        "incrementstep",
-        "rate",
-        "cover",
-    )
-
-    def to_command(self, **kwargs) -> str:
-        p = []
-        p.append("RAMP")
-        for f in self._argfields:
-            if (v := getattr(self, f)) is not None:
-                p.append(f"-{f}={v}")
-        p += self.temperature
-        return " ".join(str(x) for x in p)
-
-
-@dataclass
-class HACFILT(ProtoCommand):
-    filters: Sequence[FilterSet] | None
-
-    def to_command(
-        self, filters: Sequence[FilterSet | str] | None = None, **kwargs
-    ) -> str:
-        if self.filters is None or len(self.filters) == 0:
-            assert (filters is not None) and len(filters) > 0
-            filters = [
-                FilterSet.fromstring(f) if isinstance(f, str) else f for f in filters
-            ]
-        else:
-            filters = self.filters
-        return "HACFILT " + " ".join([f.hacform for f in filters])
-
-    def __init__(self, filters: Iterable[FilterSet | str]) -> None:
-        self.filters = [
-            FilterSet.fromstring(f) if isinstance(f, str) else f for f in filters
-        ]
-
-
-@dataclass
-class HoldAndCollect(ProtoCommand):
-    time: int
-    increment: float | None = None
-    incrementcycle: int | None = None
-    incrementstep: int | None = None
-    tiff: bool = False
-    quant: bool = True
-    pcr: bool = False
-    _argfields: ClassVar[tuple[str, ...]] = (
-        "increment",
-        "incrementcycle",
-        "incrementstep",
-        "tiff",
-        "quant",
-        "pcr",
-    )
-
-    def to_command(self, **kwargs) -> str:
-        p = []
-        p.append("HoldAndCollect")
-        for f in self._argfields:
-            if (v := getattr(self, f)) is not None:
-                p.append(f"-{f}={v}")
-        p.append(self.time)
-        return " ".join(str(x) for x in p)
-
-
-@dataclass
-class Hold(ProtoCommand):
-    time: int | None
-    increment: float | None = None
-    incrementcycle: int | None = None
-    incrementstep: int | None = None
-    _argfields: ClassVar[tuple[str, ...]] = (
-        "increment",
-        "incrementcycle",
-        "incrementstep",
-    )
-
-    def to_command(self, **kwargs) -> str:
-        p = []
-        p.append("HOLD")
-        for f in self._argfields:
-            if (v := getattr(self, f)) is not None:
-                p.append(f"-{f}={v}")
-        p.append(str(self.time))
-        return " ".join(str(x) for x in p)
-
-
-@dataclass
-class Step(BaseStep, XMLable):
-    """
-    A normal protocol step.
-
-    Parameters
-    ----------
-
-    time: int
-        The step time setting, in seconds.
-    temperature: float | Sequence[float]
-        The temperature hold setting, either as a float (all zones the same) or a sequence
-        (of correct length) of floats setting the temperature for each zone.
-    collect: bool
-        Collect fluorescence data?
-    temp_increment: float
-        Amount to increment all zone temperatures per cycle on and after :any:`temp_incrementcycle`.
-    temp_incrementcycle: int (default 2)
-        First cycle to start the increment changes. Note that the default in QSLib is 2, not 1 (as in AB's software),
-        so that leaving this alone makes sense (the first cycle will be at :any:`temperature`, the next at
-        :code:`temperature + temp_incrementcycle`.
-    time_increment : float
-    time_incrementcycle : int
-        The same settings for time per cycle.
-    filters : Sequence[FilterSet | str] (default empty)
-        A list of filter pairs to collect, either using :any:`FilterSet` or a string like "x1-m4".  If collect is
-        True and this is empty, then the filters will be set by the Protocol.
-
-    Notes
-    -----
-
-    This currently does not support step-level repeats, which do exist on the machine.
-    """
-
-    time: int
-    temperature: float | Sequence[float]
-    collect: bool = False
-    temp_increment: float = 0.0
-    temp_incrementcycle: int = 2
-    time_increment: int = 0
-    time_incrementcycle: int = 2
-    filters: Sequence[FilterSet | str] = tuple()
-    pcr: bool = False
-    quant: bool = True
-    tiff: bool = False
-    _class: str = "Step"
-
-    def __eq__(self, other: Step):
-        if self.__class__ != other.__class__:
-            return False
-        if self.temperature_list != other.temperature_list:
-            return False
-        # FIXME
-        if (self.filters) and (other.filters) and self._filtersets != other._filtersets:
-            return False
-        if self.time != other.time:
-            return False
-        if self.collect != other.collect:
-            return False
-        if self.temp_increment != other.temp_increment:
-            return False
-        if self.temp_incrementcycle != other.temp_incrementcycle:
-            return False
-        if self.time_increment != other.time_increment:
-            return False
-        if self.time_incrementcycle != other.time_incrementcycle:
-            return False
-        if self.pcr != other.pcr:
-            return False
-        if self.quant != other.quant:
-            return False
-        if self.tiff != other.tiff:
-            return False
-        return True
-
-    @property
-    def _filtersets(self):
-        return [FilterSet.fromstring(x) for x in self.filters]
-
-    def info_str(self, index, repeats: int = 1) -> str:
-        "String describing the step."
-
-        tempstr = _temperature_str(self.temperatures_at_cycle(1))
-        if (repeats > 1) and (self.temp_increment != 0.0):
-            t = _temperature_str(self.temperatures_at_cycle(repeats))
-            tempstr += f" to {t}"
-
-        elems = [f"{tempstr} for {_durformat(self.time)}/cycle"]
-        if self.temp_increment != 0.0:
-            elems.append(f"{self.temp_increment}°C/cycle")
-            if self.temp_incrementcycle > 1:
-                elems[-1] += f" from cycle {self.temp_incrementcycle}"
-        if self.time_increment != 0.0:
-            elems.append(f"{_durformat(self.time_increment)}/cycle")
-            if self.time_incrementcycle != 2:
-                elems[-1] += f" from cycle {self.time_incrementcycle}"
-        # if self.ramp_rate != 1.6:
-        #    elems.append(f"{self.ramp_rate} °C/s ramp")
-        s = f"{index}. " + ", ".join(elems)
-
-        if self.collect:
-            s += " (collects "
-            if self.filters:
-                s += ", ".join(FilterSet.fromstring(f).lowerform for f in self.filters)
-            else:
-                s += "default"
-            if self.pcr:
-                s += ", pcr on"
-            if not self.quant:
-                s += ", quant off"
-            if self.tiff:
-                s += ", keeps images"
-            s += ")"
-
-        return s
-
-    def total_duration(self, repeats: int = 1):
-        return sum(self.duration_at_cycle(c) for c in range(1, repeats + 1))
-
-    def duration_at_cycle(self, cycle: int) -> float:  # cycle from 1
-        "Duration of the step (excluding ramp) at `cycle` (from 1)"
-        inccycles = max(0, cycle + 1 - self.time_incrementcycle)
-        return self.time + inccycles * self.time_increment
-        # FIXME: is this right?
-
-    def temperatures_at_cycle(self, cycle: int) -> list[float]:
-        "Temperatures of the step at `cycle` (from 1)"
-        inccycles = max(0, cycle + 1 - self.temp_incrementcycle)
-        return [
-            x + inccycles * self.temp_increment
-            # FIXME: This actually applies to first cycle... why!?
-            for x in self.temperature_list
-        ]
-
-    @property
-    def repeat(self) -> int:
-        return 1
-
-    @property
-    def identifier(self) -> None:
-        return None
-
-    @property
-    def temperature_list(self) -> list[float]:
-        if isinstance(self.temperature, Sequence):
-            return list(self.temperature)
-        else:
-            return 6 * [self.temperature]
-
-    @property
-    def body(self) -> list[ProtoCommand]:
-        if self.collect:
-            return [
-                Ramp(
-                    self.temperature_list, self.temp_increment, self.temp_incrementcycle
-                ),
-                HACFILT(self.filters),
-                HoldAndCollect(
-                    self.time,
-                    self.time_increment,
-                    self.time_incrementcycle,
-                    None,
-                    self.tiff,
-                    self.quant,
-                    self.pcr,
-                ),
-            ]
-        else:
-            return [
-                Ramp(
-                    self.temperature_list, self.temp_increment, self.temp_incrementcycle
-                ),
-                Hold(
-                    self.time,
-                    self.time_increment,
-                    self.time_incrementcycle,
-                ),
-            ]
-
-    @classmethod
-    def from_xml(cls, e: ET.Element, *, etc=1, ehtc=1, he=False) -> Step:
-        collect = bool(int(e.findtext("CollectionFlag") or 0))
-        ts = [float(x.text or math.nan) for x in e.findall("Temperature")]
-        ht = int(e.findtext("HoldTime") or 0)
-        et = float(e.findtext("ExtTemperature") or 0.0)
-        eht = int(e.findtext("ExtHoldTime") or 0)
-        if not he:
-            et = 0
-            eht = 0
-        return Step(ht, ts, collect, et, etc, eht, ehtc, [], True)
-
-    def to_xml(self) -> ET.Element:
-        e = ET.Element("TCStep")
-        ET.SubElement(e, "CollectionFlag").text = str(
-            int(self.collect)
-        )  # FIXME: approx
-        for t in self.temperature_list:
-            ET.SubElement(e, "Temperature").text = str(t)
-        ET.SubElement(e, "HoldTime").text = str(self.time)
-        # FIXME: does not contain cycle starts, because AB format can't handle
-        ET.SubElement(e, "ExtTemperature").text = str(self.temp_increment)
-        ET.SubElement(e, "ExtHoldTime").text = str(self.time_increment)
-        # FIXME: RampRate, RampRateUnit
-        ET.SubElement(e, "RampRate").text = "1.6"
-        ET.SubElement(e, "RampRateUnit").text = "DEGREES_PER_SECOND"
-        return e
-
-    @classmethod
-    def _from_command_dict(cls, d):
-        coms = [x["command"] for x in d["body"]]
-        if coms == ["RAMP", "HACFILT", "HoldAndCollect"]:
-            c = cls(
-                d["body"][2]["args"][0],
-                d["body"][0]["args"],
-                time_incrementcycle=1,
-                temp_incrementcycle=1,
-            )
-            c.collect = True
-            if "args" in d["body"][1].keys():
-                c.filters = [FilterSet.fromstring(x) for x in d["body"][1]["args"]]
-            else:
-                c.filters = []
-            for k, v in d["body"][2]["opts"].items():
-                k = k.lower()
-                if "increment" in k:
-                    k = "time_" + k
-                setattr(c, k.lower(), v)
-            for k, v in d["body"][0]["opts"].items():
-                k = k.lower()
-                if "increment" in k:
-                    k = "temp_" + k
-                setattr(c, k.lower(), v)
-        elif coms == ["RAMP", "HOLD"]:
-            c = cls(
-                d["body"][1]["args"][0],
-                d["body"][0]["args"],
-                time_incrementcycle=1,
-                temp_incrementcycle=1,
-            )
-            c.collect = False
-            for k, v in d["body"][1]["opts"].items():
-                k = k.lower()
-                if "increment" in k:
-                    k = "time_" + k
-                setattr(c, k.lower(), v)
-            for k, v in d["body"][0]["opts"].items():
-                k = k.lower()
-                if "increment" in k:
-                    k = "temp_" + k
-                setattr(c, k.lower(), v)
-        else:
-            raise ValueError
-        return c
-
-    @classmethod
-    def fromdict(cls, d: dict[str, Any]) -> "Step":
-        return cls(**d)
-
-
-@dataclass
-class CustomStep(BaseStep):
-    _body: List[ProtoCommand] = field(init=False, repr=False)
-    body: Sequence[ProtoCommand]  # type: ignore
-    repeat: int = 1
-    identifier: int | str | None = None
-
-    @property
-    def body(self) -> List[ProtoCommand]:
-        return self._body
-
-    @body.setter
-    def body(self, v: Sequence[ProtoCommand]) -> None:
-        self._body = list(v)
-
-    def collect(self) -> bool:
-        return False
-
-    def temperatures_at_cycle(self, cycle: int) -> list[float]:
-        return 6 * [math.nan]
-
-    def total_duration(self, repeat: int = 1) -> int:
-        return 0
-
-    def info_str(self, index: None | int = None, repeats: int = 1) -> str:
-        if index is not None:
-            s = f"{index}. "
-        else:
-            s = f"- "
-        s += f"Step{' '+str(self.identifier) if self.identifier is not None else ''} of commands:\n"
-        s += "\n".join(f"  {i+1}. " + c.to_command() for i, c in enumerate(self.body))
-        return s
