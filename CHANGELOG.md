@@ -3,8 +3,11 @@
 ## Version 0.5.0
 
 - Implement EDS-file (in-progress and complete) synchronization for monitor.
+- Units throughout protocols, thanks to Pint: you can now use strings like '1 hr' or '52 °C' when defining protocols.
+- Automatic connections throughout Machine and Experiment, by default.
 - Change safe titles from spaces-as-"-" to spaces-as-"_", consistent with machine.
-
+- Deprecated paramiko tunnel.
+- 
 ## Version 0.4.1
 
 - Allow setting of Experiment.sample_wells.
