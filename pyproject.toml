@@ -44,8 +44,8 @@ dependencies = [
 "nest_asyncio >= 1.5",
 "click >=8.0,<9.0",
 "toml",
-"sshtunnel",
-"paramiko",
+"pint",
+"attrs",
 "matplotlib",
 "markdown",
 "dacite"
