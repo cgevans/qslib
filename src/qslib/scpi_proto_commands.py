@@ -52,7 +52,7 @@ class SCPICommand:
                 return f"<quote>{v}</quote>"
             else:
                 return shlex.quote(v)
-        elif isinstance(v, (int, float | np.number)):
+        elif isinstance(v, (int, float, np.number)):
             return str(v)
         elif isinstance(v, (Sequence, np.ndarray)):
             if isinstance(v[0], SCPICommand):
