@@ -1,9 +1,10 @@
 from __future__ import annotations
+
+from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from typing import Any, ClassVar, Literal, Sequence
-import pandas as pd
-from abc import abstractmethod, ABCMeta
 
+import pandas as pd
 
 ScopeType = Literal["all", "limited"]
 

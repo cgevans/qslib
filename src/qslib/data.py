@@ -5,13 +5,11 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from glob import glob
 from os import PathLike
-from typing import Optional, Union, List, cast, Literal
+from typing import List, Literal, Optional, Union, cast
 
 import numpy as np
-import pandas as pd
-
 import numpy.typing as npt
-
+import pandas as pd
 
 _UPPERS = "ABCDEFGHIJKLMNOP"
 

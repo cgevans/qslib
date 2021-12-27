@@ -1,33 +1,31 @@
 from __future__ import annotations
-from dataclasses import dataclass
-import os
-import time
-from typing import Iterable, TextIO, Type, Union, Dict, Tuple, cast, List, Optional, Any
-import zipfile
-from nio.client import AsyncClient
-import re
-import asyncio
-from pathlib import Path
-import shutil
 
-from nio.client.async_client import AsyncClientConfig
-from nio.responses import JoinedRoomsError
+import asyncio
+import functools
+import logging
+import os
+import re
+import shutil
+import time
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, TextIO, Tuple, Type, Union, cast
+
 import numpy as np
 import numpy.typing as npt
-from qslib.base import AccessLevel, RunStatus
-
-from qslib.qs_is_protocol import CommandError
-from .parser import ArgList
-
-from qslib.plate_setup import PlateSetup
-from qslib.qsconnection_async import FilterDataFilename, QSConnectionAsync
-
-import logging
-
 from influxdb_client import InfluxDBClient, Point  # , Point, WritePrecision
 from influxdb_client.client.write_api import ASYNCHRONOUS
+from nio.client import AsyncClient
+from nio.client.async_client import AsyncClientConfig
+from nio.responses import JoinedRoomsError
 
-import functools
+from qslib.base import AccessLevel, RunStatus
+from qslib.plate_setup import PlateSetup
+from qslib.qs_is_protocol import CommandError
+from qslib.qsconnection_async import FilterDataFilename, QSConnectionAsync
+
+from .parser import ArgList
 
 log = logging.getLogger("monitor")
 

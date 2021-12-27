@@ -4,13 +4,12 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from io import BytesIO
-from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple, List, Dict, Union
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 from uuid import uuid1
 
 import numpy as np
 import pandas as pd
 import tabulate
-
 
 from .qsconnection_async import QSConnectionAsync
 

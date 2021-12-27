@@ -1,5 +1,11 @@
 from __future__ import annotations
+
+import logging
+import math
+import textwrap
+import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field
 from itertools import zip_longest
 from typing import (
@@ -16,23 +22,18 @@ from typing import (
     cast,
 )
 
-from .base import RunStatus
-import math
-from . import __version__
+import attr
+import numpy as np
+import pandas as pd
+import pint
 
 from qslib.data import FilterSet
-from . import parser as qp
-import textwrap
-import xml.etree.ElementTree as ET
-import pandas as pd
-import numpy as np
-from .util import *
-import logging
-from copy import deepcopy
-from .scpi_proto_commands import SCPICommand
 
-import attr
-import pint
+from . import __version__
+from . import parser as qp
+from .base import RunStatus
+from .scpi_proto_commands import SCPICommand
+from .util import *
 
 NZONES = 6
 
@@ -1094,7 +1095,6 @@ class Protocol(XMLable):
         import matplotlib.pyplot as plt
 
         #    try:
-
         #    except ModuleNotFoundError:
         #        raise "
 

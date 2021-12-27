@@ -1,11 +1,12 @@
 from __future__ import annotations
-import textwrap
+
 import shlex
+import textwrap
+from dataclasses import dataclass
 from typing import Protocol, Sequence
 
 import numpy as np
 import pint
-from dataclasses import dataclass
 
 UR = pint.get_application_registry()
 

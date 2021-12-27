@@ -1,15 +1,15 @@
 import argparse
+import asyncio
 import logging
 import sys
+from pathlib import Path
 from typing import List
 
-from . import __version__
-
-from .monitor import Collector, Config
 import toml
-from pathlib import Path
-import asyncio
 from dacite.core import from_dict
+
+from . import __version__
+from .monitor import Collector, Config
 
 __author__ = "Constantine Evans"
 __copyright__ = "Constantine Evans"

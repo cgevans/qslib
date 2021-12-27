@@ -11,39 +11,26 @@ import zipfile
 from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from glob import glob
-from typing import (
-    IO,
-    Any,
-    Collection,
-    Literal,
-    Mapping,
-    Sequence,
-    Union,
-    cast,
-)
 from pathlib import Path
-
-import numpy as np
-
+from typing import IO, Any, Collection, Literal, Mapping, Sequence, Union, cast
 from warnings import warn
 
-from pandas.core.base import DataError
-
-from .rawquant_compat import _fdc_to_rawdata
-
-
+import numpy as np
 import pandas as pd
 import toml as toml
+from pandas.core.base import DataError
+
 from qslib.base import AccessLevel
 from qslib.plate_setup import PlateSetup
 
+from . import __version__
 from .base import RunStatus
-from .data import FilterSet, df_from_readings, FilterDataReading
+from .data import FilterDataReading, FilterSet, df_from_readings
 from .machine import Machine
+from .normalization import Normalizer, NormRaw
+from .rawquant_compat import _fdc_to_rawdata
 from .tcprotocol import Protocol, Stage, Step
 from .util import *
-from . import __version__
-from .normalization import Normalizer, NormRaw
 
 TEMPLATE_NAME = "ruo"
 

@@ -1,7 +1,7 @@
-from .machine import Machine, MachineStatus, RunStatus
-from .experiment import Experiment, PlateSetup, Protocol, Stage, Step
-from .normalization import NormToMeanPerWell, NormRaw
 from . import tcprotocol as tc
+from .experiment import Experiment, PlateSetup, Protocol, Stage, Step
+from .machine import Machine, MachineStatus, RunStatus
+from .normalization import NormRaw, NormToMeanPerWell
 
 __all__ = (
     "Machine",

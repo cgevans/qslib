@@ -1,10 +1,12 @@
 import asyncio
+import re
+
 import pytest
 import pytest_asyncio
+
+import qslib.qs_is_protocol
 from qslib.common import Machine
 from qslib.qsconnection_async import QSConnectionAsync
-import re
-import qslib.qs_is_protocol
 
 
 def crcb(crlist):
