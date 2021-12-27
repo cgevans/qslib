@@ -1,5 +1,6 @@
-from qslib.base import AccessLevel
 import pytest
+
+from qslib.base import AccessLevel
 
 levels = ["Guest", "Observer", "Controller", "Administrator", "Full"]
 

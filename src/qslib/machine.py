@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from asyncio.futures import Future
 import base64
-from functools import wraps
 import logging
 import re
 import zipfile
+from asyncio.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass
-from typing import Any, Generator, IO, Literal, overload
+from functools import wraps
+from typing import IO, Any, Generator, Literal, overload
 
 import nest_asyncio
 
@@ -22,7 +22,7 @@ from .util import _unwrap_tags
 
 nest_asyncio.apply()
 
-from .base import RunStatus, MachineStatus, AccessLevel
+from .base import AccessLevel, MachineStatus, RunStatus
 
 log = logging.getLogger(__name__)
 

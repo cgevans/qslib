@@ -1,10 +1,12 @@
-from os import PathLike
-import pytest  # noqa
-import qslib.tcprotocol as tc
-import numpy as np
-from qslib.common import Experiment
-from qslib.tcprotocol import Stage, Step, Protocol
 import pathlib
+from os import PathLike
+
+import numpy as np
+import pytest  # noqa
+
+import qslib.tcprotocol as tc
+from qslib.common import Experiment
+from qslib.tcprotocol import Protocol, Stage, Step
 
 PROTSTRING = """PROTocol -volume=30 -runmode=standard testproto <multiline.protocol>
 \tSTAGe 1 STAGE_1 <multiline.stage>

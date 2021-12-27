@@ -1,8 +1,9 @@
 from __future__ import annotations
+
+import re
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Sequence, Union
-import xml.etree.ElementTree as ET
-import re
 
 
 def _find_or_create(element: ET.Element | ET.ElementTree, path: str) -> ET.Element:

@@ -1,12 +1,14 @@
 from __future__ import annotations
-import click
+
+import time
+from dataclasses import dataclass
 from pathlib import Path
+
+import click
+
 from qslib.common import Experiment, Machine
 from qslib.machine import AccessLevel
-from qslib.qs_is_protocol import InsufficientAccess, AuthError, AccessLevelExceeded
-import click
-from dataclasses import dataclass
-import time
+from qslib.qs_is_protocol import AccessLevelExceeded, AuthError, InsufficientAccess
 
 
 @click.group()

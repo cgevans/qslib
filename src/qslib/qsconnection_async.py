@@ -1,25 +1,25 @@
 from __future__ import annotations
-import asyncio
-import io
-from typing import Any, Dict, Optional, List, Union, Literal, cast, overload
-import hmac
-import re
-import base64
 
-from qslib.scpi_proto_commands import SCPICommand
-from .qs_is_protocol import CommandError, Error, QS_IS_Protocol, NoMatch
-from .parser import ArgList
+import asyncio
+import base64
+import hmac
+import io
+import logging
+import re
+import shlex
+import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
+from typing import Any, Dict, List, Literal, Optional, Union, cast, overload
 
+import pandas as pd
 
 import qslib.data as data
-import shlex
-import pandas as pd
-import xml.etree.ElementTree as ET
-from .base import AccessLevel
+from qslib.scpi_proto_commands import SCPICommand
 
-import logging
+from .base import AccessLevel
+from .parser import ArgList
+from .qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
 
 log = logging.getLogger(__name__)
 

@@ -1,11 +1,11 @@
+import asyncio
+import uuid
 from asyncio.futures import Future
+
 import pytest
 import pytest_asyncio
-import uuid
 
 from qslib.common import *
-
-import asyncio
 
 
 @pytest.mark.asyncio

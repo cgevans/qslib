@@ -1,17 +1,17 @@
 from __future__ import annotations
+
 import asyncio
-from asyncio.futures import Future
+import io
 import logging
 import re
-import io
+import time
+from asyncio.futures import Future
 from dataclasses import dataclass
 from typing import Any, Coroutine, Optional, Protocol, Type
-import time
-
-from .scpi_proto_commands import SCPICommand
 
 from qslib.base import AccessLevel
 
+from .scpi_proto_commands import SCPICommand
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
 Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")

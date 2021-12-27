@@ -1,12 +1,10 @@
-import pytest  # noqa
-
-from qslib.qsconnection_async import FilterDataFilename
-
-from qslib.util import _pp_seqsliceint
-
 from dataclasses import astuple
 
+import pytest  # noqa
+
 from qslib.data import FilterSet
+from qslib.qsconnection_async import FilterDataFilename
+from qslib.util import _pp_seqsliceint
 
 
 @pytest.mark.parametrize("stage", [1, 63, 2623])

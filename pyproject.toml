@@ -12,6 +12,9 @@ version_scheme = "no-guess-dev"
 [tool.pdm]
 version = {use_scm = true}
 
+[tool.isort]
+profile = "black"
+
 [project]
 name = "qslib"
 requires-python = ">=3.9"

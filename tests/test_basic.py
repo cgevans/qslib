@@ -1,8 +1,8 @@
 import pytest
 
-from qslib.data import FilterSet
-import qslib.qsconnection_async as qsa
 import qslib.qs_is_protocol as qsp
+import qslib.qsconnection_async as qsa
+from qslib.data import FilterSet
 
 
 def test_filterset_strings() -> None:
