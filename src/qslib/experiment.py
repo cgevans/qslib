@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import dataclasses
 import io
 import logging
 import os
@@ -21,7 +20,6 @@ from typing import (
     Sequence,
     Union,
     cast,
-    ForwardRef,
 )
 from pathlib import Path
 

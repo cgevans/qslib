@@ -1,7 +1,6 @@
 from __future__ import annotations
 import asyncio
 from asyncio.futures import Future
-from email import message
 import logging
 import re
 import io

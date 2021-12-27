@@ -1,11 +1,7 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
-from asyncio.base_subprocess import BaseSubprocessTransport
-from audioop import ratecv
 from dataclasses import dataclass, field
-import dataclasses
 from itertools import zip_longest
-from sqlite3 import converters
 from typing import (
     Any,
     Callable,
@@ -13,16 +9,12 @@ from typing import (
     Collection,
     Iterable,
     List,
-    Mapping,
     Optional,
     Sequence,
     Tuple,
     Type,
-    Union,
     cast,
 )
-
-from docstring_to_markdown import convert
 
 from .base import RunStatus
 import math
@@ -37,7 +29,7 @@ import numpy as np
 from .util import *
 import logging
 from copy import deepcopy
-from .scpi_proto_commands import SCPICommand, SCPICommandLike
+from .scpi_proto_commands import SCPICommand
 
 import attr
 import pint

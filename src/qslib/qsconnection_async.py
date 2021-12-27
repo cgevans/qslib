@@ -1,7 +1,7 @@
 from __future__ import annotations
 import asyncio
 import io
-from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast, overload
+from typing import Any, Dict, Optional, List, Union, Literal, cast, overload
 import hmac
 import re
 import base64
@@ -11,7 +11,6 @@ from .qs_is_protocol import CommandError, Error, QS_IS_Protocol, NoMatch
 from .parser import ArgList
 import zipfile
 from dataclasses import dataclass
-from attr import asdict
 
 
 import qslib.data as data

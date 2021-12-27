@@ -1,6 +1,5 @@
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any
 import pyparsing as pp
 
 pp.ParserElement.setDefaultWhitespaceChars("")

@@ -7,7 +7,6 @@ from qslib.qs_is_protocol import InsufficientAccess, AuthError, AccessLevelExcee
 import click
 from dataclasses import dataclass
 import time
-import sys
 
 
 @click.group()
