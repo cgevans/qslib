@@ -5,10 +5,13 @@ from typing import Any, Dict, Optional, List, Tuple, Union, Literal, cast, overl
 import hmac
 import re
 import base64
+
+from qslib.scpi_proto_commands import SCPICommand
 from .qs_is_protocol import CommandError, Error, QS_IS_Protocol, NoMatch
 from .parser import ArgList
 import zipfile
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
+from attr import asdict
 
 
 import qslib.data as data
@@ -79,34 +82,6 @@ class FilterDataFilename:
             and (self.step == other.step)
             and (self.point == other.point)
         )
-
-
-def _validate_command_format(commandstring: str) -> None:
-    # This is meant to validate that the command will not mess up comms
-    # The command may be completely malformed otherwise
-
-    tagseq: List[Tuple[str, str, str]] = re.findall(
-        r"<(/?)([\w.]+)[ *]*>|(\n)", commandstring.rstrip()
-    )  # tuple of close?,tag,newline?
-
-    tagstack: List[str] = []
-    for c, t, n in tagseq:
-        if n and not tagstack:
-            raise ValueError("newline outside of quotation")
-        elif t and not c:
-            tagstack.append(t)
-        elif c:
-            if not tagstack:
-                raise ValueError(f"unbalanced tag <{c}{t}>")
-            opentag = tagstack.pop()
-            if opentag != t:
-                raise ValueError(f"unbalanced tags <{opentag}> <{c}{t}>")
-        elif n:
-            continue
-        else:
-            raise ValueError("Unknown")
-    if tagstack:
-        raise ValueError("Unclosed tags")
 
 
 class QSConnectionAsync:
@@ -307,21 +282,20 @@ class QSConnectionAsync:
 
         return resp
 
-    async def run_command_to_bytes(self, command: str, just_ack: bool = True) -> bytes:
-        command = command.rstrip()
-
-        _validate_command_format(command)
+    async def run_command_to_bytes(
+        self, command: str | bytes | SCPICommand, just_ack: bool = True
+    ) -> bytes:
         try:
             return (
-                await self._protocol.run_command(
-                    command.rstrip().encode(), just_ack=just_ack
-                )
+                await self._protocol.run_command(command, just_ack=just_ack)
             ).rstrip()
         except CommandError as e:
             e.__traceback__ = None
             raise e
 
-    async def run_command(self, command: str, just_ack: bool = False) -> str:
+    async def run_command(
+        self, command: str | bytes | SCPICommand, just_ack: bool = False
+    ) -> str:
         try:
             return (await self.run_command_to_bytes(command, just_ack)).decode()
         except CommandError as e:
@@ -329,18 +303,18 @@ class QSConnectionAsync:
             raise e
 
     async def authenticate(self, password: str) -> None:
-        challenge_key = await self.run_command("CHAL?")
+        challenge_key = await self.run_command(SCPICommand("CHAL?"))
         auth_rep = _gen_auth_response(password, challenge_key)
-        await self.run_command(f"AUTH {auth_rep}")
+        await self.run_command(SCPICommand("AUTH", auth_rep))
 
     async def set_access_level(self, level: AccessLevel) -> None:
-        await self.run_command("ACC " + level.value)
+        await self.run_command(SCPICommand("ACC", level.value))
 
     async def get_expfile_list(
         self, glob: str, allow_nomatch: bool = False
     ) -> List[str]:
         try:
-            fl = await self.run_command(f"EXP:LIST? {shlex.quote(glob)}")
+            fl = await self.run_command(SCPICommand("EXP:LIST?", glob))
         except NoMatch as ce:
             if allow_nomatch:
                 return []
@@ -401,7 +375,7 @@ class QSConnectionAsync:
         else:
             contexts = context + ":"
         reply = await self.run_command_to_bytes(
-            f"{leaf}:READ? -encoding={encoding} {shlex.quote(contexts + path)}"
+            SCPICommand(f"{leaf}:READ?", contexts + path, encoding=encoding)
         )
         assert reply.startswith(b"<quote>\n")
         assert reply.endswith(b"</quote>")

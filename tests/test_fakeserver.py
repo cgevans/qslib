@@ -140,6 +140,8 @@ async def test_connection():
 
         m = Machine("localhost", port=53533)
 
+        m.connect()
+
         assert m.connected is True
 
         assert m._connection is not None
