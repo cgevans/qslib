@@ -7,8 +7,12 @@ from pathlib import Path
 import click
 
 from qslib.common import Experiment, Machine
-from qslib.machine import AccessLevel
-from qslib.qs_is_protocol import AccessLevelExceeded, AuthError, InsufficientAccess
+from qslib.scpi_commands import AccessLevel
+from qslib.qs_is_protocol import (
+    AccessLevelExceeded,
+    AuthError,
+    InsufficientAccess,
+)
 
 
 @click.group()

@@ -23,7 +23,7 @@ def exp_reloaded(
 def test_props(exp: Experiment, exp_reloaded: Experiment):
     assert exp.name == "2020-02-20_170706"
 
-    assert exp.info() == str(exp)
+    assert exp.info() == str(exp) == exp.summary()
 
 
 def test_reload(exp: Experiment, exp_reloaded: Experiment):

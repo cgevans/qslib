@@ -33,6 +33,9 @@ class BaseStatus(ABC):
         out = connection.run_command_bytes(cls._com)
         return cls.from_bytes(out)
 
+    def __init__(self, **kwargs) -> None:  # pragma: no cover
+        ...
+
     @classmethod
     def from_bytes(cls: Type[T], out: bytes) -> T:
         return cls(
@@ -92,49 +95,3 @@ class MachineStatus(BaseStatus):
     }
 
     _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
-
-
-_accesslevel_order: Dict[str, int] = {
-    "Guest": 0,
-    "Observer": 1,
-    "Controller": 2,
-    "Administrator": 3,
-    "Full": 4,
-}
-
-
-class AccessLevel(Enum):
-    Guest = "Guest"
-    Observer = "Observer"
-    Controller = "Controller"
-    Administrator = "Administrator"
-    Full = "Full"
-    value: str
-
-    def __gt__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] > _accesslevel_order[other.value]
-
-    def __ge__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] >= _accesslevel_order[other.value]
-
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] < _accesslevel_order[other.value]
-
-    def __le__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] <= _accesslevel_order[other.value]
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] == _accesslevel_order[other.value]
-
-    def __str__(self) -> str:
-        return self.value

@@ -32,19 +32,8 @@ def _set_or_create(
     return e
 
 
-def _text_or_none(element: ET.Element | ET.ElementTree, path: str) -> Union[str, None]:
-    if (e := element.find(path)) is not None:
-        return e.text
-    else:
-        return None
-
-
 def _unwrap_tags(s: str) -> str:
     return re.sub(r"^<[^>]+?>\n?(.*)\n?</[^>]+?>$", r"\1", s)
-
-
-def _unwrap_tags_bytes(s: bytes) -> bytes:
-    return re.sub(rb"^<[^>]+?>\n?(.*)\n?</[^>]+?>$", rb"\1", s)
 
 
 def _nowuuid() -> str:
@@ -73,9 +62,7 @@ def _pp_seqsliceint(sss: Sequence | slice | int) -> str:
 __all__ = (
     "_find_or_create",
     "_set_or_create",
-    "_text_or_none",
     "_unwrap_tags",
-    "_unwrap_tags_bytes",
     "_nowuuid",
     "_pp_seqsliceint",
 )

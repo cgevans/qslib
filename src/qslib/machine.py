@@ -14,7 +14,7 @@ from typing import IO, Any, Generator, Literal, overload
 import nest_asyncio
 
 from qslib.qs_is_protocol import CommandError
-from qslib.scpi_proto_commands import SCPICommand
+from qslib.scpi_commands import SCPICommand, AccessLevel
 
 from .qsconnection_async import QSConnectionAsync
 from .tcprotocol import Protocol
@@ -22,7 +22,7 @@ from .util import _unwrap_tags
 
 nest_asyncio.apply()
 
-from .base import AccessLevel, MachineStatus, RunStatus
+from .base import MachineStatus, RunStatus
 
 log = logging.getLogger(__name__)
 
@@ -476,8 +476,8 @@ class Machine:
         pn, svs, rm = self.run_command(
             "RET ${Protocol} ${SampleVolume} ${RunMode}"
         ).split()
-        p = f"PROT -volume={svs} -runmod={rm} {pn} " + p
-        return Protocol.from_command(p)
+        p = f"PROT -volume={svs} -runmode={rm} {pn} " + p
+        return Protocol.from_scpicommand(SCPICommand.from_string(p))
 
     def set_access_level(
         self,

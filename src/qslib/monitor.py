@@ -20,12 +20,11 @@ from nio.client import AsyncClient
 from nio.client.async_client import AsyncClientConfig
 from nio.responses import JoinedRoomsError
 
-from qslib.base import AccessLevel, RunStatus
+from qslib.base import RunStatus
+from qslib.scpi_commands import AccessLevel, ArgList
 from qslib.plate_setup import PlateSetup
 from qslib.qs_is_protocol import CommandError
 from qslib.qsconnection_async import FilterDataFilename, QSConnectionAsync
-
-from .parser import ArgList
 
 log = logging.getLogger("monitor")
 
@@ -92,7 +91,7 @@ class RunState:
     plate_setup: Optional[PlateSetup] = None
 
     async def refresh(self, c: QSConnectionAsync) -> None:
-        runmsg = ArgList(await c.run_command("RunProgress?"))
+        runmsg = ArgList.from_string(await c.run_command("RunProgress?"))
         name = cast(str, runmsg.opts["RunTitle"])
         if name == "-":
             self.name = None
@@ -144,13 +143,13 @@ class MachineState:
     drawer: str
 
     async def refresh(self, c: QSConnectionAsync) -> None:
-        targmsg = ArgList(await c.run_command("TBC:SETT?"))
+        targmsg = ArgList.from_string(await c.run_command("TBC:SETT?"))
         self.cover_target = cast(float, targmsg.opts["Cover"])
         self.zone_targets = cast(
             List[float], [targmsg.opts[f"Zone{i}"] for i in range(1, 7)]
         )
 
-        contmsg = ArgList(await c.run_command("TBC:CONT?"))
+        contmsg = ArgList.from_string(await c.run_command("TBC:CONT?"))
         self.cover_control = cast(bool, contmsg.opts["Cover"])
         self.zone_controls = cast(
             List[bool], [contmsg.opts[f"Zone{i}"] for i in range(1, 7)]
@@ -445,7 +444,7 @@ class Collector:
 
         assert timestamp is not None
         timestamp = int(1e9 * timestamp)
-        msg = ArgList(message_str)
+        msg = ArgList.from_string(message_str)
         log.debug(msg)
         contents = msg.args
         action = cast(str, contents[0])
@@ -612,7 +611,7 @@ class Collector:
             self.run_log_file.write(f"{topic.decode()} {timestamp} {message.decode()}")
             self.run_log_file.flush()
         assert timestamp is not None
-        args = ArgList(message.decode()).opts
+        args = ArgList.from_string(message.decode()).opts
         log.debug(f"Handling message {topic.decode()} {message.decode()}")
         if topic == b"Temperature":
             recs = []
