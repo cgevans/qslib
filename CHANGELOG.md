@@ -50,7 +50,7 @@
 - Handle some different inputs for Protocol creation.
 - Try to handle spaces in names better; this is still a problem, howver.
 
-## Verson 0.1.1
+## Version 0.1.1
 
 Various small improvements and bug fixes.
 

@@ -145,9 +145,7 @@ def info(experiment: str) -> None:
 @cli.command()
 @click.argument("experiment", type=click.Path(exists=True))
 @click.argument("machine")
-@click.option("-t", "--tunnel-host")
-@click.option("-u", "--tunnel-user")
-def run(experiment: str, machine: str, tunnel_host: str, tunnel_user: str) -> None:
+def run(experiment: str, machine: str) -> None:
     """Run an experiment."""
     exp = Experiment.from_file(experiment)
 
@@ -167,9 +165,7 @@ def run(experiment: str, machine: str, tunnel_host: str, tunnel_user: str) -> No
 @cli.command()
 @click.argument("machine")
 @click.argument("state", type=click.Choice(["on", "off"]))
-@click.option("-t", "--tunnel-host")
-@click.option("-u", "--tunnel-user")
-def machine_power(machine: str, tunnel_host: str, tunnel_user: str, state: str) -> None:
+def machine_power(machine: str, state: str) -> None:
     """Turn the lamp/heat-block on or off (if idle)."""
     m = Machine(
         machine,
@@ -192,9 +188,7 @@ def machine_power(machine: str, tunnel_host: str, tunnel_user: str, state: str) 
 
 @cli.command()
 @click.argument("machine")
-@click.option("-t", "--tunnel-host")
-@click.option("-u", "--tunnel-user")
-def machine_status(machine: str, tunnel_host: str, tunnel_user: str) -> None:
+def machine_status(machine: str) -> None:
     """Print the current status of a machine."""
     m = Machine(
         machine,
@@ -250,9 +244,7 @@ def machine_status(machine: str, tunnel_host: str, tunnel_user: str) -> None:
 
 @cli.command()
 @click.argument("machine")
-@click.option("-t", "--tunnel-host")
-@click.option("-u", "--tunnel-user")
-def list_stored(machine: str, tunnel_host: str, tunnel_user: str) -> None:
+def list_stored(machine: str) -> None:
     """List experiments stored on a machine."""
     m = Machine(
         machine,
@@ -266,14 +258,10 @@ def list_stored(machine: str, tunnel_host: str, tunnel_user: str) -> None:
 
 @cli.command()
 @click.argument("machine")
-@click.option("-t", "--tunnel-host")
-@click.option("-u", "--tunnel-user")
 @click.argument("experiment")
 @click.option("-o", "--output", type=click.Path())
 def copy(
     machine: str,
-    tunnel_host: str,
-    tunnel_user: str,
     experiment: str,
     output: str | None,
 ) -> None:
