@@ -6,6 +6,7 @@ import pytest
 import pytest_asyncio
 
 from qslib.common import *
+from qslib.experiment import MachineBusyError, AlreadyExistsError
 
 
 @pytest.mark.asyncio
@@ -31,6 +32,11 @@ async def test_real_experiment():
     m = Machine("localhost", port=7000, max_access_level="Controller")
 
     exp.run("localhost")
+
+    with pytest.raises(
+        MachineBusyError, match=r"Machine localhost:7000 is currently busy: .*"
+    ):
+        exp.run("localhost")
 
     exp.sync_from_machine(m)
 
@@ -64,6 +70,14 @@ async def test_real_experiment():
 
     await asyncio.sleep(10)
 
+    exp.sync_from_machine(m)
+
+    exp.sync_from_machine(m)
+
     exp3 = Experiment.from_machine("localhost", exp.name)
 
     assert exp2.name == exp3.name
+
+    # with pytest.raises(AlreadyExistsError, match=f"Run {exp.name} exists.*"):
+    #     exp.runstate = "INIT"
+    #     exp.run("localhost")

@@ -9,9 +9,7 @@ from asyncio.futures import Future
 from dataclasses import dataclass
 from typing import Any, Coroutine, Optional, Protocol, Type
 
-from qslib.base import AccessLevel
-
-from .scpi_proto_commands import SCPICommand
+from .scpi_commands import SCPICommand, AccessLevel
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
 Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")
@@ -302,7 +300,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         if isinstance(comm, str):
             comm = comm.encode()
         elif isinstance(comm, SCPICommand):
-            comm = comm.to_command_string().encode()
+            comm = comm.to_string().encode()
         comm = comm.rstrip()
         _validate_command_format(comm)
         log.debug(f"Running command {comm.decode()}")

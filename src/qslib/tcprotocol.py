@@ -19,6 +19,7 @@ from typing import (
     Sequence,
     Tuple,
     Type,
+    TypeVar,
     cast,
 )
 
@@ -30,10 +31,10 @@ import pint
 from qslib.data import FilterSet
 
 from . import __version__
-from . import parser as qp
 from .base import RunStatus
-from .scpi_proto_commands import SCPICommand
+from .scpi_commands import SCPICommand
 from .util import *
+from qslib import scpi_commands
 
 NZONES = 6
 
@@ -46,10 +47,9 @@ log = logging.getLogger(__name__)
 
 
 def _wrapunit(
-    unit: pint.Unit | str,
+    unitstr: str,
 ) -> Callable[[int | float | str | pint.Quantity[Any]], pint.Quantity[Any]]:
-    if isinstance(unit, str):
-        unit = UR(unit)
+    unit: pint.Unit = UR(unitstr)
 
     def _wrapper(val: int | float | str | pint.Quantity[Any]) -> pint.Quantity[Any]:
         if isinstance(val, str):
@@ -66,7 +66,7 @@ def _wrapunit(
 
 
 def _wrapunitmaybelist(
-    unit: pint.Unit | str,
+    unitstr: str,
 ) -> Callable[
     [
         int
@@ -77,8 +77,7 @@ def _wrapunitmaybelist(
     ],
     pint.Quantity[float] | pint.Quantity[np.ndarray],
 ]:
-    if isinstance(unit, str):
-        unit = UR(unit)
+    unit: pint.Unit = UR(unitstr)
 
     def _wrapper(
         val: int
@@ -90,6 +89,9 @@ def _wrapunitmaybelist(
         if isinstance(val, pint.Quantity):
             uv = val
             uv.check(unit)
+        elif isinstance(val, str):
+            uv = UR(val)
+            uv.check(unit)
         elif isinstance(val, Sequence):
             m = []
             for x in val:
@@ -100,9 +102,6 @@ def _wrapunitmaybelist(
                 else:
                     m.append(x)
             return UR.Quantity(m, unit)
-        elif isinstance(val, str):
-            uv = UR(val)
-            uv.check(unit)
         else:
             uv = UR.Quantity(val, unit)
         return uv
@@ -143,10 +142,23 @@ def _durformat(time: pint.Quantity[int]) -> str:
     return s
 
 
+T = TypeVar("T")
+
+
 class ProtoCommand(ABC):
     @abstractmethod
-    def to_scpicommand(self, **kwargs) -> SCPICommand:
+    def to_scpicommand(self, **kwargs) -> SCPICommand:  # pragma: no cover
         ...
+
+    def __init__(self, *args, **kwargs) -> None:  # pragma: no cover
+        ...
+
+    @classmethod
+    def from_scpicommand(cls: Type[T], sc: SCPICommand) -> T:  # pragma: no cover
+        ...
+
+
+_ZEROTEMPDELTA = UR.Quantity(0.0, "delta_degC")
 
 
 @attr.define
@@ -154,38 +166,48 @@ class Ramp(ProtoCommand):
     temperature: pint.Quantity[np.ndarray] = attr.field(
         converter=_wrapunitmaybelist("degC"), on_setattr=attr.setters.convert
     )
-    increment: pint.Quantity[float] | None = attr.field(
-        converter=(lambda x: _wrapunit("delta_degC")(x) if x else None),
+    increment: pint.Quantity[float] = attr.field(
+        converter=(lambda x: _wrapunit("delta_degC")(x) if x else _ZEROTEMPDELTA),
+        on_setattr=attr.setters.convert,
+        default=_ZEROTEMPDELTA,
+    )
+    incrementcycle: int = 1
+    incrementstep: int = 1
+    rate: float = 100.0  # This is a percent
+    cover: pint.Quantity[float] | None = attr.field(
+        converter=(lambda x: _wrapunit("degC")(x) if x else None),
         on_setattr=attr.setters.convert,
         default=None,
     )
-    incrementcycle: int | None = None
-    incrementstep: int | None = None
-    rate: pint.Quantity[float] | None = None
-    cover: pint.Quantity[float] | None = None
+    _names: ClassVar[Sequence[str]] = ("RAMP",)
 
     def to_scpicommand(self, **kwargs) -> SCPICommand:
         opts = {}
 
-        if self.increment is not None:
+        if self.increment != _ZEROTEMPDELTA:
             opts["increment"] = self.increment.to("delta_degC").magnitude
-        if self.incrementcycle is not None:
+        if self.incrementcycle != 1:
             opts["incrementcycle"] = self.incrementcycle
-        if self.incrementstep is not None:
+        if self.incrementstep != 1:
             opts["incrementstep"] = self.incrementstep
-        if self.rate is not None:
-            opts["rate"] = self.rate.to("delta_degC / second").magnitude  # FIXME
+        if self.rate != 100.0:
+            opts["rate"] = self.rate
         if self.cover is not None:
             opts["cover"] = self.cover.to("degC").magnitude
 
         return SCPICommand("RAMP", *self.temperature.to("degC").magnitude, **opts)
 
+    @classmethod
+    def from_scpicommand(cls, sc: SCPICommand) -> Ramp:
+        return Ramp(UR.Quantity(sc.args, "degC"), **sc.opts)
+
 
 @dataclass
 class Exposure(ProtoCommand):
     # We don't support persistent... it doesn't seem safe
-    settings: List[Tuple[FilterSet, Sequence[int]]]
+    settings: Sequence[Tuple[FilterSet, Sequence[int]]]
     state: str = "HoldAndCollect"
+    _names: ClassVar[Sequence[str]] = ("EXP", "EXPOSURE")
 
     def to_scpicommand(self, **kwargs) -> SCPICommand:
         settingstrings = [
@@ -198,6 +220,14 @@ class Exposure(ProtoCommand):
             state=self.state,
         )
 
+    @classmethod
+    def from_scpicommand(cls: Type[T], sc: SCPICommand) -> Exposure:
+        filts = [
+            (FilterSet.fromstring(x.split(",")[0]), [int(y) for y in x.split(",")[1:]])
+            for x in cast(Sequence[str], sc.args)
+        ]
+        return Exposure(filts, **sc.opts)
+
 
 @attr.define
 class HACFILT(ProtoCommand):
@@ -205,6 +235,7 @@ class HACFILT(ProtoCommand):
         converter=lambda x: [FilterSet.fromstring(f) for f in x],
         on_setattr=attr.setters.convert,
     )
+    _names: ClassVar[Sequence[str]] = ("HoldAndCollectFILTer", "HACFILT")
 
     def to_scpicommand(self, default_filters=None, **kwargs) -> SCPICommand:
         return SCPICommand(
@@ -214,24 +245,29 @@ class HACFILT(ProtoCommand):
             ),  # FIXME
         )
 
+    @classmethod
+    def from_scpicommand(cls, sc: SCPICommand) -> HACFILT:
+        return HACFILT([FilterSet.fromstring(x) for x in cast(Iterable[str], sc.args)])
+
 
 @dataclass
 class HoldAndCollect(ProtoCommand):
     time: pint.Quantity[int]
-    increment: pint.Quantity[int] | None = None
-    incrementcycle: int | None = None
-    incrementstep: int | None = None
+    increment: pint.Quantity[int] = UR.Quantity(0, "seconds")
+    incrementcycle: int = 1
+    incrementstep: int = 1
     tiff: bool = False
     quant: bool = True
     pcr: bool = False
+    _names: ClassVar[Sequence[str]] = ("HoldAndCollect",)
 
     def to_scpicommand(self, **kwargs) -> SCPICommand:
         opts = {}
-        if self.increment:
+        if self.increment != HoldAndCollect.increment:
             opts["increment"] = self.increment.to("seconds").magnitude
-        if self.incrementcycle is not None:
+        if self.incrementcycle != HoldAndCollect.incrementcycle:
             opts["incrementcycle"] = self.incrementcycle
-        if self.incrementstep is not None:
+        if self.incrementstep != HoldAndCollect.incrementstep:
             opts["incrementstep"] = self.incrementstep
         opts["tiff"] = self.tiff
         opts["quant"] = self.quant
@@ -240,27 +276,36 @@ class HoldAndCollect(ProtoCommand):
             "HoldAndCollect", int(self.time.to("seconds").magnitude), **opts
         )
 
+    @classmethod
+    def from_scpicommand(cls, sc: SCPICommand) -> HoldAndCollect:
+        return HoldAndCollect(UR.Quantity(cast(int, sc.args[0]), "seconds"), **sc.opts)
+
 
 @dataclass
 class Hold(ProtoCommand):
     time: pint.Quantity[int] | None
-    increment: pint.Quantity[int] | None = None
-    incrementcycle: int | None = None
-    incrementstep: int | None = None
+    increment: pint.Quantity[int] = UR.Quantity(0, "seconds")
+    incrementcycle: int = 1
+    incrementstep: int = 1
+    _names: ClassVar[Sequence[str]] = ("HOLD",)
 
     def to_scpicommand(self, **kwargs) -> SCPICommand:
         opts = {}
-        if self.increment:
+        if self.increment != Hold.increment:
             opts["increment"] = self.increment.to("seconds").magnitude
-        if self.incrementcycle is not None:
+        if self.incrementcycle != 1:
             opts["incrementcycle"] = self.incrementcycle
-        if self.incrementstep is not None:
+        if self.incrementstep != 1:
             opts["incrementstep"] = self.incrementstep
         return SCPICommand(
             "HOLD",
             int(self.time.to("seconds").magnitude) if self.time is not None else "",
             **opts,
         )
+
+    @classmethod
+    def from_scpicommand(cls, sc: SCPICommand) -> Hold:
+        return Hold(UR.Quantity(cast(int, sc.args[0]), "seconds"), **sc.opts)
 
 
 class XMLable(ABC):
@@ -269,41 +314,47 @@ class XMLable(ABC):
         ...
 
 
-class BaseStep(ABC):
-    @property
-    @abstractmethod
-    def body(self) -> List[ProtoCommand]:
-        ...
+class CustomStep(ProtoCommand):
+    body: Sequence[ProtoCommand]
+    identifier: int | str | None = None
+    repeat: int = 1
+    _names: ClassVar[Sequence[str]] = ["STEP"]
 
-    @property
-    @abstractmethod
-    def identifier(self) -> int | str | None:
-        ...
+    def __init__(
+        self,
+        body: Sequence[ProtoCommand],
+        identifier: int | str | None = None,
+        repeat: int = 1,
+    ):
+        self.body = body
+        self.identifier = identifier
+        self.repeat = repeat
 
-    @property
-    @abstractmethod
-    def repeat(self) -> int:
-        ...
-
-    @abstractmethod
-    def info_str(self, index=None, repeats=1) -> str:
-        ...
+    def info_str(self, index: None | int = None, repeats: int = 1) -> str:
+        if index is not None:
+            s = f"{index}. "
+        else:
+            s = f"- "
+        s += f"Step{' '+str(self.identifier) if self.identifier is not None else ''} of commands:\n"
+        s += "\n".join(
+            f"  {i+1}. " + c.to_scpicommand().to_string()
+            for i, c in enumerate(self.body)
+        )
+        return s
 
     @abstractmethod
     def duration_at_cycle(self, cycle: int) -> pint.Quantity[int]:  # cycle from 1
-        ...
+        return UR.Quantity(0, "second")
 
-    @abstractmethod
     def temperatures_at_cycle(self, cycle: int) -> pint.Quantity[np.ndarray]:
-        ...
+        return UR.Quantity(np.array(6 * [math.nan]), "degC")
 
-    def total_duration(self, repeat: int = 1) -> pint.Quantity[np.ndarray]:
+    def total_duration(self, repeat: int = 1) -> pint.Quantity[int]:
         return 0 * UR.seconds
 
     @property
-    @abstractmethod
     def collect(self) -> bool:
-        ...
+        return False
 
     def to_scpicommand(self, *, stepindex: int, **kwargs) -> SCPICommand:
         opts = {}
@@ -319,46 +370,24 @@ class BaseStep(ABC):
 
         return SCPICommand("STEP", *args, **opts)
 
-
-@dataclass
-class CustomStep(BaseStep):
-    _body: List[ProtoCommand] = field(init=False, repr=False)
-    body: Sequence[ProtoCommand]  # type: ignore
-    repeat: int = 1
-    identifier: int | str | None = None
-
-    @property
-    def body(self) -> List[ProtoCommand]:
-        return self._body
-
-    @body.setter
-    def body(self, v: Sequence[ProtoCommand]) -> None:
-        self._body = list(v)
-
-    def collect(self) -> bool:
-        return False
-
-    def temperatures_at_cycle(self, cycle: int) -> np.ndarray:
-        return np.array(6 * [math.nan])
-
-    def total_duration(self, repeat: int = 1) -> int:
-        return 0
-
-    def info_str(self, index: None | int = None, repeats: int = 1) -> str:
-        if index is not None:
-            s = f"{index}. "
-        else:
-            s = f"- "
-        s += f"Step{' '+str(self.identifier) if self.identifier is not None else ''} of commands:\n"
-        s += "\n".join(
-            f"  {i+1}. " + c.to_scpicommand().to_command_string()
-            for i, c in enumerate(self.body)
-        )
-        return s
+    @classmethod
+    def from_scpicommand(cls, sc: SCPICommand) -> CustomStep:
+        # Try a normal step:
+        try:
+            return Step.from_scpicommand(sc)
+        except ValueError:
+            return cls(
+                [
+                    x.specialize(**kwargs)
+                    for x in cast(Sequence[SCPICommand], sc.args[1])
+                ],
+                identifier=cast(int | str, sc.args[0]),
+                **sc.opts,
+            )
 
 
 @attr.define
-class Step(BaseStep, XMLable):
+class Step(CustomStep, XMLable):
     """
     A normal protocol step.
 
@@ -533,7 +562,7 @@ class Step(BaseStep, XMLable):
                     self.time,
                     self.time_increment,
                     self.time_incrementcycle,
-                    None,
+                    1,
                     self.tiff,
                     self.quant,
                     self.pcr,
@@ -588,48 +617,44 @@ class Step(BaseStep, XMLable):
         return e
 
     @classmethod
-    def _from_command_dict(cls, d):
-        coms = [x["command"] for x in d["body"]]
-        if coms == ["RAMP", "HACFILT", "HoldAndCollect"]:
+    def from_scpicommand(cls, sc: SCPICommand):
+        coms = [x.specialize() for x in cast(Sequence[SCPICommand], sc.args[1])]
+
+        # FIXME: When willing to require Python 3.10, this can be cleaned up with a match statement.
+
+        com_classes = [x.__class__ for x in coms]
+        if com_classes == [Ramp, HACFILT, HoldAndCollect]:
+            r = cast(Ramp, coms[0])
+            hcf = cast(HACFILT, coms[1])
+            h = cast(HoldAndCollect, coms[2])
             c = cls(
-                d["body"][2]["args"][0],
-                d["body"][0]["args"],
+                h.time,
+                r.temperature,
                 time_incrementcycle=1,
                 temp_incrementcycle=1,
             )
             c.collect = True
-            if "args" in d["body"][1].keys():
-                c.filters = [FilterSet.fromstring(x) for x in d["body"][1]["args"]]
-            else:
-                c.filters = []
-            for k, v in d["body"][2]["opts"].items():
-                k = k.lower()
-                if "increment" in k:
-                    k = "time_" + k
-                setattr(c, k.lower(), v)
-            for k, v in d["body"][0]["opts"].items():
-                k = k.lower()
-                if "increment" in k:
-                    k = "temp_" + k
-                setattr(c, k.lower(), v)
-        elif coms == ["RAMP", "HOLD"]:
+            c.filters = hcf.filters
+            c.time_increment = h.increment
+            c.temp_increment = r.increment
+            c.time_incrementcycle = h.incrementcycle
+            c.temp_incrementcycle = r.incrementcycle
+        elif com_classes == [Ramp, Hold]:
+            r = cast(Ramp, coms[0])
+            h = cast(Hold, coms[1])
+            if h.time is None:
+                raise ValueError
             c = cls(
-                d["body"][1]["args"][0],
-                d["body"][0]["args"],
+                h.time,
+                r.temperature,
                 time_incrementcycle=1,
                 temp_incrementcycle=1,
             )
             c.collect = False
-            for k, v in d["body"][1]["opts"].items():
-                k = k.lower()
-                if "increment" in k:
-                    k = "time_" + k
-                setattr(c, k.lower(), v)
-            for k, v in d["body"][0]["opts"].items():
-                k = k.lower()
-                if "increment" in k:
-                    k = "temp_" + k
-                setattr(c, k.lower(), v)
+            c.time_increment = h.increment
+            c.temp_increment = r.increment
+            c.time_incrementcycle = h.incrementcycle
+            c.temp_incrementcycle = r.incrementcycle
         else:
             raise ValueError
         return c
@@ -639,19 +664,20 @@ class Step(BaseStep, XMLable):
         return cls(**d)
 
 
-def _bsl(x: Iterable[BaseStep] | BaseStep) -> Sequence[BaseStep]:
+def _bsl(x: Iterable[CustomStep] | CustomStep) -> Sequence[CustomStep]:
     return list(x) if isinstance(x, Iterable) else [x]
 
 
 @attr.define
-class Stage(XMLable):
-    steps: Sequence[BaseStep] = attr.field(
+class Stage(XMLable, ProtoCommand):
+    steps: Sequence[CustomStep] = attr.field(
         converter=(lambda x: [x] if not isinstance(x, Sequence) else list(x))
     )
     repeat: int = 1
     index: int | None = None
     label: str | None = None
     _classname: ClassVar[str] = "Stage"
+    _names: ClassVar[Sequence[str]] = ("STAGe",)
 
     def __eq__(self, other: Stage):
         if self.__class__ != other.__class__:
@@ -696,7 +722,7 @@ class Stage(XMLable):
                     temp_from,
                     collect=collect,
                     temp_increment=temp_increment,
-                    filters=filters,
+                    filters=filters,  # type: ignore (handled by attr converter)
                 )
             ],
             repeat=nsteps,
@@ -717,7 +743,7 @@ class Stage(XMLable):
                     _wrapunit("second")(total_time),
                     _wrapunitmaybelist("degC")(temps),
                     collect=collect,
-                    filters=filters,
+                    filters=filters,  # type: ignore (handled by attr converter)
                 )
             ],
             repeat=round(total_time / step_time),
@@ -846,24 +872,20 @@ class Stage(XMLable):
         return SCPICommand("STAGe", *args, **opts)
 
     @classmethod
-    def _from_command_dict(cls, d) -> Stage:
-        s = cls([])
-        if len(d["args"]) >= 1:
-            s.index = d["args"][0]
-        if len(d["args"]) >= 2:
-            s.label = d["args"][1]
-        for k, v in d["opts"].items():
-            setattr(s, k.lower(), v)
-
-        s.steps = [Step._from_command_dict(step) for step in d["body"]]
-        return s
+    def from_scpicommand(cls: Type[T], sc: SCPICommand, **kwargs) -> T:
+        return cls(
+            [x.specialize(**kwargs) for x in cast(Sequence[SCPICommand], sc.args[2])],
+            index=sc.args[0],
+            label=sc.args[1],
+            **sc.opts,
+        )
 
     @classmethod
     def from_xml(cls, e: ET.Element) -> Stage:
         rep = int(e.findtext("NumOfRepetitions") or 1)
         startcycle = int(cast(str, e.findtext("StartingCycle")))
         ade = e.findtext("AutoDeltaEnabled") == "true"
-        steps: list[BaseStep] = [
+        steps: list[CustomStep] = [
             Step.from_xml(x, etc=startcycle, ehtc=startcycle, he=ade)
             for x in e.findall("TCStep")
         ]
@@ -917,7 +939,7 @@ class Stage(XMLable):
 
     @classmethod
     def fromdict(cls, d: dict[str, Any]) -> "Stage":
-        s = [cast(BaseStep, Step(**x)) for x in d["_steps"]]
+        s = [cast(CustomStep, Step(**x)) for x in d["_steps"]]
         del d["_steps"]
         return cls(s, **d)
 
@@ -951,11 +973,11 @@ ALLTEMPS = ["temperature_{}".format(i) for i in range(1, 7)]
 
 
 @attr.define
-class Protocol(XMLable):
+class Protocol(ProtoCommand, XMLable):
     """A run protocol for the QuantStudio.  Protocols encapsulate the temperature and camera
     controls for an entire run.  They are composed of :any:`Stage`s, which may repeat for a
     number of cycles, and the stages are in turn composed of Steps, which may be created for
-    usual cases with :any:`Step`, or from SCPI commands (TODO: implement).  Steps may repeat
+    usual cases with :any:`Step`, or from SCPI commands.  Steps may repeat
     their contents as well, but this is not yet implemeted.
 
     Parameters
@@ -986,6 +1008,7 @@ class Protocol(XMLable):
     )
     covertemperature: float = 105.0
     _classname: str = "Protocol"
+    _names: ClassVar[Sequence[str]] = ("PROTocol", "PROT")
 
     def to_scpicommand(self) -> SCPICommand:
         args = []
@@ -1006,21 +1029,12 @@ class Protocol(XMLable):
         return SCPICommand("PROTocol", *args, **opts)
 
     @classmethod
-    def from_command(cls, s: str) -> Protocol:
-        return cls._from_command_dict(qp.command.parseString(s)[0])  # type: ignore
-
-    @classmethod
-    def _from_command_dict(cls, d: dict[str, Any]) -> Protocol:
-        assert d["command"].lower() in ["prot", "protocol"]
-        p = cls([])
-        assert len(d["args"]) == 1
-        p.name = d["args"][0]
-        for k, v in d["opts"].items():
-            setattr(p, k.lower(), v)
-
-        p.stages = [Stage._from_command_dict(x) for x in d["body"]]
-
-        return p
+    def from_scpicommand(cls: Type[T], sc: SCPICommand) -> T:
+        return cls(
+            [x.specialize() for x in cast(Sequence[SCPICommand], sc.args[1])],
+            name=sc.args[0],
+            **sc.opts,
+        )
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -1168,7 +1182,7 @@ class Protocol(XMLable):
         )
         _set_or_create(
             qe, "QSLibProtocolCommand"
-        ).text = self.to_scpicommand().to_command_string()
+        ).text = self.to_scpicommand().to_string()
         _set_or_create(qe, "QSLibProtocol").text = str(attr.asdict(self))
         _set_or_create(qe, "QSLibVerson").text = __version__
         _set_or_create(e, "CoverTemperature").text = str(covertemperature)
@@ -1241,3 +1255,8 @@ class Protocol(XMLable):
                 assert oldstage == newstage
             else:
                 continue
+
+
+for c in [Ramp, Exposure, HACFILT, HoldAndCollect, Hold, CustomStep, Stage, Protocol]:
+    for n in c._names:
+        scpi_commands._scpi_command_classes[n.upper()] = c

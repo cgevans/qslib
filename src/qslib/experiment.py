@@ -20,7 +20,7 @@ import pandas as pd
 import toml as toml
 from pandas.core.base import DataError
 
-from qslib.base import AccessLevel
+from qslib.scpi_commands import AccessLevel, SCPICommand
 from qslib.plate_setup import PlateSetup
 
 from . import __version__
@@ -31,6 +31,10 @@ from .normalization import Normalizer, NormRaw
 from .rawquant_compat import _fdc_to_rawdata
 from .tcprotocol import Protocol, Stage, Step
 from .util import *
+
+if False:
+    import matplotlib.pyplot as plt
+
 
 TEMPLATE_NAME = "ruo"
 
@@ -44,10 +48,6 @@ Specification-Version: 1.3.2
 """
 
 log = logging.getLogger(__name__)
-
-
-class AlreadyExistsError(ValueError):
-    pass
 
 
 MachineReference = Union[str, Machine]
@@ -85,7 +85,7 @@ class MachineBusyError(MachineError):
 
 
 @dataclass
-class RunAlreadyExistsError(MachineError):
+class AlreadyExistsError(MachineError):
     name: str
 
     def __str__(self) -> str:
@@ -493,7 +493,7 @@ table, th, td {{
 
                 # Check existence of previous run folder
                 if self.runtitle_safe + "/" in machine.run_command("EXP:LIST?"):
-                    raise AlreadyExistsError(self.runtitle_safe)
+                    raise AlreadyExistsError(machine, self.runtitle_safe)
 
                 log.debug(f"Creating experiment folder {self.runtitle_safe}.")
                 machine.run_command(f"EXP:NEW {self.runtitle_safe} {TEMPLATE_NAME}")
@@ -1642,7 +1642,7 @@ table, th, td {{
         exml = ET.parse(os.path.join(self._dir_eds, "experiment.xml"))
 
         self.name = exml.findtext("Name") or "unknown"
-        self.user = _text_or_none(exml, "Operator")
+        self.user = exml.findtext("Operator") or None
         self.createdtime = datetime.fromtimestamp(
             float(_find_or_raise(exml, "CreatedTime").text) / 1000.0  # type: ignore
         )
@@ -1684,7 +1684,9 @@ table, th, td {{
                 x.text is not None
             ):
                 try:
-                    self._protocol_from_qslib = Protocol.from_command(x.text)
+                    self._protocol_from_qslib = Protocol.from_scpicommand(
+                        SCPICommand.from_string(x.text)
+                    )
                 except ValueError:
                     self._protocol_from_qslib = None
             else:
@@ -1826,11 +1828,15 @@ table, th, td {{
                     re.IGNORECASE,
                 )
                 if rp:
-                    prot = Protocol.from_command(f"PROT {rp['protoname']} {m[1]}")
+                    prot = Protocol.from_scpicommand(
+                        SCPICommand.from_string(f"PROT {rp['protoname']} {m[1]}")
+                    )
                     if rp[1]:
                         prot.volume = float(rp["sv"])
                 else:
-                    prot = Protocol.from_command(f"PROT unknown_name {m[1]}")
+                    prot = Protocol.from_scpicommand(
+                        SCPICommand.from_string(f"PROT unknown_name {m[1]}")
+                    )
                 self._protocol_from_log = prot
             else:
                 self._protocol_from_log = None
@@ -1928,12 +1934,12 @@ table, th, td {{
         melt_stages: int | Sequence[int] | None = None,
         between_stages: int | Sequence[int] | None = None,
         normalization: Normalizer = NormRaw(),
-        ax: plt.Axes | None = None,
+        ax: "plt.Axes" | None = None,
         marker: str | None = None,
         legend: bool = True,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
-    ) -> plt.Axes:
+    ) -> "plt.Axes":
         """
         Plots anneal/melt curves.
 
@@ -2105,13 +2111,13 @@ table, th, td {{
         filters: str | FilterSet | Collection[str | FilterSet] | None = None,
         stages: slice | int | Sequence[int] = slice(None),
         normalization: Normalizer = NormRaw(),
-        ax: plt.Axes | Sequence[plt.Axes] | None = None,
+        ax: "plt.Axes" | "Sequence[plt.Axes]" | None = None,
         legend: bool = True,
         temperatures: Literal[False, "axes", "inset", "twin"] = False,
         marker: str | None = None,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
-    ) -> Sequence[plt.Axes]:
+    ) -> "Sequence[plt.Axes]":
         """
         Plots fluorescence over time, optionally with temperatures over time.
 

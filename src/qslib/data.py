@@ -5,7 +5,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from glob import glob
 from os import PathLike
-from typing import List, Literal, Optional, Union, cast
+from typing import List, Literal, Optional, Sequence, Union, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -24,10 +24,13 @@ class FilterSet:
     quant: bool = True
 
     @classmethod
-    def fromstring(cls, string: str | FilterSet) -> FilterSet:
+    def fromstring(cls, string: str | FilterSet | Sequence) -> FilterSet:
         if isinstance(string, FilterSet):
             return string
         # fixme: do validation
+        if not isinstance(string, str):
+            string = ",".join(string)
+
         if string.startswith("x"):
             return cls(int(string[1]), int(string[4]))
         elif string.startswith("M"):

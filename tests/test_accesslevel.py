@@ -1,6 +1,6 @@
 import pytest
 
-from qslib.base import AccessLevel
+from qslib.scpi_commands import AccessLevel
 
 levels = ["Guest", "Observer", "Controller", "Administrator", "Full"]
 

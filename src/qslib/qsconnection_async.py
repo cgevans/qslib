@@ -14,11 +14,9 @@ from typing import Any, Dict, List, Literal, Optional, Union, cast, overload
 
 import pandas as pd
 
-import qslib.data as data
-from qslib.scpi_proto_commands import SCPICommand
+from . import data
+from .scpi_commands import SCPICommand, AccessLevel, ArgList
 
-from .base import AccessLevel
-from .parser import ArgList
 from .qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
 
 log = logging.getLogger(__name__)
@@ -169,7 +167,7 @@ class QSConnectionAsync:
                     x,
                 )
                 if rm is None:
-                    ag = ArgList(x)
+                    ag = ArgList.from_string(x)
                     d: dict[str, str | float | int] = {}
                     d["path"] = ag.args[0]
                     d |= ag.opts
