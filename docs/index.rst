@@ -1,23 +1,58 @@
 qslib
 =====
 
-Contents
---------
+Introduction
+------------
+
+QSLib is a package for interacting with Applied Biosystems' QuantStudio
+qPCR machines, intended for non-qPCR uses, such as DNA computing and
+molecular programming systems.
+
+There are a few different ways to use QSLib:
+
+- Through its command-line script, `qslib`, which has a number of subcommands allowing basic machine control, experiment
+   file information, and data export.
+
+- As a library in Python, often either in the REPL, or via a notebook system like Jupyter.  QSLib uses nest-asyncio to
+  allow it to operate seamlessly within Jupyter notebooks.  This allows experiment creation, modification, and processing,
+  data plotting, machine control, and all other features.  Machine communication, however, does require some setup.
+
+- As a monitoring system integrated with Matrix and InfluxDB.  This allows real-time storage of machine and run state
+  and fluorescence data, and almost-live synchronization of in-progress and finished experiment files (in-progress
+  files may not be usable by AB's software).
+
+Basic use within Python
+-----------------------
+
+Basic of QSLib is mostly built around the `Experiment` and `Machine` classes, along with several classes for
+defining a `PlateSetup` and temperature `Protocol`.
+
+By default (as of v0.5.0), most methods communicating with a machine are "automatic": they handle connection
+and disconnection, and access levels, automatically.  They are also written so that, if there is no passsword
+required, the machine's hostname as a string can be used as a reference to the machine.  So, for example, if you
+want to run an experiment `experiment` on machine `example-qs5`, you could use: `experiment.run("example-qs5")`, or,
+to load an experiment named `my-experiment` from a machine, you could use 
+`experiment = Experiment.from_machine("example-qs5", "my-experiment")`.  Similarly, to open the machine's drawer,
+you could use `Machine("example-qs5").drawer_open()`.
+
+Documention contents
+--------------------
 
 .. toctree::
 
-    readme
     setup
-    high-level
-    api/qslib
-    changelog
+    experiments
+    machines
+    commandline
+    monitor
 
 .. toctree::
-    :maxdepth: 1
-
-    api/module
-    license
-    authors
+   :maxdepth: 1
+   
+   API Reference <api/modules>
+   changelog
+   license
+   authors
 
 
 Indices and tables

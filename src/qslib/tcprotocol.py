@@ -28,13 +28,13 @@ import numpy as np
 import pandas as pd
 import pint
 
+from qslib import scpi_commands
 from qslib.data import FilterSet
 
 from . import __version__
 from .base import RunStatus
 from .scpi_commands import SCPICommand
-from .util import *
-from qslib import scpi_commands
+from ._util import *
 
 NZONES = 6
 
@@ -110,8 +110,8 @@ def _wrapunitmaybelist(
 
 
 def _durformat(time: pint.Quantity[int]) -> str:
-    time_s: int = time.to(UR.seconds).magnitude
     """Convert time in seconds to a nice string"""
+    time_s: int = time.to(UR.seconds).magnitude
     s = ""
     # <= 2 minutes: stay as seconds
     if time_s <= 2 * 60:

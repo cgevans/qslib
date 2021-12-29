@@ -15,9 +15,8 @@ from typing import Any, Dict, List, Literal, Optional, Union, cast, overload
 import pandas as pd
 
 from . import data
-from .scpi_commands import SCPICommand, AccessLevel, ArgList
-
 from .qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
+from .scpi_commands import AccessLevel, ArgList, SCPICommand
 
 log = logging.getLogger(__name__)
 

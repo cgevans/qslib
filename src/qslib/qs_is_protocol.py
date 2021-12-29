@@ -9,7 +9,7 @@ from asyncio.futures import Future
 from dataclasses import dataclass
 from typing import Any, Coroutine, Optional, Protocol, Type
 
-from .scpi_commands import SCPICommand, AccessLevel
+from .scpi_commands import AccessLevel, SCPICommand
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
 Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")

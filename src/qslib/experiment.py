@@ -1,3 +1,5 @@
+"""Experiment class and related.
+"""
 from __future__ import annotations
 
 import base64
@@ -12,7 +14,17 @@ from dataclasses import InitVar, dataclass, field
 from datetime import datetime
 from glob import glob
 from pathlib import Path
-from typing import IO, Any, Collection, Literal, Mapping, Sequence, Union, cast
+from typing import (
+    IO,
+    Any,
+    Collection,
+    Literal,
+    Mapping,
+    Sequence,
+    Union,
+    cast,
+    TYPE_CHECKING,
+)
 from warnings import warn
 
 import numpy as np
@@ -20,8 +32,8 @@ import pandas as pd
 import toml as toml
 from pandas.core.base import DataError
 
-from qslib.scpi_commands import AccessLevel, SCPICommand
 from qslib.plate_setup import PlateSetup
+from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from . import __version__
 from .base import RunStatus
@@ -30,15 +42,16 @@ from .machine import Machine
 from .normalization import Normalizer, NormRaw
 from .rawquant_compat import _fdc_to_rawdata
 from .tcprotocol import Protocol, Stage, Step
-from .util import *
+from ._util import _set_or_create, _nowuuid, _pp_seqsliceint
+from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
 
-if False:
+if TYPE_CHECKING:
     import matplotlib.pyplot as plt
 
 
 TEMPLATE_NAME = "ruo"
 
-MANIFEST_CONTENTS = f"""Manifest-Version: 1.0
+_MANIFEST_CONTENTS = f"""Manifest-Version: 1.0
 Content-Type: Std
 Implementation-Title: QSLib
 Implementation-Version: {__version__}
@@ -55,6 +68,8 @@ MachineReference = Union[str, Machine]
 
 @dataclass
 class MachineError(Exception):
+    """Base class for an error from a machine."""
+
     host: str = field(init=False)
     port: int | str = field(init=False)
     machine: InitVar[Machine]
@@ -66,6 +81,8 @@ class MachineError(Exception):
 
 @dataclass
 class NotRunningError(MachineError):
+    """The named experiment is not currently running."""
+
     run: str
     current: RunStatus
 
@@ -78,6 +95,7 @@ class NotRunningError(MachineError):
 
 @dataclass
 class MachineBusyError(MachineError):
+    "The machine is busy."
     current: RunStatus
 
     def __str__(self) -> str:
@@ -86,6 +104,7 @@ class MachineBusyError(MachineError):
 
 @dataclass
 class AlreadyExistsError(MachineError):
+    "A run already exists in uncollected (experiment:) with the same name."
     name: str
 
     def __str__(self) -> str:
@@ -95,10 +114,11 @@ class AlreadyExistsError(MachineError):
         )
 
 
-def _find_or_raise(e: ET.ElementTree | ET.Element, n: str) -> ET.Element:
-    x = e.find(n)
+def _find_or_raise(e: ET.ElementTree | ET.Element, path: str) -> ET.Element:
+    "Find an element at path and return it, or raise an error."
+    x = e.find(path)
     if x is None:
-        raise ValueError(f"{n} not found in {x}.")
+        raise ValueError(f"{path} not found in {x}.")
     else:
         return x
 
@@ -475,7 +495,7 @@ table, th, td {{
             The machine already has a folder for this run in its working runs folder.
         """
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
-        log.info(f"Attempting to start {self.runtitle_safe} on {machine.host}.")
+        log.info("Attempting to start %s on %s.", self.runtitle_safe, machine.host)
 
         with machine.ensured_connection():
             # Ensure machine isn't running:
@@ -495,22 +515,22 @@ table, th, td {{
                 if self.runtitle_safe + "/" in machine.run_command("EXP:LIST?"):
                     raise AlreadyExistsError(machine, self.runtitle_safe)
 
-                log.debug(f"Creating experiment folder {self.runtitle_safe}.")
+                log.debug("Creating experiment folder %s.", self.runtitle_safe)
                 machine.run_command(f"EXP:NEW {self.runtitle_safe} {TEMPLATE_NAME}")
 
-                log.debug(f"Populating experiment folder.")
+                log.debug("Populating experiment folder.")
                 self._populate_folder(machine)
 
-                log.debug(f"Sending protocol.")
+                log.debug("Sending protocol.")
                 machine.define_protocol(self.protocol)
 
-                log.debug(f"Sending run command.")
+                log.debug("Sending run command.")
                 # Start the run
                 machine.run_command_to_ack(
                     f"RP -samplevolume={self.protocol.volume} -runmode={self.protocol.runmode}"
                     f" {self.protocol.name} {self.runtitle_safe}"
                 )  # TODO: user, cover
-                log.info(f"Run {self.runtitle_safe} started on {machine.host}.")
+                log.info("Run %s started on %s.", self.runtitle_safe, machine.host)
 
     def pause_now(self, machine: MachineReference | None = None) -> None:
         """
@@ -903,504 +923,12 @@ table, th, td {{
         )
 
         with open(os.path.join(self._dir_eds, "Manifest.mf"), "w") as f:
-            f.write(MANIFEST_CONTENTS)
+            f.write(_MANIFEST_CONTENTS)
 
         # File will not load in AB without this, even though it is
         # useless for our purposes.
         with open(self._sdspath("analysis_protocol.xml"), "w") as f:
-            f.write(
-                """<JaxbAnalysisProtocol>
-    <Name>unnamed</Name>
-    <JaxbAnalysisSettings>
-        <Type>com.apldbio.sds.platform.core.analysis.IDetectorSettings</Type>
-        <JaxbSettingValue>
-            <Name>ConfidenceLevel</Name>
-            <JaxbValueItem type="Double">
-                <DoubleValue>99.0</DoubleValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>CreatedByUser</Name>
-            <JaxbValueItem type="Boolean">
-                <BooleanValue>true</BooleanValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>Threshold</Name>
-            <JaxbValueItem type="Double">
-                <DoubleValue>0.2</DoubleValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>AutoBaseline</Name>
-            <JaxbValueItem type="Boolean">
-                <BooleanValue>true</BooleanValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>BaselineStart</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>3</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>ObjectName</Name>
-            <JaxbValueItem type="String">
-                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>BaselineStop</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>15</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>AutoCt</Name>
-            <JaxbValueItem type="Boolean">
-                <BooleanValue>true</BooleanValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-    </JaxbAnalysisSettings>
-    <JaxbAnalysisSettings>
-        <Type>com.apldbio.sds.platform.core.analysis.IWellSettings</Type>
-        <JaxbSettingValue>
-            <Name>BaselineStart</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>3</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>ObjectName</Name>
-            <JaxbValueItem type="String">
-                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>BaselineStop</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>15</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>UseDetectorDefaults</Name>
-            <JaxbValueItem type="Boolean">
-                <BooleanValue>false</BooleanValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-    </JaxbAnalysisSettings>
-    <JaxbAnalysisSettings>
-        <Type>com.apldbio.sds.platform.core.analysis.ISignalSmoothingSettings</Type>
-        <JaxbSettingValue>
-            <Name>SignalSmoothing</Name>
-            <JaxbValueItem type="Boolean">
-                <BooleanValue>true</BooleanValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>ObjectName</Name>
-            <JaxbValueItem type="String">
-                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-    </JaxbAnalysisSettings>
-    <JaxbAnalysisSettings>
-        <Type>com.apldbio.sds.platform.core.analysis.IAlgorithmSelectSettings</Type>
-        <JaxbSettingValue>
-            <Name>AlgorithmName</Name>
-            <JaxbValueItem type="String">
-                <StringValue>default</StringValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>ObjectName</Name>
-            <JaxbValueItem type="String">
-                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-    </JaxbAnalysisSettings>
-    <JaxbAnalysisSettings>
-        <Type>com.apldbio.sds.platform.core.analysis.IAutoAnalysisSettings</Type>
-        <JaxbSettingValue>
-            <Name>AutoAnalysis</Name>
-            <JaxbValueItem type="Boolean">
-                <BooleanValue>false</BooleanValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>AutoSpectral</Name>
-            <JaxbValueItem type="Boolean">
-                <BooleanValue>false</BooleanValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>ObjectName</Name>
-            <JaxbValueItem type="String">
-                <StringValue>AnalysisProtocol.DEFAULT_SETTINGS</StringValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-    </JaxbAnalysisSettings>
-    <JaxbAnalysisSettings>
-        <Type>com.apldbio.sds.platform.core.analysis.IDataSelectSettings</Type>
-        <JaxbSettingValue>
-            <Name>StepNum</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>5</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>StageNum</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>4</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>MeltStageNum</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>0</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>ObjectName</Name>
-            <JaxbValueItem type="String">
-                <StringValue>IDataSelectSettings.OBJECT_NAME</StringValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-        <JaxbSettingValue>
-            <Name>PointNum</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>5</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-    </JaxbAnalysisSettings>
-    <JaxbAnalysisSettings>
-        <Type>com.apldbio.sds.platform.core.analysis.ICrtSettings</Type>
-        <JaxbSettingValue>
-            <Name>CrtStartValue</Name>
-            <JaxbValueItem type="Integer">
-                <IntValue>1</IntValue>
-            </JaxbValueItem>
-        </JaxbSettingValue>
-    </JaxbAnalysisSettings>
-    <AnalysisSetting>
-        <Type>NHC</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>LESS_THAN 35.0</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>BPR</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>GREATER_THAN 0.6</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>DRNMIN</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>LESS_THAN 35.0</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>LESS_THAN 0.2</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>FOS</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>true</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>HSD</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>GREATER_THAN 0.5</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>CC</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>LESS_THAN 0.8</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>NA</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>LESS_THAN 0.1</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>HRN</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>GREATER_THAN 4.0</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>NS</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>GREATER_THAN 1.0</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>EW</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>true</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria4QS</Name>
-            <Type>String</Type>
-            <StringValue>LESS_THAN 100000.0</StringValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>ORG</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>true</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>EAF</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>true</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>BAF</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>true</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>TAF</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>true</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>CAF</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>true</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>ROXLOW</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>LESS_THAN 20.0</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-    <AnalysisSetting>
-        <Type>ROXDROP</Type>
-        <SettingValue>
-            <Name>enabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>true</BooleanValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>criteria</Name>
-            <Type>String</Type>
-            <StringValue>GREATER_THAN 0.04</StringValue>
-        </SettingValue>
-        <SettingValue>
-            <Name>omitEnabled</Name>
-            <Type>Boolean</Type>
-            <BooleanValue>false</BooleanValue>
-        </SettingValue>
-    </AnalysisSetting>
-</JaxbAnalysisProtocol>
-            """
-            )
+            f.write(_ANALYSIS_PROTOCOL_TEXT)
 
     def _sdspath(self, path: str) -> str:
         return os.path.join(self._dir_eds, path)
@@ -1695,7 +1223,7 @@ table, th, td {{
             if (x := qstcxml.findtext("MachineConnection")) and not self.machine:
                 try:
                     self.machine = Machine(**toml.loads(x))
-                except Exception:
+                except ValueError:
                     pass
         try:
             self._protocol_from_xml = Protocol.from_xml(exml.getroot())
@@ -2098,7 +1626,7 @@ table, th, td {{
                 self.name,
                 anneal_stages + between_stages + melt_stages,
                 samples,
-                wells,
+                all_wells,
                 filters,
             )
         )
@@ -2279,7 +1807,7 @@ table, th, td {{
 
             ax[1].set_ylabel("temperature (°C)")
 
-        ax[0].set_title(_gen_axtitle(self.name, stages, samples, wells, filters))
+        ax[0].set_title(_gen_axtitle(self.name, stages, samples, all_wells, filters))
 
         return ax
 

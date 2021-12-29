@@ -1,0 +1,4 @@
+.. _monitor:
+
+Monitor system
+==============

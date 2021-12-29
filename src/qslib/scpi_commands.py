@@ -1,17 +1,12 @@
 from __future__ import annotations
-from abc import abstractmethod
-from enum import Enum
 
 import shlex
 import textwrap
 from dataclasses import dataclass
+from enum import Enum
 from typing import Protocol, Sequence, Type, TypeVar, cast
 
 import numpy as np
-
-from dataclasses import dataclass
-
-
 import pyparsing as pp
 
 pp.ParserElement.setDefaultWhitespaceChars("")
@@ -210,8 +205,11 @@ class SCPICommand:
         | float
         | np.number
         | Sequence[str | int | float | np.number]
-        | Sequence["SCPICommand"],
+        | Sequence["SCPICommand"]
+        | "SCPICommand",
     ) -> str:
+        if isinstance(v, SCPICommand):
+            v = [v]
         if isinstance(v, str):
             if "\n" in v:
                 return f"<quote>{v}</quote>"
