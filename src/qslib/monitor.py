@@ -21,10 +21,10 @@ from nio.client.async_client import AsyncClientConfig
 from nio.responses import JoinedRoomsError
 
 from qslib.base import RunStatus
-from qslib.scpi_commands import AccessLevel, ArgList
 from qslib.plate_setup import PlateSetup
 from qslib.qs_is_protocol import CommandError
 from qslib.qsconnection_async import FilterDataFilename, QSConnectionAsync
+from qslib.scpi_commands import AccessLevel, ArgList
 
 log = logging.getLogger("monitor")
 

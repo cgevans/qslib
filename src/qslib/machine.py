@@ -14,11 +14,11 @@ from typing import IO, Any, Generator, Literal, overload
 import nest_asyncio
 
 from qslib.qs_is_protocol import CommandError
-from qslib.scpi_commands import SCPICommand, AccessLevel
+from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from .qsconnection_async import QSConnectionAsync
 from .tcprotocol import Protocol
-from .util import _unwrap_tags
+from ._util import _unwrap_tags
 
 nest_asyncio.apply()
 
@@ -448,7 +448,10 @@ class Machine:
         self.connection._protocol.waiting_commands.append((b"logtransfer", logfuture))
 
         logcommand = self.connection._protocol.run_command(
-            f"eval? session.writeQueue.put(('OK logtransfer \\<quote.base64\\>\\\\n' + (lambda x: [x.seek({byte}), __import__('base64').encodestring(x.read())][1])(open('/data/vendor/IS/experiments/{name}/apldbio/sds/messages.log')) + '\\</quote.base64\\>\\\\n', None))",
+            f"eval? session.writeQueue.put(('OK logtransfer \\<quote.base64\\>\\\\n'"
+            f" + (lambda x: [x.seek({byte}), __import__('base64').encodestring(x.read())][1])"
+            f"(open('/data/vendor/IS/experiments/{name}/apldbio/sds/messages.log')) +"
+            " '\\</quote.base64\\>\\\\n', None))",
             ack_timeout=200,
         )
 
