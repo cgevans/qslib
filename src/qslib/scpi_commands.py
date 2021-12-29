@@ -1,16 +1,19 @@
+"""SCPI Command class and parsing"""
+
 from __future__ import annotations
+from abc import ABC, abstractmethod
 
 import shlex
 import textwrap
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol, Sequence, Type, TypeVar, cast
+from typing import Any, Sequence, Type, TypeVar, cast
 
 import numpy as np
 import pyparsing as pp
+from pyparsing import ParserElement, pyparsing_common as ppc
 
 pp.ParserElement.setDefaultWhitespaceChars("")
-from pyparsing import pyparsing_common as ppc
 
 _ws_or_end = (pp.White(" \t\r") | pp.StringEnd() | pp.FollowedBy("\n")).suppress()
 _nl = (
@@ -20,7 +23,7 @@ _fwe = pp.FollowedBy(_ws_or_end).suppress()
 _fweqc = pp.FollowedBy(_ws_or_end | "<" | ",").suppress()
 
 
-def _make_multi_keyword(kwd_str, kwd_value):
+def _make_multi_keyword(kwd_str: str, kwd_value: Any) -> ParserElement:
     x = pp.oneOf(kwd_str)
     x.setParseAction(pp.replaceWith(kwd_value))
     return x
@@ -81,9 +84,7 @@ _arglist = pp.delimitedList(
 )
 
 _arglist.setParseAction(
-    lambda toks: ArgList(
-        {k: v for k, v in toks.get("opt", [])}, list(toks.get("arg", []))
-    )
+    lambda toks: ArgList(dict(toks.get("opt", [])), list(toks.get("arg", [])))
 )
 
 _command: pp.ParserElement = cast(
@@ -114,6 +115,8 @@ _accesslevel_order: dict[str, int] = {
 
 
 class AccessLevel(Enum):
+    """QS machine access level, with comparisons."""
+
     Guest = "Guest"
     Observer = "Observer"
     Controller = "Controller"
@@ -152,16 +155,36 @@ class AccessLevel(Enum):
 
 @dataclass
 class ArgList:
+    "A representation of an SCPI list of options (-key=value) and arguments."
     opts: dict[str, bool | int | float | str]
     args: list[bool | int | float | str]
 
     @classmethod
-    def from_string(cls, v: str) -> ArgList:
-        return cast(ArgList, _arglist.parseString(v)[0])
+    def from_string(cls, argument_string: str) -> ArgList:
+        """Parse an SCPI argument string."""
+        return cast(ArgList, _arglist.parseString(argument_string)[0])
+
+
+T = TypeVar("T")
+
+
+class SCPICommandLike(ABC):
+    """Abstract class for an object that can be converted from/to an SCPICommand."""
+
+    @abstractmethod
+    def to_scpicommand(self, **kwargs: Any) -> SCPICommand:  # pragma: no cover
+        """Convert the object to an :ref:`SCPICommand`"""
+        ...
+
+    @abstractmethod
+    @classmethod
+    def from_scpicommand(cls: Type[T], com: SCPICommand) -> T:  # pragma: no cover
+        """Try to create the object from an :ref:`SCPICommand`."""
+        ...
 
 
 @dataclass(init=False)
-class SCPICommand:
+class SCPICommand(SCPICommandLike):
     """
     A representation of an SCPI Command.
     """
@@ -171,12 +194,17 @@ class SCPICommand:
         str
         | int
         | float
-        | np.number
-        | Sequence[str | int | float | np.number]
+        | np.number[Any]
+        | Sequence[str | int | float | np.number[Any]]
         | Sequence["SCPICommand"]
     ]
     opts: dict[
-        str, str | int | float | np.number | Sequence[str | int | float | np.number]
+        str,
+        str
+        | int
+        | float
+        | np.number[Any]
+        | Sequence[str | int | float | np.number[Any]],
     ]
 
     def __init__(
@@ -185,14 +213,14 @@ class SCPICommand:
         *args: str
         | int
         | float
-        | np.number
-        | Sequence[str | int | float | np.number]
+        | np.number[Any]
+        | Sequence[str | int | float | np.number[Any]]
         | Sequence["SCPICommand"],
         **kwargs: str
         | int
         | float
-        | np.number
-        | Sequence[str | int | float | np.number],
+        | np.number[Any]
+        | Sequence[str | int | float | np.number[Any]],
     ) -> None:
         self.command = command.upper()
         self.args = args
@@ -200,37 +228,36 @@ class SCPICommand:
 
     def _optformat(
         self,
-        v: str
+        opt_val: str
         | int
         | float
-        | np.number
-        | Sequence[str | int | float | np.number]
-        | Sequence["SCPICommand"]
-        | "SCPICommand",
+        | np.number[Any]
+        | Sequence[str | int | float | np.number[Any]]
+        | Sequence[SCPICommand]
+        | SCPICommand,
     ) -> str:
-        if isinstance(v, SCPICommand):
-            v = [v]
-        if isinstance(v, str):
-            if "\n" in v:
-                return f"<quote>{v}</quote>"
-            else:
-                return shlex.quote(v)
-        elif isinstance(v, (int, float, np.number)):
-            return str(v)
-        elif isinstance(v, (Sequence, np.ndarray)):
-            if isinstance(v[0], SCPICommand):
+        if isinstance(opt_val, SCPICommand):
+            opt_val = [opt_val]
+        if isinstance(opt_val, str):
+            if "\n" in opt_val:
+                return f"<quote>{opt_val}</quote>"
+            return shlex.quote(opt_val)
+        if isinstance(opt_val, (int, float, np.number)):
+            return str(opt_val)
+        if isinstance(opt_val, (Sequence, np.ndarray)):
+            if isinstance(opt_val[0], SCPICommand):
                 q = "multiline." + self.command.lower()
                 return (
                     f"<{q}>\n"
-                    + textwrap.indent("".join(str(x) for x in v), "\t")
+                    + textwrap.indent("".join(str(x) for x in opt_val), "\t")
                     + f"</{q}>"
                 )
-            else:
-                return ",".join(self._optformat(x) for x in v)
-        else:
-            raise TypeError(f"{v}, of type {type(v)}, not understood.")
+            return ",".join(self._optformat(x) for x in opt_val)
+
+        raise TypeError(f"{opt_val}, of type {type(opt_val)}, not understood.")
 
     def to_string(self) -> str:
+        """Create a usable command string, including terminal newline."""
         return (
             " ".join(
                 [self.command]
@@ -241,36 +268,25 @@ class SCPICommand:
         )
 
     @classmethod
-    def from_string(cls, v: str) -> SCPICommand:
-        return cast(SCPICommand, _command.parseString(v)[0])
+    def from_string(cls, command_string: str) -> SCPICommand:
+        """Parse (as SCPICommands) an SCPI command string."""
+        return cast(SCPICommand, _command.parseString(command_string)[0])
 
     def specialize(self) -> SCPICommandLike:
+        """If possible, convert SCPICommand to QSLib classes for the command."""
         if self.command.upper() in _scpi_command_classes:
             return _scpi_command_classes[self.command.upper()].from_scpicommand(self)
-        else:
-            return self
+        return self
 
     def __str__(self) -> str:
         return self.to_string()
 
-    def to_scpicommand(self, **kwargs) -> "SCPICommand":
+    def to_scpicommand(self, **kwargs: Any) -> SCPICommand:
         return self
 
     @classmethod
-    def from_scpicommand(cls, com: SCPICommand) -> "SCPICommand":
+    def from_scpicommand(cls, com: SCPICommand) -> SCPICommand:
         return com
-
-
-T = TypeVar("T")
-
-
-class SCPICommandLike(Protocol):
-    def to_scpicommand(self, **kwargs) -> SCPICommand:  # pragma: no cover
-        ...
-
-    @classmethod
-    def from_scpicommand(cls: Type[T], com: SCPICommand) -> T:  # pragma: no cover
-        ...
 
 
 _scpi_command_classes: dict[str, SCPICommandLike] = {}

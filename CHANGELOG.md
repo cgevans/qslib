@@ -7,7 +7,8 @@
 - Automatic connections throughout Machine and Experiment, by default.
 - Change safe titles from spaces-as-"-" to spaces-as-"_", consistent with machine.
 - Deprecated paramiko tunnel.
-- 
+- Documentation!
+
 ## Version 0.4.1
 
 - Allow setting of Experiment.sample_wells.
