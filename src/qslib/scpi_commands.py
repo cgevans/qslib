@@ -84,7 +84,9 @@ _arglist = pp.delimitedList(
 )
 
 _arglist.setParseAction(
-    lambda toks: ArgList(dict(toks.get("opt", [])), list(toks.get("arg", [])))
+    lambda toks: ArgList(
+        {k: v for k, v in toks.get("opt", [])}, list(toks.get("arg", []))
+    )
 )
 
 _command: pp.ParserElement = cast(
@@ -176,8 +178,8 @@ class SCPICommandLike(ABC):
         """Convert the object to an :ref:`SCPICommand`"""
         ...
 
-    @abstractmethod
     @classmethod
+    @abstractmethod
     def from_scpicommand(cls: Type[T], com: SCPICommand) -> T:  # pragma: no cover
         """Try to create the object from an :ref:`SCPICommand`."""
         ...
