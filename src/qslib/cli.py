@@ -424,7 +424,7 @@ def restart_is(m: Machine, p: OutP):
     with m:
         with m.at_access(AccessLevel.Controller):
             try:
-                m.run_command("SYST:EXEC 'killall zygote'")
+                m.restart_system()
             except ConnectionError:
                 p.good("succeeded.")
             else:

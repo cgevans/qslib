@@ -652,6 +652,11 @@ class Machine:
         else:
             return re.sub(r"(<([\w.]+)>)?([^<]+)(</[\w.]+>)?", r"\3", out)
 
+    @_ensure_connection(AccessLevel.Controller)
+    def restart_system(self) -> None:
+        """Restart the system (both the InstrumentServer and android interface) by killing the zygote process."""
+        self.run_command(SCPICommand("SYST:EXEC", "killall zygote"))
+
     @contextmanager
     def at_access(
         self,

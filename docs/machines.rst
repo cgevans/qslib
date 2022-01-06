@@ -8,6 +8,7 @@ Communicating with Machines
 
 .. autoclass:: qslib.machine.Machine
    :noindex:
+   :members:
 
 Access and addressing
 ---------------------
