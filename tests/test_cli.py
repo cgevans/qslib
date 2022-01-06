@@ -1,7 +1,7 @@
 import pytest
 from click.testing import CliRunner
 from qslib.cli import cli
-from qslib.common import Experiment, Machine
+from qslib import Experiment, Machine
 
 
 @pytest.fixture(scope="module")

@@ -5,7 +5,7 @@ from asyncio.futures import Future
 import pytest
 import pytest_asyncio
 
-from qslib.common import *
+from qslib import *
 from qslib.experiment import MachineBusyError, AlreadyExistsError
 
 

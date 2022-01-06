@@ -175,13 +175,13 @@ class SCPICommandLike(ABC):
 
     @abstractmethod
     def to_scpicommand(self, **kwargs: Any) -> SCPICommand:  # pragma: no cover
-        """Convert the object to an :ref:`SCPICommand`"""
+        """Convert the object to an :any:`SCPICommand`"""
         ...
 
     @classmethod
     @abstractmethod
     def from_scpicommand(cls: Type[T], com: SCPICommand) -> T:  # pragma: no cover
-        """Try to create the object from an :ref:`SCPICommand`."""
+        """Try to create the object from an :any:`SCPICommand`."""
         ...
 
 

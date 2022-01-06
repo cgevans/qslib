@@ -14,7 +14,7 @@ class Normalizer(metaclass=ABCMeta):
     def normalize_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         """
         Filter the data, and return it (possibly not a copy), *if scope is the
-        minimum necessary scope for this normalization type.  Otherwise, just
+        minimum necessary scope for this normalization type*.  Otherwise, just
         return the same data.
 
         This is useful for writing scope-agnostic code, provided that you call this for
@@ -52,7 +52,7 @@ class NormToMeanPerWell(Normalizer):
 
     - To normalize to the mean stage 8 values, use `NormToMeanPerWell(stage=8)`.
     - To normalize to the first 5 cycles of stage 2, use
-        `NormToMeanPerWell(stage=2, cycle=slice(1, 6)).
+        NormToMeanPerWell(stage=2, cycle=slice(1, 6)).
 
     `selection` allows arbitrary Pandas indexing (without the filter_set level
     of the MultiIndex) for unusual cases.

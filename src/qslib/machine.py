@@ -9,7 +9,7 @@ from asyncio.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
-from typing import IO, Any, Generator, Literal, overload
+from typing import IO, Any, Generator, Literal, overload, TYPE_CHECKING
 
 import nest_asyncio
 
@@ -25,6 +25,10 @@ nest_asyncio.apply()
 from .base import MachineStatus, RunStatus
 
 log = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from .experiment import Experiment
+    import matplotlib.pyplot as plt
 
 
 def _ensure_connection(level: AccessLevel = AccessLevel.Observer):

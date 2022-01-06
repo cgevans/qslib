@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from qslib.common import Experiment
+from qslib import Experiment
 from qslib.normalization import NormToMaxPerWell, NormToMeanPerWell
 
 
@@ -38,7 +38,7 @@ def test_plots(exp: Experiment):
         samples="Sample 1", temperatures="axes", normalization=NormToMeanPerWell()
     )
     exp.plot_anneal_melt(samples="Sample 1")
-    exp.protocol.tcplot()
+    exp.protocol.plot_protocol()
 
 
 def test_rawquant(exp: Experiment):

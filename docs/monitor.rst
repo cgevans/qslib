@@ -2,3 +2,12 @@
 
 Monitor system
 ==============
+
+Setup
+-----
+
+Configuration
+-------------
+
+Command line
+------------

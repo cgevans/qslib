@@ -1,7 +1,21 @@
-from importlib.metadata import PackageNotFoundError, version
+from .version import __version__
+from . import tcprotocol as tc
+from .experiment import Experiment, PlateSetup
+from .machine import Machine, MachineStatus, RunStatus
+from .normalization import NormRaw, NormToMeanPerWell
+from .tcprotocol import CustomStep, Protocol, Stage, Step
 
-try:
-    __version__ = version("qslib")
-except PackageNotFoundError:  # pragma: no cover
-    # package is not installed
-    __version__ = "dev"
+__all__ = (
+    "Machine",
+    "Experiment",
+    "tc",
+    "PlateSetup",
+    "Protocol",
+    "Stage",
+    "Step",
+    "RunStatus",
+    "MachineStatus",
+    "NormToMeanPerWell",
+    "NormRaw",
+    "CustomStep",
+)

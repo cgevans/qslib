@@ -1,10 +1,28 @@
+.. currentmodule:: qslib
+
 Experiments
 ===========
 
-.. autoclass:: qslib.common.Experiment
-
 Defining new experiments
 ------------------------
+
+Protocols
+^^^^^^^^^
+
+.. autoclass:: qslib.experiment.Experiment
+   :noindex:
+
+.. autoclass:: qslib.Protocol
+   :members:
+   :noindex:
+
+.. autoclass:: qslib.Stage
+   :members:
+   :noindex:
+
+.. autoclass:: qslib.Step
+   :members:
+   :noindex:
 
 Loading and saving existing experiments
 ---------------------------------------
@@ -12,16 +30,20 @@ Loading and saving existing experiments
 Loading
 ^^^^^^^
 
-.. automethod:: qslib.common.Experiment.from_file
+.. automethod:: qslib.experiment.Experiment.from_file
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.from_machine
+.. automethod:: qslib.experiment.Experiment.from_machine
+   :noindex:
 
 Saving
 ^^^^^^
 
-.. automethod:: qslib.common.Experiment.save_file
+.. automethod:: qslib.experiment.Experiment.save_file
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.save_file_without_changes
+.. automethod:: qslib.experiment.Experiment.save_file_without_changes
+   :noindex:
 
 Information, data access and plotting
 -------------------------------------
@@ -32,39 +54,56 @@ Information
 Data
 ^^^^
 
-.. autoattribute:: qslib.common.Experiment.welldata
+.. autoattribute:: qslib.experiment.Experiment.welldata
+   :noindex:
 
-.. autoattribute:: qslib.common.Experiment.temperature
+.. autoattribute:: qslib.experiment.Experiment.temperatures
+   :noindex:
 
 Plotting
 ^^^^^^^^
 
-.. automethod:: qslib.common.Experiment.tcplot
+.. automethod:: qslib.experiment.Experiment.plot_anneal_melt
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.plot_anneal_melt
+.. automethod:: qslib.experiment.Experiment.plot_over_time
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.plot_over_time
+.. automethod:: qslib.experiment.Experiment.plot_protocol
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.plot_temperatures
+.. automethod:: qslib.experiment.Experiment.plot_temperatures
+   :noindex:
 
 
 Normalization
 ^^^^^^^^^^^^^
 
-.. autoclass:: qslib.common.NormalizeToMeanPerWell
+.. autoclass:: qslib.normalization.NormToMeanPerWell
+   :noindex:
+
+.. autoclass:: qslib.normalization.NormRaw
+   :noindex:
+
 
 Running and controlling experiments
 -----------------------------------
 
-.. automethod:: qslib.common.Experiment.run
+.. automethod:: qslib.experiment.Experiment.run
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.change_protocol
+.. automethod:: qslib.experiment.Experiment.change_protocol
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.pause_now
+.. automethod:: qslib.experiment.Experiment.pause_now
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.resume
+.. automethod:: qslib.experiment.Experiment.resume
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.stop
+.. automethod:: qslib.experiment.Experiment.stop
+   :noindex:
 
-.. automethod:: qslib.common.Experiment.abort
+.. automethod:: qslib.experiment.Experiment.abort
+   :noindex:
 
