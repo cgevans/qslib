@@ -78,7 +78,7 @@ class PlateSetup:
         sample_wells: Dict[str, List[str]] = dict()
 
         for fv in sample_fvs:
-            idx = int(fv.find("Index").text)
+            idx = int(fv.findtext("Index"))
             sample = Sample.from_platesetup_sample(fv.find("FeatureItem/Sample"))
             if sample.name in samples_by_name.keys():
                 assert sample == samples_by_name[sample.name]
@@ -183,6 +183,7 @@ class PlateSetup:
 
     def update_xml(self, root: ET.Element) -> None:
         samplemap = root.find("FeatureMap/Feature/Id[.='sample']/../..")
+        e: Optional[ET.Element]
         if not samplemap:
             e = ET.SubElement(root, "FeatureMap")
             v = ET.SubElement(e, "Feature")
