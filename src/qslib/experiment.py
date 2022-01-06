@@ -1806,7 +1806,7 @@ table, th, td {{
                 tmin = min(tmin, d.min())
                 tmax = max(tmax, d.max())
 
-            assert self.temperatures
+            assert self.temperatures is not None
 
             reltemps = self.temperatures.loc[
                 lambda x: (tmin <= x[("time", "hours")])
