@@ -4,7 +4,7 @@
 Status](https://img.shields.io/github/workflow/status/cgevans/qslib/Python%20tests)
 ![PyPI](https://img.shields.io/pypi/v/qslib)
 
-Documentation: [Stable](https://readthedocs.org/projects/qslib/badge/?version=stable), [Latest](https://readthedocs.org/projects/qslib/badge/?version=latest)
+Documentation: [Stable](https://qslib.readthedocs.io/en/stable/), [Latest](https://qslib.readthedocs.io/en/latest/)
 
 
 # qslib

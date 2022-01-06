@@ -17,7 +17,7 @@ from qslib.qs_is_protocol import CommandError
 from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from .qsconnection_async import QSConnectionAsync
-from .tcprotocol import Protocol
+from .protocol import Protocol
 from ._util import _unwrap_tags
 
 nest_asyncio.apply()
