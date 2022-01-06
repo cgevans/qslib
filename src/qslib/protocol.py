@@ -1202,6 +1202,9 @@ class Protocol(ProtoCommand, XMLable):
             e.append(s.to_xml())
         return te, tqe
 
+    def info(self) -> str:
+        return str(self)
+
     def __str__(self) -> str:
         begin = f"Run Protocol {self.name}"
         extras = []
