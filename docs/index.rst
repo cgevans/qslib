@@ -1,5 +1,5 @@
-qslib
-=====
+qslib |version|
+===============
 
 Introduction
 ------------

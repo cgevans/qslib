@@ -4,8 +4,10 @@ from .experiment import Experiment, PlateSetup
 from .machine import Machine, MachineStatus, RunStatus
 from .normalization import NormRaw, NormToMeanPerWell
 from .tcprotocol import CustomStep, Protocol, Stage, Step
+from .scpi_commands import AccessLevel
 
 __all__ = (
+    "AccessLevel",
     "Machine",
     "Experiment",
     "tc",
