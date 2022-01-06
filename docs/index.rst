@@ -1,6 +1,9 @@
 qslib |version|
 ===============
 
+
+.. currentmodule:: qslib
+
 Introduction
 ------------
 
@@ -11,7 +14,7 @@ molecular programming systems.
 There are a few different ways to use QSLib:
 
 - Through its command-line script, `qslib`, which has a number of subcommands allowing basic machine control, experiment
-   file information, and data export.
+  file information, and data export.
 
 - As a library in Python, often either in the REPL, or via a notebook system like Jupyter.  QSLib uses nest-asyncio to
   allow it to operate seamlessly within Jupyter notebooks.  This allows experiment creation, modification, and processing,
@@ -24,16 +27,16 @@ There are a few different ways to use QSLib:
 Basic use within Python
 -----------------------
 
-Basic of QSLib is mostly built around the `Experiment` and `Machine` classes, along with several classes for
-defining a `PlateSetup` and temperature `Protocol`.
+Basic of QSLib is mostly built around the :class:`Experiment` and :class:`Machine` classes, along with several classes for
+defining a :class:`PlateSetup` and temperature :class:`Protocol`.
 
 By default (as of v0.5.0), most methods communicating with a machine are "automatic": they handle connection
 and disconnection, and access levels, automatically.  They are also written so that, if there is no passsword
 required, the machine's hostname as a string can be used as a reference to the machine.  So, for example, if you
-want to run an experiment `experiment` on machine `example-qs5`, you could use: `experiment.run("example-qs5")`, or,
+want to run an experiment :code:`experiment` on machine `example-qs5`, you could use: :code:`experiment.run("example-qs5")`, or,
 to load an experiment named `my-experiment` from a machine, you could use 
-`experiment = Experiment.from_machine("example-qs5", "my-experiment")`.  Similarly, to open the machine's drawer,
-you could use `Machine("example-qs5").drawer_open()`.
+:code:`experiment = Experiment.from_machine("example-qs5", "my-experiment")`.  Similarly, to open the machine's drawer,
+you could use :code:`Machine("example-qs5").drawer_open()`.
 
 Documention contents
 --------------------
@@ -52,7 +55,8 @@ Documention contents
    API Reference <api/modules>
 
 .. toctree::
-   :maxdepth: 1
+   :maxdepth: 2
+
    changelog
    license
    authors
