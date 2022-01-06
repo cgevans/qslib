@@ -487,8 +487,9 @@ table, th, td {{
 
         Parameters
         ----------
-        machine : Machine, optional
-            [description], by default None
+        machine
+            The machine to run on, by default None, in which case the machine
+            associated with the run (if any) is used.
 
         Raises
         ------

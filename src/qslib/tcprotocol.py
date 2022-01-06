@@ -382,10 +382,7 @@ class CustomStep(ProtoCommand):
             return Step.from_scpicommand(sc)
         except ValueError:
             return cls(
-                [
-                    x.specialize(**kwargs)
-                    for x in cast(Sequence[SCPICommand], sc.args[1])
-                ],
+                [x.specialize() for x in cast(Sequence[SCPICommand], sc.args[1])],
                 identifier=cast(int | str, sc.args[0]),
                 **sc.opts,
             )
@@ -727,7 +724,7 @@ class Stage(XMLable, ProtoCommand):
                     temp_from,
                     collect=collect,
                     temp_increment=temp_increment,
-                    filters=filters,  # type: ignore (handled by attr converter)
+                    filters=filters,
                 )
             ],
             repeat=nsteps,
@@ -748,7 +745,7 @@ class Stage(XMLable, ProtoCommand):
                     _wrapunit("second")(total_time),
                     _wrapunitmaybelist("degC")(temps),
                     collect=collect,
-                    filters=filters,  # type: ignore (handled by attr converter)
+                    filters=filters,
                 )
             ],
             repeat=round(total_time / step_time),
