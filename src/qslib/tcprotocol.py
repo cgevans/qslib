@@ -1242,8 +1242,6 @@ class Protocol(ProtoCommand, XMLable):
         # assert self.name == new.name
 
         for i, (oldstage, newstage) in enumerate(zip_longest(self.stages, new.stages)):
-            oldstage: Stage
-            newstage: Stage
             if (
                 i + 1 < status.stage
             ):  # If the stage has already passed, we must be equal

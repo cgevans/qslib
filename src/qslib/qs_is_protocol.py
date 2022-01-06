@@ -34,10 +34,12 @@ def _validate_command_format(commandstring: bytes) -> None:
             tagstack.append(t)
         elif c:
             if not tagstack:
-                raise ValueError(f"unbalanced tag <{c}{t}>")
+                raise ValueError(f"unbalanced tag <{c.decode()}{t.decode()}>")
             opentag = tagstack.pop()
             if opentag != t:
-                raise ValueError(f"unbalanced tags <{opentag}> <{c}{t}>")
+                raise ValueError(
+                    f"unbalanced tags <{opentag.decode()}> <{c.decode()}{t.decode()}>"
+                )
         elif n:
             continue
         else:
