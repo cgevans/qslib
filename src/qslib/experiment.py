@@ -44,7 +44,7 @@ from .data import FilterDataReading, FilterSet, df_from_readings
 from .machine import Machine
 from .normalization import Normalizer, NormRaw
 from .rawquant_compat import _fdc_to_rawdata
-from .tcprotocol import Protocol, Stage, Step
+from .protocol import Protocol, Stage, Step
 from ._util import _set_or_create, _nowuuid, _pp_seqsliceint
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
 
