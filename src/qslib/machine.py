@@ -160,7 +160,7 @@ class Machine:
         self.port = port
         self.password = password
         self.automatic = automatic
-        self.max_access_level = max_access_level
+        self.max_access_level = AccessLevel(max_access_level)
         self._initial_access_level = AccessLevel(_initial_access_level)
         self._connection = None
 
@@ -522,9 +522,9 @@ class Machine:
         return self._current_access_level
 
     @access_level.setter
-    @_ensure_connection(AccessLevel.Guest)
     def access_level(self, v: AccessLevel | str) -> None:
-        self.set_access_level(v)
+        with self.ensured_connection(AccessLevel.Guest):
+            self.set_access_level(v)
 
     @_ensure_connection(AccessLevel.Controller)
     def drawer_open(self) -> None:
@@ -548,25 +548,25 @@ class Machine:
             self.cover_lower()
 
     @property
-    @_ensure_connection(AccessLevel.Observer)
     def status(self) -> RunStatus:
         """Return the current status of the run."""
-        return RunStatus.from_machine(self)
+        with self.ensured_connection(AccessLevel.Observer):
+            return RunStatus.from_machine(self)
 
     @property
-    @_ensure_connection(AccessLevel.Observer)
     def drawer_position(self) -> Literal["Open", "Closed", "Unknown"]:
         """Return the drawer position from the DRAW? command."""
-        return self.run_command("DRAW?")  # type: ignore
+        with self.ensured_connection(AccessLevel.Observer):
+            return self.run_command("DRAW?")  # type: ignore
 
     @property
-    @_ensure_connection(AccessLevel.Observer)
     def cover_position(self) -> Literal["Up", "Down", "Unknown"]:
         """Return the cover position from the ENG? command. Note that
         this does not always seem to work."""
-        f = self.run_command("ENG?")
-        assert f in ["Up", "Down", "Unknown"]
-        return f  # type: ignore
+        with self.ensured_connection(AccessLevel.Observer):
+            f = self.run_command("ENG?")
+            assert f in ["Up", "Down", "Unknown"]
+            return f  # type: ignore
 
     @_ensure_connection(AccessLevel.Controller)
     def cover_lower(self) -> None:
@@ -617,7 +617,6 @@ class Machine:
         self.run_command_to_ack("RESume")
 
     @property
-    @_ensure_connection(AccessLevel.Observer)
     def power(self) -> bool:
         """Get and set the machine's operational power (lamp, etc) as a bool.
 
@@ -625,32 +624,33 @@ class Machine:
         the lamp, temperature control, etc.  It will do so even if there is
         currently a run.
         """
-        s = self.run_command("POW?").lower()
-        if s == "on":
-            return True
-        elif s == "off":
-            return False
-        else:
-            raise ValueError(f"Unexpected power status: {s}")
+        with self.ensured_connection(AccessLevel.Observer):
+            s = self.run_command("POW?").lower()
+            if s == "on":
+                return True
+            elif s == "off":
+                return False
+            else:
+                raise ValueError(f"Unexpected power status: {s}")
 
     @power.setter
-    @_ensure_connection(AccessLevel.Controller)
-    def power(self, value: Literal["on", "off", True, False]):  # type: ignore
-        if value is True:
-            value = "on"
-        elif value is False:
-            value = "off"
-        self.run_command(f"POW {value}")
+    def power(self, value: Literal["on", "off", True, False]):
+        with self.ensured_connection(AccessLevel.Controller):
+            if value is True:
+                value = "on"
+            elif value is False:
+                value = "off"
+            self.run_command(f"POW {value}")
 
     @property
-    @_ensure_connection(AccessLevel.Observer)
     def current_run_name(self) -> str | None:
         """Name of current run, or None if no run is active."""
-        out = self.run_command("RUNTitle?")
-        if out == "-":
-            return None
-        else:
-            return re.sub(r"(<([\w.]+)>)?([^<]+)(</[\w.]+>)?", r"\3", out)
+        with self.ensured_connection(AccessLevel.Observer):
+            out = self.run_command("RUNTitle?")
+            if out == "-":
+                return None
+            else:
+                return re.sub(r"(<([\w.]+)>)?([^<]+)(</[\w.]+>)?", r"\3", out)
 
     @_ensure_connection(AccessLevel.Controller)
     def restart_system(self) -> None:

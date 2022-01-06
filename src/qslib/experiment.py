@@ -1224,9 +1224,9 @@ table, th, td {{
             else:
                 self._protocol_from_qslib = None
 
-            if (x := qstcxml.findtext("MachineConnection")) and not self.machine:
+            if (mc := qstcxml.findtext("MachineConnection")) and not self.machine:
                 try:
-                    self.machine = Machine(**toml.loads(x))
+                    self.machine = Machine(**toml.loads(mc))
                 except ValueError:
                     pass
         try:
@@ -1805,6 +1805,8 @@ table, th, td {{
                 d = fr.loc[i, ("time", "hours")].loc[stages]
                 tmin = min(tmin, d.min())
                 tmax = max(tmax, d.max())
+
+            assert self.temperatures
 
             reltemps = self.temperatures.loc[
                 lambda x: (tmin <= x[("time", "hours")])

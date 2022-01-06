@@ -7,7 +7,13 @@ from pathlib import Path
 import click
 
 from qslib.common import Experiment, Machine
-from qslib.qs_is_protocol import AccessLevelExceeded, AuthError, InsufficientAccess
+from qslib.experiment import MachineError
+from qslib.qs_is_protocol import (
+    AccessLevelExceeded,
+    AuthError,
+    CommandError,
+    InsufficientAccess,
+)
 from qslib.scpi_commands import AccessLevel
 
 
@@ -359,7 +365,7 @@ def check_access(
     admin_pw: str | None,
     default_controller: bool,
 ):
-    errs = []
+    errs: list[CommandError] = []
     if controller_pw is not None:
         p.out("Checking controller password (machine LED should turn yellow): ")
         m = Machine(
