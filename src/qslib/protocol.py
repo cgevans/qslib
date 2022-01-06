@@ -34,7 +34,7 @@ from qslib.data import FilterSet
 
 from .version import __version__
 from .base import RunStatus
-from .scpi_commands import SCPICommand
+from .scpi_commands import SCPICommand, SCPICommandLike
 from ._util import *
 
 
@@ -162,6 +162,8 @@ class ProtoCommand(ABC):
     def from_scpicommand(cls: Type[T], sc: SCPICommand) -> T:  # pragma: no cover
         ...
 
+    _names: ClassVar[Sequence[str]] = tuple()
+
 
 _ZEROTEMPDELTA = UR.Quantity(0.0, "delta_degC")
 
@@ -226,7 +228,7 @@ class Exposure(ProtoCommand):
         )
 
     @classmethod
-    def from_scpicommand(cls: Type[T], sc: SCPICommand) -> Exposure:
+    def from_scpicommand(cls, sc: SCPICommand) -> Exposure:
         filts = [
             (FilterSet.fromstring(x.split(",")[0]), [int(y) for y in x.split(",")[1:]])
             for x in cast(Sequence[str], sc.args)
@@ -1260,6 +1262,9 @@ class Protocol(ProtoCommand, XMLable):
                 continue
 
 
-for c in [Ramp, Exposure, HACFILT, HoldAndCollect, Hold, CustomStep, Stage, Protocol]:
+for c in cast(
+    Sequence[Protocol],
+    [Ramp, Exposure, HACFILT, HoldAndCollect, Hold, CustomStep, Stage, Protocol],
+):
     for n in c._names:
         scpi_commands._scpi_command_classes[n.upper()] = c
