@@ -40,16 +40,19 @@ Documention contents
 
 .. toctree::
 
-    setup
     experiments
     machines
     commandline
     monitor
+    setup
+
+.. toctree::
+   :maxdepth: 3
+   
+   API Reference <api/modules>
 
 .. toctree::
    :maxdepth: 1
-   
-   API Reference <api/modules>
    changelog
    license
    authors
