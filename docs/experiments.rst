@@ -51,6 +51,19 @@ Information, data access and plotting
 Information
 ^^^^^^^^^^^
 
+.. autosummary::
+   Experiment.name
+   Experiment.createdtime
+   Experiment.activestarttime
+   Experiment.runstarttime
+   Experiment.activeendtime
+   Experiment.runendtime
+   Experiment.all_filters
+   Experiment.sample_wells
+   Experiment.info
+   Experiment.info_html
+
+
 Data
 ^^^^
 

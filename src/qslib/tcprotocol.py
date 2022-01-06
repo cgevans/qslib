@@ -977,15 +977,15 @@ ALLTEMPS = ["temperature_{}".format(i) for i in range(1, 7)]
 @attr.define
 class Protocol(ProtoCommand, XMLable):
     """A run protocol for the QuantStudio.  Protocols encapsulate the temperature and camera
-    controls for an entire run.  They are composed of :any:`Stage`s, which may repeat for a
+    controls for an entire run.  They are composed of :class:`Stage`s, which may repeat for a
     number of cycles, and the stages are in turn composed of Steps, which may be created for
-    usual cases with :any:`Step`, or from SCPI commands.  Steps may repeat
+    usual cases with :class:`Step`, or from SCPI commands.  Steps may repeat
     their contents as well, but this is not yet implemeted.
 
     Parameters
     ----------
     stages: Iterable[Stage]
-        The stages of the protocol, likely :any:`Stage`.
+        The stages of the protocol, likely :class:`Stage`.
     name: str | None
         A protocol name. If not set, a timestamp will be used, unlike AB's uuid.
     volume: float
