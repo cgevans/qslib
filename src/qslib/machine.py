@@ -51,55 +51,33 @@ class Machine:
     """
     A connection to a QuantStudio machine.  The connection can be opened and closed, and reused.
     A maximum access level can be set and changed, which will prevent the access level from going
-    above that level.  By default, the initial connection is as Observer.
+    above that level.
 
-    For clean access, the class provides a context manager for the connection, and the
-    `at_level` method provides a context manager for access level:
-
-    >>> with Machine('machine', 'password', max_access_level="Controller") as m:
-    >>>     # Now connected
-    >>>     print(m.run_status())  # runs at Observer level
-    >>>     with m.at_level("Controller", exclusive=True):
-    >>>         # Runs as Controller, and fails if another Controller is connected (exclusive)
-    >>>         m.abort_run()
-    >>>         m.drawer_open()
-    >>>     # Now back to Observer
-    >>>     print(m.status())
-    >>> # Now disconnected.
-
-    The connection context manager can also be used with :code:`with m:` form for a Machine
-    instance :code:`m` that already exists, in which case it will connect and disconnect.
-
-    If you don't want to use these, you can also use :any:`connect` and :any:`disconnect`.
-
-    Note that there is *no supported method* on the machine's server for removing hanging connections
-    other than a reboot, and AB's software will not start runs when other connections hold Controller
-    level.
+    By default, the class tries to handle connections and access automatically.
 
     Parameters
     ----------
 
-    host: str
+    host
         The host name or IP to connect to.
 
-    password: str
+    password
         The password to use. Note that this class does not obscure or protect the password at all,
         because it should not be relied on for security.  See :ref:`access-and-security`  for more
         information.
+
+    automatic
+        Whether or not to automatically handle connection, disconnection, and where possible,
+        access level.  Default True.
 
     max_access_level: "Observer", "Controller", "Administrator", or "Full"
         The maximum access level to allow.  This is *not* the initial access level, which
         will be Observer. The parameter can be changed later by changing the :code:`max_access_level`
         attribute.
 
-    port: int (default = 7000)
+    port
         The port to connect to. (Use the normal SCPI port, not the line-editor connection usually
-        on 2323).
-
-    Examples
-    --------
-
-    Set up a connection
+        on 2323).  Default is 7000.
 
     """
 
@@ -127,6 +105,7 @@ class Machine:
 
     @property
     def connection(self) -> QSConnectionAsync:
+        """The :class:`QSConnectionAsync` for the connection, or a :class:`ConnectionError`."""
         if self._connection is None:
             raise ConnectionError
         else:
@@ -165,7 +144,7 @@ class Machine:
         self._connection = None
 
     def connect(self) -> None:
-        """Open the connection."""
+        """Open the connection manually."""
         loop = asyncio.get_event_loop()
 
         self.connection = QSConnectionAsync(
@@ -179,6 +158,11 @@ class Machine:
 
     @property
     def connected(self) -> bool:
+        """Whether or not there is a current connection to the machine.
+
+        Note that when using automatic connections, this will usually be False,
+        because connections will only be active when running a command.
+        """
         if (not hasattr(self, "_connection")) or (self._connection is None):
             return False
         else:
@@ -225,7 +209,7 @@ class Machine:
 
         Parameters
         ----------
-        command : str
+        commands
             command to run
 
         Returns
@@ -257,7 +241,7 @@ class Machine:
 
         Parameters
         ----------
-        command : str | bytes
+        command
             command to run
 
         Returns
@@ -284,7 +268,7 @@ class Machine:
 
         Parameters
         ----------
-        protocol : Protocol
+        protocol
             protocol to send
         """
         self.run_command(protocol.to_scpicommand())
