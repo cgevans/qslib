@@ -771,6 +771,7 @@ table, th, td {{
         overwrite : bool, optional
             If True, overwrite any existing file without warning. Defaults to False.
         """
+        mode: Literal["w", "x"]
         if overwrite:
             mode = "w"
         else:
@@ -800,6 +801,7 @@ table, th, td {{
         overwrite : bool, optional
             If True, overwrite any existing file without warning. Defaults to False.
         """
+        mode: Literal["w", "x"]
         if overwrite:
             mode = "w"
         else:
