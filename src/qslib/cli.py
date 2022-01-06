@@ -51,7 +51,7 @@ def protocol_plot(experiment, output, format, actual, open) -> None:
 
     fig, ax = plt.subplots(figsize=(21.0 / 2.54, 15.0 / 2.54))
 
-    exp.protocol.tcplot(ax)
+    exp.protocol.plot_protocol(ax)
 
     fig.savefig(output, format=format)
 

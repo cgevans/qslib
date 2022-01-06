@@ -2,7 +2,7 @@ from typing import Any, TypeVar
 
 import pytest
 
-from qslib.common import Experiment, Machine
+from qslib import Experiment, Machine
 
 # def test_drawer(monkeypatch):
 #     def patchrun(self, value: str) -> str:

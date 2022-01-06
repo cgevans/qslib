@@ -5,11 +5,11 @@ import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, ClassVar, Dict, Tuple, Type, TypeVar
+from typing import Any, Callable, ClassVar, Dict, Tuple, Type, TypeVar, TYPE_CHECKING
 
 T = TypeVar("T", bound="BaseStatus")
 
-if False:  # for mypy
+if TYPE_CHECKING:
     from .machine import Machine
 
 

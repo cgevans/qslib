@@ -5,7 +5,7 @@ import pytest
 import pytest_asyncio
 
 import qslib.qs_is_protocol
-from qslib.common import Machine
+from qslib import Machine
 from qslib.qsconnection_async import QSConnectionAsync
 
 

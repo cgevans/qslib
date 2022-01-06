@@ -18,9 +18,12 @@ from typing import (
     IO,
     Any,
     Collection,
+    List,
     Literal,
     Mapping,
+    Optional,
     Sequence,
+    Tuple,
     Union,
     cast,
     TYPE_CHECKING,
@@ -35,7 +38,7 @@ from pandas.core.base import DataError
 from qslib.plate_setup import PlateSetup
 from qslib.scpi_commands import AccessLevel, SCPICommand
 
-from . import __version__
+from .version import __version__
 from .base import RunStatus
 from .data import FilterDataReading, FilterSet, df_from_readings
 from .machine import Machine
@@ -358,7 +361,7 @@ class Experiment:
         import matplotlib.pyplot as plt
 
         fig, ax = plt.subplots(figsize=(21.0 / 2.54, 15.0 / 2.54))
-        self.protocol.tcplot(ax)
+        self.protocol.plot_protocol(ax)
 
         o = io.StringIO()
         fig.savefig(o, format="svg")
@@ -1289,12 +1292,12 @@ table, th, td {{
             return
         try:
             msglog = open(os.path.join(self._dir_eds, "messages.log"), "r").read()
-        except UnicodeDecodeError as e:
+        except UnicodeDecodeError as error:
             log.debug(
                 "Decoding log failed. If <binary.reply> is present in log this may be the cause:"
                 "if so contact Constantine (<const@costinet.org>).  Continuing with failed characters replaced with backslash notation"
                 "Failure was in this area:\n"
-                f"{e.object[e.start-500:e.end+500]}"
+                f"{error.object[error.start-500:error.end+500]}"
             )
             msglog = open(
                 os.path.join(self._dir_eds, "messages.log"),
@@ -1482,6 +1485,9 @@ table, th, td {{
         but different filter sets, then only the filter set will be shown. Wells are shown
         if a sample has multiple wells.
 
+        Parameters
+        ----------
+
         samples
             Either a reference to a single sample (a string), or a list of sample names.
             Well names may also be included, in which case each well will be treated without
@@ -1518,6 +1524,12 @@ table, th, td {{
 
         line_kw
             Optional.  A dictionary of keywords passed to all three plotting commands.
+
+        Returns
+        -------
+
+        plt.Axes
+            The axes object of the plot.
 
         """
 
@@ -1655,6 +1667,9 @@ table, th, td {{
         samples, then only the sample will be shown.  If every line is from the same sample,
         but different filter sets, then only the filter set will be shown. Wells are shown
         if a sample has multiple wells.
+
+        Parameters
+        ----------
 
         samples
             Either a reference to a single sample (a string), or a list of sample names.
@@ -1810,6 +1825,11 @@ table, th, td {{
         ax[0].set_title(_gen_axtitle(self.name, stages, samples, all_wells, filters))
 
         return ax
+
+    def plot_protocol(
+        self, ax: Optional[plt.Axes] = None
+    ) -> Tuple[plt.Axes, Tuple[List[plt.Line2D], List[plt.Line2D]]]:
+        return self.protocol.plot_protocol(ax)
 
     def plot_temperatures(self):
         raise NotImplemented

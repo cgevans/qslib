@@ -21,6 +21,7 @@ from typing import (
     Type,
     TypeVar,
     cast,
+    TYPE_CHECKING,
 )
 
 import attr
@@ -31,10 +32,14 @@ import pint
 from qslib import scpi_commands
 from qslib.data import FilterSet
 
-from . import __version__
+from .version import __version__
 from .base import RunStatus
 from .scpi_commands import SCPICommand
 from ._util import *
+
+
+if TYPE_CHECKING:
+    import matplotlib.pyplot as plt
 
 NZONES = 6
 
@@ -1101,9 +1106,9 @@ class Protocol(ProtoCommand, XMLable):
         d = self.dataframe
         return np.repeat(d["temperature_avg":], 2)
 
-    def tcplot(
-        self, ax: Optional["plt.Axes"] = None  # type: ignore
-    ) -> Tuple["plt.Axes", Tuple[List["plt.Line2D"], List["plt.Line2D"]]]:  # type: ignore
+    def plot_protocol(
+        self, ax: Optional[plt.Axes] = None
+    ) -> Tuple[plt.Axes, Tuple[List[plt.Line2D], List[plt.Line2D]]]:
         "A plot of the temperature and data collection points."
 
         import matplotlib.pyplot as plt

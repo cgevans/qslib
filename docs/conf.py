@@ -77,6 +77,7 @@ extensions = [
     "sphinx.ext.mathjax",
     "sphinx.ext.napoleon",
     "sphinx_click",
+    "sphinx_autodoc_typehints",
     "myst_parser",
 ]
 

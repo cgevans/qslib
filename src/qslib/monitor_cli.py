@@ -8,7 +8,7 @@ from typing import List
 import toml
 from dacite.core import from_dict
 
-from . import __version__
+from .version import __version__
 from .monitor import Collector, Config
 
 __author__ = "Constantine Evans"

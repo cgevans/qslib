@@ -6,7 +6,7 @@ import pytest
 from qslib.scpi_commands import SCPICommand  # noqa
 
 import qslib.tcprotocol as tc
-from qslib.common import Experiment
+from qslib import Experiment
 from qslib.tcprotocol import Protocol, Stage, Step, FilterSet, UR
 
 PROTSTRING = """PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
