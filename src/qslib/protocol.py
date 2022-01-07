@@ -94,7 +94,7 @@ _ZEROTEMPDELTA = UR.Quantity(0.0, "delta_degC")
 def _wrap_delta_degC_or_zero(
     val: int | float | str | pint.Quantity[Any] | None,
 ) -> pint.Quantity[Any]:
-    if not val:
+    if val is None:
         return _ZEROTEMPDELTA
     else:
         return _wrap_delta_degC(val)
@@ -103,7 +103,7 @@ def _wrap_delta_degC_or_zero(
 def _wrap_degC_or_none(
     val: int | float | str | pint.Quantity[Any] | None,
 ) -> pint.Quantity[Any] | None:
-    if not val:
+    if val is None:
         return None
     else:
         return _wrap_degC(val)
@@ -427,17 +427,17 @@ class CustomStep(ProtoCommand):
 
     def to_scpicommand(self, *, stepindex: int = -1, **kwargs) -> SCPICommand:
         opts = {}
-        args: list[int | str | Sequence[SCPICommand]] = []
-        if self._repeat != 1:
+        args: list[int | str | None | Sequence[SCPICommand]] = []
+        if self.repeat != 1:
             opts["repeat"] = self._repeat
         if self._identifier:
-            args.append(self._identifier)
+            args.append(self.identifier)
         else:
             args.append(stepindex)
 
-        args.append([com.to_scpicommand(**kwargs) for com in self._body])
+        args.append([com.to_scpicommand(**kwargs) for com in self.body])
 
-        return SCPICommand("STEP", *args, **opts)
+        return SCPICommand("STEP", *args, **opts)  # type: ignore
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> CustomStep:
@@ -502,7 +502,7 @@ class Step(CustomStep, XMLable):
     collect: bool = False
     temp_increment: pint.Quantity[float] = attr.field(
         default=UR.Quantity(0.0, UR.delta_degC),
-        converter=_wrap_degC,
+        converter=_wrap_delta_degC,
         on_setattr=attr.setters.convert,
     )
     temp_incrementcycle: int = 2
