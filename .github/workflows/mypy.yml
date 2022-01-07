@@ -1,0 +1,4 @@
+# or specify a path!
+uses: jpetrucciani/mypy-check@master
+with:
+  path: './src'
