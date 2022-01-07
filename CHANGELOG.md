@@ -2,12 +2,13 @@
 
 ## Version 0.5.0
 
-- Implement EDS-file (in-progress and complete) synchronization for monitor.
 - Units throughout protocols, thanks to Pint: you can now use strings like '1 hr' or '52 °C' when defining protocols.
 - Automatic connections throughout Machine and Experiment, by default.
 - Change safe titles from spaces-as-"-" to spaces-as-"_", consistent with machine.
 - Deprecated paramiko tunnel.
-- Documentation!
+- Documentation rewrite
+- Implement EDS-file (in-progress and complete) synchronization for monitor.
+- Reorganization of modules: common is no longer needed
 
 ## Version 0.4.1
 
@@ -16,7 +17,7 @@
 
 ## Version 0.4.0
 
-- Much faster `Experiment.sync_from_machine`, only transferring additional log 
+- Much faster `Experiment.sync_from_machine`, only transferring additional log
   entries rather than the entire log.
 - Common plotting routines for fluorescence data.
 - More reliable monitoring.
@@ -24,7 +25,7 @@
 - `Stage.stepped_ramp` convenience function.
 - Fixes to bugs inhibiting exposure setting, and some basic
   implementations for this.
-- Fixes to qs-monitor for cycle counts > 999 (and other large stage / step / 
+- Fixes to qs-monitor for cycle counts > 999 (and other large stage / step /
   cycle counts).
 
 ## Version 0.3.1
