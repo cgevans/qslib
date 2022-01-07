@@ -58,7 +58,7 @@ dependencies = [
 # Add here additional requirements for extra features, to install with:
 # `pip install qslib[PDF]` like:
 # PDF = ReportLab; RXP
-monitor = [ 
+monitor = [
     "matrix-nio",
     "influxdb_client",
     "toml",
@@ -69,7 +69,7 @@ docs = [
     "influxdb_client",
     "toml",
     "lxml"
-    ]    
+    ]
 # Add here test requirements (semicolon/line-separated)
 testing = [
     "setuptools",
@@ -78,7 +78,7 @@ testing = [
     "pytest-asyncio"
     ]
 
-[project.urls]    
+[project.urls]
 homepage = "https://github.com/cgevans/qslib/"
 documentation = "https://qslib.readthedocs.org/"
 source = "https://github.com/cgevans/qslib/"
@@ -97,3 +97,10 @@ norecursedirs = [
     "build",
     ".tox"]
 testpaths = ["tests"]
+
+
+[tool.mypy]
+python_version = "3.10"
+# warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
