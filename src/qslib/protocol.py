@@ -170,6 +170,8 @@ _ZEROTEMPDELTA = UR.Quantity(0.0, "delta_degC")
 
 @attr.define
 class Ramp(ProtoCommand):
+    """Ramps temperature to a new setting."""
+
     temperature: pint.Quantity[np.ndarray] = attr.field(
         converter=_wrapunitmaybelist("degC"), on_setattr=attr.setters.convert
     )
@@ -211,6 +213,8 @@ class Ramp(ProtoCommand):
 
 @dataclass
 class Exposure(ProtoCommand):
+    """Modifies exposure settings."""
+
     # We don't support persistent... it doesn't seem safe
     settings: Sequence[Tuple[FilterSet, Sequence[int]]]
     state: str = "HoldAndCollect"
@@ -238,6 +242,8 @@ class Exposure(ProtoCommand):
 
 @attr.define
 class HACFILT(ProtoCommand):
+    """Sets filters for :class:`HoldAndCollect` ."""
+
     filters: Sequence[FilterSet] = attr.field(
         converter=lambda x: [FilterSet.fromstring(f) for f in x],
         on_setattr=attr.setters.convert,
@@ -259,6 +265,8 @@ class HACFILT(ProtoCommand):
 
 @dataclass
 class HoldAndCollect(ProtoCommand):
+    """A protocol hold (for a time) and collect (set by HACFILT) command."""
+
     time: pint.Quantity[int]
     increment: pint.Quantity[int] = UR.Quantity(0, "seconds")
     incrementcycle: int = 1
@@ -290,6 +298,8 @@ class HoldAndCollect(ProtoCommand):
 
 @dataclass
 class Hold(ProtoCommand):
+    """A protocol hold (for a time) command."""
+
     time: pint.Quantity[int] | None
     increment: pint.Quantity[int] = UR.Quantity(0, "seconds")
     incrementcycle: int = 1
@@ -322,6 +332,8 @@ class XMLable(ABC):
 
 
 class CustomStep(ProtoCommand):
+    """A protocol step composed of SCPI/protocol commands."""
+
     body: Sequence[ProtoCommand]
     identifier: int | str | None = None
     repeat: int = 1
@@ -393,7 +405,7 @@ class CustomStep(ProtoCommand):
 @attr.define
 class Step(CustomStep, XMLable):
     """
-    A normal protocol step.
+    A normal protocol step, of a hold and possible collection.
 
     Parameters
     ----------
@@ -1087,6 +1099,7 @@ class Protocol(ProtoCommand, XMLable):
 
     @property
     def all_filters(self) -> Collection[FilterSet]:
+        "A list of all filters used at some point in the protocol."
         filters = {FilterSet.fromstring(f) for f in self.filters}
 
         for stage in self.stages:
@@ -1097,6 +1110,7 @@ class Protocol(ProtoCommand, XMLable):
         return filters
 
     def copy(self) -> Protocol:
+        """Returns a new copy (recursively) of the protocol."""
         return deepcopy(self)
 
     @property
@@ -1205,6 +1219,7 @@ class Protocol(ProtoCommand, XMLable):
         return te, tqe
 
     def info(self) -> str:
+        """Generate a (markdown) text protocol description."""
         return str(self)
 
     def __str__(self) -> str:
@@ -1241,7 +1256,23 @@ class Protocol(ProtoCommand, XMLable):
         del d["stages"]
         return cls(s, **d)
 
-    def check_compatible(self, new: Protocol, status: RunStatus):
+    def check_compatible(self, new: Protocol, status: RunStatus) -> bool:
+        """Checks compatibility for changing a running protocol to a new one.
+
+        Raises ValueError if incompatible, returns True if compatible.
+
+        Parameters
+        ----------
+        new
+            New protocol.
+        status
+            Current run status.
+
+        Raises
+        ------
+        ValueError
+            Protocols are incompatible.
+        """
         # Sample sample volume? (FIXME: We can't change it right now.)
         # assert self.volume == new.volume
         # assert self.name == new.name
@@ -1250,16 +1281,20 @@ class Protocol(ProtoCommand, XMLable):
             if (
                 i + 1 < status.stage
             ):  # If the stage has already passed, we must be equal
-                assert oldstage == newstage
+                if oldstage != newstage:
+                    raise ValueError
             elif (
                 i + 1 == status.stage
             ):  # Current stage.  Only change is # cycles, >= current
                 if newstage.repeat < status.cycle:
                     raise ValueError
                 oldstage.repeat = newstage.repeat  # for comparison
-                assert oldstage == newstage
+                if oldstage != newstage:
+                    raise ValueError
             else:
                 continue
+
+        return True
 
 
 for c in cast(

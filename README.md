@@ -57,6 +57,17 @@ recommend against having the machines be accessible online: use a
 restricted VPN connection or port forwarding. See the documentation for
 more information.
 
+## Contributing and issue reporting
+
+Issue reports and enhancement requests can be submitted via Github.
+
+Potential contributions can be submitted via Github.  These should include pytest tests, preferably 
+both tests that can be run without outside resources, and, if applicable, tests that directly test
+any communication with a QuantStudio SCPI server.  They will also need a Contributor Licence Agreement.
+
+Private vulnerability reports can be sent to me by
+email, PGP-encrypted, or via Matrix to [@cge:matrix.org](https://matrix.to/#/@cge:matrix.org).
+
 ## Disclaimer
 
 This package was developed for my own use. It may break your machine or
