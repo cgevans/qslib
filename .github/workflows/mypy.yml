@@ -10,3 +10,4 @@ jobs:
       - uses: jpetrucciani/mypy-check@master
         with:
           path: './src'
+          mypy_flags: '--install-types --non-interactive'
