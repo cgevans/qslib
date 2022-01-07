@@ -686,6 +686,8 @@ def _bsl(x: Iterable[CustomStep] | CustomStep) -> Sequence[CustomStep]:
 
 @attr.define
 class Stage(XMLable, ProtoCommand):
+    """A Stage in a protocol, composed of :class:`Step` s with a possible repeat."""
+
     steps: Sequence[CustomStep] = attr.field(
         converter=(lambda x: [x] if not isinstance(x, Sequence) else list(x))
     )

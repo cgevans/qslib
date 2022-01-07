@@ -286,6 +286,7 @@ class Experiment:
 
     @property
     def all_filters(self) -> Collection[FilterSet]:
+        """All filters used at some point in the experiment's protocol."""
         return self.protocol.all_filters
 
     @property
@@ -356,6 +357,7 @@ class Experiment:
         return s
 
     def info_html(self) -> str:
+        """Create a self-contained HTML summary (returned as a string, but very large) of the experiment."""
         summary = self.info(plate="table")
 
         import matplotlib.pyplot as plt
@@ -815,6 +817,7 @@ table, th, td {{
 
     @property
     def sample_wells(self) -> dict[str, list[str]]:
+        """A dictionary of sample names to sample wells (convenience read/write access to the :class:`PlateSetup` ."""
         return self.plate_setup.sample_wells
 
     @sample_wells.setter
@@ -1834,6 +1837,8 @@ table, th, td {{
     def plot_protocol(
         self, ax: Optional[plt.Axes] = None
     ) -> Tuple[plt.Axes, Tuple[List[plt.Line2D], List[plt.Line2D]]]:
+        """A plot of the temperature and data collection points in the experiment's protocol."""
+
         return self.protocol.plot_protocol(ax)
 
     def plot_temperatures(self):
