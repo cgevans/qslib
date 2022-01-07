@@ -81,7 +81,7 @@ def protocol_plot(experiment, output, format, actual, open) -> None:
 )
 @click.argument("experiment", type=click.Path(exists=True))
 def info_html(experiment, output, openfile) -> None:
-    """Plot the temperature protocol in an experiment."""
+    """Create an HTML summary of the experiment, and potentially open it."""
     import matplotlib.pyplot as plt
 
     experiment = Path(experiment)

@@ -13,7 +13,7 @@ Defining new experiments
 Protocols
 ^^^^^^^^^
 
-A basic :class:`Protocol` is generally made up of :class:`Stages` s, which are made up of :class:`Step` s.  
+A basic :class:`Protocol` is generally made up of :class:`Stage` s, which are made up of :class:`Step` s.  
 These are often compatible with AB's software.
 
 .. autosummary::
@@ -38,7 +38,7 @@ includes classes that allow more convenient use:
    protocol.HoldAndCollect
    scpi_commands.SCPICommand
 
-Once created, 
+Once created, there are several useful methods:
 
 .. autosummary::
    Protocol.info
