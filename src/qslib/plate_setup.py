@@ -44,9 +44,9 @@ class Sample:
     @classmethod
     def from_platesetup_sample(cls, se: ET.Element) -> Sample:  # type: ignore
         return cls(
-            se.findtext("Name"),
-            se.findtext("CustomProperty/Property[.='SP_UUID']/../Value"),
-            _process_color_from_str_int(se.findtext("Color")),
+            se.findtext("Name") or "Unnamed",
+            se.findtext("CustomProperty/Property[.='SP_UUID']/../Value") or uuid1().hex,
+            _process_color_from_str_int(se.findtext("Color") or "-1"),
         )
 
     def to_xml(self) -> ET.Element:
@@ -78,8 +78,12 @@ class PlateSetup:
         sample_wells: Dict[str, List[str]] = dict()
 
         for fv in sample_fvs:
-            idx = int(fv.findtext("Index"))
-            sample = Sample.from_platesetup_sample(fv.find("FeatureItem/Sample"))
+            if x := fv.findtext("Index"):
+                idx = int(x)
+            else:
+                raise ValueError
+            if y := fv.find("FeatureItem/Sample"):
+                sample = Sample.from_platesetup_sample(y)
             if sample.name in samples_by_name.keys():
                 assert sample == samples_by_name[sample.name]
                 assert sample == samples_by_uuid[sample.uuid]
