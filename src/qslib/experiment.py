@@ -224,7 +224,7 @@ class Experiment:
     """
     runendtime: datetime | None
     """
-    The run end time as a datetime, taken from the log.  This is the end of the run, 
+    The run end time as a datetime, taken from the log.  This is the end of the run,
     """
     activestarttime: datetime | None
     """
@@ -266,8 +266,8 @@ class Experiment:
     Columns (as multi-index):
 
     ("time", ...) : float
-        Time of temperature reading, for choices of "timestamp" (Unix timestamp in seconds), 
-        "seconds" (seconds since the *active* start of the run), or "hours". The latter two may 
+        Time of temperature reading, for choices of "timestamp" (Unix timestamp in seconds),
+        "seconds" (seconds since the *active* start of the run), or "hours". The latter two may
         be negative, and may not be set if the run never became active.
 
     ("sample", ...) : float
@@ -1842,6 +1842,7 @@ table, th, td {{
         return self.protocol.plot_protocol(ax)
 
     def plot_temperatures(self):
+        """To be implemented."""
         raise NotImplemented
 
 
