@@ -42,7 +42,7 @@ class BaseStatus(ABC):
             **{
                 k: inst(v)
                 for (k, (_, inst)), v in zip(
-                    cls._comlist.items(), shlex.split(out.decode())
+                    cls._comlist.items(), shlex.split(out.decode())  # type: ignore
                 )
             }
         )

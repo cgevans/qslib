@@ -284,6 +284,9 @@ class Experiment:
 
     """
 
+    num_zones: int
+    """The number of temperature zones (excluding cover), or -1 if not known."""
+
     @property
     def all_filters(self) -> Collection[FilterSet]:
         """All filters used at some point in the experiment's protocol."""
@@ -1303,7 +1306,7 @@ table, th, td {{
                 "Decoding log failed. If <binary.reply> is present in log this may be the cause:"
                 "if so contact Constantine (<const@costinet.org>).  Continuing with failed characters replaced with backslash notation"
                 "Failure was in this area:\n"
-                f"{error.object[error.start-500:error.end+500]}"
+                "{!r}".format(error.object[error.start - 500 : error.end + 500])
             )
             msglog = open(
                 os.path.join(self._dir_eds, "messages.log"),
@@ -1320,6 +1323,9 @@ table, th, td {{
         self.activestarttime = None
         self.activeendtime = None
         self.runstate = "INIT"
+
+        m: Optional[re.Match[str]]
+
         for m in ms:
             ts = datetime.fromtimestamp(float(m["ts"]))
             if m["msg"] == "Starting":
@@ -1423,7 +1429,7 @@ table, th, td {{
             )
 
         else:
-            self.num_zones = None
+            self.num_zones = -1
             self.temperatures = None
 
     def _find_anneal_stages(self) -> list[int]:
