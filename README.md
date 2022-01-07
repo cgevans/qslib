@@ -3,6 +3,7 @@
 ![GitHub Workflow
 Status](https://img.shields.io/github/workflow/status/cgevans/qslib/Python%20tests)
 ![PyPI](https://img.shields.io/pypi/v/qslib)
+[![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/5512/badge)](https://bestpractices.coreinfrastructure.org/projects/5512)
 
 Documentation: [Stable](https://qslib.readthedocs.io/en/stable/), [Latest](https://qslib.readthedocs.io/en/latest/)
 
