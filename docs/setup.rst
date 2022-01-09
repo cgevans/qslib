@@ -1,13 +1,30 @@
-.. _setup:
-
 Setup
 =====
 
 Access
 ------
 
+The QuantStudio machine communicates, unencrypted, via a text interface port 7000.
+
+The machine has a password authentication mechanism.  However, it is extremely insecure, and should not be relied on for security (see :ref:`access-and-security`).  Each password has a set
+
+There are five access levels: Guest, Observer, Controller, Administrator, and Full.  While QSLib supports all of these, only two are usually useful:
+
+- Observer provides access to most functions giving a read-only view of the machine and experiments.
+- Controller allows control of the machine's functions and experiments.
+
+Guest appears to be intended to provide access only to the help system and authentication, while higher access levels are related to programming the machine.
+
 Configuration suggestions
 -------------------------
+
+One reasonably secure configuration:
+
+- The QuantStudio machine is connected, via an ethernet cable, directly to a laptop, or otherwise to a secure private network.  Anyone with access to this network can easily gain full access to the machines, regardless of configuration.  Thus, it makes sense to allow Observer and Controller access without a password (putting higher access levels behind a password to prevent mistakes, not to secure the machines).  Wifi should be turned off in most circumstances.
+
+- The laptop, or a device on both the private network and a larger network or the internet, securely allows access to port 7000 on the QuantStudio machine.  This could be through port forwarding and a VPN, or through an SSH tunnel.
+
+QSLib provides a CLI command, :code:`qslib setup-machine`, which will configure a machine to have the default, more convenient access useful with this configuration.
 
 .. _access-and-security:
 

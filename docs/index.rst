@@ -34,7 +34,7 @@ By default (as of v0.5.0), most methods communicating with a machine are "automa
 and disconnection, and access levels, automatically.  They are also written so that, if there is no passsword
 required, the machine's hostname as a string can be used as a reference to the machine.  So, for example, if you
 want to run an experiment :code:`experiment` on machine `example-qs5`, you could use: :code:`experiment.run("example-qs5")`, or,
-to load an experiment named `my-experiment` from a machine, you could use 
+to load an experiment named `my-experiment` from a machine, you could use
 :code:`experiment = Experiment.from_machine("example-qs5", "my-experiment")`.  Similarly, to open the machine's drawer,
 you could use :code:`Machine("example-qs5").drawer_open()`.
 
@@ -42,7 +42,7 @@ Documention contents
 --------------------
 
 .. toctree::
-
+    tutorial
     experiments
     machines
     commandline
@@ -51,7 +51,7 @@ Documention contents
 
 .. toctree::
    :maxdepth: 3
-   
+
    API Reference <api/modules>
 
 .. toctree::
