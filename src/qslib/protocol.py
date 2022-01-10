@@ -795,9 +795,9 @@ class Stage(XMLable, ProtoCommand):
     @classmethod
     def stepped_ramp(
         cls: Type[Stage],
-        temp_from: float | pint.Quantity[float],
-        temp_to: float | pint.Quantity[float],
-        total_time: int | pint.Quantity[int],
+        temp_from: float | str | pint.Quantity[float],
+        temp_to: float | str | pint.Quantity[float],
+        total_time: int | str | pint.Quantity[int],
         nsteps: int,
         collect: bool = False,
         filters: Sequence[str | FilterSet] = tuple(),
@@ -827,12 +827,13 @@ class Stage(XMLable, ProtoCommand):
     @classmethod
     def hold_for(
         cls: Type[Stage],
-        temps: float | Sequence[float],
-        total_time: int | pint.Quantity[int],
-        step_time: int | pint.Quantity[int],
+        temps: float | str | Sequence[float],
+        total_time: int | str | pint.Quantity[int],
+        step_time: int | str | pint.Quantity[int],
         collect: bool = False,
         filters: Sequence[str | FilterSet] = tuple(),
     ):
+        real_step_time = _wrap_seconds(step_time)
         return cls(
             [
                 Step(
@@ -842,7 +843,7 @@ class Stage(XMLable, ProtoCommand):
                     filters=filters,
                 )
             ],
-            repeat=round(total_time / step_time),
+            repeat=round(total_time / real_step_time),
         )
 
     def __repr__(self) -> str:
