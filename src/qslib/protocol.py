@@ -834,16 +834,17 @@ class Stage(XMLable, ProtoCommand):
         filters: Sequence[str | FilterSet] = tuple(),
     ):
         real_step_time = _wrap_seconds(step_time)
+        total_time = _wrap_seconds(total_time)
         return cls(
             [
                 Step(
-                    _wrap_seconds(total_time),
+                    real_step_time,
                     _wrapunitmaybelist_degC(temps),
                     collect=collect,
                     filters=filters,
                 )
             ],
-            repeat=round(total_time / real_step_time),
+            repeat=round((total_time / real_step_time).magnitude),
         )
 
     def __repr__(self) -> str:
