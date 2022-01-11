@@ -5,6 +5,8 @@
 - `CustomStep.collect` (and subclasses, including `Step`) is now `CustomStep.collects`.  The `collect` parameter for
   `Step` can now be `None`, which will collect data if the step has a filter setting (ie, if you want to collect the
   default `Protocol` filters, you need to use `collect=True`).
+- `Stage.stepped_ramp` and `Stage.hold_for` are now safer in requiring some keyword arguments, are documented, and
+  are more flexible.
 
 ## Version 0.5.0
 
