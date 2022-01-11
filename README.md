@@ -5,6 +5,9 @@ Status](https://img.shields.io/github/workflow/status/cgevans/qslib/Python%20tes
 ![PyPI](https://img.shields.io/pypi/v/qslib)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/5512/badge)](https://bestpractices.coreinfrastructure.org/projects/5512)
 [![DOI](https://zenodo.org/badge/393710481.svg)](https://zenodo.org/badge/latestdoi/393710481)
+[![PyPI - Python Version](https://img.shields.io/pypi/pyversions/qslib)](https://pypi.org/project/qslib/)
+
+
 
 
 Documentation: [Stable](https://qslib.readthedocs.io/en/stable/), [Latest](https://qslib.readthedocs.io/en/latest/)
