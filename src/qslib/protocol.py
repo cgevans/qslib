@@ -37,6 +37,7 @@ from .version import __version__
 from .base import RunStatus
 from .scpi_commands import SCPICommand, SCPICommandLike
 from ._util import *
+import warnings
 
 
 if TYPE_CHECKING:
@@ -566,9 +567,9 @@ class Step(CustomStep, XMLable):
     def info_str(self, index: None | int = None, repeats: int = 1) -> str:
         "String describing the step."
 
-        tempstr = "{:~}".format(self.temperatures_at_cycle(1))  # type: ignore
+        tempstr = "{:.2f~}".format(self.temperatures_at_cycle(1))  # type: ignore
         if (repeats > 1) and (self.temp_increment != 0.0):
-            t = "{:~}".format(self.temperatures_at_cycle(repeats))  # type: ignore
+            t = "{:.2f~}".format(self.temperatures_at_cycle(repeats))  # type: ignore
             tempstr += f" to {t}"
 
         elems = [f"{tempstr} for {self.time}/cycle"]
@@ -802,56 +803,203 @@ class Stage(XMLable, ProtoCommand):
     @classmethod
     def stepped_ramp(
         cls: Type[Stage],
-        temp_from: float | str | pint.Quantity[float],
-        temp_to: float | str | pint.Quantity[float],
+        from_temperature: float | str | pint.Quantity[float] | Sequence[float],
+        to_temperature: float | str | pint.Quantity[float] | Sequence[float],
         total_time: int | str | pint.Quantity[int],
-        nsteps: int,
+        *,
+        n_steps: int | None = None,
+        temperature_step: float | str | pint.Quantity[float] | None = None,
         collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
     ):
+        """Hold at a series of temperatures, from one to another.
 
-        temp_from = _wrap_degC(temp_from)
-        temp_to = _wrap_degC(temp_to)
-        total_time = _wrap_seconds(total_time)
+        Parameters
+        ----------
+        from_temperature
+            Initial temperature/s (inclusive).
+        to_temperature
+            Final temperature/s (inclusive).
+        total_time
+            Total time for the stage
+        n_steps
+            Number of steps.  If None, uses 1.0 Δ°C steps, or, if
+            doing a multi-temperature change, uses maximum step
+            of 1.0 Δ°C.
+        temperature_step
+            Step temperature change (optional).  Must be None,
+            or correctly match calculation, if n_steps is not
+            None.  If both this and n_steps are None, default
+            is 1.0 Δ°C steps.  If temperature step does not
+            exactly fit range, it will be adjusted, with a warning
+            if the change is more than 5%.  Sign is ignored.  If
+            doing a multi-temperature change, then this is the
+            maximum temperature step.
+        collect
+            Collect data?  If None, collects data if filters is set explicitly.
+        filters
+            Filters to collect.
 
-        step_time = (total_time / nsteps).round()
+        Returns
+        -------
+        Stage
+            The resulting stage.
+        """
 
-        temp_increment = ((temp_to - temp_from) / (nsteps - 1)).round(4)
+        from_temperature = _wrapunitmaybelist_degC(from_temperature)
+        to_temperature = _wrapunitmaybelist_degC(to_temperature)
+
+        delta = to_temperature - from_temperature
+
+        multistep = False
+
+        if hasattr(delta, "shape"):
+            if (delta != delta[0]).any():
+                multistep = True
+                max_delta = delta.max()  # type: pint.Quantity[float]
+            else:
+                max_delta = delta[0]
+        else:
+            max_delta = delta
+
+        total_time = _wrap_seconds(total_time).to("seconds")
+
+        if n_steps is None:
+            if temperature_step is None:
+                temperature_step = UR("1.0 delta_degC")
+            else:
+                temperature_step = abs(_wrap_delta_degC(temperature_step))
+
+            n_steps = abs(round((max_delta / temperature_step).to("").magnitude)) + 1
+
+            real_max_temperature_step = abs(max_delta / (n_steps - 1))
+
+            change = (
+                ((real_max_temperature_step - temperature_step) / temperature_step)
+                .to("")
+                .magnitude
+            )
+
+            if abs(change) > 0.05:
+                warnings.warn(
+                    f"Desired temperature step {temperature_step} differs by {100*change}% from actual {real_max_temperature_step}."
+                )
+
+        elif temperature_step is not None:
+            temperature_step = abs(_wrap_delta_degC(temperature_step))
+            if (
+                abs(round((max_delta / temperature_step).to("").magnitude)) + 1
+                != n_steps
+            ):
+                raise ValueError(
+                    "Both n_steps and temperature_step set, and calculated steps don't match set steps."
+                )
+
+        temp_increment = ((to_temperature - from_temperature) / (n_steps - 1)).round(4)
+
+        step_time = (total_time / n_steps).round()
+
+        if not multistep:
+            return cls(
+                [
+                    Step(
+                        step_time,
+                        from_temperature,
+                        collect=collect,
+                        temp_increment=temp_increment,
+                        filters=filters,
+                    )
+                ],
+                repeat=n_steps,
+            )
+
+        # MULTISTEP!
 
         return cls(
             [
                 Step(
                     step_time,
-                    temp_from,
+                    from_temperature + step_i * temp_increment,
                     collect=collect,
-                    temp_increment=temp_increment,
                     filters=filters,
                 )
-            ],
-            repeat=nsteps,
+                for step_i in range(0, n_steps)
+            ]
         )
 
     @classmethod
     def hold_for(
         cls: Type[Stage],
-        temps: float | str | Sequence[float],
+        temperature: float | str | Sequence[float],
         total_time: int | str | pint.Quantity[int],
-        step_time: int | str | pint.Quantity[int],
+        step_time: int | str | pint.Quantity[int] | None = None,
         collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
     ):
-        real_step_time = _wrap_seconds(step_time)
+        """Hold at a temperature for a set amount of time, with steps of a configurable fixed time.
+
+
+        Parameters
+        ----------
+        temperatures
+            The temperature or temperatures to hold.  If not strings or quantities, the value/values are
+            interpreted as °C.
+        total_time
+            Desired total time for the stage.  If this is not a multiple of `step_time`, it may not be the actual
+            total time for the stage.  The function will emit a warning if the difference is more than 10%.  If
+            an integer, value is interpreted as seconds.
+        step_time
+            If None (default), the stage will have one step.  Otherwise, it will have steps of this time.  If
+            an integer, value is interpreted as seconds.
+        collect
+            Whether or not each step should collect fluorescence data.  If None (default), collects data
+            if filters is explicitly set.
+        filters
+            A list of filters to collect.  If empty, and collect is True, then each step will collect the
+            default filters for the :class:`Protocol`.
+
+        Returns
+        -------
+        Stage
+            The resulting Stage
+
+        Raises
+        ------
+        ValueError
+            If step time is larger than total time.
+        """
+        if step_time is None:
+            step_time = total_time
+
+        step_time = _wrap_seconds(step_time)
         total_time = _wrap_seconds(total_time)
+
+        if step_time > total_time:
+            raise ValueError(
+                f"Step time {step_time} > total time {total_time}.  Did you mix up the parameter order?"
+            )
+
+        repeat = round((total_time / step_time).to("").magnitude)
+
+        real_total_time = repeat * step_time
+
+        chg = ((real_total_time - total_time) / total_time).to("").magnitude
+
+        if abs(chg) > 0.1:
+            warnings.warn(
+                f"Stage will have total time {real_total_time}, with {repeat} steps, {100*chg} different from desired time {total_time}."
+            )
+
         return cls(
             [
                 Step(
-                    real_step_time,
-                    _wrapunitmaybelist_degC(temps),
+                    step_time,
+                    _wrapunitmaybelist_degC(temperature),
                     collect=collect,
                     filters=filters,
                 )
             ],
-            repeat=round((total_time / real_step_time).magnitude),
+            repeat=repeat,
         )
 
     def __repr__(self) -> str:
@@ -1023,7 +1171,7 @@ class Stage(XMLable, ProtoCommand):
             adds = ""
         stagestr = f"{index}. Stage with {self.repeat} cycle{adds}"
         stepstrs = [
-            textwrap.indent(f"{step.info_str(i+1, self.repeat)}", "  ")
+            textwrap.indent(f"{step.info_str(i+1, self.repeat)}", "    ")
             for i, step in enumerate(self.steps)
         ]
         try:

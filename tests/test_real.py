@@ -24,7 +24,12 @@ async def test_real_experiment():
     await confut
 
     proto = Protocol(
-        [Stage.stepped_ramp(50, 30, 120, 5, True)], filters=["x1-m4", "x3-m5"]
+        [
+            Stage.stepped_ramp(
+                50, [30, 31, 32, 33, 34, 35], 120, n_steps=5, collect=True
+            )
+        ],
+        filters=["x1-m4", "x3-m5"],
     )
 
     exp = Experiment(uuid.uuid1().hex, proto, PlateSetup({"s": "A1"}))
@@ -46,8 +51,10 @@ async def test_real_experiment():
 
     proto2 = Protocol(
         [
-            Stage.stepped_ramp(50, 30, 120, 5, True),
-            Stage.stepped_ramp(30, 50, 120, 5, True),
+            Stage.stepped_ramp(
+                50, [30, 31, 32, 33, 34, 35], 120, n_steps=5, collect=True
+            ),
+            Stage.stepped_ramp(30, 50, 120, n_steps=5, collect=True),
         ],
         filters=["x1-m4", "x3-m5"],
     )

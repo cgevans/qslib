@@ -209,7 +209,7 @@ def test_exp_saveload_proto(tmp_path: pathlib.Path):
 
 
 def test_stepped_ramp_down():
-    srstage = Stage.stepped_ramp(60.0, 40.0, 60 * 21, 21)
+    srstage = Stage.stepped_ramp(60.0, 40.0, total_time=60 * 21)
 
     df = srstage.dataframe()
 
@@ -222,7 +222,7 @@ def test_stepped_ramp_down():
 
 
 def test_stepped_ramp_up():
-    srstage = Stage.stepped_ramp(40.0, 60.0, 60 * 41, 41)
+    srstage = Stage.stepped_ramp(40.0, 60.0, 60 * 41, n_steps=41)
 
     df = srstage.dataframe()
 
