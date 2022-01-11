@@ -4,6 +4,8 @@
 Status](https://img.shields.io/github/workflow/status/cgevans/qslib/Python%20tests)
 ![PyPI](https://img.shields.io/pypi/v/qslib)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/5512/badge)](https://bestpractices.coreinfrastructure.org/projects/5512)
+[![DOI](https://zenodo.org/badge/393710481.svg)](https://zenodo.org/badge/latestdoi/393710481)
+
 
 Documentation: [Stable](https://qslib.readthedocs.io/en/stable/), [Latest](https://qslib.readthedocs.io/en/latest/)
 
@@ -41,7 +43,7 @@ Amongst other features that it has:
 QSLib is pure Python, and can be installed via pip:
 
     pip3 install -U qslib
-	
+
 Or, for the current Github version:
 
     pip3 install -U --pre git+https://github.com/cgevans/qslib
@@ -62,7 +64,7 @@ more information.
 
 Issue reports and enhancement requests can be submitted via Github.
 
-Potential contributions can be submitted via Github.  These should include pytest tests, preferably 
+Potential contributions can be submitted via Github.  These should include pytest tests, preferably
 both tests that can be run without outside resources, and, if applicable, tests that directly test
 any communication with a QuantStudio SCPI server.  They will also need a Contributor Licence Agreement.
 
@@ -78,5 +80,5 @@ render your machine unusable or be used to send commands that would
 physically/electrically damage the machine or potentially be hazardous
 to you or others.
 
-I am not any way connected with Applied Biosystems.  I have developed this 
+I am not any way connected with Applied Biosystems.  I have developed this
 package using the machine's documentation system and standard file formats.

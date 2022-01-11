@@ -1,5 +1,11 @@
 # Changelog
 
+## Version 0.5.1
+
+- `CustomStep.collect` (and subclasses, including `Step`) is now `CustomStep.collects`.  The `collect` parameter for
+  `Step` can now be `None`, which will collect data if the step has a filter setting (ie, if you want to collect the
+  default `Protocol` filters, you need to use `collect=True`).
+
 ## Version 0.5.0
 
 - Units throughout protocols, thanks to Pint: you can now use strings like '1 hr' or '52 °C' when defining protocols.
