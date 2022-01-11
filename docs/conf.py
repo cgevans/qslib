@@ -97,7 +97,7 @@ master_doc = "index"
 
 # General information about the project.
 project = "qslib"
-copyright = "2021, Constantine Evans"
+copyright = "2022, Constantine Evans"
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
