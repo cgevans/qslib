@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+# SPDX-License-Identifier: AGPL-3.0-only
+
 import pytest
 from click.testing import CliRunner
 from qslib.cli import cli

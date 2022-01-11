@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
 src/qslib/_version.py
 
 # Temporary and binary files
@@ -17,6 +21,9 @@ __pycache__/*
 .DS_Store
 .mypy*
 cov.xml
+
+.virtualdocuments
+.ipynb_checkpoints
 
 # Project files
 .ropeproject

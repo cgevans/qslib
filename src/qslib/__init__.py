@@ -1,3 +1,7 @@
+# SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
 from .version import __version__
 from . import protocol
 from .experiment import Experiment, PlateSetup
