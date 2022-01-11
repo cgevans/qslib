@@ -422,7 +422,7 @@ class CustomStep(ProtoCommand):
         self._identifier = v
 
     @property
-    def collect(self) -> bool:
+    def collects(self) -> bool:
         return False
 
     def to_scpicommand(self, *, stepindex: int = -1, **kwargs) -> SCPICommand:
@@ -472,8 +472,9 @@ class Step(CustomStep, XMLable):
     temperature: float | Sequence[float]
         The temperature hold setting, either as a float (all zones the same) or a sequence
         (of correct length) of floats setting the temperature for each zone.
-    collect: bool
-        Collect fluorescence data?
+    collect
+        Collect fluorescence data?  If None (default), collect only if the Step has an explicit
+        filters setting.
     temp_increment: float
         Amount to increment all zone temperatures per cycle on and after :any:`temp_incrementcycle`.
     temp_incrementcycle: int (default 2)
@@ -499,7 +500,7 @@ class Step(CustomStep, XMLable):
     temperature: pint.Quantity[Any] = attr.field(
         converter=_wrapunitmaybelist_degC, on_setattr=attr.setters.convert
     )
-    collect: bool = False
+    collect: bool | None = None
     temp_increment: pint.Quantity[float] = attr.field(
         default=UR.Quantity(0.0, UR.delta_degC),
         converter=_wrap_delta_degC,
@@ -534,7 +535,7 @@ class Step(CustomStep, XMLable):
             return False
         if self.time != other.time:
             return False
-        if self.collect != other.collect:
+        if self.collects != other.collects:
             return False
         if self.temp_increment != other.temp_increment:
             return False
@@ -551,6 +552,12 @@ class Step(CustomStep, XMLable):
         if self.tiff != other.tiff:
             return False
         return True
+
+    @property
+    def collects(self):
+        if self.collect is None:
+            return len(self.filters) > 0
+        return self.collect
 
     @property
     def _filtersets(self):
@@ -577,7 +584,7 @@ class Step(CustomStep, XMLable):
         #    elems.append(f"{self.ramp_rate} °C/s ramp")
         s = f"{index}. " + ", ".join(elems)
 
-        if self.collect:
+        if self.collects:
             s += " (collects "
             if self.filters:
                 s += ", ".join(FilterSet.fromstring(f).lowerform for f in self.filters)
@@ -635,7 +642,7 @@ class Step(CustomStep, XMLable):
 
     @property
     def body(self) -> list[ProtoCommand]:
-        if self.collect:
+        if self.collects:
             return [
                 Ramp(
                     self.temperature_list, self.temp_increment, self.temp_incrementcycle
@@ -687,7 +694,7 @@ class Step(CustomStep, XMLable):
         assert not kwargs
         e = ET.Element("TCStep")
         ET.SubElement(e, "CollectionFlag").text = str(
-            int(self.collect)
+            int(self.collects)
         )  # FIXME: approx
         for t in self.temperature_list.to("°C").magnitude:
             ET.SubElement(e, "Temperature").text = str(t)
@@ -799,7 +806,7 @@ class Stage(XMLable, ProtoCommand):
         temp_to: float | str | pint.Quantity[float],
         total_time: int | str | pint.Quantity[int],
         nsteps: int,
-        collect: bool = False,
+        collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
     ):
 
@@ -830,7 +837,7 @@ class Stage(XMLable, ProtoCommand):
         temps: float | str | Sequence[float],
         total_time: int | str | pint.Quantity[int],
         step_time: int | str | pint.Quantity[int],
-        collect: bool = False,
+        collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
     ):
         real_step_time = _wrap_seconds(step_time)
@@ -902,7 +909,7 @@ class Stage(XMLable, ProtoCommand):
         #    [step.ramp_rate for _ in range(1, self.repeat + 1) for step in self.body]
         # )
         collect_data = np.array(
-            [step.collect for _ in range(1, self.repeat + 1) for step in self.steps]
+            [step.collects for _ in range(1, self.repeat + 1) for step in self.steps]
         )
 
         # FIXME: is this how ramp rates actually work?
