@@ -1,5 +1,14 @@
+<!--
+SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+
+SPDX-License-Identifier: AGPL-3.0-only
+-->
+
 # Changelog
 
+## Version 0.5.2
+
+ - Licensing switched to AGPL 3.0.
 ## Version 0.5.1
 
 - `CustomStep.collect` (and subclasses, including `Step`) is now `CustomStep.collects`.  The `collect` parameter for

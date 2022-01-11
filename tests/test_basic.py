@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+# SPDX-License-Identifier: AGPL-3.0-only
+
 import pytest
 
 import qslib.qs_is_protocol as qsp
