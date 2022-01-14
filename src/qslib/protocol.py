@@ -389,7 +389,6 @@ class CustomStep(ProtoCommand):
         )
         return s
 
-    @abstractmethod
     def duration_at_cycle(self, cycle: int) -> pint.Quantity[int]:  # cycle from 1
         return UR.Quantity(0, "second")
 
