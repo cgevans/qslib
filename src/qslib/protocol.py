@@ -21,6 +21,7 @@ from typing import (
     Tuple,
     Type,
     TypeVar,
+    Union,
     cast,
     TYPE_CHECKING,
 )
@@ -451,7 +452,7 @@ class CustomStep(ProtoCommand):
                     cast(ProtoCommand, x.specialize())
                     for x in cast(Sequence[SCPICommand], sc.args[1])
                 ],
-                identifier=cast(int | str, sc.args[0]),
+                identifier=cast(Union[int, str], sc.args[0]),
                 **sc.opts,  # type: ignore
             )
 
