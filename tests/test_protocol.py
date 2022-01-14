@@ -10,7 +10,7 @@ from qslib.scpi_commands import SCPICommand  # noqa
 
 import qslib.protocol as tc
 from qslib import Experiment
-from qslib.protocol import Protocol, Stage, Step, FilterSet, UR
+from qslib.protocol import Exposure, Protocol, Stage, Step, FilterSet, UR
 
 PROTSTRING = """PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
 \tSTAGE 1 STAGE_1 <multiline.stage>
@@ -235,3 +235,9 @@ def test_stepped_ramp_up():
     assert df.iloc[1, :]["temperature_1"] == 40.5
 
     assert srstage == Stage(Step(60, 40.0, temp_increment=0.5), 41)
+
+
+def test_exposure_roundtrip():
+    e = Exposure([(FilterSet(1, 4), [500, 2000])])
+    s = e.to_scpicommand().to_string()
+    assert SCPICommand.from_string(s).specialize() == e
