@@ -257,7 +257,7 @@ class Exposure(ProtoCommand):
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> Exposure:
         filts = [
-            (FilterSet.fromstring(x.split(",")[0]), [int(y) for y in x.split(",")[1:]])
+            (FilterSet.fromstring(f"{x[1]},{x[0]},{x[2]}"), [int(y) for y in x[3:]])
             for x in cast(Sequence[str], sc.args)
         ]
         return Exposure(filts, **sc.opts)  # type: ignore
