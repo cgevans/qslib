@@ -30,7 +30,7 @@ from .base import MachineStatus, RunStatus
 
 log = logging.getLogger(__name__)
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from .experiment import Experiment
     import matplotlib.pyplot as plt
 

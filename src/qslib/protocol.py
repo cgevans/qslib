@@ -45,7 +45,7 @@ from ._util import *
 import warnings
 
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt
 
 NZONES = 6
@@ -232,7 +232,9 @@ class Ramp(ProtoCommand):
         if self.cover is not None:
             opts["cover"] = self.cover.to("degC").magnitude
 
-        return SCPICommand("RAMP", *self.temperature.to("degC").magnitude, **opts)
+        return SCPICommand(
+            "RAMP", *self.temperature.to("degC").magnitude, _comment=None, **opts
+        )
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> Ramp:
@@ -330,7 +332,10 @@ class HoldAndCollect(ProtoCommand):
         opts["quant"] = self.quant
         opts["pcr"] = self.pcr
         return SCPICommand(
-            "HoldAndCollect", int(self.time.to("seconds").magnitude), **opts
+            "HoldAndCollect",
+            int(self.time.to("seconds").magnitude),
+            _comment=None,
+            **opts,
         )
 
     @classmethod
@@ -359,6 +364,7 @@ class Hold(ProtoCommand):
         return SCPICommand(
             "HOLD",
             int(self.time.to("seconds").magnitude) if self.time is not None else "",
+            _comment=None,
             **opts,
         )
 
@@ -536,6 +542,7 @@ class Step(CustomStep, XMLable):
     pcr: bool = False
     quant: bool = True
     tiff: bool = False
+    _default_filters: Sequence[FilterSet] = attr.field(default=tuple())
     _classname: ClassVar[str] = "Step"
 
     def __eq__(self, other: object):
@@ -797,6 +804,7 @@ class Stage(XMLable, ProtoCommand):
     repeat: int = 1
     index: int | None = None
     label: str | None = None
+    _default_filters: Sequence[FilterSet] = attr.field(default=tuple())
     _classname: ClassVar[str] = "Stage"
     _names: ClassVar[Sequence[str]] = ("STAGe",)
 
@@ -1141,24 +1149,27 @@ class Stage(XMLable, ProtoCommand):
             ]
         )
 
-        return SCPICommand("STAGe", *args, **opts)
+        return SCPICommand("STAGe", *args, _comment=None, **opts)
 
     @classmethod
-    def from_scpicommand(cls: Type[T], sc: SCPICommand, **kwargs) -> T:
+    def from_scpicommand(cls, sc: SCPICommand, **kwargs) -> Stage:
         c = cls(
-            [x.specialize(**kwargs) for x in cast(Sequence[SCPICommand], sc.args[2])],
-            index=sc.args[0],
-            label=sc.args[1],
+            [
+                cast(CustomStep, x.specialize(**kwargs))
+                for x in cast(Sequence[SCPICommand], sc.args[2])
+            ],
+            index=cast(int, sc.args[0]),
+            label=cast(Optional[str], sc.args[1]),
             **sc.opts,  # type: ignore
         )
 
         dfilt: list[FilterSet] = []
 
         for s in c.steps:
-            if hasattr(s, "_default_filters") and s._default_filters:
+            if isinstance(s, Step) and s._default_filters:
                 ndf = s._default_filters
                 if len(dfilt) == 0:
-                    dfilt = ndf
+                    dfilt = list(ndf)
                 if dfilt != ndf:
                     raise ValueError("Inconsistent default filters")
         c._default_filters = dfilt
@@ -1313,7 +1324,7 @@ class Protocol(ProtoCommand):
                 for i, stage in enumerate(self.stages)
             ]
         )
-        return SCPICommand("PROTocol", *args, **opts)
+        return SCPICommand("PROTocol", *args, _comment=None, **opts)
 
     @classmethod
     def from_scpicommand(cls: Type[Protocol], sc: SCPICommand) -> Protocol:
@@ -1332,7 +1343,7 @@ class Protocol(ProtoCommand):
             if hasattr(s, "_default_filters") and s._default_filters:
                 ndf = s._default_filters
                 if len(dfilt) == 0:
-                    dfilt = ndf
+                    dfilt = list(ndf)
                 if dfilt != ndf:
                     raise ValueError("Inconsistent default filters")
         c.filters = dfilt
