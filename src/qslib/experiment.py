@@ -52,7 +52,7 @@ from .protocol import Protocol, Stage, Step
 from ._util import _set_or_create, _nowuuid, _pp_seqsliceint
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt
 
 

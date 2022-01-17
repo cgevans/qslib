@@ -45,7 +45,7 @@ from ._util import *
 import warnings
 
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt
 
 NZONES = 6
@@ -232,7 +232,9 @@ class Ramp(ProtoCommand):
         if self.cover is not None:
             opts["cover"] = self.cover.to("degC").magnitude
 
-        return SCPICommand("RAMP", *self.temperature.to("degC").magnitude, **opts)
+        return SCPICommand(
+            "RAMP", *self.temperature.to("degC").magnitude, comment=None, **opts
+        )
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> Ramp:
@@ -280,19 +282,29 @@ class HACFILT(ProtoCommand):
         converter=_filtersequence,
         on_setattr=attr.setters.convert,
     )
+    _default_filters: Sequence[FilterSet] = attr.field(factory=lambda: [])
     _names: ClassVar[Sequence[str]] = ("HoldAndCollectFILTer", "HACFILT")
 
     def to_scpicommand(self, default_filters=None, **kwargs) -> SCPICommand:
+        if not default_filters and not self.filters:
+            raise ValueError("Protocol must have default filters set.")
+        if not self.filters:
+            comment = "qslib:default_filters"
+        else:
+            comment = None
         return SCPICommand(
             "HACFILT",
-            *(
-                f.hacform for f in (self.filters if self.filters else default_filters)
-            ),  # FIXME
+            *(f.hacform for f in (self.filters if self.filters else default_filters)),
+            comment=comment,
         )
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> HACFILT:
-        return HACFILT([FilterSet.fromstring(x) for x in cast(Iterable[str], sc.args)])
+        c = HACFILT([FilterSet.fromstring(x) for x in cast(Iterable[str], sc.args)])
+        if sc.comment and "qslib:default_filters" in sc.comment:
+            c._default_filters = c.filters
+            c.filters = []
+        return c
 
 
 @dataclass
@@ -320,7 +332,10 @@ class HoldAndCollect(ProtoCommand):
         opts["quant"] = self.quant
         opts["pcr"] = self.pcr
         return SCPICommand(
-            "HoldAndCollect", int(self.time.to("seconds").magnitude), **opts
+            "HoldAndCollect",
+            int(self.time.to("seconds").magnitude),
+            comment=None,
+            **opts,
         )
 
     @classmethod
@@ -349,6 +364,7 @@ class Hold(ProtoCommand):
         return SCPICommand(
             "HOLD",
             int(self.time.to("seconds").magnitude) if self.time is not None else "",
+            comment=None,
             **opts,
         )
 
@@ -526,6 +542,7 @@ class Step(CustomStep, XMLable):
     pcr: bool = False
     quant: bool = True
     tiff: bool = False
+    _default_filters: Sequence[FilterSet] = attr.field(default=tuple())
     _classname: ClassVar[str] = "Step"
 
     def __eq__(self, other: object):
@@ -736,7 +753,12 @@ class Step(CustomStep, XMLable):
                 temp_incrementcycle=1,
             )
             c.collect = True
-            c.filters = hcf.filters
+            if hcf._default_filters:
+                c.filters = []
+                c.collect = True
+                c._default_filters = hcf._default_filters
+            else:
+                c.filters = hcf.filters
             c.time_increment = h.increment
             c.temp_increment = r.increment
             c.time_incrementcycle = h.incrementcycle
@@ -782,6 +804,7 @@ class Stage(XMLable, ProtoCommand):
     repeat: int = 1
     index: int | None = None
     label: str | None = None
+    _default_filters: Sequence[FilterSet] = attr.field(default=tuple())
     _classname: ClassVar[str] = "Stage"
     _names: ClassVar[Sequence[str]] = ("STAGe",)
 
@@ -1126,16 +1149,32 @@ class Stage(XMLable, ProtoCommand):
             ]
         )
 
-        return SCPICommand("STAGe", *args, **opts)
+        return SCPICommand("STAGe", *args, comment=None, **opts)
 
     @classmethod
-    def from_scpicommand(cls: Type[T], sc: SCPICommand, **kwargs) -> T:
-        return cls(
-            [x.specialize(**kwargs) for x in cast(Sequence[SCPICommand], sc.args[2])],
-            index=sc.args[0],
-            label=sc.args[1],
+    def from_scpicommand(cls, sc: SCPICommand, **kwargs) -> Stage:
+        c = cls(
+            [
+                cast(CustomStep, x.specialize(**kwargs))
+                for x in cast(Sequence[SCPICommand], sc.args[2])
+            ],
+            index=cast(int, sc.args[0]),
+            label=cast(Optional[str], sc.args[1]),
             **sc.opts,  # type: ignore
         )
+
+        dfilt: list[FilterSet] = []
+
+        for s in c.steps:
+            if isinstance(s, Step) and s._default_filters:
+                ndf = s._default_filters
+                if len(dfilt) == 0:
+                    dfilt = list(ndf)
+                if dfilt != ndf:
+                    raise ValueError("Inconsistent default filters")
+        c._default_filters = dfilt
+
+        return c
 
     @classmethod
     def from_xml(cls, e: ET.Element) -> Stage:
@@ -1285,11 +1324,11 @@ class Protocol(ProtoCommand):
                 for i, stage in enumerate(self.stages)
             ]
         )
-        return SCPICommand("PROTocol", *args, **opts)
+        return SCPICommand("PROTocol", *args, comment=None, **opts)
 
     @classmethod
     def from_scpicommand(cls: Type[Protocol], sc: SCPICommand) -> Protocol:
-        return cls(
+        c = cls(
             [
                 cast(Stage, x.specialize())
                 for x in cast(Sequence[SCPICommand], sc.args[1])
@@ -1297,6 +1336,19 @@ class Protocol(ProtoCommand):
             name=cast(str, sc.args[0]),
             **sc.opts,  # type: ignore
         )  # type: ignore
+
+        dfilt: list[FilterSet] = []
+
+        for s in c.stages:
+            if hasattr(s, "_default_filters") and s._default_filters:
+                ndf = s._default_filters
+                if len(dfilt) == 0:
+                    dfilt = list(ndf)
+                if dfilt != ndf:
+                    raise ValueError("Inconsistent default filters")
+        c.filters = dfilt
+
+        return c
 
     @property
     def dataframe(self) -> pd.DataFrame:

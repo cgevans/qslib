@@ -10,7 +10,7 @@ from qslib.scpi_commands import SCPICommand  # noqa
 
 import qslib.protocol as tc
 from qslib import Experiment
-from qslib.protocol import Protocol, Stage, Step, FilterSet, UR
+from qslib.protocol import Exposure, Protocol, Stage, Step, FilterSet, UR
 
 PROTSTRING = """PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
 \tSTAGE 1 STAGE_1 <multiline.stage>
@@ -28,14 +28,14 @@ PROTSTRING = """PROTOCOL -volume=30 -runmode=standard testproto <multiline.proto
 \tSTAGE -repeat=5 3 STAGE_3 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
 \t\t\tRAMP -incrementcycle=2 53 53 53 53 53 53
-\t\t\tHACFILT m4,x1,quant m5,x3,quant
+\t\t\tHACFILT m4,x1,quant m5,x3,quant # qslib:default_filters
 \t\t\tHOLDANDCOLLECT -incrementcycle=2 -tiff=False -quant=True -pcr=False 120
 \t\t</multiline.step>
 \t</multiline.stage>
 \tSTAGE -repeat=20 4 STAGE_4 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
 \t\t\tRAMP -incrementcycle=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
-\t\t\tHACFILT m4,x1,quant m5,x3,quant
+\t\t\tHACFILT m4,x1,quant m5,x3,quant # qslib:default_filters
 \t\t\tHOLDANDCOLLECT -incrementcycle=2 -tiff=False -quant=True -pcr=False 64800000
 \t\t</multiline.step>
 \t</multiline.stage>
@@ -151,16 +151,13 @@ def test_proto() -> None:
     )
 
     assert prot.to_scpicommand().to_string() == PROTSTRING
-    assert (
-        prot.to_scpicommand().to_string()
-        == prot_explicitfilter.to_scpicommand().to_string()
-    )
+    assert prot.to_scpicommand() == prot_explicitfilter.to_scpicommand()
 
     assert str(prot) != str(prot_explicitfilter)
 
     prot_fromstring = Protocol.from_scpicommand(SCPICommand.from_string(PROTSTRING))
 
-    assert prot_explicitfilter == prot_fromstring
+    assert prot_explicitfilter.to_scpicommand() == prot_fromstring.to_scpicommand()
 
 
 def test_exp_saveload_proto(tmp_path: pathlib.Path):
@@ -235,3 +232,9 @@ def test_stepped_ramp_up():
     assert df.iloc[1, :]["temperature_1"] == 40.5
 
     assert srstage == Stage(Step(60, 40.0, temp_increment=0.5), 41)
+
+
+def test_exposure_roundtrip():
+    e = Exposure([(FilterSet(1, 4), [500, 2000])])
+    s = e.to_scpicommand().to_string()
+    assert SCPICommand.from_string(s).specialize() == e
