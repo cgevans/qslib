@@ -95,7 +95,9 @@ _arglist.setParseAction(
 )
 
 _commentstring: pp.ParserElement = pp.Combine(
-    pp.Regex("\s*#\s*[^\n]+") + pp.FollowedBy("\n").suppress()
+    pp.Regex(r"\s*#\s?").suppress()
+    + pp.Regex(r"[^\n]+")
+    + (pp.StringEnd() | pp.FollowedBy("\n")).suppress()
 )
 
 _command: pp.ParserElement = cast(
@@ -109,7 +111,7 @@ _command: pp.ParserElement = cast(
     ).setParseAction(
         lambda toks: SCPICommand(
             toks["command"],
-            _comment=toks.get("comment", None),
+            comment=toks.get("comment", None),
             *toks["arglist"].args,
             **toks["arglist"].opts,
         )
@@ -241,17 +243,27 @@ class SCPICommand(SCPICommandLike):
         | np.number[Any]
         | Sequence[str | int | float | np.number[Any]]
         | Sequence["SCPICommand"],
-        _comment: str | None = None,
+        comment: str | None = None,
         **kwargs: str
         | int
         | float
         | np.number[Any]
         | Sequence[str | int | float | np.number[Any]],
     ) -> None:
+        if " " in command:
+            if args or comment or kwargs:
+                raise ValueError
+            n = SCPICommand.from_string(command)
+            self.command = n.command
+            self.args = n.args
+            self.opts = n.opts
+            self.comment = n.comment
+            return
+
         self.command = command.upper()
         self.args = args
         self.opts = {k.lower(): v for k, v in kwargs.items()}
-        self.comment = _comment
+        self.comment = comment
 
     def _optformat(
         self,
@@ -286,13 +298,7 @@ class SCPICommand(SCPICommandLike):
     def to_string(self) -> str:
         """Create a usable command string, including terminal newline."""
         if self.comment:
-            if not re.match(r"\s+#", self.comment):
-                if self.comment[0] == "#":
-                    comment = " " + self.comment
-                else:
-                    comment = " # " + self.comment
-            else:
-                comment = self.comment
+            comment = f" # {self.comment}"
         else:
             comment = ""
         return (

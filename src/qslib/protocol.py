@@ -233,7 +233,7 @@ class Ramp(ProtoCommand):
             opts["cover"] = self.cover.to("degC").magnitude
 
         return SCPICommand(
-            "RAMP", *self.temperature.to("degC").magnitude, _comment=None, **opts
+            "RAMP", *self.temperature.to("degC").magnitude, comment=None, **opts
         )
 
     @classmethod
@@ -289,13 +289,13 @@ class HACFILT(ProtoCommand):
         if not default_filters and not self.filters:
             raise ValueError("Protocol must have default filters set.")
         if not self.filters:
-            comment = "# qslib:default_filters"
+            comment = "qslib:default_filters"
         else:
             comment = None
         return SCPICommand(
             "HACFILT",
             *(f.hacform for f in (self.filters if self.filters else default_filters)),
-            _comment=comment,
+            comment=comment,
         )
 
     @classmethod
@@ -334,7 +334,7 @@ class HoldAndCollect(ProtoCommand):
         return SCPICommand(
             "HoldAndCollect",
             int(self.time.to("seconds").magnitude),
-            _comment=None,
+            comment=None,
             **opts,
         )
 
@@ -364,7 +364,7 @@ class Hold(ProtoCommand):
         return SCPICommand(
             "HOLD",
             int(self.time.to("seconds").magnitude) if self.time is not None else "",
-            _comment=None,
+            comment=None,
             **opts,
         )
 
@@ -955,7 +955,7 @@ class Stage(XMLable, ProtoCommand):
         )
 
     @classmethod
-    def hold_for(
+    def hold_at(
         cls: Type[Stage],
         temperature: float | str | Sequence[float],
         total_time: int | str | pint.Quantity[int],
@@ -1028,6 +1028,8 @@ class Stage(XMLable, ProtoCommand):
             ],
             repeat=repeat,
         )
+
+    hold_for = hold_at
 
     def __repr__(self) -> str:
         s = f"Stage(steps="
@@ -1149,7 +1151,7 @@ class Stage(XMLable, ProtoCommand):
             ]
         )
 
-        return SCPICommand("STAGe", *args, _comment=None, **opts)
+        return SCPICommand("STAGe", *args, comment=None, **opts)
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand, **kwargs) -> Stage:
@@ -1324,7 +1326,7 @@ class Protocol(ProtoCommand):
                 for i, stage in enumerate(self.stages)
             ]
         )
-        return SCPICommand("PROTocol", *args, _comment=None, **opts)
+        return SCPICommand("PROTocol", *args, comment=None, **opts)
 
     @classmethod
     def from_scpicommand(cls: Type[Protocol], sc: SCPICommand) -> Protocol:
