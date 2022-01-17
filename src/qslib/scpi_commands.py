@@ -6,12 +6,13 @@
 
 from __future__ import annotations
 from abc import ABC, abstractmethod
+import re
 
 import shlex
 import textwrap
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Sequence, Type, TypeVar, cast
+from typing import Any, Literal, Sequence, Type, TypeVar, cast
 
 import numpy as np
 import pyparsing as pp
@@ -59,7 +60,7 @@ _opt_value_one = (
     (_pbool + _fweqc)
     | (ppc.number + _fweqc)
     | (_quote_open.suppress() + pp.Regex(r"[^<]+") + _quote_close.suppress() + _fweqc)
-    | (pp.Regex(r"[^ \t\n<\",']+") + _fweqc)
+    | (pp.Regex(r"[^ \t\n<\",#']+") + _fweqc)
     | (_qs + _fweqc)
 ).setParseAction(lambda toks: toks[0])
 
@@ -93,15 +94,22 @@ _arglist.setParseAction(
     )
 )
 
+_commentstring: pp.ParserElement = pp.Combine(
+    pp.Regex("\s*#\s*[^\n]+") + pp.FollowedBy("\n").suppress()
+)
+
 _command: pp.ParserElement = cast(
     pp.ParserElement,
     (
         ppc.identifier("command")
         + _ws_or_end
-        + pp.Optional(_arglist("arglist") + _ws_or_end, {})
+        + pp.Optional(_arglist("arglist"))
+        + pp.Optional(_commentstring("comment"))
+        + _ws_or_end
     ).setParseAction(
         lambda toks: SCPICommand(
             toks["command"],
+            _comment=toks.get("comment", None),
             *toks["arglist"].args,
             **toks["arglist"].opts,
         )
@@ -212,6 +220,17 @@ class SCPICommand(SCPICommandLike):
         | np.number[Any]
         | Sequence[str | int | float | np.number[Any]],
     ]
+    comment: str | None
+
+    def __eq__(self, other) -> bool:
+        if not isinstance(other, SCPICommand):
+            return False
+
+        return (
+            (self.command == other.command)
+            and (self.args == other.args)
+            and (self.opts == other.opts)
+        )
 
     def __init__(
         self,
@@ -222,6 +241,7 @@ class SCPICommand(SCPICommandLike):
         | np.number[Any]
         | Sequence[str | int | float | np.number[Any]]
         | Sequence["SCPICommand"],
+        _comment: str | None = None,
         **kwargs: str
         | int
         | float
@@ -231,6 +251,7 @@ class SCPICommand(SCPICommandLike):
         self.command = command.upper()
         self.args = args
         self.opts = {k.lower(): v for k, v in kwargs.items()}
+        self.comment = _comment
 
     def _optformat(
         self,
@@ -264,12 +285,23 @@ class SCPICommand(SCPICommandLike):
 
     def to_string(self) -> str:
         """Create a usable command string, including terminal newline."""
+        if self.comment:
+            if not re.match(r"\s+#", self.comment):
+                if self.comment[0] == "#":
+                    comment = " " + self.comment
+                else:
+                    comment = " # " + self.comment
+            else:
+                comment = self.comment
+        else:
+            comment = ""
         return (
             " ".join(
                 [self.command]
                 + [f"-{k}={self._optformat(v)}" for k, v in self.opts.items()]
                 + [self._optformat(v) for v in self.args]
             )
+            + comment
             + "\n"
         )
 

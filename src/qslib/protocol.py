@@ -280,19 +280,29 @@ class HACFILT(ProtoCommand):
         converter=_filtersequence,
         on_setattr=attr.setters.convert,
     )
+    _default_filters: Sequence[FilterSet] = attr.field(factory=lambda: [])
     _names: ClassVar[Sequence[str]] = ("HoldAndCollectFILTer", "HACFILT")
 
     def to_scpicommand(self, default_filters=None, **kwargs) -> SCPICommand:
+        if not default_filters and not self.filters:
+            raise ValueError("Protocol must have default filters set.")
+        if not self.filters:
+            comment = "# qslib:default_filters"
+        else:
+            comment = None
         return SCPICommand(
             "HACFILT",
-            *(
-                f.hacform for f in (self.filters if self.filters else default_filters)
-            ),  # FIXME
+            *(f.hacform for f in (self.filters if self.filters else default_filters)),
+            _comment=comment,
         )
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> HACFILT:
-        return HACFILT([FilterSet.fromstring(x) for x in cast(Iterable[str], sc.args)])
+        c = HACFILT([FilterSet.fromstring(x) for x in cast(Iterable[str], sc.args)])
+        if sc.comment and "qslib:default_filters" in sc.comment:
+            c._default_filters = c.filters
+            c.filters = []
+        return c
 
 
 @dataclass
@@ -736,7 +746,12 @@ class Step(CustomStep, XMLable):
                 temp_incrementcycle=1,
             )
             c.collect = True
-            c.filters = hcf.filters
+            if hcf._default_filters:
+                c.filters = []
+                c.collect = True
+                c._default_filters = hcf._default_filters
+            else:
+                c.filters = hcf.filters
             c.time_increment = h.increment
             c.temp_increment = r.increment
             c.time_incrementcycle = h.incrementcycle
@@ -1130,12 +1145,25 @@ class Stage(XMLable, ProtoCommand):
 
     @classmethod
     def from_scpicommand(cls: Type[T], sc: SCPICommand, **kwargs) -> T:
-        return cls(
+        c = cls(
             [x.specialize(**kwargs) for x in cast(Sequence[SCPICommand], sc.args[2])],
             index=sc.args[0],
             label=sc.args[1],
             **sc.opts,  # type: ignore
         )
+
+        dfilt: list[FilterSet] = []
+
+        for s in c.steps:
+            if hasattr(s, "_default_filters") and s._default_filters:
+                ndf = s._default_filters
+                if len(dfilt) == 0:
+                    dfilt = ndf
+                if dfilt != ndf:
+                    raise ValueError("Inconsistent default filters")
+        c._default_filters = dfilt
+
+        return c
 
     @classmethod
     def from_xml(cls, e: ET.Element) -> Stage:
@@ -1289,7 +1317,7 @@ class Protocol(ProtoCommand):
 
     @classmethod
     def from_scpicommand(cls: Type[Protocol], sc: SCPICommand) -> Protocol:
-        return cls(
+        c = cls(
             [
                 cast(Stage, x.specialize())
                 for x in cast(Sequence[SCPICommand], sc.args[1])
@@ -1297,6 +1325,19 @@ class Protocol(ProtoCommand):
             name=cast(str, sc.args[0]),
             **sc.opts,  # type: ignore
         )  # type: ignore
+
+        dfilt: list[FilterSet] = []
+
+        for s in c.stages:
+            if hasattr(s, "_default_filters") and s._default_filters:
+                ndf = s._default_filters
+                if len(dfilt) == 0:
+                    dfilt = ndf
+                if dfilt != ndf:
+                    raise ValueError("Inconsistent default filters")
+        c.filters = dfilt
+
+        return c
 
     @property
     def dataframe(self) -> pd.DataFrame:
