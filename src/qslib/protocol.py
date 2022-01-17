@@ -955,7 +955,7 @@ class Stage(XMLable, ProtoCommand):
         )
 
     @classmethod
-    def hold_at(
+    def hold_for(
         cls: Type[Stage],
         temperature: float | str | Sequence[float],
         total_time: int | str | pint.Quantity[int],
@@ -1028,8 +1028,6 @@ class Stage(XMLable, ProtoCommand):
             ],
             repeat=repeat,
         )
-
-    hold_for = hold_at
 
     def __repr__(self) -> str:
         s = f"Stage(steps="
