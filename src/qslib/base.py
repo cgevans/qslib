@@ -13,7 +13,7 @@ from typing import Any, Callable, ClassVar, Dict, Tuple, Type, TypeVar, TYPE_CHE
 
 T = TypeVar("T", bound="BaseStatus")
 
-if TYPE_CHECKING:
+if TYPE_CHECKING:  # pragma: no cover
     from .machine import Machine
 
 
