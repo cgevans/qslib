@@ -1756,7 +1756,7 @@ table, th, td {{
         fig = None
 
         if ax is None:
-            if temperatures:
+            if temperatures == "axes":
                 fig, ax = plt.subplots(
                     2,
                     1,
@@ -1814,31 +1814,21 @@ table, th, td {{
                 raise ValueError("Temperature axes requires at least two axes in ax")
 
             xlims = ax[0].get_xlim()
-
             tmin, tmax = np.inf, 0.0
+
             for i, fr in reduceddata.groupby("filter_set", as_index=False):
                 d = fr.loc[i, ("time", "hours")].loc[stages]
                 tmin = min(tmin, d.min())
                 tmax = max(tmax, d.max())
 
-            assert self.temperatures is not None
-
-            reltemps = self.temperatures.loc[
-                lambda x: (tmin <= x[("time", "hours")])
+            self.plot_temperatures(
+                sel=lambda x: (tmin <= x[("time", "hours")])
                 & (x[("time", "hours")] <= tmax),
-                :,
-            ]
-
-            for x in range(1, 7):
-                ax[1].plot(
-                    reltemps.loc[:, ("time", "hours")],
-                    reltemps.loc[:, ("sample", x)],
-                )
+                ax=ax[1],
+            )
 
             ax[0].set_xlim(xlims)
             ax[1].set_xlim(xlims)
-
-            ax[1].set_ylabel("temperature (°C)")
 
         ax[0].set_title(_gen_axtitle(self.name, stages, samples, all_wells, filters))
 
@@ -1851,9 +1841,25 @@ table, th, td {{
 
         return self.protocol.plot_protocol(ax)
 
-    def plot_temperatures(self):
+    def plot_temperatures(self, sel=None, ax: Optional[plt.Axes] = None) -> plt.Axes:
         """To be implemented."""
-        raise NotImplemented
+        if self.temperatures is None:
+            raise ValueError("Experiment has no temperature data.")
+
+        if ax is None:
+            _, ax = plt.subplots()
+
+        reltemps = self.temperatures.loc[sel, :]
+
+        for x in range(1, 7):
+            ax.plot(
+                reltemps.loc[:, ("time", "hours")],
+                reltemps.loc[:, ("sample", x)],
+            )
+
+        ax.set_ylabel("temperature (°C)")
+
+        return ax
 
 
 def _normalize_filters(
