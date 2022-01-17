@@ -9,6 +9,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 ## Version 0.5.2
 
  - Licensing switched to AGPL 3.0.
+ - Command comment parsing, also used to store whether steps are using default filters.
+ - Example notebook
+ - Working parsing of Exposure commands
+ - Dependency version fixes
+ -
 ## Version 0.5.1
 
 - `CustomStep.collect` (and subclasses, including `Step`) is now `CustomStep.collects`.  The `collect` parameter for
