@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import (
     IO,
     Any,
+    Callable,
     Collection,
     List,
     Literal,
@@ -1525,10 +1526,12 @@ table, th, td {{
         ----------
 
         samples
-            Either a reference to a single sample (a string), or a list of sample names.
-            Well names may also be included, in which case each well will be treated without
-            regard to the sample name that may refer to it.  Note this means you cannot
-            give your samples names that correspond with well references.
+            A reference to a single sample (a string), a list of sample names, or a Python
+            regular expression as a string, matching sample names (full start-to-end matches
+            only). Well names may also be included, in which case each well will be treated
+            without regard to the sample name that may refer to it.  Note this means you cannot
+            give your samples names that correspond with well references.  If not provided,
+            all (named) samples will be included.
 
         filters
             Optional. A filterset (string or `FilterSet`) or list of filtersets to include in the
@@ -1545,14 +1548,20 @@ table, th, td {{
             Optional. A Normalizer instance to apply to the data.  By default, this is NormRaw, which
             passes through raw fluorescence values.  NormToMeanPerWell also works well.
 
-        marker
-
         ax
             Optional.  An axes to put the plot on.  If not provided, the function will
-            create a new figure.
+            create a new figure, by default with constrained_layout=True, though this
+            can be modified with figure_kw.
+
+        marker
+            The marker format for data points, or None for no markers (default).
 
         legend
-            Optional.  Determines whether a legend is included.
+            Whether to add a legend.  True (default) decides whether to have the legend
+            as an inset or to the right of the axes based on the number of lines.  "inset"
+            and "right" specify the positioning.  Note that for "right", you must use
+            some method to adjust the axes positioning: constrained_layout, tight_layout,
+            or manually reducing the axes width are all options.
 
         figure_kw
             Optional.  A dictionary of options passed through as keyword options to
@@ -1726,8 +1735,13 @@ table, th, td {{
         legend: bool | Literal["inset", "right"] = True,
         temperatures: Literal[False, "axes", "inset", "twin"] = "axes",
         marker: str | None = None,
-        stage_lines: bool = True,
-        annotate_stage_lines: bool | float = False,
+        stage_lines: bool | Literal["fluorescence", "temperature"] = True,
+        annotate_stage_lines: (
+            bool
+            | float
+            | Literal["fluorescence", "temperature"]
+            | Tuple[Literal["fluorescence", "temperature"], float]
+        ) = False,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
     ) -> "Sequence[plt.Axes]":
@@ -1745,10 +1759,12 @@ table, th, td {{
         ----------
 
         samples
-            Either a reference to a single sample (a string), or a list of sample names.
-            Well names may also be included, in which case each well will be treated without
-            regard to the sample name that may refer to it.  Note this means you cannot
-            give your samples names that correspond with well references.
+            A reference to a single sample (a string), a list of sample names, or a Python
+            regular expression as a string, matching sample names (full start-to-end matches
+            only). Well names may also be included, in which case each well will be treated
+            without regard to the sample name that may refer to it.  Note this means you cannot
+            give your samples names that correspond with well references.  If not provided,
+            all (named) samples will be included.
 
         filters
             Optional. A filterset (string or `FilterSet`) or list of filtersets to include in the
@@ -1768,7 +1784,7 @@ table, th, td {{
             passes through raw fluorescence values.  NormToMeanPerWell also works well.
 
         temperatures
-            Optional (default False).  Several alternatives for displaying temperatures.
+            Optional (default "axes").  Several alternatives for displaying temperatures.
             "axes" uses a separate axes (created if ax is not provided, otherwise ax must
             be a list of two axes).
 
@@ -1779,12 +1795,29 @@ table, th, td {{
 
         ax
             Optional.  An axes to put the plot on.  If not provided, the function will
-            create a new figure.  If `temperatures="axes"`, however, you must provide
+            create a new figure, by default with constrained_layout=True, though this
+            can be modified with figure_kw.  If `temperatures="axes"`, you must provide
             a list or tuple of *two* axes, the first for fluorescence, the second
             for temperature.
 
+        marker
+            The marker format for data points, or None for no markers (default).
+
         legend
-            Optional.  Determines whether a legend is included.
+            Whether to add a legend.  True (default) decides whether to have the legend
+            as an inset or to the right of the axes based on the number of lines.  "inset"
+            and "right" specify the positioning.  Note that for "right", you must use
+            some method to adjust the axes positioning: constrained_layout, tight_layout,
+            or manually reducing the axes width are all options.
+
+        stage_lines
+            Whether to include dotted vertical lines on transitions between stages.  If
+            "fluorescence" or "temperature", include only on one of the two axes.
+
+        annotate_stage_lines
+            Whether to include text annotations for stage lines.  Float parameter allows
+            setting the minimum duration of stage, as a fraction of total plotted time, to
+            annotate, in order to avoid overlapping annotations (default threshold is 0.05).
 
         figure_kw
             Optional.  A dictionary of options passed through as keyword options to
@@ -1878,9 +1911,36 @@ table, th, td {{
 
         xlims = ax[0].get_xlim()
 
-        self._annotate_stages(
-            ax[0], stage_lines, annotate_stage_lines, (xlims[1] - xlims[0]) * 3600.0
-        )
+        if isinstance(annotate_stage_lines, (tuple, list)):
+            if annotate_stage_lines[0] == "fluorescence":
+                fl_asl: bool | float = annotate_stage_lines[1]
+                t_asl: bool | float = False
+            elif annotate_stage_lines[0] == "temperature":
+                fl_asl = False
+                t_asl = annotate_stage_lines[1]
+            else:
+                raise ValueError
+        elif annotate_stage_lines == "temperature":
+            t_asl = True
+            fl_asl = False
+        elif annotate_stage_lines == "fluorescence":
+            t_asl = False
+            fl_asl = True
+        else:
+            t_asl = annotate_stage_lines
+            fl_asl = annotate_stage_lines
+
+        if stage_lines == "temperature":
+            t_sl = True
+            fl_sl = False
+        elif stage_lines == "fluorescence":
+            t_sl = False
+            fl_sl = True
+        else:
+            t_sl = stage_lines
+            fl_sl = stage_lines
+
+        self._annotate_stages(ax[0], fl_sl, fl_asl, (xlims[1] - xlims[0]) * 3600.0)
 
         if temperatures == "axes":
             if len(ax) < 2:
@@ -1895,13 +1955,18 @@ table, th, td {{
                 tmax = max(tmax, d.max())
 
             self.plot_temperatures(
-                sel=lambda x: (tmin <= x[("time", "hours")])
-                & (x[("time", "hours")] <= tmax),
+                hours=(tmin, tmax),
                 ax=ax[1],
+                stage_lines=t_sl,
+                annotate_stage_lines=t_asl,
             )
 
             ax[0].set_xlim(xlims)
             ax[1].set_xlim(xlims)
+        elif temperatures is False:
+            pass
+        else:
+            raise NotImplementedError
 
         ax[0].set_title(_gen_axtitle(self.name, stages, samples, all_wells, filters))
 
@@ -1916,26 +1981,77 @@ table, th, td {{
 
     def plot_temperatures(
         self,
-        sel=slice(None),
+        *,
+        sel: slice | Callable[[pd.DataFrame], bool] = slice(None),
+        hours: tuple[float, float] | None = None,
         ax: Optional[plt.Axes] = None,
         stage_lines: bool = True,
         annotate_stage_lines: bool | float = True,
-    ) -> plt.Axes:
-        """To be implemented."""
+        legend: bool = False,
+        figure_kw: Mapping[str, Any] | None = None,
+        line_kw: Mapping[str, Any] | None = None,
+    ) -> "plt.Axes":
+        """Plot sample temperature readings.
+
+        Parameters
+        ----------
+
+        sel
+            A selector for the temperature DataFrame.  This is not necessarily
+            easy to use; `hours` is an easier alternative.
+
+        hours
+            Constructs a selector to show temperatures for a time range.
+            :param:`sel` should not be set.
+
+        ax
+            Optional.  An axes to put the plot on.  If not provided, the function will
+            create a new figure, by default with constrained_layout=True, though this
+            can be modified with figure_kw.
+
+        stage_lines
+            Whether to include dotted vertical lines on transitions between stages.
+
+        annotate_stage_lines
+            Whether to include text annotations for stage lines.  Float parameter allows
+            setting the minimum duration of stage, as a fraction of total plotted time, to
+            annotate, in order to avoid overlapping annotations (default threshold is 0.05).
+
+        legend
+            Whether to add a legend.
+
+        figure_kw
+            Optional.  A dictionary of options passed through as keyword options to
+            the figure creation.  Only applies if ax is None.
+
+        line_kw
+            Optional.  A dictionary of keywords passed to plot commands.
+        """
+
         import matplotlib.pyplot as plt
 
         if self.temperatures is None:
             raise ValueError("Experiment has no temperature data.")
 
+        if hours is not None:
+            if sel != slice(None):
+                raise ValueError("sel and hours cannot both be set.")
+            tmin, tmax = hours
+            sel = lambda x: (tmin <= x[("time", "hours")]) & (
+                x[("time", "hours")] <= tmax
+            )
+
         if ax is None:
-            _, ax = plt.subplots()
+            _, ax = plt.subplots(**(figure_kw or {}))
 
         reltemps = self.temperatures.loc[sel, :]
 
-        for x in range(1, 7):
+        for x in range(1, self.num_zones):
             ax.plot(
                 reltemps.loc[:, ("time", "hours")],
                 reltemps.loc[:, ("sample", x)],
+                label=f"zone {x}",
+                **(line_kw or {}),
             )
 
         v = reltemps.loc[:, ("time", "hours")]
@@ -1944,6 +2060,10 @@ table, th, td {{
         self._annotate_stages(ax, stage_lines, annotate_stage_lines, totseconds)
 
         ax.set_ylabel("temperature (°C)")
+        ax.set_xlabel("time (hours)")
+
+        if legend:
+            ax.legend()
 
         return ax
 
