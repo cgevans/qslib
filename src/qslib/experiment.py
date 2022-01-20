@@ -1694,9 +1694,9 @@ table, th, td {{
                 legend = "right"
 
         if legend == "inset":
-            ax[0].legend()
+            ax.legend()
         elif legend == "right":
-            ax[0].legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+            ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
 
         ax.set_title(
             _gen_axtitle(
