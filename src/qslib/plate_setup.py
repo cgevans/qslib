@@ -190,6 +190,7 @@ class PlateSetup:
         )
 
     def update_xml(self, root: ET.Element) -> None:
+        self._update_samples()
         samplemap = root.find("FeatureMap/Feature/Id[.='sample']/../..")
         e: Optional[ET.Element]
         if not samplemap:
