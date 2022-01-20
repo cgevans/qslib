@@ -6,14 +6,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
-## Version 0.5.2
-
- - Licensing switched to AGPL 3.0.
+## Version 0.6.0
+ - Improved plots, including new `Experiment.plot_temperatures`.
+ - Comments in SCPI commands, allowing save/load of default filters in protocols
+ - Licensing switched to AGPL 3.0, CLA in docs.
  - Command comment parsing, also used to store whether steps are using default filters.
  - Example notebook
  - Working parsing of Exposure commands
  - Dependency version fixes
- -
+
 ## Version 0.5.1
 
 - `CustomStep.collect` (and subclasses, including `Step`) is now `CustomStep.collects`.  The `collect` parameter for
