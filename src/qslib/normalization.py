@@ -32,7 +32,7 @@ class Normalizer(metaclass=ABCMeta):
 
     @property
     @abstractmethod
-    def ylabel(self) -> str:
+    def ylabel(self) -> str:  # pragma: no cover
         ...
 
 

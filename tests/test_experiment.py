@@ -9,3 +9,16 @@ from qslib import *
 def test_create():
 
     exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
+
+
+def test_fail_plots():
+    exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
+
+    with pytest.raises(ValueError, match="no temperature data"):
+        exp.plot_temperatures()
+
+    with pytest.raises(ValueError, match="no data available"):
+        exp.plot_over_time()
+
+    with pytest.raises(ValueError, match="no data available"):
+        exp.plot_anneal_melt()

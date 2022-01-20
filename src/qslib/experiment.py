@@ -261,9 +261,9 @@ class Experiment:
     """
     A string describing the software and version used to write the file.
     """
-    _welldata: pd.DataFrame | None
+    _welldata: pd.DataFrame | None = None
 
-    temperatures: pd.DataFrame | None
+    temperatures: pd.DataFrame | None = None
     """
     A DataFrame of temperature readings, at one second resolution, during the experiment
     (and potentially slightly before and after, if included in the message log).
@@ -2030,7 +2030,7 @@ table, th, td {{
 
         import matplotlib.pyplot as plt
 
-        if self.temperatures is None:
+        if not hasattr(self, "temperatures") or self.temperatures is None:
             raise ValueError("Experiment has no temperature data.")
 
         if hours is not None:

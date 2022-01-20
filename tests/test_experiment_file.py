@@ -11,7 +11,12 @@ from qslib.normalization import NormToMaxPerWell, NormToMeanPerWell
 
 @pytest.fixture(scope="module")
 def exp() -> Experiment:
-    return Experiment.from_file("tests/test.eds")
+    exp = Experiment.from_file("tests/test.eds")
+    # We need better sample arrangements:
+    exp.sample_wells["Sample 1"] = ["A7", "A8"]
+    exp.sample_wells["Sample 2"] = ["A9", "A10"]
+    exp.sample_wells["othersample"] = ["B7"]
+    return exp
 
 
 @pytest.fixture(scope="module")
@@ -37,11 +42,6 @@ def test_reload(exp: Experiment, exp_reloaded: Experiment):
 
 
 def test_plots(exp: Experiment):
-    # We need better sample arrangements:
-    exp.sample_wells["Sample 1"] = ["A7", "A8"]
-    exp.sample_wells["Sample 2"] = ["A9", "A10"]
-    exp.sample_wells["othersample"] = ["B7"]
-
     axf, axt = exp.plot_over_time(
         legend=False, figure_kw={"constrained_layout": False}, annotate_stage_lines=True
     )
@@ -71,7 +71,7 @@ def test_plots(exp: Experiment):
     )
 
     axs2 = exp.plot_over_time(
-        "Sample .*",
+        ["Sample 1", "Sample 2"],
         "x1-m1",
         stages=2,
         temperatures=False,
