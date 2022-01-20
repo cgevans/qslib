@@ -1574,17 +1574,7 @@ table, th, td {{
         if filters is None:
             filters = self.all_filters
 
-        if isinstance(samples, str):
-            if samples in self.plate_setup.sample_wells:
-                samples = [samples]
-            else:
-                samples = [
-                    k for k in self.plate_setup.sample_wells if re.match(samples, k)
-                ]
-                if not samples:
-                    raise ValueError(f"Samples not found")
-        elif samples is None:
-            samples = list(self.plate_setup.sample_wells.keys())
+        samples = self._get_samples(samples)
 
         filters = _normalize_filters(filters)
 
@@ -1710,6 +1700,22 @@ table, th, td {{
 
         return ax
 
+    def _get_samples(self, samples: str | Sequence[str] | None) -> Sequence[str]:
+        if isinstance(samples, str):
+            if samples in self.plate_setup.sample_wells:
+                samples = [samples]
+            else:
+                samples = [
+                    k
+                    for k in self.plate_setup.sample_wells
+                    if re.match(samples + "$", k)
+                ]
+                if not samples:
+                    raise ValueError(f"Samples not found")
+        elif samples is None:
+            samples = list(self.plate_setup.sample_wells.keys())
+        return samples
+
     def plot_over_time(
         self,
         samples: str | Sequence[str] | None = None,
@@ -1796,17 +1802,7 @@ table, th, td {{
 
         filters = _normalize_filters(filters)
 
-        if isinstance(samples, str):
-            if samples in self.plate_setup.sample_wells:
-                samples = [samples]
-            else:
-                samples = [
-                    k for k in self.plate_setup.sample_wells if re.match(samples, k)
-                ]
-                if not samples:
-                    raise ValueError(f"Samples not found")
-        elif samples is None:
-            samples = list(self.plate_setup.sample_wells.keys())
+        samples = self._get_samples(samples)
 
         if isinstance(stages, int):
             stages = [stages]
