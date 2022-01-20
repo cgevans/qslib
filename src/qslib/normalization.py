@@ -30,6 +30,11 @@ class Normalizer(metaclass=ABCMeta):
     def normalize(self, data: pd.DataFrame) -> pd.DataFrame:
         ...
 
+    @property
+    @abstractmethod
+    def ylabel(self) -> str:
+        ...
+
 
 class NormRaw(Normalizer):
     """
@@ -42,6 +47,8 @@ class NormRaw(Normalizer):
 
     def normalize(self, data: pd.DataFrame) -> pd.DataFrame:
         return data
+
+    ylabel = "fluorescence"
 
 
 @dataclass(init=False)
@@ -115,6 +122,8 @@ class NormToMeanPerWell(Normalizer):
 
         return normdata
 
+    ylabel = "norm. fluorescence"
+
 
 @dataclass
 class NormToMaxPerWell(Normalizer):
@@ -186,3 +195,5 @@ class NormToMaxPerWell(Normalizer):
         normdata.loc[:, (slice(None), "fl")] /= means
 
         return normdata
+
+    ylabel = "norm fluorescence"
