@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import (
     IO,
     Any,
+    Callable,
     Collection,
     List,
     Literal,
@@ -260,9 +261,9 @@ class Experiment:
     """
     A string describing the software and version used to write the file.
     """
-    _welldata: pd.DataFrame | None
+    _welldata: pd.DataFrame | None = None
 
-    temperatures: pd.DataFrame | None
+    temperatures: pd.DataFrame | None = None
     """
     A DataFrame of temperature readings, at one second resolution, during the experiment
     (and potentially slightly before and after, if included in the message log).
@@ -1329,33 +1330,53 @@ table, th, td {{
         self.runstate = "INIT"
 
         m: Optional[re.Match[str]]
+        stages = []
 
         for m in ms:
             ts = datetime.fromtimestamp(float(m["ts"]))
             if m["msg"] == "Starting":
                 self.runstarttime = ts
-            elif (m["msg"] == "Stage") and (m["ext"] == "PRERUN"):
-                self.prerunstart = ts
-                self.runstate = "RUNNING"
-            elif (
-                (m["msg"] == "Stage")
-                and (self.activestarttime is None)
-                and (self.prerunstart is not None)
-            ):
-                self.activestarttime = ts
-            elif (m["msg"] == "Stage") and (m["ext"] == "POSTRun"):
-                self.activeendtime = ts
+            elif m["msg"] == "Stage":
+                if m["ext"] == "PRERUN":
+                    self.prerunstart = ts
+                    self.runstate = "RUNNING"
+                elif (self.activestarttime is None) and (self.prerunstart is not None):
+                    self.activestarttime = ts
+                elif m["ext"] == "POSTRun":
+                    self.activeendtime = ts
+                try:
+                    stages.append([int(m["msg"]), ts])
+                except ValueError:
+                    stages.append([m["ext"], ts])
+                if len(stages) > 1:
+                    stages[-2].append(ts)
             elif m["msg"] == "Ended":
                 self.runendtime = ts
                 self.runstate = "COMPLETE"
+                if len(stages) > 1:
+                    stages[-1].append(ts)
             elif m["msg"] == "Aborted":
                 self.runstate = "ABORTED"
                 self.activeendtime = ts
                 self.runendtime = ts
+                if len(stages) > 1:
+                    stages[-1].append(ts)
             elif m["msg"] == "Stopped":
                 self.runstate = "STOPPED"
                 self.activeendtime = ts
                 self.runendtime = ts
+                if len(stages) > 1:
+                    stages[-1].append(ts)
+
+        self.stages = pd.DataFrame(stages, columns=["stage", "start_time", "end_time"])
+
+        if self.activestarttime:
+            self.stages["start_seconds"] = (
+                self.stages["start_time"] - self.activestarttime
+            ).astype("timedelta64[s]")
+            self.stages["end_seconds"] = (
+                self.stages["end_time"] - self.activestarttime
+            ).astype("timedelta64[s]")
 
         tt = []
 
@@ -1483,7 +1504,7 @@ table, th, td {{
         normalization: Normalizer = NormRaw(),
         ax: "plt.Axes" | None = None,
         marker: str | None = None,
-        legend: bool = True,
+        legend: bool | Literal["inset", "right"] = True,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
     ) -> "plt.Axes":
@@ -1505,10 +1526,12 @@ table, th, td {{
         ----------
 
         samples
-            Either a reference to a single sample (a string), or a list of sample names.
-            Well names may also be included, in which case each well will be treated without
-            regard to the sample name that may refer to it.  Note this means you cannot
-            give your samples names that correspond with well references.
+            A reference to a single sample (a string), a list of sample names, or a Python
+            regular expression as a string, matching sample names (full start-to-end matches
+            only). Well names may also be included, in which case each well will be treated
+            without regard to the sample name that may refer to it.  Note this means you cannot
+            give your samples names that correspond with well references.  If not provided,
+            all (named) samples will be included.
 
         filters
             Optional. A filterset (string or `FilterSet`) or list of filtersets to include in the
@@ -1525,14 +1548,20 @@ table, th, td {{
             Optional. A Normalizer instance to apply to the data.  By default, this is NormRaw, which
             passes through raw fluorescence values.  NormToMeanPerWell also works well.
 
-        marker
-
         ax
             Optional.  An axes to put the plot on.  If not provided, the function will
-            create a new figure.
+            create a new figure, by default with constrained_layout=True, though this
+            can be modified with figure_kw.
+
+        marker
+            The marker format for data points, or None for no markers (default).
 
         legend
-            Optional.  Determines whether a legend is included.
+            Whether to add a legend.  True (default) decides whether to have the legend
+            as an inset or to the right of the axes based on the number of lines.  "inset"
+            and "right" specify the positioning.  Note that for "right", you must use
+            some method to adjust the axes positioning: constrained_layout, tight_layout,
+            or manually reducing the axes width are all options.
 
         figure_kw
             Optional.  A dictionary of options passed through as keyword options to
@@ -1554,10 +1583,7 @@ table, th, td {{
         if filters is None:
             filters = self.all_filters
 
-        if isinstance(samples, str):
-            samples = [samples]
-        elif samples is None:
-            samples = list(self.plate_setup.sample_wells.keys())
+        samples = self._get_samples(samples)
 
         filters = _normalize_filters(filters)
 
@@ -1585,7 +1611,12 @@ table, th, td {{
         if ax is None:
             ax = cast(
                 plt.Axes,
-                plt.figure(**({} if figure_kw is None else figure_kw)).add_subplot(),
+                plt.figure(
+                    **(
+                        {"constrained_layout": True}
+                        | (({} if figure_kw is None else figure_kw))
+                    )
+                ).add_subplot(),
             )
 
         data = normalization.normalize_scoped(self.welldata, "all")
@@ -1605,6 +1636,10 @@ table, th, td {{
             if len(between_stages) > 0:
                 betweendat: pd.DataFrame = filterdat.loc[between_stages, :]  # type: ignore
 
+            anneallines = []
+            meltlines = []
+            betweenlines = []
+
             for sample in samples:
                 wells = self.plate_setup.get_wells(sample)
 
@@ -1613,41 +1648,54 @@ table, th, td {{
 
                     label = _gen_label(sample, well, filter, samples, wells, filters)
 
-                    anneallines = ax.plot(
-                        annealdat.loc[:, (well, "st")],
-                        annealdat.loc[:, (well, "fl")],
-                        color=color,
-                        label=label,
-                        marker=marker,
-                        **(line_kw if line_kw is not None else {}),
+                    anneallines.append(
+                        ax.plot(
+                            annealdat.loc[:, (well, "st")],
+                            annealdat.loc[:, (well, "fl")],
+                            color=color,
+                            label=label,
+                            marker=marker,
+                            **(line_kw if line_kw is not None else {}),
+                        )
                     )
 
-                    meltlines = ax.plot(
-                        meltdat.loc[:, (well, "st")],
-                        meltdat.loc[:, (well, "fl")],
-                        color=color,
-                        linestyle="dashed",
-                        marker=marker,
-                        **(line_kw if line_kw is not None else {}),
+                    meltlines.append(
+                        ax.plot(
+                            meltdat.loc[:, (well, "st")],
+                            meltdat.loc[:, (well, "fl")],
+                            color=color,
+                            linestyle="dashed",
+                            marker=marker,
+                            **(line_kw if line_kw is not None else {}),
+                        )
                     )
 
                     if len(between_stages) > 0:
-                        betweenlines = ax.plot(
-                            betweendat.loc[:, (well, "st")],
-                            betweendat.loc[:, (well, "fl")],
-                            color=color,
-                            linestyle="dotted",
-                            marker=marker,
-                            **(line_kw if line_kw is not None else {}),
+                        betweenlines.append(
+                            ax.plot(
+                                betweendat.loc[:, (well, "st")],
+                                betweendat.loc[:, (well, "fl")],
+                                color=color,
+                                linestyle="dotted",
+                                marker=marker,
+                                **(line_kw if line_kw is not None else {}),
+                            )
                         )
 
         ax.set_xlabel("temperature (°C)")
 
-        # FIXME: consider normalization
-        ax.set_ylabel("fluorescence")
+        ax.set_ylabel(normalization.ylabel)
 
-        if legend:
+        if legend is True:
+            if len(anneallines) < 6:
+                legend = "inset"
+            else:
+                legend = "right"
+
+        if legend == "inset":
             ax.legend()
+        elif legend == "right":
+            ax.legend(bbox_to_anchor=(1.04, 1), loc="upper left")
 
         ax.set_title(
             _gen_axtitle(
@@ -1661,6 +1709,22 @@ table, th, td {{
 
         return ax
 
+    def _get_samples(self, samples: str | Sequence[str] | None) -> Sequence[str]:
+        if isinstance(samples, str):
+            if samples in self.plate_setup.sample_wells:
+                samples = [samples]
+            else:
+                samples = [
+                    k
+                    for k in self.plate_setup.sample_wells
+                    if re.match(samples + "$", k)
+                ]
+                if not samples:
+                    raise ValueError(f"Samples not found")
+        elif samples is None:
+            samples = list(self.plate_setup.sample_wells.keys())
+        return samples
+
     def plot_over_time(
         self,
         samples: str | Sequence[str] | None = None,
@@ -1668,9 +1732,16 @@ table, th, td {{
         stages: slice | int | Sequence[int] = slice(None),
         normalization: Normalizer = NormRaw(),
         ax: "plt.Axes" | "Sequence[plt.Axes]" | None = None,
-        legend: bool = True,
-        temperatures: Literal[False, "axes", "inset", "twin"] = False,
+        legend: bool | Literal["inset", "right"] = True,
+        temperatures: Literal[False, "axes", "inset", "twin"] = "axes",
         marker: str | None = None,
+        stage_lines: bool | Literal["fluorescence", "temperature"] = True,
+        annotate_stage_lines: (
+            bool
+            | float
+            | Literal["fluorescence", "temperature"]
+            | Tuple[Literal["fluorescence", "temperature"], float]
+        ) = False,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
     ) -> "Sequence[plt.Axes]":
@@ -1688,10 +1759,12 @@ table, th, td {{
         ----------
 
         samples
-            Either a reference to a single sample (a string), or a list of sample names.
-            Well names may also be included, in which case each well will be treated without
-            regard to the sample name that may refer to it.  Note this means you cannot
-            give your samples names that correspond with well references.
+            A reference to a single sample (a string), a list of sample names, or a Python
+            regular expression as a string, matching sample names (full start-to-end matches
+            only). Well names may also be included, in which case each well will be treated
+            without regard to the sample name that may refer to it.  Note this means you cannot
+            give your samples names that correspond with well references.  If not provided,
+            all (named) samples will be included.
 
         filters
             Optional. A filterset (string or `FilterSet`) or list of filtersets to include in the
@@ -1711,7 +1784,7 @@ table, th, td {{
             passes through raw fluorescence values.  NormToMeanPerWell also works well.
 
         temperatures
-            Optional (default False).  Several alternatives for displaying temperatures.
+            Optional (default "axes").  Several alternatives for displaying temperatures.
             "axes" uses a separate axes (created if ax is not provided, otherwise ax must
             be a list of two axes).
 
@@ -1722,12 +1795,29 @@ table, th, td {{
 
         ax
             Optional.  An axes to put the plot on.  If not provided, the function will
-            create a new figure.  If `temperatures="axes"`, however, you must provide
+            create a new figure, by default with constrained_layout=True, though this
+            can be modified with figure_kw.  If `temperatures="axes"`, you must provide
             a list or tuple of *two* axes, the first for fluorescence, the second
             for temperature.
 
+        marker
+            The marker format for data points, or None for no markers (default).
+
         legend
-            Optional.  Determines whether a legend is included.
+            Whether to add a legend.  True (default) decides whether to have the legend
+            as an inset or to the right of the axes based on the number of lines.  "inset"
+            and "right" specify the positioning.  Note that for "right", you must use
+            some method to adjust the axes positioning: constrained_layout, tight_layout,
+            or manually reducing the axes width are all options.
+
+        stage_lines
+            Whether to include dotted vertical lines on transitions between stages.  If
+            "fluorescence" or "temperature", include only on one of the two axes.
+
+        annotate_stage_lines
+            Whether to include text annotations for stage lines.  Float parameter allows
+            setting the minimum duration of stage, as a fraction of total plotted time, to
+            annotate, in order to avoid overlapping annotations (default threshold is 0.05).
 
         figure_kw
             Optional.  A dictionary of options passed through as keyword options to
@@ -1745,10 +1835,7 @@ table, th, td {{
 
         filters = _normalize_filters(filters)
 
-        if isinstance(samples, str):
-            samples = [samples]
-        elif samples is None:
-            samples = list(self.plate_setup.sample_wells.keys())
+        samples = self._get_samples(samples)
 
         if isinstance(stages, int):
             stages = [stages]
@@ -1756,13 +1843,16 @@ table, th, td {{
         fig = None
 
         if ax is None:
-            if temperatures:
+            if temperatures == "axes":
                 fig, ax = plt.subplots(
                     2,
                     1,
                     sharex="all",
                     gridspec_kw={"height_ratios": [3, 1]},
-                    **({} if figure_kw is None else figure_kw),
+                    **(
+                        {"constrained_layout": True}
+                        | (({} if figure_kw is None else figure_kw))
+                    ),
                 )
             else:
                 fig, ax = plt.subplots(1, 1, **({} if figure_kw is None else figure_kw))
@@ -1781,6 +1871,7 @@ table, th, td {{
 
         reduceddata = normalization.normalize_scoped(reduceddata, "limited")
 
+        lines = []
         for filter in filters:
             filterdat: pd.DataFrame = reduceddata.loc[filter.lowerform, :]  # type: ignore
 
@@ -1792,53 +1883,90 @@ table, th, td {{
 
                     label = _gen_label(sample, well, filter, samples, wells, filters)
 
-                    lines = ax[0].plot(
-                        filterdat.loc[stages, ("time", "hours")],
-                        filterdat.loc[stages, (well, "fl")],
-                        color=color,
-                        label=label,
-                        marker=marker,
-                        **(line_kw if line_kw is not None else {}),
+                    lines.append(
+                        ax[0].plot(
+                            filterdat.loc[stages, ("time", "hours")],
+                            filterdat.loc[stages, (well, "fl")],
+                            color=color,
+                            label=label,
+                            marker=marker,
+                            **(line_kw if line_kw is not None else {}),
+                        )
                     )
 
         ax[-1].set_xlabel("time (hours)")
 
-        # FIXME: consider normalization
-        ax[0].set_ylabel("fluorescence")
+        ax[0].set_ylabel(normalization.ylabel)
 
-        if legend:
+        if legend is True:
+            if len(lines) < 6:
+                legend = "inset"
+            else:
+                legend = "right"
+
+        if legend == "inset":
             ax[0].legend()
+        elif legend == "right":
+            ax[0].legend(bbox_to_anchor=(1.04, 1), loc="upper left")
+
+        xlims = ax[0].get_xlim()
+
+        if isinstance(annotate_stage_lines, (tuple, list)):
+            if annotate_stage_lines[0] == "fluorescence":
+                fl_asl: bool | float = annotate_stage_lines[1]
+                t_asl: bool | float = False
+            elif annotate_stage_lines[0] == "temperature":
+                fl_asl = False
+                t_asl = annotate_stage_lines[1]
+            else:
+                raise ValueError
+        elif annotate_stage_lines == "temperature":
+            t_asl = True
+            fl_asl = False
+        elif annotate_stage_lines == "fluorescence":
+            t_asl = False
+            fl_asl = True
+        else:
+            t_asl = annotate_stage_lines
+            fl_asl = annotate_stage_lines
+
+        if stage_lines == "temperature":
+            t_sl = True
+            fl_sl = False
+        elif stage_lines == "fluorescence":
+            t_sl = False
+            fl_sl = True
+        else:
+            t_sl = stage_lines
+            fl_sl = stage_lines
+
+        self._annotate_stages(ax[0], fl_sl, fl_asl, (xlims[1] - xlims[0]) * 3600.0)
 
         if temperatures == "axes":
             if len(ax) < 2:
                 raise ValueError("Temperature axes requires at least two axes in ax")
 
             xlims = ax[0].get_xlim()
-
             tmin, tmax = np.inf, 0.0
+
             for i, fr in reduceddata.groupby("filter_set", as_index=False):
                 d = fr.loc[i, ("time", "hours")].loc[stages]
                 tmin = min(tmin, d.min())
                 tmax = max(tmax, d.max())
 
-            assert self.temperatures is not None
-
-            reltemps = self.temperatures.loc[
-                lambda x: (tmin <= x[("time", "hours")])
-                & (x[("time", "hours")] <= tmax),
-                :,
-            ]
-
-            for x in range(1, 7):
-                ax[1].plot(
-                    reltemps.loc[:, ("time", "hours")],
-                    reltemps.loc[:, ("sample", x)],
-                )
+            self.plot_temperatures(
+                hours=(tmin, tmax),
+                ax=ax[1],
+                stage_lines=t_sl,
+                annotate_stage_lines=t_asl,
+            )
 
             ax[0].set_xlim(xlims)
             ax[1].set_xlim(xlims)
-
-            ax[1].set_ylabel("temperature (°C)")
+        elif temperatures is False:
+            pass
+        else:
+            raise NotImplementedError
 
         ax[0].set_title(_gen_axtitle(self.name, stages, samples, all_wells, filters))
 
@@ -1851,9 +1979,121 @@ table, th, td {{
 
         return self.protocol.plot_protocol(ax)
 
-    def plot_temperatures(self):
-        """To be implemented."""
-        raise NotImplemented
+    def plot_temperatures(
+        self,
+        *,
+        sel: slice | Callable[[pd.DataFrame], bool] = slice(None),
+        hours: tuple[float, float] | None = None,
+        ax: Optional[plt.Axes] = None,
+        stage_lines: bool = True,
+        annotate_stage_lines: bool | float = True,
+        legend: bool = False,
+        figure_kw: Mapping[str, Any] | None = None,
+        line_kw: Mapping[str, Any] | None = None,
+    ) -> "plt.Axes":
+        """Plot sample temperature readings.
+
+        Parameters
+        ----------
+
+        sel
+            A selector for the temperature DataFrame.  This is not necessarily
+            easy to use; `hours` is an easier alternative.
+
+        hours
+            Constructs a selector to show temperatures for a time range.
+            :param:`sel` should not be set.
+
+        ax
+            Optional.  An axes to put the plot on.  If not provided, the function will
+            create a new figure, by default with constrained_layout=True, though this
+            can be modified with figure_kw.
+
+        stage_lines
+            Whether to include dotted vertical lines on transitions between stages.
+
+        annotate_stage_lines
+            Whether to include text annotations for stage lines.  Float parameter allows
+            setting the minimum duration of stage, as a fraction of total plotted time, to
+            annotate, in order to avoid overlapping annotations (default threshold is 0.05).
+
+        legend
+            Whether to add a legend.
+
+        figure_kw
+            Optional.  A dictionary of options passed through as keyword options to
+            the figure creation.  Only applies if ax is None.
+
+        line_kw
+            Optional.  A dictionary of keywords passed to plot commands.
+        """
+
+        import matplotlib.pyplot as plt
+
+        if not hasattr(self, "temperatures") or self.temperatures is None:
+            raise ValueError("Experiment has no temperature data.")
+
+        if hours is not None:
+            if sel != slice(None):
+                raise ValueError("sel and hours cannot both be set.")
+            tmin, tmax = hours
+            sel = lambda x: (tmin <= x[("time", "hours")]) & (
+                x[("time", "hours")] <= tmax
+            )
+
+        if ax is None:
+            _, ax = plt.subplots(**(figure_kw or {}))
+
+        reltemps = self.temperatures.loc[sel, :]
+
+        for x in range(1, self.num_zones):
+            ax.plot(
+                reltemps.loc[:, ("time", "hours")],
+                reltemps.loc[:, ("sample", x)],
+                label=f"zone {x}",
+                **(line_kw or {}),
+            )
+
+        v = reltemps.loc[:, ("time", "hours")]
+        totseconds = 3600.0 * (v.iloc[-1] - v.iloc[0])
+
+        self._annotate_stages(ax, stage_lines, annotate_stage_lines, totseconds)
+
+        ax.set_ylabel("temperature (°C)")
+        ax.set_xlabel("time (hours)")
+
+        if legend:
+            ax.legend()
+
+        return ax
+
+    def _annotate_stages(self, ax, stage_lines, annotate_stage_lines, totseconds):
+        if stage_lines:
+            if isinstance(annotate_stage_lines, float):
+                annotate_frac = annotate_stage_lines
+                annotate_stage_lines = True
+            else:
+                annotate_frac = 0.05
+
+            for _, s in self.stages.iloc[1:-1].iterrows():
+                xtrans = ax.get_xaxis_transform()
+                ax.axvline(
+                    s.start_seconds / 3600.0,
+                    linestyle="dotted",
+                    color="black",
+                    linewidth=0.5,
+                )
+                durfrac = (s.end_seconds - s.start_seconds) / totseconds
+                if annotate_stage_lines and (durfrac > annotate_frac):
+                    ax.text(
+                        s.start_seconds / 3600.0 + 0.02,
+                        0.9,
+                        f"stage {s.stage}",
+                        transform=xtrans,
+                        rotation=90,
+                        verticalalignment="top",
+                        horizontalalignment="left",
+                    )
 
 
 def _normalize_filters(
