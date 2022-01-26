@@ -4,17 +4,13 @@
 from dataclasses import astuple
 
 import pytest  # noqa
+import hypothesis.strategies as st
+from hypothesis import given
 
 from qslib.qsconnection_async import FilterDataFilename
 from qslib._util import _pp_seqsliceint
 
-
-@pytest.mark.parametrize("stage", [1, 63, 2623])
-@pytest.mark.parametrize("cycle", [4, 262, 2633])
-@pytest.mark.parametrize("step", [5, 63, 2633])
-@pytest.mark.parametrize("point", [24, 53250])
-@pytest.mark.parametrize("em", [2])
-@pytest.mark.parametrize("ex", [2, 3])
+@given(stage=st.integers(0, 10000), cycle=st.integers(0, 10000), step=st.integers(0, 10000), point=st.integers(0, 10000), em=st.integers(1,6), ex=st.integers(1,6))
 def test_fd_fn(stage, cycle, step, point, em, ex):
     fds = f"S{stage:02}_C{cycle:03}_T{step:02}" f"_P{point:04}_M{em}_X{ex}"
     fdfn = fds + "_filterdata.xml"

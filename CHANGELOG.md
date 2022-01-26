@@ -6,6 +6,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.6.1
+ - Fix pyparsing 3.0.7 whitespace parsing problem (pyparsing/pyparsing#359).
+ - Use Hypothesis for some tests.
+
 ## Version 0.6.0
  - Improved plots, including new `Experiment.plot_temperatures`.
  - Comments in SCPI commands, allowing save/load of default filters in protocols
