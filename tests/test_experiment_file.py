@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 from pathlib import Path
+import numpy as np
 
 import pytest
 
@@ -48,7 +49,7 @@ def test_plots(exp: Experiment):
 
     # +2 here is for stage lines
     assert len(axf.get_lines()) == 5 * len(exp.all_filters) + 2
-    assert axf.get_xlim() == (-0.004326652778519521, 0.09085970834891001)
+    assert np.allclose(axf.get_xlim(), (-0.004326652778519521, 0.09085970834891001))
 
     with pytest.raises(ValueError, match="Samples not found"):
         exp.plot_over_time("Sampl(e|a)")
