@@ -20,12 +20,12 @@ from pyparsing import ParserElement, pyparsing_common as ppc
 
 pp.ParserElement.setDefaultWhitespaceChars("")
 
-_ws_or_end = (pp.White(" \t\r") | pp.StringEnd() | pp.FollowedBy("\n")).suppress()
+_ws_or_end = (pp.Regex(r"[ \t\r]+") | pp.StringEnd() | pp.FollowedBy("\n")).suppress().setName("<ws/end>")
 _nl = (
-    (pp.Literal("\n") + pp.Optional(pp.White(" \t\r"))).suppress().setName("<newline>")
+    (pp.Literal("\n") + pp.Optional(pp.Regex(r"[ \t\r]+"))).suppress().setName("<newline>")
 )
-_fwe = pp.FollowedBy(_ws_or_end).suppress()
-_fweqc = pp.FollowedBy(_ws_or_end | "<" | ",").suppress()
+_fwe = pp.FollowedBy(_ws_or_end).suppress().setName("<fwe?>")
+_fweqc = pp.FollowedBy(_ws_or_end | "<" | ",").suppress().setName("<fweqc?>")
 
 
 def _make_multi_keyword(kwd_str: str, kwd_value: Any) -> ParserElement:
