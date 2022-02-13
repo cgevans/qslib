@@ -5,7 +5,7 @@
 # This workflow will install Python dependencies, run tests and lint with a variety of Python versions
 # For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
 
-name: Python directg tests
+name: Python direct tests
 
 on:
   [push, pull_request]
@@ -25,10 +25,11 @@ jobs:
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip setuptools_scm[toml] wheel setuptools
-        python -m pip install flake8 tox mypy
+        python -m pip install -U flake8 mypy pytest pytest-cov pytest-asyncio hypothesis
+        python -m pip install -U .[monitor] --no-build-isolation
     - name: Test with tox/pytest
       run: |
-        tox -- -k 'test_real'
+        python -m pytest -k 'test_real' --cov --cov-report=xml
     - name: "Upload coverage to Codecov"
       uses: codecov/codecov-action@v1
       with:
