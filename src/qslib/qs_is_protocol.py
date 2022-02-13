@@ -318,7 +318,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         if uid:
             import random
 
-            commref = str(random.randint(1, 2 ** 30)).encode()
+            commref = str(random.randint(1, 2**30)).encode()
             comm_with_ref = commref + b" " + comm
         else:
             comm_with_ref = comm
