@@ -1,0 +1,35 @@
+# SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+#
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# This workflow will install Python dependencies, run tests and lint with a variety of Python versions
+# For more information see: https://help.github.com/actions/language-and-framework-guides/using-python-with-github-actions
+
+name: Python directg tests
+
+on:
+  [push, pull_request]
+
+jobs:
+  tests:
+    runs-on: "self-hosted"
+    strategy:
+      fail-fast: false
+
+    steps:
+    - uses: actions/checkout@v2
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v2
+      with:
+        python-version: ${{ matrix.python-version }}
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip setuptools_scm[toml] wheel setuptools
+        python -m pip install flake8 tox mypy
+    - name: Test with tox/pytest
+      run: |
+        tox -- -k 'test_real'
+    - name: "Upload coverage to Codecov"
+      uses: codecov/codecov-action@v1
+      with:
+        fail_ci_if_error: false
