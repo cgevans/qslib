@@ -13,7 +13,7 @@ from asyncio.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
-from typing import IO, Any, Generator, Literal, overload, TYPE_CHECKING
+from typing import IO, Any, Generator, Literal, overload, TYPE_CHECKING, cast
 
 import nest_asyncio
 
@@ -523,7 +523,7 @@ class Machine:
         self.run_command("OPEN")
 
     @_ensure_connection(AccessLevel.Controller)
-    def drawer_close(self, lower_cover: bool = True) -> None:
+    def drawer_close(self, lower_cover: bool = True, check: bool = True) -> None:
         """Close the machine drawer using the OPEN command. This will ensure proper
         cover/drawer operation.  It *will not check run status*, and will open and
         close the drawer during runs and potentially during imaging.
@@ -532,6 +532,10 @@ class Machine:
         lower_cover=False to not do so.
         """
         self.run_command("CLOSE")
+        if (drawerpos := self.drawer_position) != "Closed":
+            log.error(f"Drawer position should be Closed, but is {drawerpos}.")
+            if check:
+                raise ValueError(f"Drawer position is {drawerpos}")
         if lower_cover:
             self.cover_lower()
 
@@ -545,7 +549,10 @@ class Machine:
     def drawer_position(self) -> Literal["Open", "Closed", "Unknown"]:
         """Return the drawer position from the DRAW? command."""
         with self.ensured_connection(AccessLevel.Observer):
-            return self.run_command("DRAW?")  # type: ignore
+            d = self.run_command("DRAW?")
+            if d not in ["Up", "Down", "Unknown"]:
+                raise ValueError(f"Cover position {d} is not understood.")
+            return cast(Literal["Open", "Closed", "Unknown"], d)
 
     @property
     def cover_position(self) -> Literal["Up", "Down", "Unknown"]:
@@ -553,14 +560,20 @@ class Machine:
         this does not always seem to work."""
         with self.ensured_connection(AccessLevel.Observer):
             f = self.run_command("ENG?")
-            assert f in ["Up", "Down", "Unknown"]
-            return f  # type: ignore
+            if f not in ["Up", "Down", "Unknown"]:
+                raise ValueError(f"Cover position {f} is not understood.")
+            return cast(Literal["Up", "Down", "Unknown"], f)
 
     @_ensure_connection(AccessLevel.Controller)
-    def cover_lower(self) -> None:
+    def cover_lower(self, check: bool = True) -> None:
         """Lower/engage the plate cover, closing the drawer if needed."""
-        self.drawer_close(lower_cover=False)
+        if self.drawer_position in ("Closed", "Unknown"):
+            self.drawer_close(lower_cover=False)
         self.run_command("COVerDOWN")
+        if (covpos := self.cover_position) != "Down":
+            log.error(f"Cover position should be Down, but is {covpos}.")
+            if check:
+                raise ValueError(f"Cover position should be Down, but is {covpos}.")
 
     def __exit__(self, exc_type: type, exc: Exception, tb: Any) -> None:
         self.disconnect()
