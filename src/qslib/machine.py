@@ -537,7 +537,7 @@ class Machine:
             if check:
                 raise ValueError(f"Drawer position is {drawerpos}")
         if lower_cover:
-            self.cover_lower(check=check)
+            self.cover_lower(check=check, ensure_drawer=False)
 
     @property
     def status(self) -> RunStatus:
@@ -565,10 +565,10 @@ class Machine:
             return cast(Literal["Up", "Down", "Unknown"], f)
 
     @_ensure_connection(AccessLevel.Controller)
-    def cover_lower(self, check: bool = True) -> None:
+    def cover_lower(self, check: bool = True, ensure_drawer: bool = True) -> None:
         """Lower/engage the plate cover, closing the drawer if needed."""
-        if self.drawer_position in ("Closed", "Unknown"):
-            self.drawer_close(lower_cover=False)
+        if ensure_drawer and (self.drawer_position in ("Open", "Unknown")):
+            self.drawer_close(lower_cover=False, check=check)
         self.run_command("COVerDOWN")
         if (covpos := self.cover_position) != "Down":
             log.error(f"Cover position should be Down, but is {covpos}.")
