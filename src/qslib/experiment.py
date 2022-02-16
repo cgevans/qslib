@@ -492,6 +492,7 @@ table, th, td {{
         self,
         machine: MachineReference | None = None,
         require_exclusive: bool = False,
+        require_drawer_check: bool = True,
     ) -> None:
         """Load the run onto a machine, and start it.
 
@@ -523,7 +524,8 @@ table, th, td {{
                 log.debug("Powering on machine and ensuring drawer/cover is closed.")
                 # Ensure machine state and power.
                 machine.power = True
-                machine.drawer_close(lower_cover=True)
+
+                machine.drawer_close(lower_cover=True, check=require_drawer_check)
 
                 # Check existence of previous run folder
                 if self.runtitle_safe + "/" in machine.run_command("EXP:LIST?"):

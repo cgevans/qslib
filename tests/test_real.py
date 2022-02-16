@@ -39,7 +39,7 @@ async def test_real_experiment():
 
     m = Machine("localhost", port=7000, max_access_level="Controller")
 
-    exp.run("localhost")
+    exp.run("localhost", require_drawer_check=False)
 
     with pytest.raises(
         MachineBusyError, match=r"Machine localhost:7000 is currently busy: .*"
