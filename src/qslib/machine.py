@@ -555,14 +555,16 @@ class Machine:
             return cast(Literal["Open", "Closed", "Unknown"], d)
 
     @property
-    def cover_position(self) -> Literal["Up", "Down", "Unknown"]:
+    def cover_position(self) -> Literal["Up", "Down", "Unknown", ""]:
         """Return the cover position from the ENG? command. Note that
         this does not always seem to work."""
         with self.ensured_connection(AccessLevel.Observer):
             f = self.run_command("ENG?")
-            if f not in ["Up", "Down", "Unknown"]:
+            if f not in ["Up", "Down", "Unknown", ""]:
                 raise ValueError(f"Cover position {f} is not understood.")
-            return cast(Literal["Up", "Down", "Unknown"], f)
+            if f == "":
+                log.error("Cover position is blank. This should not happen.")
+            return cast(Literal["Up", "Down", "Unknown", ""], f)
 
     @_ensure_connection(AccessLevel.Controller)
     def cover_lower(self, check: bool = True, ensure_drawer: bool = True) -> None:
