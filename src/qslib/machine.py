@@ -537,7 +537,7 @@ class Machine:
             if check:
                 raise ValueError(f"Drawer position is {drawerpos}")
         if lower_cover:
-            self.cover_lower()
+            self.cover_lower(check=check)
 
     @property
     def status(self) -> RunStatus:
