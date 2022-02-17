@@ -508,7 +508,7 @@ class Collector:
         elif action == "Ramping":
             # TODO: check zones
             state.machine.zone_targets = [
-                float(x) for x in str(msg.opts["targets"]).split(",")
+                float(x) for x in cast(list[float], msg.opts["targets"][0])  # type: ignore
             ]
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
@@ -621,8 +621,9 @@ class Collector:
             recs = []
             for i, (s, b, t) in enumerate(
                 zip(
-                    [float(x) for x in cast(str, args["sample"]).split(",")],
-                    [float(x) for x in cast(str, args["block"]).split(",")],
+                    # FIXME: parsing weirdness: these are single-element tuples
+                    [float(x) for x in cast(list[float], args["sample"][0])],  # type: ignore
+                    [float(x) for x in cast(list[float], args["block"][0])],  # type: ignore
                     state.machine.zone_targets,
                 )
             ):
