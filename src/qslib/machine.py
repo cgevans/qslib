@@ -550,8 +550,8 @@ class Machine:
         """Return the drawer position from the DRAW? command."""
         with self.ensured_connection(AccessLevel.Observer):
             d = self.run_command("DRAW?")
-            if d not in ["Up", "Down", "Unknown"]:
-                raise ValueError(f"Cover position {d} is not understood.")
+            if d not in ["Open", "Closed", "Unknown"]:
+                raise ValueError(f"Drawer position {d} is not understood.")
             return cast(Literal["Open", "Closed", "Unknown"], d)
 
     @property

@@ -6,6 +6,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.6.3
+ - Fixes drawer check bug.
+
 ## Version 0.6.2
  - Add checks for cover and drawer position after changing positions.
 
