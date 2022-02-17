@@ -6,6 +6,9 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.6.4
+ - Fixes bug that prevented loading of some aborted runs.
+
 ## Version 0.6.3
  - Fixes drawer check bug.
 

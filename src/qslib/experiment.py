@@ -1332,7 +1332,7 @@ table, th, td {{
         self.runstate = "INIT"
 
         m: Optional[re.Match[str]]
-        stages = []
+        stages: list[dict[str, int | str | datetime]] = []
 
         for m in ms:
             ts = datetime.fromtimestamp(float(m["ts"]))
@@ -1347,28 +1347,28 @@ table, th, td {{
                 elif m["ext"] == "POSTRun":
                     self.activeendtime = ts
                 try:
-                    stages.append([int(m["msg"]), ts])
+                    stages.append({"stage": int(m["ext"]), "start_time": ts})
                 except ValueError:
-                    stages.append([m["ext"], ts])
+                    stages.append({"stage": m["ext"], "start_time": ts})
                 if len(stages) > 1:
-                    stages[-2].append(ts)
+                    stages[-2]["end_time"] = ts
             elif m["msg"] == "Ended":
                 self.runendtime = ts
                 self.runstate = "COMPLETE"
                 if len(stages) > 1:
-                    stages[-1].append(ts)
+                    stages[-1].setdefault("end_time", ts)
             elif m["msg"] == "Aborted":
                 self.runstate = "ABORTED"
                 self.activeendtime = ts
                 self.runendtime = ts
                 if len(stages) > 1:
-                    stages[-1].append(ts)
+                    stages[-1].setdefault("end_time", ts)
             elif m["msg"] == "Stopped":
                 self.runstate = "STOPPED"
                 self.activeendtime = ts
                 self.runendtime = ts
                 if len(stages) > 1:
-                    stages[-1].append(ts)
+                    stages[-1].setdefault("end_time", ts)
 
         self.stages = pd.DataFrame(stages, columns=["stage", "start_time", "end_time"])
 
