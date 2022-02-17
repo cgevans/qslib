@@ -8,7 +8,16 @@
 name: Python tests
 
 on:
-  [push, pull_request]
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - CHANGELOG.md
+      - README.md
+      - AUTHORS.md
+  pull_request:
+    branches:
+      - main
 
 jobs:
   black:
