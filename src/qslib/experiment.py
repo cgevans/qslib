@@ -294,8 +294,22 @@ class Experiment:
 
     @property
     def all_filters(self) -> Collection[FilterSet]:
-        """All filters used at some point in the experiment's protocol."""
+        """All filters used at some point in the experiment.
+
+        If the experiment has data, this is based on the existing data.  Otherwise, it is based
+        on the experiment protocol.
+        """
+        if self._welldata is not None:
+            return [
+                FilterSet.fromstring(f)
+                for f in self.welldata.index.get_level_values(0).unique()
+            ]
         return self.protocol.all_filters
+
+    @property
+    def filter_strings(self) -> list[str]:
+        """All filters, as x?-m? strings, used at some point in the experiment."""
+        return [str(f) for f in self.all_filters]
 
     @property
     def welldata(self) -> pd.DataFrame:

@@ -8,6 +8,8 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 ## Version 0.6.4
  - Fixes bug that prevented loading of some aborted runs.
+ - Fixes monitor's recording of temperatures.
+ - Experiment.all_filters uses data if it exists; Experiment.filter_strings as a convenience function alternative.
 
 ## Version 0.6.3
  - Fixes drawer check bug.
