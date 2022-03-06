@@ -90,9 +90,15 @@ jobs:
         python -m pip install --upgrade pip setuptools_scm[toml] wheel setuptools
         python -m pip install -U flake8 mypy pytest pytest-cov pytest-asyncio hypothesis
         python -m pip install -U .[monitor] --no-build-isolation
+    - name: Setup environment
+      run: |
+        start_realtest_environment
     - name: Test with tox/pytest
       run: |
         python -m pytest -k 'test_real' --cov --cov-report=xml
+    - name: Stop environment
+      run: |
+        stop_realtest_environment
     - name: "Upload coverage to Codecov"
       uses: codecov/codecov-action@v1
       with:

@@ -3,12 +3,12 @@
 
 from dataclasses import astuple
 
-import pytest  # noqa
 import hypothesis.strategies as st
+import pytest  # noqa
 from hypothesis import given
 
-from qslib.qsconnection_async import FilterDataFilename
 from qslib._util import _pp_seqsliceint
+from qslib.qsconnection_async import FilterDataFilename
 
 
 @given(

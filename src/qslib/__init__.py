@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 
-from .version import __version__
 from . import protocol
 from .experiment import Experiment, PlateSetup
 from .machine import Machine, MachineStatus, RunStatus
-from .normalization import NormRaw, NormToMeanPerWell, NormToMaxPerWell
+from .normalization import NormRaw, NormToMaxPerWell, NormToMeanPerWell
 from .protocol import CustomStep, Protocol, Stage, Step
 from .scpi_commands import AccessLevel
+from .version import __version__
 
 __all__ = (
     "AccessLevel",

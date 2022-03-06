@@ -6,11 +6,11 @@ from os import PathLike
 
 import numpy as np
 import pytest
-from qslib.scpi_commands import SCPICommand  # noqa
 
 import qslib.protocol as tc
 from qslib import Experiment
-from qslib.protocol import Exposure, Protocol, Stage, Step, FilterSet, UR
+from qslib.protocol import UR, Exposure, FilterSet, Protocol, Stage, Step
+from qslib.scpi_commands import SCPICommand  # noqa
 
 PROTSTRING = """PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
 \tSTAGE 1 STAGE_1 <multiline.stage>

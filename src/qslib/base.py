@@ -9,7 +9,7 @@ import shlex
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Callable, ClassVar, Dict, Tuple, Type, TypeVar, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Tuple, Type, TypeVar
 
 T = TypeVar("T", bound="BaseStatus")
 

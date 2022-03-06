@@ -20,6 +20,7 @@ from glob import glob
 from pathlib import Path
 from typing import (
     IO,
+    TYPE_CHECKING,
     Any,
     Callable,
     Collection,
@@ -31,7 +32,6 @@ from typing import (
     Tuple,
     Union,
     cast,
-    TYPE_CHECKING,
 )
 from warnings import warn
 
@@ -43,15 +43,15 @@ from pandas.core.base import DataError
 from qslib.plate_setup import PlateSetup
 from qslib.scpi_commands import AccessLevel, SCPICommand
 
-from .version import __version__
+from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
+from ._util import _nowuuid, _pp_seqsliceint, _set_or_create
 from .base import RunStatus
 from .data import FilterDataReading, FilterSet, df_from_readings
 from .machine import Machine
 from .normalization import Normalizer, NormRaw
-from .rawquant_compat import _fdc_to_rawdata
 from .protocol import Protocol, Stage, Step
-from ._util import _set_or_create, _nowuuid, _pp_seqsliceint
-from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
+from .rawquant_compat import _fdc_to_rawdata
+from .version import __version__
 
 if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt
@@ -702,6 +702,48 @@ table, th, td {{
 
             # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
             self._update_from_files()
+
+    def change_protocol_from_now(
+        self, new_stages: Sequence[Stage], machine: MachineReference | None = None
+    ) -> None:
+        """
+        For a running experiment, change the remaining stages to be the provided :param:`new_stages` list.
+        This is a convenience function that:
+
+        1. Gets the currently-running stage and cycle.
+        2. Sets the repeat number of the current stage to its current cycle, thus ending it after the end of
+           the current cycle.
+        3. Changes the remainder of the stages to be those in the :param:`new_stages` list.
+
+        Because this does not impact any current or past stages, there is less of a need to ensure that the
+        stages provided are compatible with the old protocol.  The only check done is to ensure that, if
+        the provided stages have any collection commands using default filters, the old protocol has specified
+        default filters.  This function does not allow the default filters to be changed: if you want to use
+        filters other than the defaults, or defaults were not provided in the old protocol, then either specify
+        filters explicitly (recommended) for new stages you'd like to be different, or use
+        :any:`Experiment.change_protocol` directly.
+        """
+        machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
+        with machine.ensured_connection(AccessLevel.Controller):
+            self._ensure_running(machine)
+
+            proto = machine.get_running_protocol()
+
+            runstatus = machine.run_status()
+
+            proto.stages[-1].repeat = runstatus.cycle
+            proto.stages += new_stages
+
+            machine.define_protocol(proto)
+            self.protocol = proto
+
+            self._update_tcprotocol_xml()
+
+            # Push new tcprotocol.xml
+            machine.write_file(
+                "${LogFolder}/tcprotocol.xml",
+                open(self._sdspath("tcprotocol.xml"), "rb").read(),
+            )
 
     def change_protocol(
         self,

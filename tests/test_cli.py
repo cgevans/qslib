@@ -3,8 +3,9 @@
 
 import pytest
 from click.testing import CliRunner
-from qslib.cli import cli
+
 from qslib import Experiment, Machine
+from qslib.cli import cli
 
 
 @pytest.fixture(scope="module")

@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 from pathlib import Path
-import numpy as np
 
+import numpy as np
 import pytest
 
 from qslib import Experiment

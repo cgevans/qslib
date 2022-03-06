@@ -6,18 +6,20 @@ from __future__ import annotations
 
 import logging
 import math
-from os import popen
 import textwrap
+import warnings
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from copy import deepcopy
 from dataclasses import dataclass, field
 from itertools import zip_longest
 from typing import (
+    TYPE_CHECKING,
     Any,
     Callable,
     ClassVar,
     Collection,
+    Generic,
     Iterable,
     List,
     Optional,
@@ -27,7 +29,7 @@ from typing import (
     TypeVar,
     Union,
     cast,
-    TYPE_CHECKING,
+    overload,
 )
 
 import attr
@@ -38,12 +40,10 @@ import pint
 from qslib import scpi_commands
 from qslib.data import FilterSet
 
-from .version import __version__
+from ._util import *
 from .base import RunStatus
 from .scpi_commands import SCPICommand, SCPICommandLike
-from ._util import *
-import warnings
-
+from .version import __version__
 
 if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt
@@ -183,10 +183,10 @@ T = TypeVar("T")
 
 class ProtoCommand(ABC):
     @abstractmethod
-    def to_scpicommand(self, **kwargs) -> SCPICommand:  # pragma: no cover
+    def to_scpicommand(self, **kwargs: Any) -> SCPICommand:  # pragma: no cover
         ...
 
-    def __init__(self, *args, **kwargs) -> None:  # pragma: no cover
+    def __init__(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover
         ...
 
     @classmethod
@@ -218,7 +218,7 @@ class Ramp(ProtoCommand):
     )
     _names: ClassVar[Sequence[str]] = ("RAMP",)
 
-    def to_scpicommand(self, **kwargs) -> SCPICommand:
+    def to_scpicommand(self, **kwargs: None) -> SCPICommand:
         opts = {}
 
         if self.increment != _ZEROTEMPDELTA:
@@ -250,7 +250,7 @@ class Exposure(ProtoCommand):
     state: str = "HoldAndCollect"
     _names: ClassVar[Sequence[str]] = ("EXP", "EXPOSURE")
 
-    def to_scpicommand(self, **kwargs) -> SCPICommand:
+    def to_scpicommand(self, **kwargs: None) -> SCPICommand:
         settingstrings = [
             k.hacform + "," + ",".join(str(x) for x in v) for k, v in self.settings
         ]
@@ -285,7 +285,11 @@ class HACFILT(ProtoCommand):
     _default_filters: Sequence[FilterSet] = attr.field(factory=lambda: [])
     _names: ClassVar[Sequence[str]] = ("HoldAndCollectFILTer", "HACFILT")
 
-    def to_scpicommand(self, default_filters=None, **kwargs) -> SCPICommand:
+    def to_scpicommand(
+        self, default_filters: Sequence[FilterSet] | None = None, **kwargs: None
+    ) -> SCPICommand:
+        if default_filters is None:
+            default_filters = []
         if not default_filters and not self.filters:
             raise ValueError("Protocol must have default filters set.")
         if not self.filters:
@@ -320,7 +324,7 @@ class HoldAndCollect(ProtoCommand):
     pcr: bool = False
     _names: ClassVar[Sequence[str]] = ("HoldAndCollect",)
 
-    def to_scpicommand(self, **kwargs) -> SCPICommand:
+    def to_scpicommand(self, **kwargs: None) -> SCPICommand:
         opts = {}
         if self.increment != HoldAndCollect.increment:
             opts["increment"] = self.increment.to("seconds").magnitude
@@ -353,7 +357,7 @@ class Hold(ProtoCommand):
     incrementstep: int = 1
     _names: ClassVar[Sequence[str]] = ("HOLD",)
 
-    def to_scpicommand(self, **kwargs) -> SCPICommand:
+    def to_scpicommand(self, **kwargs: None) -> SCPICommand:
         opts = {}
         if self.increment != Hold.increment:
             opts["increment"] = self.increment.to("seconds").magnitude
@@ -379,10 +383,62 @@ class XMLable(ABC):
         ...
 
 
+G = TypeVar("G")
+
+
+class _NumOrRefIndexer(Generic[G]):
+    _list: list[G]
+
+    def __init__(self, val_list: list[G]):
+        self._list = val_list
+
+    @overload
+    def _translate_key(self, key: int | str) -> int:
+        ...
+
+    @overload
+    def _translate_key(self, key: slice) -> slice:
+        ...
+
+    def _translate_key(self, key: int | str | slice) -> int | slice:
+        if isinstance(key, int):
+            return key - 1
+        elif isinstance(key, str):
+            raise NotImplemented
+        elif isinstance(key, slice):
+            return slice(key.start - 1, key.stop, key.step)
+
+    def __getitem__(self, key: int | str | slice) -> G | list[G]:
+        return self._list[self._translate_key(key)]
+
+    @overload
+    def __setitem__(self, key: int | str, val: G) -> None:
+        ...
+
+    @overload
+    def __setitem__(self, key: slice, val: Sequence[G]) -> None:
+        ...
+
+    def __setitem__(self, key, val):
+        self._list.__setitem__(self._translate_key(key), val)
+
+    def __delitem__(self, key: int | str | slice) -> None:
+        del self._list[self._translate_key(key)]
+
+    def __call__(self, key: int | str | slice) -> G | list[G]:
+        return self[key]
+
+    def append(self, val: G) -> None:
+        return self._list.append(val)
+
+    def __iadd__(self, val: Iterable[G]) -> None:
+        self._list += val
+
+
 class CustomStep(ProtoCommand):
     """A protocol step composed of SCPI/protocol commands."""
 
-    _body: Sequence[ProtoCommand]
+    _body: list[ProtoCommand]
     _identifier: int | str | None = None
     _repeat: int = 1
     _names: ClassVar[Sequence[str]] = ["STEP"]
@@ -393,7 +449,7 @@ class CustomStep(ProtoCommand):
         identifier: int | str | None = None,
         repeat: int = 1,
     ):
-        self._body = body
+        self._body = list(body)
         self._identifier = identifier
         self._repeat = repeat
 
@@ -419,19 +475,19 @@ class CustomStep(ProtoCommand):
         return 0 * UR.seconds
 
     @property
-    def body(self) -> Sequence[ProtoCommand]:
+    def body(self) -> list[ProtoCommand]:
         return self._body
 
     @body.setter
-    def body(self, v: Sequence[ProtoCommand]):
-        self._body = v
+    def body(self, v: Sequence[ProtoCommand]) -> None:
+        self._body = list(v)
 
     @property
     def repeat(self) -> int:
         return self._repeat
 
     @repeat.setter
-    def repeat(self, v: int):
+    def repeat(self, v: int) -> None:
         self._repeat = v
 
     @property
@@ -439,14 +495,14 @@ class CustomStep(ProtoCommand):
         return self._identifier
 
     @identifier.setter
-    def identifier(self, v: int | str | None):
+    def identifier(self, v: int | str | None) -> None:
         self._identifier = v
 
     @property
     def collects(self) -> bool:
         return False
 
-    def to_scpicommand(self, *, stepindex: int = -1, **kwargs) -> SCPICommand:
+    def to_scpicommand(self, *, stepindex: int = -1, **kwargs: Any) -> SCPICommand:
         opts = {}
         args: list[int | str | None | Sequence[SCPICommand]] = []
         if self.repeat != 1:
@@ -542,10 +598,11 @@ class Step(CustomStep, XMLable):
     pcr: bool = False
     quant: bool = True
     tiff: bool = False
+    repeat: int = 1
     _default_filters: Sequence[FilterSet] = attr.field(default=tuple())
     _classname: ClassVar[str] = "Step"
 
-    def __eq__(self, other: object):
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, Step):
             return False
         if self.__class__ != other.__class__:
@@ -639,19 +696,11 @@ class Step(CustomStep, XMLable):
         return self.temperature_list + inccycles * self.temp_increment
 
     @property
-    def repeat(self) -> int:
-        return 1
-
-    @repeat.setter
-    def repeat(self, v: int):
-        raise ValueError
-
-    @property
     def identifier(self) -> None:
         return None
 
     @identifier.setter
-    def identifier(self, v: Any):
+    def identifier(self, v: Any) -> None:
         raise ValueError
 
     @property
@@ -693,11 +742,13 @@ class Step(CustomStep, XMLable):
             ]
 
     @body.setter
-    def body(self, v: Any):
+    def body(self, v: Any) -> None:
         raise ValueError
 
     @classmethod
-    def from_xml(cls, e: ET.Element, *, etc=1, ehtc=1, he=False) -> Step:
+    def from_xml(
+        cls, e: ET.Element, *, etc: int = 1, ehtc: int = 1, he: bool = False
+    ) -> Step:
         collect = bool(int(e.findtext("CollectionFlag") or 0))
         ts: pint.Quantity[np.ndarray] = UR.Quantity(
             [float(x.text or math.nan) for x in e.findall("Temperature")], "degC"
@@ -734,7 +785,7 @@ class Step(CustomStep, XMLable):
         return e
 
     @classmethod
-    def from_scpicommand(cls, sc: SCPICommand):
+    def from_scpicommand(cls, sc: SCPICommand) -> Step:
         coms = [x.specialize() for x in cast(Sequence[SCPICommand], sc.args[1])]
 
         # FIXME: When willing to require Python 3.10, this can be cleaned up with a match statement.
@@ -808,7 +859,11 @@ class Stage(XMLable, ProtoCommand):
     _classname: ClassVar[str] = "Stage"
     _names: ClassVar[Sequence[str]] = ("STAGe",)
 
-    def __eq__(self, other: object):
+    @property
+    def step(self) -> _NumOrRefIndexer[CustomStep]:
+        return _NumOrRefIndexer(list(self.steps))
+
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, Stage):
             return False
         if self.__class__ != other.__class__:
@@ -838,7 +893,7 @@ class Stage(XMLable, ProtoCommand):
         temperature_step: float | str | pint.Quantity[float] | None = None,
         collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
-    ):
+    ) -> Stage:
         """Hold at a series of temperatures, from one to another.
 
         Parameters
@@ -962,7 +1017,7 @@ class Stage(XMLable, ProtoCommand):
         step_time: int | str | pint.Quantity[int] | None = None,
         collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
-    ):
+    ) -> Stage:
         """Hold at a temperature for a set amount of time, with steps of a configurable fixed time.
 
 
@@ -1137,13 +1192,21 @@ class Stage(XMLable, ProtoCommand):
 
         return data
 
-    def to_scpicommand(self, stageindex=None, **kwargs) -> SCPICommand:
+    def to_scpicommand(
+        self, stageindex: int | str | None = None, **kwargs: Any
+    ) -> SCPICommand:
         opts = {}
-        args = []
+        args: list[int | str | list[SCPICommand]] = []
         if self.repeat != 1:
             opts["repeat"] = self.repeat
-        args.append(self.index or stageindex)
-        args.append(self.label or f"STAGE_{self.index or stageindex}")
+        if self.index:
+            index_to_use: int | str = self.index
+        elif stageindex:
+            index_to_use = stageindex
+        else:
+            raise ValueError("No index.")
+        args.append(index_to_use)
+        args.append(self.label or f"STAGE_{index_to_use}")
         args.append(
             [
                 step.to_scpicommand(stepindex=i + 1, **kwargs)
@@ -1154,7 +1217,7 @@ class Stage(XMLable, ProtoCommand):
         return SCPICommand("STAGe", *args, comment=None, **opts)
 
     @classmethod
-    def from_scpicommand(cls, sc: SCPICommand, **kwargs) -> Stage:
+    def from_scpicommand(cls, sc: SCPICommand, **kwargs: Any) -> Stage:
         c = cls(
             [
                 cast(CustomStep, x.specialize(**kwargs))
@@ -1209,7 +1272,7 @@ class Stage(XMLable, ProtoCommand):
 
         return e
 
-    def info_str(self, index) -> str:
+    def info_str(self, index: int | None = None) -> str:
         if self.repeat > 1:
             adds = "s"
         else:
@@ -1296,7 +1359,7 @@ class Protocol(ProtoCommand):
         that don't specify their own.
     """
 
-    stages: Iterable[Stage]
+    stages: list[Stage] = attr.field(factory=list)
     name: str = attr.field(factory=lambda: "Prot_" + _nowuuid())
     volume: float = 50.0
     runmode: str = "standard"  # standard or fast... need to deal with this
@@ -1308,6 +1371,10 @@ class Protocol(ProtoCommand):
     covertemperature: float = 105.0
     _classname: str = "Protocol"
     _names: ClassVar[Sequence[str]] = ("PROTocol", "PROT")
+
+    @property
+    def stage(self) -> _NumOrRefIndexer[Stage]:
+        return _NumOrRefIndexer(self.stages)
 
     def to_scpicommand(self, **kwargs: Any) -> SCPICommand:
         assert not kwargs
@@ -1481,7 +1548,9 @@ class Protocol(ProtoCommand):
         stages = [Stage.from_xml(x) for x in e.findall("TCStage")]
         return Protocol(stages, protoname, svol, runmode, filters, covertemperature)
 
-    def to_xml(self, covertemperature=105.0) -> tuple[ET.ElementTree, ET.ElementTree]:
+    def to_xml(
+        self, covertemperature: float = 105.0
+    ) -> tuple[ET.ElementTree, ET.ElementTree]:
         te = ET.ElementTree(ET.Element("TCProtocol"))
         tqe = ET.ElementTree(ET.Element("QSTCProtocol"))
 
