@@ -12,8 +12,8 @@ from typing import List
 import toml
 from dacite.core import from_dict
 
-from .version import __version__
 from .monitor import Collector, Config
+from .version import __version__
 
 __author__ = "Constantine Evans"
 __copyright__ = "Constantine Evans"

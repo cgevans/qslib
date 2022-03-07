@@ -13,16 +13,16 @@ from asyncio.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
-from typing import IO, Any, Generator, Literal, overload, TYPE_CHECKING, cast
+from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload
 
 import nest_asyncio
 
 from qslib.qs_is_protocol import CommandError
 from qslib.scpi_commands import AccessLevel, SCPICommand
 
-from .qsconnection_async import QSConnectionAsync
-from .protocol import Protocol
 from ._util import _unwrap_tags
+from .protocol import Protocol
+from .qsconnection_async import QSConnectionAsync
 
 nest_asyncio.apply()
 
@@ -31,8 +31,9 @@ from .base import MachineStatus, RunStatus
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .experiment import Experiment
     import matplotlib.pyplot as plt
+
+    from .experiment import Experiment
 
 
 def _ensure_connection(level: AccessLevel = AccessLevel.Observer):

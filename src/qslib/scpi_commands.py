@@ -5,18 +5,19 @@
 """SCPI Command class and parsing"""
 
 from __future__ import annotations
-from abc import ABC, abstractmethod
-import re
 
+import re
 import shlex
 import textwrap
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Literal, Sequence, Type, TypeVar, cast
 
 import numpy as np
 import pyparsing as pp
-from pyparsing import ParserElement, pyparsing_common as ppc
+from pyparsing import ParserElement
+from pyparsing import pyparsing_common as ppc
 
 pp.ParserElement.setDefaultWhitespaceChars("")
 

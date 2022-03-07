@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 
 from qslib import *
-from qslib.experiment import MachineBusyError, AlreadyExistsError
+from qslib.experiment import AlreadyExistsError, MachineBusyError
 
 
 @pytest.mark.asyncio
