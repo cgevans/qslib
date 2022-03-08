@@ -160,6 +160,10 @@ def test_proto() -> None:
     assert prot_explicitfilter.to_scpicommand() == prot_fromstring.to_scpicommand()
 
 
+def test_refaccess():
+    exp = []
+
+
 def test_exp_saveload_proto(tmp_path: pathlib.Path):
     temperatures = list(np.linspace(51.2, 49.4, num=6))
     prot = Protocol(

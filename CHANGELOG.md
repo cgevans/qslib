@@ -6,10 +6,16 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
-## Version 0.6.4
+## Version 0.7.0
  - Fixes bug that prevented loading of some aborted runs.
  - Fixes monitor's recording of temperatures.
  - Experiment.all_filters uses data if it exists; Experiment.filter_strings as a convenience function alternative.
+ - Protocol now has `Protocol.stage`, and Stage now has `Stage.step`, to provide convenient, 1-indexed access,
+   such that `protocol.stage[5]` of is stage 5 of `protocol`, not stage 6.
+ - `Experiment.change_protocol_from_now` allows convenient changes to a currently-running experiment.
+ - Some initial implementation changes to allow repeated steps (not stages).
+ - `Normalization` changed to general `Processor`.  Plotting functions can take sequences of processors to
+   process data, which now supports both normalization and smoothing.
 
 ## Version 0.6.3
  - Fixes drawer check bug.

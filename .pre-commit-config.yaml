@@ -18,3 +18,8 @@ repos:
     -   id: black
         language_version: python3.10
         args: ["--target-version", "py310"]
+-   repo: https://github.com/pycqa/isort
+    rev: 5.10.1
+    hooks:
+      - id: isort
+        name: isort (python)

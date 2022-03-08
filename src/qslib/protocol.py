@@ -1346,6 +1346,9 @@ class Protocol(ProtoCommand):
     ----------
     stages: Iterable[Stage]
         The stages of the protocol, likely :class:`Stage`.
+    stage: _NumOrRefIndexer[Stage]
+        A more convenient way of accessing the stages of the protocol, with
+        numbering that matches the machine.
     name: str | None
         A protocol name. If not set, a timestamp will be used, unlike AB's uuid.
     volume: float
@@ -1374,6 +1377,13 @@ class Protocol(ProtoCommand):
 
     @property
     def stage(self) -> _NumOrRefIndexer[Stage]:
+        """
+        A more convenient view of :any:`Protocol.stages`.  This allows one-indexed access,
+        such that `protocol.stage[5] == protocol.stages[6]` is stage 5 of the protocol, in
+        the interpretation of tha machine.  Indexing can use slices, and is *inclusive*, so
+        `protocol.stage[5:6]` returns stages 5 and 6.  Getting, setting, and appending
+        stages are all supported through this interface.
+        """
         return _NumOrRefIndexer(self.stages)
 
     def to_scpicommand(self, **kwargs: Any) -> SCPICommand:

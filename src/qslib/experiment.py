@@ -48,7 +48,7 @@ from ._util import _nowuuid, _pp_seqsliceint, _set_or_create
 from .base import RunStatus
 from .data import FilterDataReading, FilterSet, df_from_readings
 from .machine import Machine
-from .processors import Processor, NormRaw
+from .processors import NormRaw, Processor
 from .protocol import Protocol, Stage, Step
 from .rawquant_compat import _fdc_to_rawdata
 from .version import __version__
@@ -888,7 +888,8 @@ table, th, td {{
 
     @sample_wells.setter
     def sample_wells(self, new_sample_wells: dict[str, list[str]]) -> None:
-        self.plate_setup.sample_wells = new_sample_wells
+        raise NotImplementedError
+        # self.plate_setup.sample_wells = new_sample_wells
 
     def __init__(
         self,
@@ -1953,7 +1954,14 @@ table, th, td {{
                 for well in wells:
                     color = next(ax[0]._get_lines.prop_cycler)["color"]
 
-                    label = _gen_label(sample, well, filter, samples, wells, filters)
+                    label = _gen_label(
+                        self.plate_setup.get_descriptive_string(sample),
+                        well,
+                        filter,
+                        samples,
+                        wells,
+                        filters,
+                    )
 
                     lines.append(
                         ax[0].plot(
@@ -2189,7 +2197,7 @@ def _gen_label(
 ) -> str:
     label = ""
     if len(samples) > 1:
-        label = str(sample)
+        label = sample
     if len(wells) > 1:
         if len(label) > 0:
             label += f" ({well})"
