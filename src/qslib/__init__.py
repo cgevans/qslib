@@ -5,7 +5,7 @@
 from . import protocol
 from .experiment import Experiment, PlateSetup
 from .machine import Machine, MachineStatus, RunStatus
-from .normalization import NormRaw, NormToMaxPerWell, NormToMeanPerWell
+from .processors import NormRaw, NormToMaxPerWell, NormToMeanPerWell, SmoothEMWMean
 from .protocol import CustomStep, Protocol, Stage, Step
 from .scpi_commands import AccessLevel
 from .version import __version__
@@ -24,5 +24,6 @@ __all__ = (
     "NormToMeanPerWell",
     "NormToMaxPerWell",
     "NormRaw",
+    "SmoothEMWMean",
     "CustomStep",
 )

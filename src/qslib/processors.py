@@ -6,16 +6,18 @@ from __future__ import annotations
 
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Any, ClassVar, Literal, Sequence
+import attr
 
 import pandas as pd
 
 ScopeType = Literal["all", "limited"]
 
 
-class Normalizer(metaclass=ABCMeta):
+class Processor(metaclass=ABCMeta):
     @abstractmethod
-    def normalize_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
+    def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         """
         Filter the data, and return it (possibly not a copy), *if scope is the
         minimum necessary scope for this normalization type*.  Otherwise, just
@@ -27,7 +29,7 @@ class Normalizer(metaclass=ABCMeta):
         ...
 
     @abstractmethod
-    def normalize(self, data: pd.DataFrame) -> pd.DataFrame:
+    def process(self, data: pd.DataFrame) -> pd.DataFrame:
         ...
 
     @property
@@ -36,23 +38,95 @@ class Normalizer(metaclass=ABCMeta):
         ...
 
 
-class NormRaw(Normalizer):
+class NormRaw(Processor):
     """
     A Normalizer that takes no arguments, and simply passes through raw
     fluorescence values.
     """
 
-    def normalize_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
+    def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         return data
 
-    def normalize(self, data: pd.DataFrame) -> pd.DataFrame:
+    def process(self, data: pd.DataFrame) -> pd.DataFrame:
         return data
 
     ylabel = "fluorescence"
 
 
+@attr.define()
+class SmoothRollingMean(Processor):
+    """
+    A Processor that smooths fluorescence readings using Pandas' Rolling,
+    and mean.
+    """
+
+    window: int
+    min_periods: int | None = None
+    center: bool = False
+    win_type: str | None = None
+    closed: str | None = None
+    scope: ClassVar[ScopeType] = "limited"
+    ylabel = "smoothed fluorescence"
+
+    def __attrs_post_init__(self):
+        pass
+
+    def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
+        if scope == self.scope:
+            return self.process(data)
+        else:
+            return data
+
+    def process(self, data: pd.DataFrame) -> pd.DataFrame:
+        return data.rolling(
+            window=self.window,
+            min_periods=self.min_periods,
+            center=self.center,
+            win_type=self.win_type,
+            closed=self.closed,
+        ).mean()
+
+
+@attr.define()
+class SmoothEMWMean(Processor):
+    """
+    A Processor that smooths fluorescence readings using Pandas' Exponential Moving Window
+    (ewm / exponentially weighted moving-average).
+    """
+
+    com: float | None = None
+    span: float | None = None
+    halflife: float | str | timedelta | None = None
+    alpha: float | None = None
+    min_periods: int = 0
+    adjust: bool = True
+    ignore_na: bool = False
+    scope: ClassVar[ScopeType] = "limited"
+    ylabel = "smoothed fluorescence"
+
+    def __attrs_post_init__(self):
+        pass
+
+    def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
+        if scope == self.scope:
+            return self.process(data)
+        else:
+            return data
+
+    def process(self, data: pd.DataFrame) -> pd.DataFrame:
+        return data.ewm(
+            com=self.com,
+            span=self.span,
+            halflife=self.halflife,
+            alpha=self.alpha,
+            min_periods=self.min_periods,
+            adjust=self.adjust,
+            ignore_na=self.ignore_na,
+        ).mean()
+
+
 @dataclass(init=False)
-class NormToMeanPerWell(Normalizer):
+class NormToMeanPerWell(Processor):
     """
     A Normalizer that divides the fluorescence reading for each (filterset, well) pair
     by the mean value of that pair within a particular selection of data.
@@ -103,13 +177,13 @@ class NormToMeanPerWell(Normalizer):
 
         self.selection = (stage, step, cycle)
 
-    def normalize_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
+    def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         if scope == self.scope:
-            return self.normalize(data)
+            return self.process(data)
         else:
             return data
 
-    def normalize(self, data: pd.DataFrame) -> pd.DataFrame:
+    def process(self, data: pd.DataFrame) -> pd.DataFrame:
         normdata = data.copy()
 
         means = (
@@ -126,7 +200,7 @@ class NormToMeanPerWell(Normalizer):
 
 
 @dataclass
-class NormToMaxPerWell(Normalizer):
+class NormToMaxPerWell(Processor):
     """
     A Normalizer that divides the fluorescence reading for each (filterset, well) pair
     by the max value of that pair within a particular selection of data.
@@ -177,13 +251,13 @@ class NormToMaxPerWell(Normalizer):
 
         self.selection = (stage, step, cycle)
 
-    def normalize_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
+    def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         if scope == self.scope:
-            return self.normalize(data)
+            return self.process(data)
         else:
             return data
 
-    def normalize(self, data: pd.DataFrame) -> pd.DataFrame:
+    def process(self, data: pd.DataFrame) -> pd.DataFrame:
         normdata = data.copy()
 
         means = (
