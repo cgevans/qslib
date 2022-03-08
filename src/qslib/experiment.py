@@ -48,7 +48,7 @@ from ._util import _nowuuid, _pp_seqsliceint, _set_or_create
 from .base import RunStatus
 from .data import FilterDataReading, FilterSet, df_from_readings
 from .machine import Machine
-from .normalization import Normalizer, NormRaw
+from .processors import Processor, NormRaw
 from .protocol import Protocol, Stage, Step
 from .rawquant_compat import _fdc_to_rawdata
 from .version import __version__
@@ -1559,7 +1559,7 @@ table, th, td {{
         anneal_stages: int | Sequence[int] | None = None,
         melt_stages: int | Sequence[int] | None = None,
         between_stages: int | Sequence[int] | None = None,
-        normalization: Normalizer = NormRaw(),
+        normalization: Processor = NormRaw(),
         ax: "plt.Axes" | None = None,
         marker: str | None = None,
         legend: bool | Literal["inset", "right"] = True,
@@ -1677,13 +1677,13 @@ table, th, td {{
                 ).add_subplot(),
             )
 
-        data = normalization.normalize_scoped(self.welldata, "all")
+        data = normalization.process_scoped(self.welldata, "all")
 
         all_wells = self.plate_setup.get_wells(samples)
 
         reduceddata = data.loc[[f.lowerform for f in filters], all_wells]
 
-        reduceddata = normalization.normalize_scoped(reduceddata, "limited")
+        reduceddata = normalization.process_scoped(reduceddata, "limited")
 
         for filter in filters:
             filterdat: pd.DataFrame = reduceddata.loc[filter.lowerform, :]  # type: ignore
@@ -1788,7 +1788,8 @@ table, th, td {{
         samples: str | Sequence[str] | None = None,
         filters: str | FilterSet | Collection[str | FilterSet] | None = None,
         stages: slice | int | Sequence[int] = slice(None),
-        normalization: Normalizer = NormRaw(),
+        process: Sequence[Processor] | Processor | None = None,
+        normalization: Processor | None = None,
         ax: "plt.Axes" | "Sequence[plt.Axes]" | None = None,
         legend: bool | Literal["inset", "right"] = True,
         temperatures: Literal[False, "axes", "inset", "twin"] = "axes",
@@ -1888,6 +1889,15 @@ table, th, td {{
 
         import matplotlib.pyplot as plt
 
+        if process is None:
+            process = [normalization or NormRaw()]
+        elif normalization:
+            raise ValueError
+        if isinstance(process, Processor):
+            process = [process]
+
+        process
+
         if filters is None:
             filters = self.all_filters
 
@@ -1921,13 +1931,17 @@ table, th, td {{
 
         ax = cast(Sequence[plt.Axes], ax)
 
-        data = normalization.normalize_scoped(self.welldata, "all")
+        data = self.welldata
+
+        for processor in process:
+            data = processor.process_scoped(data, "all")
 
         all_wells = self.plate_setup.get_wells(samples) + ["time"]
 
         reduceddata = data.loc[[f.lowerform for f in filters], all_wells]
 
-        reduceddata = normalization.normalize_scoped(reduceddata, "limited")
+        for processor in process:
+            reduceddata = processor.process_scoped(reduceddata, "limited")
 
         lines = []
         for filter in filters:
@@ -1954,7 +1968,10 @@ table, th, td {{
 
         ax[-1].set_xlabel("time (hours)")
 
-        ax[0].set_ylabel(normalization.ylabel)
+        ylabel = "fluorescence"
+        for processor in process:
+            ylabel = processor.ylabel  # FIXME
+        ax[0].set_ylabel(ylabel)
 
         if legend is True:
             if len(lines) < 6:
@@ -2162,7 +2179,14 @@ def _normalize_filters(
     return [FilterSet.fromstring(filter) for filter in filters]
 
 
-def _gen_label(sample, well, filter, samples, wells, filters) -> str:
+def _gen_label(
+    sample: str,
+    well: str,
+    filter: FilterSet,
+    samples: Sequence[str],
+    wells: Sequence[str],
+    filters: Sequence[FilterSet],
+) -> str:
     label = ""
     if len(samples) > 1:
         label = str(sample)
@@ -2180,8 +2204,14 @@ def _gen_label(sample, well, filter, samples, wells, filters) -> str:
     return label
 
 
-def _gen_axtitle(expname, stages, samples, wells, filters) -> str:
-    elems = []
+def _gen_axtitle(
+    expname: str,
+    stages: Sequence[int] | slice | int,
+    samples: Sequence[str],
+    wells: Sequence[str],
+    filters: Sequence[FilterSet],
+) -> str:
+    elems: list[str] = []
     if len(samples) == 1:
         elems += samples
     if len(filters) == 1:
