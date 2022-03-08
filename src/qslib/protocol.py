@@ -645,9 +645,15 @@ class Step(CustomStep, XMLable):
     def info_str(self, index: None | int = None, repeats: int = 1) -> str:
         "String describing the step."
 
-        tempstr = "{:.2f~}".format(self.temperatures_at_cycle(1))  # type: ignore
+        temperatures_cycle1 = self.temperatures_at_cycle(1)
+        temperatures_cycle1 = convert_quantity_ndarray_to_scalar_if_all_equal(
+            temperatures_cycle1
+        )
+        tempstr = "{:.2f~}".format(temperatures_cycle1)  # type: ignore
         if (repeats > 1) and (self.temp_increment != 0.0):
-            t = "{:.2f~}".format(self.temperatures_at_cycle(repeats))  # type: ignore
+            temperatures = self.temperatures_at_cycle(repeats)
+            temperatures = convert_quantity_ndarray_to_scalar_if_all_equal(temperatures)
+            t = "{:.2f~}".format(temperatures)  # type: ignore
             tempstr += f" to {t}"
 
         elems = [f"{tempstr} for {self.time}/cycle"]
@@ -837,6 +843,25 @@ class Step(CustomStep, XMLable):
     @classmethod
     def fromdict(cls, d: dict[str, Any]) -> "Step":
         return cls(**d)
+
+
+def convert_quantity_ndarray_to_scalar_if_all_equal(
+    quants: pint.Quantity,
+) -> pint.Quantity:
+    """
+    If `quants` is a `Quantity[ndarray]`, but all floats in the ndarray are exactly equal,
+    then return a `Quantity[unit]`, where `unit` is the unit of `quants` (e.g., degC).
+
+    :param quants:
+        Quantity[ndarray]
+    :return:
+        `quants` unchanged if the array has more than one value,
+        otherwise a Quantity with the single shared value
+    """
+    if len(set(quants.m)) == 1:
+        temperatures_cycle1_float = quants.m[0]
+        quants = pint.Quantity(temperatures_cycle1_float, quants.u)
+    return quants
 
 
 def _bsl(x: Iterable[CustomStep] | CustomStep) -> Sequence[CustomStep]:
