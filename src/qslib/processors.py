@@ -8,8 +8,8 @@ from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, ClassVar, Literal, Sequence
-import attr
 
+import attrs
 import pandas as pd
 
 ScopeType = Literal["all", "limited"]
@@ -53,7 +53,7 @@ class NormRaw(Processor):
     ylabel = "fluorescence"
 
 
-@attr.define()
+@attrs.define()
 class SmoothRollingMean(Processor):
     """
     A Processor that smooths fluorescence readings using Pandas' Rolling,
@@ -87,7 +87,7 @@ class SmoothRollingMean(Processor):
         ).mean()
 
 
-@attr.define()
+@attrs.define()
 class SmoothEMWMean(Processor):
     """
     A Processor that smooths fluorescence readings using Pandas' Exponential Moving Window

@@ -8,9 +8,21 @@ from __future__ import annotations
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from io import BytesIO
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
 from uuid import uuid1
 
+import attrs
 import numpy as np
 import pandas as pd
 import tabulate
@@ -39,34 +51,114 @@ def _color_to_str_int(x: Tuple[int, int, int, int]) -> str:
     return str(int.from_bytes(bytes(x), "little", signed=True))
 
 
-@dataclass
+def _str_or_list_to_list(v: str | Sequence[str]) -> list[str]:
+    if isinstance(v, str):
+        return [v]
+    return list(v)
+
+
+@attrs.define(init=False)
 class Sample:
     name: str
-    uuid: str = field(default_factory=(lambda: uuid1().hex))
-    color: Tuple[int, int, int, int] = field(default=(255, 0, 0, 255))
+    color: Tuple[int, int, int, int] = attrs.field(default=(255, 0, 0, 255))
+    properties: dict[str, str] = attrs.field(factory=dict)
+    description: str | None = None
+    wells: list[str] = attrs.field(
+        factory=list, converter=_str_or_list_to_list, on_setattr=attrs.setters.convert
+    )
+
+    def __init__(
+        self,
+        name: str,
+        uuid: str | None = None,
+        color: Tuple[int, int, int, int] = (255, 0, 0, 255),
+        properties: dict[str, str] | None = None,
+        description: str | None = None,
+        wells: str | list[str] | None = None,
+    ) -> None:
+        if properties is None:
+            properties = dict()
+        if not "SP_UUID" in properties:
+            if not uuid:
+                uuid = uuid1().hex
+            properties["SP_UUID"] = uuid
+        if wells is None:
+            wells = list()
+        self.__attrs_init__(name, color, properties, description, wells=wells)  # type: ignore
+
+    @property
+    def uuid(self) -> str:
+        return self.properties["SP_UUID"]
+
+    @uuid.setter
+    def uuid(self, val: str) -> None:
+        self.properties["SP_UUID"] = val
 
     @classmethod
-    def from_platesetup_sample(cls, se: ET.Element) -> Sample:  # type: ignore
+    def from_platesetup_sample(cls, se: ET.Element) -> Sample:
+        name = se.findtext("Name") or "Unnamed"
+        color = _process_color_from_str_int(se.findtext("Color") or "-1")
+
+        keys = [
+            x.text for x in se.findall("CustomProperty/Property") if x.text is not None
+        ]
+        values = [
+            x.text for x in se.findall("CustomProperty/Value") if x.text is not None
+        ]
+        properties = {key: value for key, value in zip(keys, values, strict=True)}
+
         return cls(
-            se.findtext("Name") or "Unnamed",
-            se.findtext("CustomProperty/Property[.='SP_UUID']/../Value") or uuid1().hex,
-            _process_color_from_str_int(se.findtext("Color") or "-1"),
+            name=name,
+            color=color,
+            properties=properties,
+            description=se.findtext("Description"),
         )
 
     def to_xml(self) -> ET.Element:
         x = ET.Element("Sample")
         ET.SubElement(x, "Name").text = self.name
         ET.SubElement(x, "Color").text = _color_to_str_int(self.color)
+        if self.description:
+            ET.SubElement(x, "Description").text = self.description
         u = ET.SubElement(x, "CustomProperty")
+        for key in self.properties.keys():
+            ET.SubElement(u, "Property").text = key
         ET.SubElement(u, "Property").text = "SP_UUID"
+        for value in self.properties.values():
+            ET.SubElement(u, "Value").text = value
         ET.SubElement(u, "Value").text = self.uuid
         return x
 
 
+@attrs.define()
+class _SampleWellsView(Mapping[str, list[str]]):
+    samples_by_name: Dict[str, Sample]
+
+    def __getitem__(self, name: str) -> list[str]:
+        return self.samples_by_name[name].wells
+
+    def __setitem__(self, name: str, wells: str | list[str]) -> None:
+        if isinstance(wells, str):
+            wells = [wells]
+        try:
+            self.samples_by_name[name].wells = wells
+        except KeyError:
+            self.samples_by_name[name] = Sample(name=name, wells=wells)
+
+    def __len__(self) -> int:
+        return len(self.samples_by_name)
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.samples_by_name)
+
+
 @dataclass
 class PlateSetup:
-    sample_wells: Dict[str, List[str]]
     samples_by_name: Dict[str, Sample]
+
+    @property
+    def sample_wells(self):
+        return _SampleWellsView(self.samples_by_name)
 
     @classmethod
     def from_platesetup_xml(cls, platexml: ET.Element) -> PlateSetup:  # type: ignore
@@ -79,7 +171,7 @@ class PlateSetup:
         samples_by_name: Dict[str, Sample] = dict()
         samples_by_uuid: Dict[str, Sample] = dict()
 
-        sample_wells: Dict[str, List[str]] = dict()
+        sample_wells: Dict[str, list[str]] = dict()
 
         for fv in sample_fvs:
             if x := fv.findtext("Index"):
@@ -105,25 +197,19 @@ class PlateSetup:
         sample_wells: Mapping[str, str | List[str]] | None = None,
         samples: Iterable[Sample] | Mapping[str, Sample] = tuple(),
     ) -> None:
-        if sample_wells is None:
-            sample_wells = {}
-        self.sample_wells = {
-            k: [v] if isinstance(v, str) else v for k, v in sample_wells.items()
-        }
         if isinstance(samples, Mapping):
             self.samples_by_name = dict(samples)
         else:
             self.samples_by_name = {s.name: s for s in samples}
-        self._update_samples(delete=False)
 
-    def _update_samples(self, delete=False):
-        for k in self.sample_wells:
-            if k not in self.samples_by_name:
-                self.samples_by_name[k] = Sample(k)
-        if delete:
-            for k in self.samples_by_name:
-                if k not in self.sample_wells:
-                    del self.samples_by_name[k]
+        if sample_wells is not None:
+            for name, wells in sample_wells.items():
+                if name in self.samples_by_name:
+                    if isinstance(wells, str):
+                        wells = [wells]
+                    self.samples_by_name[name].wells = wells
+                else:
+                    self.samples_by_name[name] = Sample(name, wells=wells)
 
     @property
     def well_sample(self):
@@ -150,6 +236,12 @@ class PlateSetup:
                 wells += self.sample_wells[sw]
 
         return wells
+
+    def get_descriptive_string(self, name: str) -> str:
+        if (w := name.upper()) in _WELLNAMESET:
+            return w
+        sample = self.samples_by_name[name]
+        return sample.description or sample.name
 
     def well_samples_as_array(self) -> np.ndarray[Any, Any]:
         return self.well_sample.to_numpy().reshape((8, 12))
@@ -179,7 +271,7 @@ class PlateSetup:
         headers: Sequence[Union[str, int]] = list(range(1, 13)),
         tablefmt: str = "orgtbl",
         showindex: Sequence[str] = tuple("ABCDEFGH"),
-        **kwargs,
+        **kwargs: Any,
     ) -> str:
         return tabulate.tabulate(
             self.well_samples_as_array(),
@@ -190,7 +282,6 @@ class PlateSetup:
         )
 
     def update_xml(self, root: ET.Element) -> None:
-        self._update_samples()
         samplemap = root.find("FeatureMap/Feature/Id[.='sample']/../..")
         e: Optional[ET.Element]
         if not samplemap:
