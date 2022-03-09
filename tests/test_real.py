@@ -50,6 +50,19 @@ def test_real_invocationerror():
             m.run_command("HELP? A B")
 
 
+# @pytest.mark.asyncio
+# async def test_real_fakeexperiment():
+#     exp = Experiment.from_file("tests/test.eds")
+#     # We need better sample arrangements:
+#     exp.sample_wells["Sample 1"] = ["A7", "A8"]
+#     exp.sample_wells["Sample 2"] = ["A9", "A10"]
+#     exp.sample_wells["othersample"] = ["B7"]
+
+#     with Machine("localhost") as m:
+#         with m.at_access("Controller"):
+#             exp._populate_folder(m)
+
+
 @pytest.mark.asyncio
 async def test_real_experiment():
 
@@ -116,15 +129,25 @@ async def test_real_experiment():
 
     exp.sync_from_machine(m)
 
-    await asyncio.sleep(10)
+    with m:
+        with m.at_access("Controller"):
+            m.run_command(f'TextWAit -timeout=7200 Run Ended \\"{exp.name}\\"')
 
-    exp.sync_from_machine(m)
+    await asyncio.sleep(2)
 
     exp.sync_from_machine(m)
 
     exp3 = Experiment.from_machine("localhost", exp.name)
 
     assert exp2.name == exp3.name
+
+    rs = m.run_status()
+
+    assert rs.name == "-"
+
+    with m:
+        with m.at_access("Controller"):
+            await m.connection.compile_eds(exp.name)
 
     # with pytest.raises(AlreadyExistsError, match=f"Run {exp.name} exists.*"):
     #     exp.runstate = "INIT"
