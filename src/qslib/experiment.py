@@ -469,6 +469,9 @@ table, th, td {{
     ) -> Machine:
         if isinstance(machine, Machine):
             self.machine = machine
+            self.machine.max_access_level = max(
+                self.machine.max_access_level, needed_level
+            )
             return machine
         elif isinstance(machine, str):
             self.machine = Machine(
@@ -478,6 +481,7 @@ table, th, td {{
             )
             return self.machine
         elif hasattr(self, "machine") and (c := self.machine):
+            c.max_access_level = max(c.max_access_level, needed_level)
             return c
         else:
             raise ValueError(
