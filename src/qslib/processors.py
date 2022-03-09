@@ -28,6 +28,11 @@ class Processor(metaclass=ABCMeta):
 
         This is useful for writing scope-agnostic code, provided that you call this for
         every scope before using the data.
+
+        The values for scope are:
+
+        - "all": the entire welldata array.
+        - "limited": all time points, but limited to the filter sets and samples being plotted.
         """
         ...
 

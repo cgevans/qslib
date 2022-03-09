@@ -1560,7 +1560,8 @@ table, th, td {{
         anneal_stages: int | Sequence[int] | None = None,
         melt_stages: int | Sequence[int] | None = None,
         between_stages: int | Sequence[int] | None = None,
-        normalization: Processor = NormRaw(),
+        process: Sequence[Processor] | Processor | None = None,
+        normalization: Processor | None = None,
         ax: "plt.Axes" | None = None,
         marker: str | None = None,
         legend: bool | Literal["inset", "right"] = True,
@@ -1639,6 +1640,15 @@ table, th, td {{
 
         import matplotlib.pyplot as plt
 
+        if process is None:
+            process = [normalization or NormRaw()]
+        elif normalization:
+            raise ValueError(
+                "Can't specify both process and normalization (include normalization in process list)."
+            )
+        if isinstance(process, Processor):
+            process = [process]
+
         if filters is None:
             filters = self.all_filters
 
@@ -1678,13 +1688,17 @@ table, th, td {{
                 ).add_subplot(),
             )
 
-        data = normalization.process_scoped(self.welldata, "all")
+        data = self.welldata
+
+        for processor in process:
+            data = processor.process_scoped(data, "all")
 
         all_wells = self.plate_setup.get_wells(samples)
 
         reduceddata = data.loc[[f.lowerform for f in filters], all_wells]
 
-        reduceddata = normalization.process_scoped(reduceddata, "limited")
+        for processor in process:
+            reduceddata = processor.process_scoped(reduceddata, "limited")
 
         for filter in filters:
             filterdat: pd.DataFrame = reduceddata.loc[filter.lowerform, :]  # type: ignore
@@ -1705,7 +1719,14 @@ table, th, td {{
                 for well in wells:
                     color = next(ax._get_lines.prop_cycler)["color"]
 
-                    label = _gen_label(sample, well, filter, samples, wells, filters)
+                    label = _gen_label(
+                        self.plate_setup.get_descriptive_string(sample),
+                        well,
+                        filter,
+                        samples,
+                        wells,
+                        filters,
+                    )
 
                     anneallines.append(
                         ax.plot(
@@ -1743,7 +1764,10 @@ table, th, td {{
 
         ax.set_xlabel("temperature (°C)")
 
-        ax.set_ylabel(normalization.ylabel())
+        ylabel: str | None = None
+        for processor in process:
+            ylabel = processor.ylabel(ylabel)
+        ax.set_ylabel(ylabel or "fluorescence")
 
         if legend is True:
             if len(anneallines) < 6:
@@ -1893,11 +1917,11 @@ table, th, td {{
         if process is None:
             process = [normalization or NormRaw()]
         elif normalization:
-            raise ValueError
+            raise ValueError(
+                "Can't specify both process and normalization (include normalization in process list)."
+            )
         if isinstance(process, Processor):
             process = [process]
-
-        process
 
         if filters is None:
             filters = self.all_filters
