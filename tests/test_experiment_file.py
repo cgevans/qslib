@@ -7,7 +7,13 @@ import numpy as np
 import pytest
 
 from qslib import Experiment
-from qslib.processors import NormToMaxPerWell, NormToMeanPerWell
+from qslib.processors import (
+    NormToMaxPerWell,
+    NormToMeanPerWell,
+    SmoothEMWMean,
+    SmoothWindowMean,
+    SubtractByMeanPerWell,
+)
 
 
 @pytest.fixture(scope="module")
@@ -40,6 +46,28 @@ def test_reload(exp: Experiment, exp_reloaded: Experiment) -> None:
     assert exp.name == exp_reloaded.name
     assert exp.protocol == exp_reloaded.protocol
     assert exp.plate_setup == exp_reloaded.plate_setup
+
+
+def test_plot_ntmpw_smoothmw(exp: Experiment) -> None:
+    axf, axt = exp.plot_over_time(
+        process=[SmoothWindowMean(4), NormToMeanPerWell(1)], annotate_stage_lines=False
+    )
+    assert axf.get_ylabel() == "fluorescence (window mean 4, norm. to mean)"
+
+
+def test_plot_emw_maxperwell(exp: Experiment) -> None:
+    axf, axt = exp.plot_over_time(
+        process=[SmoothEMWMean(alpha=0.1), NormToMaxPerWell(1)],
+        annotate_stage_lines=False,
+    )
+    assert axf.get_ylabel() == "fluorescence (EMW-smoothed, norm. to max)"
+
+
+def test_plot_subtrbymean(exp: Experiment) -> None:
+    axf, axt = exp.plot_over_time(
+        process=SubtractByMeanPerWell(1), annotate_stage_lines=False
+    )
+    assert axf.get_ylabel() == "fluorescence (subtr. by mean)"
 
 
 def test_plots(exp: Experiment) -> None:
