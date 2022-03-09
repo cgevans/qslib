@@ -164,7 +164,7 @@ def test_refaccess():
     exp = []
 
 
-def test_exp_saveload_proto(tmp_path: pathlib.Path):
+def test_exp_saveload_proto(tmp_path: pathlib.Path) -> None:
     temperatures = list(np.linspace(51.2, 49.4, num=6))
     prot = Protocol(
         name="testproto",
