@@ -15,42 +15,42 @@ from qslib.scpi_commands import SCPICommand  # noqa
 PROTSTRING = """PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
 \tSTAGE 1 STAGE_1 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
-\t\t\tRAMP -incrementcycle=2 80 80 80 80 80 80
-\t\t\tHOLD -incrementcycle=2 300
+\t\t\tRAMP -incrementcycle=2 -incrementstep=2 80 80 80 80 80 80
+\t\t\tHOLD -incrementcycle=2 -incrementstep=2 300
 \t\t</multiline.step>
 \t</multiline.stage>
 \tSTAGE -repeat=27 2 STAGE_2 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
-\t\t\tRAMP -increment=-1 -incrementcycle=2 80 80 80 80 80 80
-\t\t\tHOLD -incrementcycle=2 147600
+\t\t\tRAMP -increment=-1 -incrementcycle=2 -incrementstep=2 80 80 80 80 80 80
+\t\t\tHOLD -incrementcycle=2 -incrementstep=2 147600
 \t\t</multiline.step>
 \t</multiline.stage>
 \tSTAGE -repeat=5 3 STAGE_3 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
-\t\t\tRAMP -incrementcycle=2 53 53 53 53 53 53
+\t\t\tRAMP -incrementcycle=2 -incrementstep=2 53 53 53 53 53 53
 \t\t\tHACFILT m4,x1,quant m5,x3,quant # qslib:default_filters
-\t\t\tHOLDANDCOLLECT -incrementcycle=2 -tiff=False -quant=True -pcr=False 120
+\t\t\tHOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 120
 \t\t</multiline.step>
 \t</multiline.stage>
 \tSTAGE -repeat=20 4 STAGE_4 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
-\t\t\tRAMP -incrementcycle=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+\t\t\tRAMP -incrementcycle=2 -incrementstep=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
 \t\t\tHACFILT m4,x1,quant m5,x3,quant # qslib:default_filters
-\t\t\tHOLDANDCOLLECT -incrementcycle=2 -tiff=False -quant=True -pcr=False 64800000
+\t\t\tHOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 64800000
 \t\t</multiline.step>
 \t</multiline.stage>
 \tSTAGE -repeat=20 5 STAGE_5 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
-\t\t\tRAMP -incrementcycle=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+\t\t\tRAMP -incrementcycle=2 -incrementstep=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
 \t\t\tHACFILT m4,x1,quant m5,x3,quant
-\t\t\tHOLDANDCOLLECT -incrementcycle=2 -tiff=False -quant=True -pcr=False 86400
+\t\t\tHOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 86400
 \t\t</multiline.step>
 \t</multiline.stage>
 \tSTAGE -repeat=100 6 STAGE_6 <multiline.stage>
 \t\tSTEP 1 <multiline.step>
-\t\t\tRAMP -incrementcycle=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+\t\t\tRAMP -incrementcycle=2 -incrementstep=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
 \t\t\tHACFILT m4,x1,quant m5,x3,quant
-\t\t\tHOLDANDCOLLECT -incrementcycle=2 -tiff=False -quant=True -pcr=False 1200
+\t\t\tHOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 1200
 \t\t</multiline.step>
 \t</multiline.stage>
 </multiline.protocol>
