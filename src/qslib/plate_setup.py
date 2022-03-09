@@ -105,7 +105,7 @@ class Sample:
         values = [
             x.text for x in se.findall("CustomProperty/Value") if x.text is not None
         ]
-        properties = {key: value for key, value in zip(keys, values, strict=True)}
+        properties = {key: value for key, value in zip(keys, values)}
 
         return cls(
             name=name,
