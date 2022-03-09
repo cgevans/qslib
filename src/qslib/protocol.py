@@ -440,7 +440,7 @@ class CustomStep(ProtoCommand):
 
     _body: list[ProtoCommand]
     _identifier: int | str | None = None
-    _repeat: int = 1
+    repeat: int = 1
     _names: ClassVar[Sequence[str]] = ["STEP"]
 
     def __init__(
@@ -451,7 +451,7 @@ class CustomStep(ProtoCommand):
     ):
         self._body = list(body)
         self._identifier = identifier
-        self._repeat = repeat
+        self.repeat = repeat
 
     def info_str(self, index: None | int = None, repeats: int = 1) -> str:
         if index is not None:
@@ -483,14 +483,6 @@ class CustomStep(ProtoCommand):
         self._body = list(v)
 
     @property
-    def repeat(self) -> int:
-        return self._repeat
-
-    @repeat.setter
-    def repeat(self, v: int) -> None:
-        self._repeat = v
-
-    @property
     def identifier(self) -> int | str | None:
         return self._identifier
 
@@ -506,7 +498,7 @@ class CustomStep(ProtoCommand):
         opts = {}
         args: list[int | str | None | Sequence[SCPICommand]] = []
         if self.repeat != 1:
-            opts["repeat"] = self._repeat
+            opts["repeat"] = self.repeat
         if self._identifier:
             args.append(self.identifier)
         else:
@@ -584,12 +576,14 @@ class Step(CustomStep, XMLable):
         on_setattr=attr.setters.convert,
     )
     temp_incrementcycle: int = 2
+    temp_incrementpoint: int = 2
     time_increment: pint.Quantity[int] = attr.field(
         default=UR.Quantity(0, UR.second),
         converter=_wrap_seconds,
         on_setattr=attr.setters.convert,
     )
     time_incrementcycle: int = 2
+    time_incrementpoint: int = 2
     filters: Sequence[FilterSet] = attr.field(
         default=tuple(),
         converter=_filterlist,
@@ -602,7 +596,7 @@ class Step(CustomStep, XMLable):
     _default_filters: Sequence[FilterSet] = attr.field(default=tuple())
     _classname: ClassVar[str] = "Step"
 
-    def __eq__(self, other: object) -> bool:
+    def __eq__(self, other: object) -> bool:  # FIXME: add other stuff
         if not isinstance(other, Step):
             return False
         if self.__class__ != other.__class__:
@@ -658,7 +652,9 @@ class Step(CustomStep, XMLable):
         if self.time_increment != 0.0:
             elems.append(f"{_durformat(self.time_increment)}/cycle")
             if self.time_incrementcycle != 2:
-                elems[-1] += f" from cycle {self.time_incrementcycle}"
+                elems[
+                    -1
+                ] += f" from cycle {self.time_incrementcycle}"  # Fixme: ADD OTHER STUFF
         # if self.ramp_rate != 1.6:
         #    elems.append(f"{self.ramp_rate} °C/s ramp")
         s = f"{index}. " + ", ".join(elems)
@@ -684,13 +680,17 @@ class Step(CustomStep, XMLable):
             (self.duration_at_cycle(c) for c in range(1, repeats + 1)), 0 * UR.seconds
         )
 
-    def duration_at_cycle(self, cycle: int) -> pint.Quantity:  # cycle from 1
+    def duration_at_cycle(
+        self, cycle: int
+    ) -> pint.Quantity:  # cycle from 1 # FIXME: add point
         "Duration of the step (excluding ramp) at `cycle` (from 1)"
         inccycles = max(0, cycle + 1 - self.time_incrementcycle)
         return self.time + inccycles * self.time_increment
         # FIXME: is this right?
 
-    def temperatures_at_cycle(self, cycle: int) -> pint.Quantity[np.ndarray]:
+    def temperatures_at_cycle(
+        self, cycle: int
+    ) -> pint.Quantity[np.ndarray]:  # FIXME: add point
         "Temperatures of the step at `cycle` (from 1)"
         inccycles = max(0, cycle + 1 - self.temp_incrementcycle)
         return self.temperature_list + inccycles * self.temp_increment
@@ -716,14 +716,17 @@ class Step(CustomStep, XMLable):
         if self.collects:
             return [
                 Ramp(
-                    self.temperature_list, self.temp_increment, self.temp_incrementcycle
+                    self.temperature_list,
+                    self.temp_increment,
+                    self.temp_incrementcycle,
+                    self.temp_incrementpoint,
                 ),
                 HACFILT(self.filters),
                 HoldAndCollect(
                     self.time,
                     self.time_increment,
                     self.time_incrementcycle,
-                    1,
+                    self.time_incrementpoint,
                     self.tiff,
                     self.quant,
                     self.pcr,
@@ -732,12 +735,16 @@ class Step(CustomStep, XMLable):
         else:
             return [
                 Ramp(
-                    self.temperature_list, self.temp_increment, self.temp_incrementcycle
+                    self.temperature_list,
+                    self.temp_increment,
+                    self.temp_incrementcycle,
+                    self.temp_incrementpoint,
                 ),
                 Hold(
                     self.time,
                     self.time_increment,
                     self.time_incrementcycle,
+                    self.time_incrementpoint,
                 ),
             ]
 
@@ -761,7 +768,7 @@ class Step(CustomStep, XMLable):
         if not he:
             et = 0 * UR("seconds")
             eht = 0 * UR("seconds")
-        return Step(ht, ts, collect, et, etc, eht, ehtc, [], True)
+        return Step(ht, ts, collect, et, etc, 1, eht, ehtc, 1, [], True)
 
     def to_xml(self, **kwargs: Any) -> ET.Element:
         assert not kwargs
@@ -1360,6 +1367,10 @@ class Protocol(ProtoCommand):
     filters: Sequence[str]
         A list of default filters that can be used by any collection commands
         that don't specify their own.
+    prerun: Sequence[SCPICommand]
+        Sets PRERUN.  *DO NOT USE THIS UNLESS YOU KNOW WHAT YOU ARE DOING*.
+    postrun: Sequence[SCPICommand]
+        Sets POSTRUN. *DO NOT USE THIS UNLESS YOU KNOW WHAT YOU ARE DOING*.
     """
 
     stages: list[Stage] = attr.field(factory=list)
@@ -1372,6 +1383,8 @@ class Protocol(ProtoCommand):
         on_setattr=attr.setters.convert,
     )
     covertemperature: float = 105.0
+    prerun: Sequence[SCPICommandLike] = attr.field(factory=list)
+    postrun: Sequence[SCPICommandLike] = attr.field(factory=list)
     _classname: str = "Protocol"
     _names: ClassVar[Sequence[str]] = ("PROTocol", "PROT")
 
@@ -1395,26 +1408,57 @@ class Protocol(ProtoCommand):
         if self.runmode is not None:
             opts["runmode"] = self.runmode
         args.append(self.name)
-        args.append(
-            [
-                stage.to_scpicommand(
-                    filters=self.filters, stageindex=i + 1, default_filters=self.filters
-                )
-                for i, stage in enumerate(self.stages)
-            ]
-        )
+        stages: list[SCPICommand] = []
+        if self.prerun:
+            stages.append(
+                SCPICommand("PRERun", [s.to_scpicommand() for s in self.prerun])
+            )
+
+        stages += [
+            stage.to_scpicommand(
+                filters=self.filters, stageindex=i + 1, default_filters=self.filters
+            )
+            for i, stage in enumerate(self.stages)
+        ]
+
+        if self.postrun:
+            stages.append(
+                SCPICommand("POSTRun", [s.to_scpicommand() for s in self.postrun])
+            )
+
+        args.append(stages)
+
         return SCPICommand("PROTocol", *args, comment=None, **opts)
 
     @classmethod
     def from_scpicommand(cls: Type[Protocol], sc: SCPICommand) -> Protocol:
-        c = cls(
-            [
-                cast(Stage, x.specialize())
-                for x in cast(Sequence[SCPICommand], sc.args[1])
-            ],
-            name=cast(str, sc.args[0]),
-            **sc.opts,  # type: ignore
-        )  # type: ignore
+        stage_commands = [x for x in cast(Sequence[SCPICommand], sc.args[1])]
+
+        if stage_commands[0].command.upper() == "PRERUN":
+            prerun = cast(Sequence[SCPICommand], stage_commands[0].args[0])
+            assert isinstance(prerun, Sequence)
+            del stage_commands[0]
+        else:
+            prerun = []
+        if stage_commands[-1].command.upper() == "POSTRUN":
+            postrun = cast(Sequence[SCPICommand], stage_commands[-1].args[0])
+            assert isinstance(postrun, Sequence)
+            del stage_commands[-1]
+        else:
+            postrun = []
+
+        stages = [cast(Stage, x.specialize()) for x in stage_commands]
+        for s in stages:
+            if not isinstance(s, Stage):
+                raise ValueError
+
+        name = sc.args[0]
+        if not isinstance(name, str):
+            raise ValueError
+
+        opts = sc.opts
+
+        c = cls(stages, name, prerun=prerun, postrun=postrun, **opts)  # type: ignore
 
         dfilt: list[FilterSet] = []
 

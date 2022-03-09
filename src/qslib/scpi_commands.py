@@ -101,6 +101,21 @@ _arglist.setParseAction(
     )
 )
 
+
+@dataclass
+class ArgList:
+    "A representation of an SCPI list of options (-key=value) and arguments."
+    opts: dict[str, bool | int | float | str]
+    args: list[bool | int | float | str]
+
+    @classmethod
+    def from_string(cls, argument_string: str) -> ArgList:
+        """Parse an SCPI argument string."""
+        return cast(ArgList, _arglist.parseString(argument_string)[0])
+
+
+_NULLIST = ArgList({}, [])
+
 _commentstring: pp.ParserElement = pp.Combine(
     pp.Regex(r"\s*#\s?").suppress()
     + pp.Regex(r"[^\n]+")
@@ -110,7 +125,7 @@ _commentstring: pp.ParserElement = pp.Combine(
 _command: pp.ParserElement = cast(
     pp.ParserElement,
     (
-        ppc.identifier("command")
+        pp.Combine(pp.Regex("[A-Za-z:_]+"))("command")
         + _ws_or_end
         + pp.Optional(_arglist("arglist"))
         + pp.Optional(_commentstring("comment"))
@@ -119,8 +134,8 @@ _command: pp.ParserElement = cast(
         lambda toks: SCPICommand(
             toks["command"],
             comment=toks.get("comment", None),
-            *toks["arglist"].args,
-            **toks["arglist"].opts,
+            *toks.get("arglist", _NULLIST).args,  # FIXME
+            **toks.get("arglist", _NULLIST).opts,
         )
     ),
 )
@@ -176,18 +191,6 @@ class AccessLevel(Enum):
         return self.value
 
 
-@dataclass
-class ArgList:
-    "A representation of an SCPI list of options (-key=value) and arguments."
-    opts: dict[str, bool | int | float | str]
-    args: list[bool | int | float | str]
-
-    @classmethod
-    def from_string(cls, argument_string: str) -> ArgList:
-        """Parse an SCPI argument string."""
-        return cast(ArgList, _arglist.parseString(argument_string)[0])
-
-
 T = TypeVar("T")
 
 
@@ -231,7 +234,7 @@ class SCPICommand(SCPICommandLike):
     ]
     comment: str | None
 
-    def __eq__(self, other) -> bool:
+    def __eq__(self, other: Any) -> bool:
         if not isinstance(other, SCPICommand):
             return False
 

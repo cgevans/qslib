@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from qslib import Experiment
-from qslib.normalization import NormToMaxPerWell, NormToMeanPerWell
+from qslib.processors import NormToMaxPerWell, NormToMeanPerWell
 
 
 @pytest.fixture(scope="module")
@@ -29,20 +29,20 @@ def exp_reloaded(
     return Experiment.from_file(tmp_path / "test_loaded.eds")
 
 
-def test_props(exp: Experiment, exp_reloaded: Experiment):
+def test_props(exp: Experiment, exp_reloaded: Experiment) -> None:
     assert exp.name == "2020-02-20_170706"
 
     assert exp.info() == str(exp) == exp.summary()
 
 
-def test_reload(exp: Experiment, exp_reloaded: Experiment):
+def test_reload(exp: Experiment, exp_reloaded: Experiment) -> None:
     assert (exp.welldata == exp_reloaded.welldata).all().all()
     assert exp.name == exp_reloaded.name
     assert exp.protocol == exp_reloaded.protocol
     assert exp.plate_setup == exp_reloaded.plate_setup
 
 
-def test_plots(exp: Experiment):
+def test_plots(exp: Experiment) -> None:
     axf, axt = exp.plot_over_time(
         legend=False, figure_kw={"constrained_layout": False}, annotate_stage_lines=True
     )
@@ -93,5 +93,5 @@ def test_plots(exp: Experiment):
     ax2 = exp.plot_protocol()
 
 
-def test_rawquant(exp: Experiment):
+def test_rawquant(exp: Experiment) -> None:
     exp.rawdata.loc[:, :]

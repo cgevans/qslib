@@ -7,15 +7,24 @@ SPDX-License-Identifier: AGPL-3.0-only
 # Changelog
 
 ## Version 0.7.0
+
+ - `Protocol` now has `Protocol.stage`, and Stage now has `Stage.step`, to provide convenient, 1-indexed access,
+   such that `protocol.stage[5]` of is stage 5 of `protocol`, not stage 6.
+ - `Protocol` now supports setting PRERUN and POSTRUN stages, as a series of SCPI commands.  This allows
+   the setting of things like idling temperatures and exposure times.  It is not easily usable yet, however.
+ - `Experiment.change_protocol_from_now` allows convenient changes to a currently-running experiment.
+ - `Normalization` has been renamed to `Processor`.  Plotting functions can take sequences of processors to
+   process data.  These now include:
+     - Normalization as before: `NormByMeanPerWell`, `NormByMaxPerWell`
+     - `SubtractMeanPerWell`: subtracts the mean of a particular region, applied to each well.
+     - `SmoothEMWMean`: smooths data using Pandas' ExponentialMovingWindow.mean.
+     - `SmoothWindowMean`: smooths data using Pandas' Rolling.mean or Window.mean.
+ - Some initial implementation changes to allow repeated steps (not stages).
  - Fixes bug that prevented loading of some aborted runs.
  - Fixes monitor's recording of temperatures.
  - Experiment.all_filters uses data if it exists; Experiment.filter_strings as a convenience function alternative.
- - Protocol now has `Protocol.stage`, and Stage now has `Stage.step`, to provide convenient, 1-indexed access,
-   such that `protocol.stage[5]` of is stage 5 of `protocol`, not stage 6.
- - `Experiment.change_protocol_from_now` allows convenient changes to a currently-running experiment.
- - Some initial implementation changes to allow repeated steps (not stages).
- - `Normalization` changed to general `Processor`.  Plotting functions can take sequences of processors to
-   process data, which now supports both normalization and smoothing.
+ - SCPICommand parsing improvements.
+ - Protocol printing improvements.
 
 ## Version 0.6.3
  - Fixes drawer check bug.
