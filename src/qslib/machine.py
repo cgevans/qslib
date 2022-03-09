@@ -36,10 +36,10 @@ if TYPE_CHECKING:  # pragma: no cover
     from .experiment import Experiment
 
 
-def _ensure_connection(level: AccessLevel = AccessLevel.Observer):
+def _ensure_connection(level: AccessLevel = AccessLevel.Observer) -> Any:
     def wrap(func):
         @wraps(func)
-        def wrapped(m: Machine, *args, **kwargs):
+        def wrapped(m: Machine, *args: Any, **kwargs: Any) -> Any:
             if m.automatic:
                 with m.ensured_connection(level):
                     return func(m, *args, **kwargs)
@@ -125,7 +125,7 @@ class Machine:
         return self._max_access_level
 
     @max_access_level.setter
-    def max_access_level(self, v: AccessLevel | str):
+    def max_access_level(self, v: AccessLevel | str) -> None:
         if not isinstance(v, AccessLevel):
             self._max_access_level = AccessLevel(v)
         else:
@@ -174,7 +174,11 @@ class Machine:
             return self.connection.connected
 
     def __enter__(self) -> Machine:
-        self.connect()
+        try:
+            self.connect()
+        except Exception as e:
+            self.disconnect()
+            raise e
         return self
 
     @_ensure_connection(AccessLevel.Guest)
@@ -638,7 +642,7 @@ class Machine:
                 raise ValueError(f"Unexpected power status: {s}")
 
     @power.setter
-    def power(self, value: Literal["on", "off", True, False]):
+    def power(self, value: Literal["on", "off", True, False]) -> None:
         with self.ensured_connection(AccessLevel.Controller):
             if value is True:
                 value = "on"

@@ -1743,7 +1743,7 @@ table, th, td {{
 
         ax.set_xlabel("temperature (°C)")
 
-        ax.set_ylabel(normalization.ylabel)
+        ax.set_ylabel(normalization.ylabel())
 
         if legend is True:
             if len(anneallines) < 6:
@@ -1976,10 +1976,10 @@ table, th, td {{
 
         ax[-1].set_xlabel("time (hours)")
 
-        ylabel = "fluorescence"
+        ylabel: str | None = None
         for processor in process:
-            ylabel = processor.ylabel  # FIXME
-        ax[0].set_ylabel(ylabel)
+            ylabel = processor.ylabel(ylabel)
+        ax[0].set_ylabel(ylabel or "fluorescence")
 
         if legend is True:
             if len(lines) < 6:

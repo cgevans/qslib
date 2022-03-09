@@ -10,6 +10,44 @@ import pytest_asyncio
 
 from qslib import *
 from qslib.experiment import AlreadyExistsError, MachineBusyError
+from qslib.qs_is_protocol import (
+    AccessLevelExceeded,
+    AuthError,
+    InsufficientAccess,
+    InvocationError,
+)
+
+
+@pytest.mark.asyncio
+async def test_real_insufficientaccess():
+    m = Machine("localhost")
+    with m:
+        with pytest.raises(InsufficientAccess):
+            m.run_command("MACRO USER?")
+
+
+@pytest.mark.asyncio
+async def test_real_accesslevelexceeded():
+    m = Machine("localhost", max_access_level="Full")
+    with m:
+        with pytest.raises(AccessLevelExceeded):
+            m.set_access_level(AccessLevel.Full)
+
+
+@pytest.mark.asyncio
+async def test_real_autherror():
+    m = Machine("localhost", password="aninvalidpassword")
+    with pytest.raises(AuthError):
+        with m:
+            m.run_command("HELP?")
+
+
+@pytest.mark.asyncio
+def test_real_invocationerror():
+    m = Machine("localhost")
+    with m:
+        with pytest.raises(InvocationError):
+            m.run_command("HELP? A B")
 
 
 @pytest.mark.asyncio
@@ -22,7 +60,7 @@ async def test_real_experiment():
     confut: Future[bool] = asyncio.Future()
     task = mon.monitor(confut)
 
-    asyncio.tasks.create_task(task)
+    ttask = asyncio.tasks.create_task(task)
 
     await confut
 
