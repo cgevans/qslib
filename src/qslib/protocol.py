@@ -1650,10 +1650,15 @@ class Protocol(ProtoCommand):
         _set_or_create(qe, "QSLibProtocol").text = str(attr.asdict(self))
         _set_or_create(qe, "QSLibVerson").text = __version__
         _set_or_create(e, "CoverTemperature").text = str(covertemperature)
-        if self.volume is not None:
-            _set_or_create(e, "SampleVolume").text = str(self.volume)
-        if self.runmode is not None:
-            _set_or_create(e, "RunMode").text = str(self.runmode)
+        _set_or_create(e, "SampleVolume").text = str(self.volume or 50)
+        _set_or_create(e, "RunMode").text = str(self.runmode or "Standard")
+        _set_or_create(e, "UserName").text = ""
+        _set_or_create(e, "TubeType").text = "0"
+        _set_or_create(e, "BlockID").text = "18"  # FIXME
+        _set_or_create(e, "Delay").text = "0.0"
+        _set_or_create(e, "ExtendedPCRCycles").text = "0"
+        _set_or_create(e, "ExtendedHoldTemp").text = "0"
+        _set_or_create(e, "ExtendedHoldTime").text = "0"
         if self.filters:
             x = _set_or_create(e, "CollectionProfile", ProfileId="1")
             for f in self.filters:

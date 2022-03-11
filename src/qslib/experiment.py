@@ -552,6 +552,11 @@ table, th, td {{
                 log.debug("Creating experiment folder %s.", self.runtitle_safe)
                 machine.run_command(f"EXP:NEW {self.runtitle_safe} {TEMPLATE_NAME}")
 
+                log.debug("Setting up experiment.xml")
+                self.runstarttime = datetime.now()
+                self.runstate = "RUNNING"
+                self._update_files()
+
                 log.debug("Populating experiment folder.")
                 self._populate_folder(machine)
 
