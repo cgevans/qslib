@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 from . import protocol
-from .experiment import Experiment, PlateSetup
+from .experiment import Experiment, PlateSetup, Sample
 from .machine import Machine, MachineStatus, RunStatus
 from .processors import NormRaw, NormToMaxPerWell, NormToMeanPerWell, SmoothEMWMean
 from .protocol import CustomStep, Protocol, Stage, Step
@@ -16,6 +16,7 @@ __all__ = (
     "Experiment",
     "protocol",
     "PlateSetup",
+    "Sample",
     "Protocol",
     "Stage",
     "Step",
