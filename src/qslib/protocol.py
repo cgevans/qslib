@@ -435,7 +435,7 @@ class _NumOrRefIndexer(Generic[G]):
         self._list += val
 
 
-class CustomStep(ProtoCommand):
+class CustomStep(ProtoCommand, XMLable):
     """A protocol step composed of SCPI/protocol commands."""
 
     _body: list[ProtoCommand]
@@ -493,6 +493,23 @@ class CustomStep(ProtoCommand):
     @property
     def collects(self) -> bool:
         return False
+
+    def to_xml(self, **kwargs: Any) -> ET.Element:
+        assert not kwargs
+        e = ET.Element("TCStep")
+        ET.SubElement(e, "CollectionFlag").text = str(
+            int(self.collects)
+        )  # FIXME: approx
+        for t in range(0, 6):  # FIXME
+            ET.SubElement(e, "Temperature").text = "30.0"
+        ET.SubElement(e, "HoldTime").text = "1"
+        # FIXME: does not contain cycle starts, because AB format can't handle
+        ET.SubElement(e, "ExtTemperature").text = str(0)
+        ET.SubElement(e, "ExtHoldTime").text = str(0)
+        # FIXME: RampRate, RampRateUnit
+        ET.SubElement(e, "RampRate").text = "1.6"
+        ET.SubElement(e, "RampRateUnit").text = "DEGREES_PER_SECOND"
+        return e
 
     def to_scpicommand(self, *, stepindex: int = -1, **kwargs: Any) -> SCPICommand:
         opts = {}

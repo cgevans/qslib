@@ -767,6 +767,10 @@ table, th, td {{
                 "${LogFolder}/tcprotocol.xml",
                 open(self._sdspath("tcprotocol.xml"), "rb").read(),
             )
+            machine.write_file(
+                "${LogFolder}/qsl-tcprotocol.xml",
+                open(self._sdspath("qsl-tcprotocol.xml"), "rb").read(),
+            )
 
     def change_protocol(
         self,
@@ -831,6 +835,10 @@ table, th, td {{
             machine.write_file(
                 "${LogFolder}/tcprotocol.xml",
                 open(self._sdspath("tcprotocol.xml"), "rb").read(),
+            )
+            machine.write_file(
+                "${LogFolder}/qsl-tcprotocol.xml",
+                open(self._sdspath("qsl-tcprotocol.xml"), "rb").read(),
             )
 
     def save_file(
@@ -1457,7 +1465,7 @@ table, th, td {{
                 msglog,
                 re.DOTALL | re.MULTILINE,
             ):
-                # We can get the prot name too, and sample volume!
+                # We can get the prot name too, and sample volume! FIXME: not from qslib runs!
                 rp = re.search(
                     r"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?(?:-SampleVolume=(?P<sv>[\d.]+) )?([\w-]+) (?P<protoname>[\w-]+)",
                     msglog,
@@ -1474,6 +1482,19 @@ table, th, td {{
                         SCPICommand.from_string(f"PROT unknown_name {m[1]}")
                     )
                 self._protocol_from_log = prot
+
+                # Now that we know the protocol name, we can search for whether the protocol was changed later:
+                for mm in re.finditer(
+                    r"^Debug.*<quote.message>C:.* (PROT[ O].*\n(c:.*\n)+.*)</quote.message>",
+                    msglog,
+                    re.MULTILINE,
+                ):
+                    newprot = Protocol.from_scpicommand(
+                        SCPICommand.from_string(mm[1].replace("\nc:", "\n"))
+                    )
+                    # if newprot.name == prot.name:
+                    self._protocol_from_log = newprot
+
             else:
                 self._protocol_from_log = None
         except ValueError:
