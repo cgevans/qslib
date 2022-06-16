@@ -73,7 +73,8 @@ docs = [
     "influxdb_client",
     "toml",
     "lxml",
-    "sphinx-click"
+    "sphinx-click",
+    "sphinx-autodoc-typehints"
     ]
 # Add here test requirements (semicolon/line-separated)
 testing = [
