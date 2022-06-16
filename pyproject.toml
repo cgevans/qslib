@@ -72,7 +72,8 @@ docs = [
     "myst_parser",
     "influxdb_client",
     "toml",
-    "lxml"
+    "lxml",
+    "sphinx-click"
     ]
 # Add here test requirements (semicolon/line-separated)
 testing = [
