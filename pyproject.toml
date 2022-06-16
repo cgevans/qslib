@@ -80,7 +80,8 @@ testing = [
     "setuptools",
     "pytest",
     "pytest-cov",
-    "pytest-asyncio"
+    "pytest-asyncio",
+    "hypothesis"
     ]
 
 [project.urls]
