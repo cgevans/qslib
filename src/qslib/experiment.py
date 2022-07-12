@@ -650,10 +650,34 @@ table, th, td {{
         with machine.ensured_connection(AccessLevel.Observer):
             return self._ensure_running(machine)
 
+    @classmethod
+    def _from_running_via_sync(cls, machine: MachineReference, include_tiffs: bool = False) -> 'Experiment':
+        exp = cls(_create_xml=False)
+
+        p = Path(exp._dir_eds)
+        p.mkdir(parents=True)
+
+        machine = exp._ensure_machine(machine)
+
+        with machine.ensured_connection():
+            crt = machine.current_run_name
+
+            exp.name = crt
+
+            if not crt:
+                raise ValueError("Nothing is currently running.")
+
+            exp.sync_from_machine(machine, log_method="copy", include_tiffs=include_tiffs)
+
+            exp._update_from_files()
+
+        return exp
+
     def sync_from_machine(
         self,
         machine: MachineReference | None = None,
         log_method: Literal["copy", "eval"] = "eval",
+        include_tiffs: bool = False
     ) -> None:
         """
         Try to synchronize the data in the experiment to the current state of the run on a
@@ -669,7 +693,11 @@ table, th, td {{
 
             # Transfer anything we don't have
             for f in machine_files:
-                name = os.path.basename(f["path"])
+                name: str = os.path.basename(f["path"])
+
+                if name.lower().endswith("tiff") and not include_tiffs:
+                    continue
+
                 sdspath = self._sdspath(
                     re.sub(".*/apldbio/sds/(.*)$", r"\1", f["path"])
                 )

@@ -160,7 +160,7 @@ class AccessLevel(Enum):
     Controller = "Controller"
     Administrator = "Administrator"
     Full = "Full"
-    value: str
+    #value: str
 
     def __gt__(self, other: object) -> bool:
         if not isinstance(other, AccessLevel):
@@ -186,6 +186,9 @@ class AccessLevel(Enum):
         if not isinstance(other, AccessLevel):
             other = AccessLevel(other)
         return _accesslevel_order[self.value] == _accesslevel_order[other.value]
+
+    def __hash__(self) -> int:
+        return self.value.__hash__()
 
     def __str__(self) -> str:
         return self.value
