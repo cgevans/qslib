@@ -662,12 +662,12 @@ table, th, td {{
         machine = exp._ensure_machine(machine)
 
         with machine.ensured_connection():
-            crt = machine.current_run_name
-
-            exp.name = crt
+            crt: str | None = machine.current_run_name
 
             if not crt:
                 raise ValueError("Nothing is currently running.")
+
+            exp.name = crt
 
             exp.sync_from_machine(
                 machine, log_method="copy", include_tiffs=include_tiffs
