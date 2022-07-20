@@ -85,9 +85,12 @@ class RunStatus(BaseStatus):
     }
     _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
 
-_sbool = {'True': True, 'False': False}
+
+_sbool = {"True": True, "False": False}
 
 import re
+
+
 @dataclass
 class MachineStatus(BaseStatus):
     drawer: str
@@ -104,13 +107,24 @@ class MachineStatus(BaseStatus):
         "drawer": (b"$(DRAWER?)", str),
         "cover": (b'$[ "$(ENG?)" or "unknown" ]', str),
         "lamp_status": (b"$(LST?)", str),
-        "sample_temperatures": (b"$(TBC:SampleTemperatures?)", lambda x: [float(y) for y in x.split()]),
-        "block_temperatures": (b"$(TBC:BlockTemperatures?)", lambda x: [float(y) for y in x.split()]),
+        "sample_temperatures": (
+            b"$(TBC:SampleTemperatures?)",
+            lambda x: [float(y) for y in x.split()],
+        ),
+        "block_temperatures": (
+            b"$(TBC:BlockTemperatures?)",
+            lambda x: [float(y) for y in x.split()],
+        ),
         "cover_temperature": (b"$(TBC:CoverTemperatures?)", float),
-        "target_temperatures": (b"$(TBC:SETT?)", lambda x: {y: float(z) for y, z in re.findall(r"-(\w+)=([\d.-]+)", x)}),
-        "target_controlled": (b"$(TBC:CONT?)", lambda x: {y: _sbool[z] for y, z in re.findall(r"-(\w+)=(True|False)", x)}),
+        "target_temperatures": (
+            b"$(TBC:SETT?)",
+            lambda x: {y: float(z) for y, z in re.findall(r"-(\w+)=([\d.-]+)", x)},
+        ),
+        "target_controlled": (
+            b"$(TBC:CONT?)",
+            lambda x: {y: _sbool[z] for y, z in re.findall(r"-(\w+)=(True|False)", x)},
+        ),
         "led_temperature": (b"$(LED:LEDTemperature?)", float),
     }
 
     _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
-

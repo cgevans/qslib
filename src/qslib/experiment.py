@@ -651,7 +651,9 @@ table, th, td {{
             return self._ensure_running(machine)
 
     @classmethod
-    def _from_running_via_sync(cls, machine: MachineReference, include_tiffs: bool = False) -> 'Experiment':
+    def _from_running_via_sync(
+        cls, machine: MachineReference, include_tiffs: bool = False
+    ) -> "Experiment":
         exp = cls(_create_xml=False)
 
         p = Path(exp._dir_eds)
@@ -667,7 +669,9 @@ table, th, td {{
             if not crt:
                 raise ValueError("Nothing is currently running.")
 
-            exp.sync_from_machine(machine, log_method="copy", include_tiffs=include_tiffs)
+            exp.sync_from_machine(
+                machine, log_method="copy", include_tiffs=include_tiffs
+            )
 
             exp._update_from_files()
 
@@ -677,7 +681,7 @@ table, th, td {{
         self,
         machine: MachineReference | None = None,
         log_method: Literal["copy", "eval"] = "eval",
-        include_tiffs: bool = False
+        include_tiffs: bool = False,
     ) -> None:
         """
         Try to synchronize the data in the experiment to the current state of the run on a
@@ -708,6 +712,7 @@ table, th, td {{
                     log.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
                     continue
                 from pathlib import Path  # FIXME
+
                 log.info(f"Updating {sdspath}")
 
                 ldir = f["path"].split("/")[-2]
@@ -871,7 +876,10 @@ table, th, td {{
             )
 
     def save_file(
-        self, path_or_stream: str | os.PathLike[str] | IO[bytes] = ".", overwrite: bool = False, update_files: bool = True
+        self,
+        path_or_stream: str | os.PathLike[str] | IO[bytes] = ".",
+        overwrite: bool = False,
+        update_files: bool = True,
     ) -> None:
         """
         Save an EDS file of the experiment. This *should* be readable by AB's software,
@@ -929,7 +937,7 @@ table, th, td {{
     #     overwrite : bool, optional
     #         If True, overwrite any existing file without warning. Defaults to False.
     #     """
-        
+
     #     return self.save_file(path, overwrite, update_files=False)
 
     @property

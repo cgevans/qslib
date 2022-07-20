@@ -160,7 +160,7 @@ class AccessLevel(Enum):
     Controller = "Controller"
     Administrator = "Administrator"
     Full = "Full"
-    #value: str
+    # value: str
 
     def __gt__(self, other: object) -> bool:
         if not isinstance(other, AccessLevel):
