@@ -6,6 +6,14 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.8.0
+
+- MachineStatus now includes temperature information, as does the `qslib machine-status` CLI command.
+- `Experiment.sync_from_machine` can exclude tiffs, and has better logging.
+- Custom steps are now approximated in xml files, keeping them somewhat compatible with the machine's android interface.
+- Several testing and documentation improvements.
+- Python 3.11 fixes.
+
 ## Version 0.7.1
 
  - QSLib-initiated experiments should now be partially compatible with the machine's android interface.  Status, time, and the (possibly approximate) protocol should be displayed.  Data and samples will likely not.  Pause/resume/stop/open/close buttons on the interface should function properly.
