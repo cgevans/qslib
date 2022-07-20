@@ -75,7 +75,6 @@ Saving
 
 .. autosummary::
    Experiment.save_file
-   Experiment.save_file_without_changes
 
 Information, data access and plotting
 -------------------------------------
