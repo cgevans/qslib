@@ -8,6 +8,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 ## Version 0.8.0
 
+- Ensure that protocols don't have incorrect stage index and label information when being sent to machine.
 - MachineStatus now includes temperature information, as does the `qslib machine-status` CLI command.
 - `Experiment.sync_from_machine` can exclude tiffs, and has better logging.
 - Custom steps are now approximated in xml files, keeping them somewhat compatible with the machine's android interface.

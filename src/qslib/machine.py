@@ -280,6 +280,7 @@ class Machine:
         protocol
             protocol to send
         """
+        protocol.validate()
         self.run_command(protocol.to_scpicommand())
 
     @_ensure_connection(AccessLevel.Observer)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
+import re
 import textwrap
 import warnings
 import xml.etree.ElementTree as ET
@@ -1763,6 +1764,41 @@ class Protocol(ProtoCommand):
                 continue
 
         return True
+
+    def validate(self, fix: bool = True):
+        for i, stage in enumerate(self.stages):
+            if (stage.index is not None) and (stage.index != i + 1):
+                if fix:
+                    log.warn(
+                        "Stage %s is at index %d of protocol, but has set index %d. Fixing.",
+                        stage,
+                        i + 1,
+                        stage.index,
+                    )
+                    stage.index = i + 1
+                else:
+                    raise ValueError(
+                        "Stage %s is at index %d of protocol, but has set index %d."
+                        % (stage, i + 1, stage.index)
+                    )
+
+            if stage.label is not None:
+                m = re.match(r"STAGE_(\d+)", stage.label)
+                if m and (int(m[1]) != i + 1):
+                    if fix:
+                        log.warn(
+                            "Stage %s has label %s, which implies index %d, but is at index %d of protocol. Fixing.",
+                            stage,
+                            stage.label,
+                            int(m[1]),
+                            i + 1,
+                        )
+                        stage.label = f"STAGE_{i+1}"
+                    else:
+                        raise ValueError(
+                            "Stage %s has label %s, which implies index %d, but is at index %d of protocol."
+                            % (stage, stage.label, int(m[1]), i + 1)
+                        )
 
 
 for c in cast(
