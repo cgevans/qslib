@@ -238,7 +238,23 @@ def machine_status(machine: str) -> None:
         state = click.style(state, fg="red")
 
     click.echo(f"Machine {mn} is {state}.")
-    click.echo(f"Drawer is {drawer}, cover is {cover}, and lamp is {lamp}.")
+    click.echo(f"Drawer is {drawer}, cover is {cover}, and lamp is {lamp} and {ms.led_temperature:.2f} °C.")
+
+    click.echo(f"Cover temperature is {ms.cover_temperature:.2f} °C", nl=False)
+    if ms.target_controlled['Cover']:
+        click.echo(f" and is controlled with a target of {ms.target_temperatures['Cover']:.2f} °C.")
+    else:
+        click.echo(f" and is uncontrolled.")
+
+    click.echo(f"Block temperatures are " + ", ".join("{:.2f}".format(x) for x in ms.block_temperatures) + " °C." )
+    click.echo(f"Sample temperatures are " + ", ".join("{:.2f}".format(x) for x in ms.block_temperatures) + " °C." )
+
+    if all(ms.target_controlled[f'Zone{i}'] for i in range(1,7)):
+        click.echo(f"Zone temperatures are controlled with a target of " + ", ".join("{:.2f}".format(ms.target_temperatures[f'Zone{i}']) for i in range(1,7)) + " °C.")
+    else:
+        click.echo(f"Zone temperatures are uncontrolled.")
+
+
     if rs.state != "Idle":
         click.echo(
             f"Run {rs.name}. Stage {rs.stage}/{rs.num_stages},"

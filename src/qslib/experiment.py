@@ -701,13 +701,14 @@ table, th, td {{
                 sdspath = self._sdspath(
                     re.sub(".*/apldbio/sds/(.*)$", r"\1", f["path"])
                 )
-                logging.debug(f"checking {f['path']} mtime {f['mtime']} to {sdspath}")
+                log.debug(f"checking {f['path']} mtime {f['mtime']} to {sdspath}")
                 if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(
                     f["mtime"]
                 ):
-                    logging.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
+                    log.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
                     continue
                 from pathlib import Path  # FIXME
+                log.info(f"Updating {sdspath}")
 
                 ldir = f["path"].split("/")[-2]
                 if ldir != "sds":
@@ -870,7 +871,7 @@ table, th, td {{
             )
 
     def save_file(
-        self, file: str | os.PathLike[str] | IO[bytes], overwrite: bool = False
+        self, path_or_stream: str | os.PathLike[str] | IO[bytes] = ".", overwrite: bool = False, update_files: bool = True
     ) -> None:
         """
         Save an EDS file of the experiment. This *should* be readable by AB's software,
@@ -879,10 +880,15 @@ table, th, td {{
 
         Parameters
         ----------
-        file : str or IO[bytes]
-            A filename or open binary IO.
+        path_or_stream : str or os.PathLike[str] or IO[bytes]
+            A filename, open binary IO, or directory.  If a directory, the file will
+            be saved with the name from `Experiment.runtitle_safe`.
         overwrite : bool, optional
             If True, overwrite any existing file without warning. Defaults to False.
+        update_files: bool, optional
+            If True (default), update files before saving. Use False if you don't want
+            qslib to touch the files, for example, if you have just loaded a run from
+            the machine and don't want qslib to change anything based on its interpretation.
         """
         mode: Literal["w", "x"]
         if overwrite:
@@ -890,41 +896,41 @@ table, th, td {{
         else:
             mode = "x"
 
-        self._update_files()
+        if update_files:
+            self._update_files()
 
-        with zipfile.ZipFile(file, mode) as z:
-            for root, _, files in os.walk(self._dir_base):
-                for file in files:
-                    fpath = os.path.join(root, file)
-                    z.write(fpath, os.path.relpath(fpath, self._dir_base))
-
-    def save_file_without_changes(
-        self, file: str | IO[bytes], overwrite: bool = False
-    ) -> None:
-        """
-        Save an EDS file of the experiment. Unlike :any:`save_file`, this will not
-        update any parts of the file, so if it has not been modified elsewhere,
-        it will be the same as when it was loaded. By default, this will refuse to
-        overwrite an existing file.
-
-        Parameters
-        ----------
-        file : str or IO[bytes]
-            A filename or open binary IO.
-        overwrite : bool, optional
-            If True, overwrite any existing file without warning. Defaults to False.
-        """
-        mode: Literal["w", "x"]
-        if overwrite:
-            mode = "w"
+        if isinstance(path_or_stream, IO):
+            path: Union[Path, IO] = path_or_stream
         else:
-            mode = "x"
+            path = Path(path_or_stream)
+            if path.is_dir():
+                path = (path / self.runtitle_safe).with_suffix(".eds")
 
-        with zipfile.ZipFile(file, mode) as z:
+        with zipfile.ZipFile(path, mode) as z:
             for root, _, files in os.walk(self._dir_base):
                 for file in files:
                     fpath = os.path.join(root, file)
                     z.write(fpath, os.path.relpath(fpath, self._dir_base))
+
+    # def save_file_without_changes(
+    #     self, path: str | os.PathLike[str] | IO[bytes], overwrite: bool = False
+    # ) -> None:
+    #     """
+    #     Save an EDS file of the experiment. Unlike :any:`save_file`, this will not
+    #     update any parts of the file, so if it has not been modified elsewhere,
+    #     it will be the same as when it was loaded. By default, this will refuse to
+    #     overwrite an existing file.
+
+    #     Parameters
+    #     ----------
+    #     path_or_stream : str or os.PathLike[str] or IO[bytes]
+    #         A filename, open binary IO, or directory.  If a directory, the file will
+    #         be saved with the name from `Experiment.runtitle_safe`.
+    #     overwrite : bool, optional
+    #         If True, overwrite any existing file without warning. Defaults to False.
+    #     """
+        
+    #     return self.save_file(path, overwrite, update_files=False)
 
     @property
     def sample_wells(self) -> dict[str, list[str]]:

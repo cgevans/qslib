@@ -85,17 +85,32 @@ class RunStatus(BaseStatus):
     }
     _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
 
+_sbool = {'True': True, 'False': False}
 
+import re
 @dataclass
 class MachineStatus(BaseStatus):
     drawer: str
     cover: str
     lamp_status: str
+    sample_temperatures: list[float]
+    block_temperatures: list[float]
+    cover_temperature: float
+    target_temperatures: dict[str, float]
+    target_controlled: dict[str, float]
+    led_temperature: float
 
     _comlist: ClassVar[Dict[str, Tuple[bytes, Callable[[Any], Any]]]] = {
         "drawer": (b"$(DRAWER?)", str),
         "cover": (b'$[ "$(ENG?)" or "unknown" ]', str),
         "lamp_status": (b"$(LST?)", str),
+        "sample_temperatures": (b"$(TBC:SampleTemperatures?)", lambda x: [float(y) for y in x.split()]),
+        "block_temperatures": (b"$(TBC:BlockTemperatures?)", lambda x: [float(y) for y in x.split()]),
+        "cover_temperature": (b"$(TBC:CoverTemperatures?)", float),
+        "target_temperatures": (b"$(TBC:SETT?)", lambda x: {y: float(z) for y, z in re.findall(r"-(\w+)=([\d.-]+)", x)}),
+        "target_controlled": (b"$(TBC:CONT?)", lambda x: {y: _sbool[z] for y, z in re.findall(r"-(\w+)=(True|False)", x)}),
+        "led_temperature": (b"$(LED:LEDTemperature?)", float),
     }
 
     _com: ClassVar[bytes] = b"RET " + b" ".join(v for v, _ in _comlist.values())
+
