@@ -129,9 +129,11 @@ async def test_real_experiment():
 
     exp.sync_from_machine(m)
 
-    with m:
-        with m.at_access("Controller"):
-            m.run_command(f'TextWAit -timeout=7200 Run Ended')
+    rs = m.run_status()
+    while rs.name != "-":
+        await asyncio.sleep(2)
+        rs = m.run_status()
+
 
     await asyncio.sleep(2)
 
