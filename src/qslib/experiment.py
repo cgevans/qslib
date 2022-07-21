@@ -877,7 +877,7 @@ table, th, td {{
 
     def save_file(
         self,
-        path_or_stream: str | os.PathLike[str] | IO[bytes] = ".",
+        path_or_stream: str | os.PathLike[str] | io.BytesIO | IO[bytes] = ".",
         overwrite: bool = False,
         update_files: bool = True,
     ) -> None:
@@ -888,7 +888,7 @@ table, th, td {{
 
         Parameters
         ----------
-        path_or_stream : str or os.PathLike[str] or IO[bytes]
+        path_or_stream : str or os.PathLike[str] or io.BytesIO
             A filename, open binary IO, or directory.  If a directory, the file will
             be saved with the name from `Experiment.runtitle_safe`.
         overwrite : bool, optional
@@ -907,7 +907,7 @@ table, th, td {{
         if update_files:
             self._update_files()
 
-        if isinstance(path_or_stream, IO):
+        if isinstance(path_or_stream, (IO, io.BytesIO)):
             path: Union[Path, IO] = path_or_stream
         else:
             path = Path(path_or_stream)

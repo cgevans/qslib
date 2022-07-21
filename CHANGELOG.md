@@ -6,6 +6,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.8.1
+
+- Fix bug with BytesIO not being recognized by `Experiment.save_file`.
+
 ## Version 0.8.0
 
 - Ensure that protocols don't have incorrect stage index and label information when being sent to machine.
