@@ -131,7 +131,7 @@ async def test_real_experiment():
 
     with m:
         with m.at_access("Controller"):
-            m.run_command(f'TextWAit -timeout=7200 Run Ended \\"{exp.name}\\"')
+            m.run_command(f'TextWAit -timeout=7200 Run Ended')
 
     await asyncio.sleep(2)
 
