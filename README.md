@@ -14,7 +14,7 @@ Status](https://img.shields.io/github/workflow/status/cgevans/qslib/Python%20tes
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/qslib)](https://pypi.org/project/qslib/)
 
 
-
+[Our DNA 28 poster is available here.](https://costi.eu/dna28/qslib-poster.pdf)
 
 Documentation: [Stable](https://qslib.readthedocs.io/en/stable/), [Latest](https://qslib.readthedocs.io/en/latest/)
 
