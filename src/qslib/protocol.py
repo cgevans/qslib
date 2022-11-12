@@ -59,9 +59,9 @@ UR: pint.UnitRegistry = pint.UnitRegistry(
 log = logging.getLogger(__name__)
 
 
-def _wrap_seconds(val: int | float | str | pint.Quantity[Any]) -> pint.Quantity[Any]:
+def _wrap_seconds(val: int | float | str | pint.Quantity) -> pint.Quantity:
     if isinstance(val, str):
-        uv = UR(val)
+        uv = UR.Quantity(val)
         uv.check("seconds")
     elif isinstance(val, pint.Quantity):
         uv = val
@@ -71,9 +71,9 @@ def _wrap_seconds(val: int | float | str | pint.Quantity[Any]) -> pint.Quantity[
     return uv
 
 
-def _wrap_degC(val: int | float | str | pint.Quantity[Any]) -> pint.Quantity[Any]:
+def _wrap_degC(val: int | float | str | pint.Quantity) -> pint.Quantity:
     if isinstance(val, str):
-        uv = UR(val)
+        uv = UR.Quantity(val)
         uv.check("degC")
     elif isinstance(val, pint.Quantity):
         uv = val
@@ -83,9 +83,9 @@ def _wrap_degC(val: int | float | str | pint.Quantity[Any]) -> pint.Quantity[Any
     return uv
 
 
-def _wrap_delta_degC(val: int | float | str | pint.Quantity[Any]) -> pint.Quantity[Any]:
+def _wrap_delta_degC(val: int | float | str | pint.Quantity) -> pint.Quantity:
     if isinstance(val, str):
-        uv = UR(val)
+        uv = UR.Quantity(val)
         uv.check("delta_degC")
     elif isinstance(val, pint.Quantity):
         uv = val
@@ -99,8 +99,8 @@ _ZEROTEMPDELTA = UR.Quantity(0.0, "delta_degC")
 
 
 def _wrap_delta_degC_or_zero(
-    val: int | float | str | pint.Quantity[Any] | None,
-) -> pint.Quantity[Any]:
+    val: int | float | str | pint.Quantity | None,
+) -> pint.Quantity:
     if val is None:
         return _ZEROTEMPDELTA
     else:
@@ -108,8 +108,8 @@ def _wrap_delta_degC_or_zero(
 
 
 def _wrap_degC_or_none(
-    val: int | float | str | pint.Quantity[Any] | None,
-) -> pint.Quantity[Any] | None:
+    val: int | float | str | pint.Quantity | None,
+) -> pint.Quantity | None:
     if val is None:
         return None
     else:
@@ -120,9 +120,9 @@ def _wrapunitmaybelist_degC(
     val: int
     | float
     | str
-    | pint.Quantity[Any]
-    | Sequence[int | float | str | pint.Quantity[Any]],
-) -> pint.Quantity[Any]:
+    | pint.Quantity
+    | Sequence[int | float | str | pint.Quantity],
+) -> pint.Quantity:
     unit: pint.Unit = cast(pint.Unit, UR("degC"))
 
     if isinstance(val, pint.Quantity):
@@ -137,7 +137,7 @@ def _wrapunitmaybelist_degC(
             if isinstance(x, pint.Quantity):
                 m.append(x.to(unit).magnitude)
             elif isinstance(x, str):
-                m.append(UR(x).to(unit).magnitude)
+                m.append(UR.Quantity(x).to(unit).magnitude)
             else:
                 m.append(x)
         return UR.Quantity(m, unit)
@@ -191,6 +191,7 @@ class ProtoCommand(ABC):
         ...
 
     @classmethod
+    @abstractmethod
     def from_scpicommand(cls: Type[T], sc: SCPICommand) -> T:  # pragma: no cover
         ...
 
@@ -584,7 +585,7 @@ class Step(CustomStep, XMLable):
     time: pint.Quantity[int] = attr.field(
         converter=_wrap_seconds, on_setattr=attr.setters.convert
     )
-    temperature: pint.Quantity[Any] = attr.field(
+    temperature: pint.Quantity = attr.field(
         converter=_wrapunitmaybelist_degC, on_setattr=attr.setters.convert
     )
     collect: bool | None = None
@@ -720,7 +721,7 @@ class Step(CustomStep, XMLable):
         return self.temperature_list + inccycles * self.temp_increment
 
     @property
-    def identifier(self) -> None:
+    def identifier(self) -> int | str | None:
         return None
 
     @identifier.setter

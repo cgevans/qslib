@@ -140,9 +140,13 @@ class FilterDataReading:
         assert self.plate_rows * self.plate_cols == 96
         assert len(self.temperatures) == 6
 
+        wfs = cast(ET.Element, pde.find("WellData")).text
+        if wfs is None:
+            raise ValueError("WellData is empty.")
+
         self.well_fluorescence = cast(
             np.ndarray,
-            np.fromstring(cast(ET.Element, pde.find("WellData")).text, sep=" "),
+            np.fromstring(wfs, sep=" "),
         )
 
         self.timestamp = timestamp
@@ -173,12 +177,14 @@ class FilterDataReading:
 
     @property
     def well_temperatures(self) -> np.ndarray:
+        zones = self.plate_cols / len(self.temperatures)
+        assert zones == int(zones)
         return cast(
             np.ndarray,
             self.temperatures[
                 np.tile(
                     np.arange(0, len(self.temperatures)).repeat(
-                        self.plate_cols / len(self.temperatures)
+                        int(zones)
                     ),
                     self.plate_rows,
                 )
@@ -187,13 +193,18 @@ class FilterDataReading:
 
     @property
     def well_set_temperatures(self) -> np.ndarray:
+        if self.set_temperatures is None:
+            raise ValueError("No set temperatures available.")
+        zones = self.plate_cols / len(self.set_temperatures)
+        assert zones == int(zones)
+        zones = int(zones)
         if self.set_temperatures is not None:
             return cast(
                 np.ndarray,
                 self.set_temperatures[
                     np.tile(
                         np.arange(0, len(self.set_temperatures)).repeat(
-                            self.plate_cols / len(self.set_temperatures)
+                            zones
                         ),
                         self.plate_rows,
                     )
@@ -214,7 +225,7 @@ class FilterDataReading:
     def plate_fluorescence(self) -> np.ndarray:
         return self.well_fluorescence.reshape(self.plate_rows, self.plate_cols)
 
-    def to_lineprotocol(self, run_name: str = None, sample_array=None) -> List[str]:
+    def to_lineprotocol(self, run_name: Optional[str] = None, sample_array=None) -> List[str]:
         lines = []
         gs = f"filterdata,filter_set={self.filter_set}"
         assert self.timestamp

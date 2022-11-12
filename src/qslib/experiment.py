@@ -38,7 +38,7 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 import toml as toml
-from pandas.core.base import DataError
+from pandas.errors import DataError
 
 from qslib.plate_setup import PlateSetup
 from qslib.scpi_commands import AccessLevel, SCPICommand

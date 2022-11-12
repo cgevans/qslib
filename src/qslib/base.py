@@ -18,19 +18,23 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 class BaseStatus(ABC):
-    @classmethod
-    @property
-    @abstractmethod
-    def _comlist(
-        cls: Type[T],
-    ) -> Dict[str, Tuple[bytes, Callable[[Any], Any]]]:  # pragma: no cover
-        ...
+    _comlist: ClassVar[Dict[str, Tuple[bytes, Callable[[Any], Any]]]]
 
-    @classmethod
-    @property
-    @abstractmethod  # pragma: no cover
-    def _com(cls: Type[T]) -> bytes:  # pragma: no cover
-        ...
+    _com: ClassVar[bytes]
+
+    # @classmethod
+    # @property
+    # @abstractmethod
+    # def _comlist(
+    #     cls: Type[T],
+    # ) -> Dict[str, Tuple[bytes, Callable[[Any], Any]]]:  # pragma: no cover
+    #     ...
+
+    # @classmethod
+    # @property
+    # @abstractmethod  # pragma: no cover
+    # def _com(cls: Type[T]) -> bytes:  # pragma: no cover
+    #     ...
 
     @classmethod
     def from_machine(cls: Type[T], connection: "Machine") -> T:  # type: ignore
