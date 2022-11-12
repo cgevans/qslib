@@ -183,9 +183,7 @@ class FilterDataReading:
             np.ndarray,
             self.temperatures[
                 np.tile(
-                    np.arange(0, len(self.temperatures)).repeat(
-                        int(zones)
-                    ),
+                    np.arange(0, len(self.temperatures)).repeat(int(zones)),
                     self.plate_rows,
                 )
             ],
@@ -203,9 +201,7 @@ class FilterDataReading:
                 np.ndarray,
                 self.set_temperatures[
                     np.tile(
-                        np.arange(0, len(self.set_temperatures)).repeat(
-                            zones
-                        ),
+                        np.arange(0, len(self.set_temperatures)).repeat(zones),
                         self.plate_rows,
                     )
                 ],
@@ -225,7 +221,9 @@ class FilterDataReading:
     def plate_fluorescence(self) -> np.ndarray:
         return self.well_fluorescence.reshape(self.plate_rows, self.plate_cols)
 
-    def to_lineprotocol(self, run_name: Optional[str] = None, sample_array=None) -> List[str]:
+    def to_lineprotocol(
+        self, run_name: Optional[str] = None, sample_array=None
+    ) -> List[str]:
         lines = []
         gs = f"filterdata,filter_set={self.filter_set}"
         assert self.timestamp

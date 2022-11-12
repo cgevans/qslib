@@ -2255,7 +2255,7 @@ table, th, td {{
                 annotate_frac = 0.05
 
             for _, s in self.stages.iterrows():
-                if s.stage == 'PRERUN' or s.stage == 'POSTRUN':
+                if s.stage == "PRERUN" or s.stage == "POSTRUN":
                     continue
                 xtrans = ax.get_xaxis_transform()
                 ax.axvline(
