@@ -319,7 +319,7 @@ class Machine:
         path: str,
         *,
         leaf: str = "FILE",
-        verbose: Literal[False],
+        verbose: Literal[False] = False,
         recursive: bool = False,
     ) -> list[str]:
         ...
@@ -333,7 +333,6 @@ class Machine:
         verbose: bool = False,
         recursive: bool = False,
     ) -> list[str] | list[dict[str, Any]]:
-
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(
             self.connection.list_files(

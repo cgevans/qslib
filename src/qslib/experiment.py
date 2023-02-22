@@ -116,6 +116,27 @@ class AlreadyExistsError(MachineError):
     name: str
 
     def __str__(self) -> str:
+        return f"Run {self.name} exists."
+
+
+@dataclass
+class AlreadyExistsWorkingError(AlreadyExistsError):
+    "A run already exists in uncollected (experiment:) with the same name."
+    name: str
+
+    def __str__(self) -> str:
+        return (
+            f"Run {self.name} exists in machine working directory. This may be caused by "
+            "a failed previous run.  TODO: write cleanup code."
+        )
+
+
+@dataclass
+class AlreadyExistsCompleteError(AlreadyExistsError):
+    "A run already exists in uncollected (experiment:) with the same name."
+    name: str
+
+    def __str__(self) -> str:
         return (
             f"Run {self.name} exists in machine working directory. This may be caused by "
             "a failed previous run.  TODO: write cleanup code."
@@ -509,6 +530,7 @@ table, th, td {{
     def run(
         self,
         machine: MachineReference | None = None,
+        overwrite: Literal[True, False, "incomplete"] = False,
         require_exclusive: bool = False,
         require_drawer_check: bool = True,
     ) -> None:
@@ -539,15 +561,31 @@ table, th, td {{
                 raise ValueError
 
             with machine.at_access(AccessLevel.Controller, exclusive=require_exclusive):
+                # Check existence of previous run folder in experiments:
+                if self.runtitle_safe + "/" in machine.run_command("EXP:LIST?"):
+                    if not overwrite:
+                        raise AlreadyExistsWorkingError(machine, self.runtitle_safe)
+                    else:
+                        log.warning("Found incomplete run folder, deleting.")
+                        machine.run_command(f"EXP:DELETE {self.runtitle_safe}")
+
+                # Check existence of previous completed run:
+                compl_runs = machine.list_files("public_run_complete:", verbose=False)
+                reds = f"public_run_complete:{self.runtitle_safe}.eds"
+                if reds in compl_runs:
+                    if (not overwrite) or (overwrite == "incomplete"):
+                        raise AlreadyExistsCompleteError(machine, self.runtitle_safe)
+                    else:
+                        log.warning(
+                            f"Found complete run, but overwriting per overwrite={overwrite}."
+                        )
+                        machine.run_command(f"FILE:REMOVE {reds}")
+
                 log.debug("Powering on machine and ensuring drawer/cover is closed.")
                 # Ensure machine state and power.
                 machine.power = True
 
                 machine.drawer_close(lower_cover=True, check=require_drawer_check)
-
-                # Check existence of previous run folder
-                if self.runtitle_safe + "/" in machine.run_command("EXP:LIST?"):
-                    raise AlreadyExistsError(machine, self.runtitle_safe)
 
                 log.debug("Creating experiment folder %s.", self.runtitle_safe)
                 machine.run_command(f"EXP:NEW {self.runtitle_safe} {TEMPLATE_NAME}")
@@ -725,7 +763,6 @@ table, th, td {{
                         b.write(machine.read_file(f["path"]))
                 elif log_method == "eval":
                     with open(sdspath, "ab+") as b:
-
                         # Seeking to the end of the file gives us the size
                         curpos = b.seek(0, 1)
 
@@ -874,6 +911,13 @@ table, th, td {{
                 "${LogFolder}/qsl-tcprotocol.xml",
                 open(self._sdspath("qsl-tcprotocol.xml"), "rb").read(),
             )
+
+    #     def change_plate_setup(self, new_plate_setup: Optional[PlateSetup], machine: MachineReference | None = None,
+    # ):
+    #         """
+    #         Change the plate setup for the experiment, including on the machine where it is running.
+
+    #         """
 
     def save_file(
         self,

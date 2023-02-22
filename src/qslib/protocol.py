@@ -590,7 +590,7 @@ class Step(CustomStep, XMLable):
     )
     collect: bool | None = None
     temp_increment: pint.Quantity[float] = attr.field(
-        default=UR.Quantity(0.0, UR.delta_degC),
+        default=_ZEROTEMPDELTA,
         converter=_wrap_delta_degC,
         on_setattr=attr.setters.convert,
     )
@@ -785,14 +785,14 @@ class Step(CustomStep, XMLable):
         ts: pint.Quantity[np.ndarray] = UR.Quantity(
             [float(x.text or math.nan) for x in e.findall("Temperature")], "degC"
         )
-        ht: pint.Quantity[int] = int(e.findtext("HoldTime") or 0) * UR("seconds")
-        et: pint.Quantity[float] = float(e.findtext("ExtTemperature") or 0.0) * UR(
-            "delta_degC"
+        ht: pint.Quantity[int] = int(e.findtext("HoldTime") or 0) * UR.seconds
+        et: pint.Quantity[float] = (
+            float(e.findtext("ExtTemperature") or 0.0) * UR.delta_degC
         )
-        eht: pint.Quantity[int] = int(e.findtext("ExtHoldTime") or 0) * UR("seconds")
+        eht: pint.Quantity[int] = int(e.findtext("ExtHoldTime") or 0) * UR.seconds
         if not he:
-            et = 0 * UR("seconds")
-            eht = 0 * UR("seconds")
+            et = _ZEROTEMPDELTA
+            eht = 0 * UR.seconds
         return Step(ht, ts, collect, et, etc, 1, eht, ehtc, 1, [], True)
 
     def to_xml(self, **kwargs: Any) -> ET.Element:
