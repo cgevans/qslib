@@ -75,6 +75,20 @@ MachineReference = Union[str, Machine]
 
 
 @dataclass
+class AlreadyStartedError(ValueError):
+    """The experiment has already been started."""
+
+    name: str
+    state: str
+
+    def __str__(self) -> str:
+        return (
+            f"Experiment {self.name} is recorded as already having started."
+            f"Current state of the object is {self.state}."
+        )
+
+
+@dataclass
 class MachineError(Exception):
     """Base class for an error from a machine."""
 
@@ -112,7 +126,7 @@ class MachineBusyError(MachineError):
 
 @dataclass
 class AlreadyExistsError(MachineError):
-    "A run already exists in uncollected (experiment:) with the same name."
+    "A run already exists with the same name."
     name: str
 
     def __str__(self) -> str:
@@ -127,7 +141,7 @@ class AlreadyExistsWorkingError(AlreadyExistsError):
     def __str__(self) -> str:
         return (
             f"Run {self.name} exists in machine working directory. This may be caused by "
-            "a failed previous run.  TODO: write cleanup code."
+            'a failed previous run.  Start run with `overwrite="incomplete"` or `True` to overwrite.'
         )
 
 
@@ -138,8 +152,8 @@ class AlreadyExistsCompleteError(AlreadyExistsError):
 
     def __str__(self) -> str:
         return (
-            f"Run {self.name} exists in machine working directory. This may be caused by "
-            "a failed previous run.  TODO: write cleanup code."
+            f"Run {self.name} is in completed run storage. This may be caused by "
+            "a failed previous run.  Start run with `overwrite=True` to overwrite."
         )
 
 
@@ -541,13 +555,22 @@ table, th, td {{
         machine
             The machine to run on, by default None, in which case the machine
             associated with the run (if any) is used.
+        overwrite: bool or "incomplete", optional
+            Whether to overwrite files if a run with the same name already exists.
+            If "incomplete", only overwrite if the existing run is an incomplete
+            folder (in the experiments: working directory). By default False.
+        require_exclusive: bool, optional
+            Whether to require exclusive access to the machine, by default False.
+        require_drawer_check: bool, optional
+            Whether to ensure the drawer is closed before starting.  Note that
+            a close command will be sent regardless of this setting.  By default True.
 
         Raises
         ------
         MachineBusyError
             The machine isn't idle.
-        AlreadyExistsError
-            The machine already has a folder for this run in its working runs folder.
+        AlreadyExistsError (either AlreadyExistsWorkingError or AlreadyExistsCompleteError)
+            The machine already has a folder or eds file with this run name.
         """
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         log.info("Attempting to start %s on %s.", self.runtitle_safe, machine.host)
@@ -558,7 +581,7 @@ table, th, td {{
                 raise MachineBusyError(machine, x)
 
             if self.runstate != "INIT":
-                raise ValueError
+                raise AlreadyStartedError(self.runtitle_safe, self.runstate)
 
             with machine.at_access(AccessLevel.Controller, exclusive=require_exclusive):
                 # Check existence of previous run folder in experiments:
@@ -566,7 +589,9 @@ table, th, td {{
                     if not overwrite:
                         raise AlreadyExistsWorkingError(machine, self.runtitle_safe)
                     else:
-                        log.warning("Found incomplete run folder, deleting.")
+                        log.warning(
+                            f"Found incomplete run folder, deleting per overwrite={overwrite}."
+                        )
                         machine.run_command(f"EXP:DELETE {self.runtitle_safe}")
 
                 # Check existence of previous completed run:
