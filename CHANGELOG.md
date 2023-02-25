@@ -6,10 +6,12 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
-## Version 0.8.2 (development)
+## Version 0.8.2
 
 - Add check for existing, completed EDS files with same name, and option to `Experiment.run` to overwrite completed or working files.
 - Fix XML protocol parsing bug for increment units with non-qslib EDS files.
+- Fix stage lines in plots.
+- Improve error messages.
 
 ## Version 0.8.1
 
