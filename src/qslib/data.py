@@ -101,7 +101,6 @@ class FilterDataReading:
         sds_dir: Optional[str | PathLike[str]] = None,
         set_temperatures: Union[Literal["auto"], None, List[float]] = "auto",
     ):
-
         attribs = {
             cast(str, k.text).lower(): cast(str, v.text)
             for k, v in zip(

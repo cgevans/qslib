@@ -7,7 +7,6 @@ from qslib import *
 
 
 def test_create():
-
     exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
 
 

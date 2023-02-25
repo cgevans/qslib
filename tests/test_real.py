@@ -65,7 +65,6 @@ def test_real_invocationerror():
 
 @pytest.mark.asyncio
 async def test_real_experiment():
-
     from qslib.monitor import Collector, Config
 
     mon = Collector(Config())

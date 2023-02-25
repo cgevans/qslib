@@ -650,7 +650,6 @@ class Collector:
             self.idbw.flush()
 
     async def monitor(self, connected_fut: asyncio.Future[bool] | None = None) -> None:
-
         if self.config.matrix is not None:
             await self.matrix_client.login(self.config.matrix.password)
             joinedroomresp = await self.matrix_client.joined_rooms()

@@ -254,7 +254,6 @@ class QSConnectionAsync:
         initial_access_level: AccessLevel | None = None,
         password: Optional[str] = None,
     ) -> str:
-
         if authenticate is not None:
             self._authenticate_on_connect = authenticate
         if password is not None:
