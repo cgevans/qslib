@@ -7,7 +7,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 [![Documentation Status](https://readthedocs.org/projects/qslib/badge/?version=latest)](https://qslib.readthedocs.io/en/latest/?badge=latest)
 ![Codecov](https://img.shields.io/codecov/c/github/cgevans/qslib)
 ![GitHub Workflow
-Status](https://img.shields.io/github/actions/workflow/status/cgevans/qslib/python-tests.fml?branch=main)
+Status](https://img.shields.io/github/actions/workflow/status/cgevans/qslib/python-tests.yml?branch=main)
 ![PyPI](https://img.shields.io/pypi/v/qslib)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/5512/badge)](https://bestpractices.coreinfrastructure.org/projects/5512)
 [![DOI](https://zenodo.org/badge/393710481.svg)](https://zenodo.org/badge/latestdoi/393710481)
