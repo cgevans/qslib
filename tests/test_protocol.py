@@ -9,7 +9,7 @@ import pytest
 
 import qslib.protocol as tc
 from qslib import Experiment
-from qslib.protocol import UR, Exposure, FilterSet, Protocol, Stage, Step
+from qslib.protocol import Q_, UR, Exposure, FilterSet, Protocol, Stage, Step
 from qslib.scpi_commands import SCPICommand  # noqa
 
 PROTSTRING = """PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
@@ -285,3 +285,12 @@ def test_delta_unit_conversion():
             "50 °C", "20 °C", total_time="30 min", temperature_step="3.6 degF"
         )
     )
+
+
+def test_hold():
+    h = Stage.hold_at("60 °C", "1 hour", "10 minutes")
+    assert h == Stage(Step("10 min", "60 °C"), 6)
+
+    assert Stage.hold_at("50 °C", total_time="1 hour").steps[0].duration_at_cycle(
+        0
+    ) == Q_("1 hour")
