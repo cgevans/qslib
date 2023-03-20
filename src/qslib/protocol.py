@@ -976,7 +976,12 @@ class Stage(XMLable, ProtoCommand):
         n_steps
             Number of steps.  If None, uses 1.0 Δ°C steps, or, if
             doing a multi-temperature change, uses maximum step
-            of 1.0 Δ°C.
+            of 1.0 Δ°C.  If n_steps is specified, it is the number of
+            temperature *steps* to take.  Normally, since there is
+            an initial cycle of the starting temperatures, this means
+            there will be `n_steps + 1` cycles.  If start_increment is True,
+            and the initial cycle is already stepped away from the starting
+            temperature, then there will be only `n_steps` cycles.
         temperature_step
             Step temperature change (optional).  Must be None,
             or correctly match calculation, if n_steps is not
@@ -990,6 +995,13 @@ class Stage(XMLable, ProtoCommand):
             Collect data?  If None, collects data if filters is set explicitly.
         filters
             Filters to collect.
+        start_increment
+            If False (default), start at the `from_temperature`, holding there
+            for the same hold time as every other temperature.  If True, start
+            one step away from the `from_temperature`.  This is useful, for
+            example, if the previous stage held at a particular temperature,
+            and you now want to step *away* from that temperature.  When True,
+            note the remarks about n_steps above.
 
         Returns
         -------
