@@ -55,47 +55,63 @@ UR: pint.UnitRegistry = pint.UnitRegistry(
     autoconvert_offset_to_baseunit=True, auto_reduce_dimensions=True
 )
 
+Q_ = UR.Quantity
 
 log = logging.getLogger(__name__)
 
 
+def _check_unit_or_fail(val: pint.Quantity, unit: str | pint.Unit) -> None:
+    if not val.check(unit):
+        raise pint.DimensionalityEror(val.u, unit)
+
+
 def _wrap_seconds(val: int | float | str | pint.Quantity) -> pint.Quantity:
     if isinstance(val, str):
-        uv = UR.Quantity(val)
-        uv.check("seconds")
+        uv = Q_(val)
+        _check_unit_or_fail(uv, "seconds")
     elif isinstance(val, pint.Quantity):
         uv = val
-        uv.check("seconds")
+        _check_unit_or_fail(uv, "seconds")
     else:
-        uv = UR.Quantity(val, "seconds")
+        uv = Q_(val, "seconds")
     return uv
 
 
 def _wrap_degC(val: int | float | str | pint.Quantity) -> pint.Quantity:
     if isinstance(val, str):
-        uv = UR.Quantity(val)
-        uv.check("degC")
+        uv = Q_(val)
+        _check_unit_or_fail(uv, "degC")
     elif isinstance(val, pint.Quantity):
         uv = val
-        uv.check("degC")
+        _check_unit_or_fail(uv, "degC")
     else:
-        uv = UR.Quantity(val, "degC")
+        uv = Q_(val, "degC")
     return uv
 
 
 def _wrap_delta_degC(val: int | float | str | pint.Quantity) -> pint.Quantity:
     if isinstance(val, str):
-        uv = UR.Quantity(val)
-        uv.check("delta_degC")
+        uv = Q_(val)
+        uv = _ensure_delta_temperature(uv)
     elif isinstance(val, pint.Quantity):
         uv = val
-        uv.check("delta_degC")
+        uv = _ensure_delta_temperature(uv)
     else:
-        uv = UR.Quantity(val, "delta_degC")
+        uv = Q_(val, "delta_degC")
     return uv
 
 
-_ZEROTEMPDELTA = UR.Quantity(0.0, "delta_degC")
+def _ensure_delta_temperature(val: pint.Quantity) -> pint.Quantity:
+    _check_unit_or_fail(val, "delta_degC")
+
+    # Are we multiplicative?
+    if not UR._units[str(val.u)].is_multiplicative:
+        return Q_(val.m, "delta_" + str(val.u))
+
+    return val
+
+
+_ZEROTEMPDELTA = Q_(0.0, "delta_degC")
 
 
 def _wrap_delta_degC_or_zero(
@@ -123,26 +139,26 @@ def _wrapunitmaybelist_degC(
     | pint.Quantity
     | Sequence[int | float | str | pint.Quantity],
 ) -> pint.Quantity:
-    unit: pint.Unit = cast(pint.Unit, UR("degC"))
+    unit: pint.Unit = UR.Unit("degC")
 
     if isinstance(val, pint.Quantity):
         uv = val
-        uv.check(unit)
+        _check_unit_or_fail(uv, unit)
     elif isinstance(val, str):
         uv = UR(val)
-        uv.check(unit)
+        _check_unit_or_fail(uv, unit)
     elif isinstance(val, Sequence):
         m = []
         for x in val:
             if isinstance(x, pint.Quantity):
                 m.append(x.to(unit).magnitude)
             elif isinstance(x, str):
-                m.append(UR.Quantity(x).to(unit).magnitude)
+                m.append(Q_(x).to(unit).magnitude)
             else:
                 m.append(x)
-        return UR.Quantity(m, unit)
+        return Q_(m, unit)
     else:
-        uv = UR.Quantity(val, unit)
+        uv = Q_(val, unit)
     return uv
 
 
@@ -240,7 +256,7 @@ class Ramp(ProtoCommand):
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> Ramp:
-        return Ramp(UR.Quantity(sc.args, "degC"), **sc.opts)  # type: ignore
+        return Ramp(Q_(sc.args, "degC"), **sc.opts)  # type: ignore
 
 
 @dataclass
@@ -318,7 +334,7 @@ class HoldAndCollect(ProtoCommand):
     """A protocol hold (for a time) and collect (set by HACFILT) command."""
 
     time: pint.Quantity[int]
-    increment: pint.Quantity[int] = UR.Quantity(0, "seconds")
+    increment: pint.Quantity[int] = Q_(0, "seconds")
     incrementcycle: int = 1
     incrementstep: int = 1
     tiff: bool = False
@@ -346,7 +362,7 @@ class HoldAndCollect(ProtoCommand):
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> HoldAndCollect:
-        return HoldAndCollect(UR.Quantity(cast(int, sc.args[0]), "seconds"), **sc.opts)  # type: ignore
+        return HoldAndCollect(Q_(cast(int, sc.args[0]), "seconds"), **sc.opts)  # type: ignore
 
 
 @dataclass
@@ -354,7 +370,7 @@ class Hold(ProtoCommand):
     """A protocol hold (for a time) command."""
 
     time: pint.Quantity[int] | None
-    increment: pint.Quantity[int] = UR.Quantity(0, "seconds")
+    increment: pint.Quantity[int] = Q_(0, "seconds")
     incrementcycle: int = 1
     incrementstep: int = 1
     _names: ClassVar[Sequence[str]] = ("HOLD",)
@@ -376,7 +392,7 @@ class Hold(ProtoCommand):
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> Hold:
-        return Hold(UR.Quantity(cast(int, sc.args[0]), "seconds"), **sc.opts)  # type: ignore
+        return Hold(Q_(cast(int, sc.args[0]), "seconds"), **sc.opts)  # type: ignore
 
 
 class XMLable(ABC):
@@ -468,10 +484,10 @@ class CustomStep(ProtoCommand, XMLable):
         return s
 
     def duration_at_cycle(self, cycle: int) -> pint.Quantity[int]:  # cycle from 1
-        return UR.Quantity(0, "second")
+        return Q_(0, "second")
 
     def temperatures_at_cycle(self, cycle: int) -> pint.Quantity[np.ndarray]:
-        return UR.Quantity(np.array(6 * [math.nan]), "degC")
+        return Q_(np.array(6 * [math.nan]), "degC")
 
     def total_duration(self, repeat: int = 1) -> pint.Quantity[int]:
         return 0 * UR.seconds
@@ -597,7 +613,7 @@ class Step(CustomStep, XMLable):
     temp_incrementcycle: int = 2
     temp_incrementpoint: int = 2
     time_increment: pint.Quantity[int] = attr.field(
-        default=UR.Quantity(0, UR.second),
+        default=Q_(0, UR.second),
         converter=_wrap_seconds,
         on_setattr=attr.setters.convert,
     )
@@ -669,9 +685,9 @@ class Step(CustomStep, XMLable):
             t = "{:.2f~}".format(temperatures)  # type: ignore
             tempstr += f" to {t}"
 
-        elems = [f"{tempstr} for {self.time}/cycle"]
+        elems = [f"{tempstr} for {self.time:~}/cycle"]
         if self.temp_increment != 0.0:
-            elems.append(f"{self.temp_increment}°C/cycle")
+            elems.append(f"{self.temp_increment:~}/cycle")
             if self.temp_incrementcycle > 1:
                 elems[-1] += f" from cycle {self.temp_incrementcycle}"
         if self.time_increment != 0.0:
@@ -732,9 +748,9 @@ class Step(CustomStep, XMLable):
     def temperature_list(self) -> pint.Quantity[np.ndarray]:
         mag = self.temperature.to("degC").magnitude  # FIXME
         if isinstance(mag, np.ndarray):
-            return UR.Quantity(mag, "degC")
+            return Q_(mag, "degC")
         else:
-            return UR.Quantity(NZONES * [mag], "degC")
+            return Q_(NZONES * [mag], "degC")
 
     @property
     def body(self) -> list[ProtoCommand]:
@@ -782,7 +798,7 @@ class Step(CustomStep, XMLable):
         cls, e: ET.Element, *, etc: int = 1, ehtc: int = 1, he: bool = False
     ) -> Step:
         collect = bool(int(e.findtext("CollectionFlag") or 0))
-        ts: pint.Quantity[np.ndarray] = UR.Quantity(
+        ts: pint.Quantity[np.ndarray] = Q_(
             [float(x.text or math.nan) for x in e.findall("Temperature")], "degC"
         )
         ht: pint.Quantity[int] = int(e.findtext("HoldTime") or 0) * UR.seconds
@@ -936,7 +952,7 @@ class Stage(XMLable, ProtoCommand):
     @classmethod
     def stepped_ramp(
         cls: Type[Stage],
-        from_temperature: float | str | pint.Quantity[float] | Sequence[float],
+        from_temperature: float | str | pint.Quantity[float] | Sequence[float] | None,
         to_temperature: float | str | pint.Quantity[float] | Sequence[float],
         total_time: int | str | pint.Quantity[int],
         *,
@@ -944,13 +960,15 @@ class Stage(XMLable, ProtoCommand):
         temperature_step: float | str | pint.Quantity[float] | None = None,
         collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
+        start_increment: bool = False,
     ) -> Stage:
         """Hold at a series of temperatures, from one to another.
 
         Parameters
         ----------
         from_temperature
-            Initial temperature/s (inclusive).
+            Initial temperature/s (inclusive).  If None, uses the final temperature of
+            the previous stage.
         to_temperature
             Final temperature/s (inclusive).
         total_time
@@ -986,12 +1004,8 @@ class Stage(XMLable, ProtoCommand):
 
         multistep = False
 
-        if hasattr(delta, "shape"):
-            if (delta != delta[0]).any():
-                multistep = True
-                max_delta = delta.max()  # type: pint.Quantity[float]
-            else:
-                max_delta = delta[0]
+        if hasattr(delta, "shape") and len(delta.shape) > 0:
+            max_delta = delta.max()  # type: pint.Quantity[float]
         else:
             max_delta = delta
 
@@ -999,13 +1013,21 @@ class Stage(XMLable, ProtoCommand):
 
         if n_steps is None:
             if temperature_step is None:
-                temperature_step = UR("1.0 delta_degC")
+                temperature_step = Q_(1.0, "delta_degC")
+                autoset_step = True
             else:
                 temperature_step = abs(_wrap_delta_degC(temperature_step))
+                autoset_step = False
 
-            n_steps = abs(round((max_delta / temperature_step).to("").magnitude)) + 1
+            n_steps = max(
+                abs(round((max_delta / temperature_step).to("").magnitude))
+                + (0 if start_increment else 1),
+                1,
+            )
 
-            real_max_temperature_step = abs(max_delta / (n_steps - 1))
+            real_max_temperature_step = abs(
+                max_delta / (n_steps - (0 if start_increment else 1))
+            )
 
             change = (
                 ((real_max_temperature_step - temperature_step) / temperature_step)
@@ -1013,7 +1035,7 @@ class Stage(XMLable, ProtoCommand):
                 .magnitude
             )
 
-            if abs(change) > 0.05:
+            if (abs(change) > 0.05) and not autoset_step:
                 warnings.warn(
                     f"Desired temperature step {temperature_step} differs by {100*change}% from actual {real_max_temperature_step}."
                 )
@@ -1021,14 +1043,27 @@ class Stage(XMLable, ProtoCommand):
         elif temperature_step is not None:
             temperature_step = abs(_wrap_delta_degC(temperature_step))
             if (
-                abs(round((max_delta / temperature_step).to("").magnitude)) + 1
+                abs(round((max_delta / temperature_step).to("").magnitude))
+                + (0 if start_increment else 1)
                 != n_steps
             ):
                 raise ValueError(
                     "Both n_steps and temperature_step set, and calculated steps don't match set steps."
                 )
 
-        temp_increment = ((to_temperature - from_temperature) / (n_steps - 1)).round(4)
+        temp_increment = (
+            (to_temperature - from_temperature)
+            / (n_steps - (0 if start_increment else 1))
+        ).round(4)
+
+        # If the temp_increment is entirely equal, we are not multistep, and we should
+        # have only a single temp_increment.
+
+        if hasattr(temp_increment, "shape") and len(temp_increment.shape) > 0:
+            if (temp_increment != temp_increment[0]).any():
+                multistep = True
+            else:
+                temp_increment = temp_increment[0]
 
         step_time = (total_time / n_steps).round()
 
@@ -1041,6 +1076,7 @@ class Stage(XMLable, ProtoCommand):
                         collect=collect,
                         temp_increment=temp_increment,
                         filters=filters,
+                        temp_incrementcycle=(1 if start_increment else 2),
                     )
                 ],
                 repeat=n_steps,
@@ -1052,7 +1088,8 @@ class Stage(XMLable, ProtoCommand):
             [
                 Step(
                     step_time,
-                    from_temperature + step_i * temp_increment,
+                    from_temperature
+                    + (step_i + (1 if start_increment else 0)) * temp_increment,
                     collect=collect,
                     filters=filters,
                 )
@@ -1336,7 +1373,7 @@ class Stage(XMLable, ProtoCommand):
         try:
             tot_dur = sum(
                 (x.total_duration(self.repeat) for x in self.steps),
-                UR.Quantity(0, UR.seconds),
+                Q_(0, UR.seconds),
             )
             stagestr += f" (total duration {_durformat(tot_dur)})"
         except KeyError:

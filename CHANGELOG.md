@@ -6,6 +6,15 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.9.0
+
+- Fix `Stage.stepped_ramp` when all temperature increments are the same, but temperatures are not.
+- Add a `start_increment` option to `Stage.stepped_ramp` for cases where the user does not want the
+  ramp to actually start at the starting temperature, but at the first increment away from it (eg,
+  when continuing a previous ramp).
+- Ensure that units are delta units when appropriate in protocols, regardless of whether the user
+  entered them as delta units (eg, so "2°C" will work as a temperature step).
+
 ## Version 0.8.2
 
 - Add check for existing, completed EDS files with same name, and option to `Experiment.run` to overwrite completed or working files.
