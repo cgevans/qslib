@@ -242,3 +242,46 @@ def test_exposure_roundtrip():
     e = Exposure([(FilterSet(1, 4), [500, 2000])])
     s = e.to_scpicommand().to_string()
     assert SCPICommand.from_string(s).specialize() == e
+
+
+def test_stepped_ramp_multi_same_increment():
+    p1 = Protocol(
+        [
+            Stage.stepped_ramp(
+                [50, 50, 50, 40, 40, 40], [40, 40, 40, 30, 30, 30], "11 min"
+            ),
+            Stage.stepped_ramp(
+                [40, 40, 40, 30, 30, 30],
+                [30, 30, 30, 20, 20, 20.0],
+                "10 min",
+                start_increment=True,
+            ),
+            # Stage.stepped_ramp(None, [20,20,20,10,10,10], "9 min", start_increment=True), # FIXME: implement this
+        ]
+    )
+
+    s = str(p1)
+
+    p1.to_scpicommand()
+
+    assert (
+        (p1.dataframe.loc[:, "temperature_1":"temperature_6"].diff()[1:] == -1)
+        .all()
+        .all()
+    )
+    assert (p1.dataframe.start_time.diff()[1:] == 60.625).all()
+    assert (p1.dataframe.end_time.diff()[1:] == 60.625).all()
+
+
+def test_delta_unit_conversion():
+    assert (
+        Stage.stepped_ramp(
+            "50 °C", "20 °C", total_time="30 min", temperature_step="2 °C"
+        )
+        == Stage.stepped_ramp(
+            "50 °C", "20 °C", total_time="30 min", temperature_step="2 delta_degC"
+        )
+        == Stage.stepped_ramp(
+            "50 °C", "20 °C", total_time="30 min", temperature_step="3.6 degF"
+        )
+    )

@@ -25,6 +25,12 @@ These are often compatible with AB's software.
    Stage
    Step
 
+There are also some convenience commands to construct often-used stages:
+
+.. autosummary::
+   Stage.stepped_ramp
+   Stage.hold_at
+
 While the parameters for these classes default to seconds and degrees Celsius, when using numbers as input, they also use the
 pint library to accept strings (or pint Quantity objects).  Thus, you can use :code:`"1 hr"` or :code:`"1 hour"` instead of :code:`3600`,
 or :code:`"59 °C"` or :code:`"59 degC"` for a temperature.  Note that for temperature increments, pint distinguishes between a temperature
