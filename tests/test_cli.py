@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
 # SPDX-License-Identifier: AGPL-3.0-only
 
+import sys
+
 import pytest
 from click.testing import CliRunner
 
@@ -26,6 +28,9 @@ def test_info(exp, runner: CliRunner):
     assert exp.info().rstrip() == result.output.rstrip()
 
 
+@pytest.mark.skipif(
+    sys.platform.startswith("win"), reason="HTML output not identical on Windows."
+)
 def test_html(exp, tmp_path_factory: pytest.TempPathFactory, runner: CliRunner):
     tp = tmp_path_factory.mktemp("temp_html")
     result = runner.invoke(
