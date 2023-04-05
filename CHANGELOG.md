@@ -6,6 +6,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.9.1 (dev)
+
+- Minor bug fixes and dependency updates (to fix pandas errors).
+
 ## Version 0.9.0
 
 - Fix `Stage.stepped_ramp` when all temperature increments are the same, but temperatures are not.

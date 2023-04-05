@@ -62,7 +62,7 @@ log = logging.getLogger(__name__)
 
 def _check_unit_or_fail(val: pint.Quantity, unit: str | pint.Unit) -> None:
     if not val.check(unit):
-        raise pint.DimensionalityEror(val.u, unit)
+        raise pint.DimensionalityError(val.u, unit)
 
 
 def _wrap_seconds(val: int | float | str | pint.Quantity) -> pint.Quantity:
