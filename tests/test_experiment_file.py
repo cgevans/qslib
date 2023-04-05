@@ -50,14 +50,14 @@ def test_reload(exp: Experiment, exp_reloaded: Experiment) -> None:
 
 def test_plot_ntmpw_smoothmw(exp: Experiment) -> None:
     axf, axt = exp.plot_over_time(
-        process=[SmoothWindowMean(4), NormToMeanPerWell(1)], annotate_stage_lines=False
+        process=[SmoothWindowMean(4), NormToMeanPerWell(2)], annotate_stage_lines=False
     )
     assert axf.get_ylabel() == "fluorescence (window mean 4, norm. to mean)"
 
 
 def test_plot_emw_maxperwell(exp: Experiment) -> None:
     axf, axt = exp.plot_over_time(
-        process=[SmoothEMWMean(alpha=0.1), NormToMaxPerWell(1)],
+        process=[SmoothEMWMean(alpha=0.1), NormToMaxPerWell(2)],
         annotate_stage_lines=False,
     )
     assert axf.get_ylabel() == "fluorescence (EMW-smoothed, norm. to max)"
@@ -65,7 +65,7 @@ def test_plot_emw_maxperwell(exp: Experiment) -> None:
 
 def test_plot_subtrbymean(exp: Experiment) -> None:
     axf, axt = exp.plot_over_time(
-        process=SubtractByMeanPerWell(1), annotate_stage_lines=False
+        process=SubtractByMeanPerWell(2), annotate_stage_lines=False
     )
     assert axf.get_ylabel() == "fluorescence (subtr. by mean)"
 

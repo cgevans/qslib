@@ -1560,10 +1560,10 @@ table, th, td {{
         if self.activestarttime:
             self.stages["start_seconds"] = (
                 self.stages["start_time"] - self.activestarttime
-            ).astype("timedelta64[s]")
+            ).astype("timedelta64[ms]").astype("int64") / 1000
             self.stages["end_seconds"] = (
                 self.stages["end_time"] - self.activestarttime
-            ).astype("timedelta64[s]")
+            ).astype("timedelta64[ms]").astype("int64") / 1000
 
         tt = []
 
