@@ -13,7 +13,7 @@ from asyncio.futures import Future
 from dataclasses import dataclass
 from typing import Any, Coroutine, Optional, Protocol, Type
 
-from .scpi_commands import AccessLevel, SCPICommand
+from .scpi_commands import AccessLevel, SCPICommand, _arglist
 
 NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
 Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")
@@ -70,9 +70,29 @@ class CommandError(Error):
 
 @dataclass
 class UnparsedCommandError(CommandError):
+    """The machine has returned an error that we are not familiar with,
+    and that we haven't parsed."""
+
     command: Optional[str]
     ref_index: Optional[str]
     response: str
+
+
+@dataclass
+class QS_IOError(CommandError):
+    command: str
+    message: str
+    data: dict[str, str]
+
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> QS_IOError:
+        m = re.match(r"(.*) --> (.*)", message)
+        if not m:
+            raise ValueError
+
+        data = _arglist.parse_string(m[1])[0].opts
+
+        return cls(command, m[2], data)
 
 
 @dataclass
@@ -145,6 +165,7 @@ COM_ERRORS: dict[str, Type[CommandError]] = {
     "AccessLevelExceeded": AccessLevelExceeded,
     "InvocationError": InvocationError,
     "NoMatch": NoMatch,
+    "IOError": QS_IOError,
 }
 
 

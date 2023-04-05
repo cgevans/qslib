@@ -6,9 +6,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
-## Version 0.9.1 (dev)
+## Version 0.9.1
 
 - Minor bug fixes and dependency updates (to fix pandas errors).
+- Fixes to support Pandas 2.0.
+- Ensure that some invalid characters are not used in machine names.
+- Check for files with and without spaces on machine when loading a new experiment (in case run was started outside of qslib).
+- Parse IOError messages from the machine.
 
 ## Version 0.9.0
 

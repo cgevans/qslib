@@ -50,11 +50,24 @@ from .data import FilterDataReading, FilterSet, df_from_readings
 from .machine import Machine
 from .processors import NormRaw, Processor
 from .protocol import Protocol, Stage, Step
+from .qs_is_protocol import QS_IOError
 from .rawquant_compat import _fdc_to_rawdata
 from .version import __version__
 
 if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt
+
+# Let's just assume all of these are problematic, for now.
+INVALID_NAME_RE = re.compile(r"[\[\]{}!/:;@&=+$,?#|\\]")
+
+
+def _safe_exp_name(name: str) -> str:
+    m = INVALID_NAME_RE.search(name)
+
+    if m:
+        raise ValueError(f"Invalid characters ({m[0]}) in run name: {name}.")
+
+    return name.replace(" ", "_")
 
 
 TEMPLATE_NAME = "ruo"
@@ -478,8 +491,8 @@ table, th, td {{
 
     @property
     def runtitle_safe(self) -> str:
-        """Run name with " " replaced by "_"."""
-        return self.name.replace(" ", "_")
+        """Run name with " " replaced by "_"; raises ValueError if name has other problematic characters."""
+        return _safe_exp_name(self.name)
 
     @property
     def rawdata(self) -> pd.DataFrame:
@@ -1045,6 +1058,10 @@ table, th, td {{
         else:
             self.name = _nowuuid()
 
+        # Ensure that name is safe for use as a filename:
+        # this will raise a ValueError for us if it isn't.
+        self.runtitle_safe
+
         if protocol is None:
             self.protocol = Protocol([Stage([Step(60, 25)])])
         else:
@@ -1249,15 +1266,18 @@ table, th, td {{
         machine = exp._ensure_machine(machine)
 
         with machine.ensured_connection():
-            crt = name
-
             if move:
                 raise NotImplementedError
 
-            if not crt:
-                raise ValueError("Nothing is currently running.")
-
-            z = machine.read_dir_as_zip(crt, leaf="EXP")
+            try:
+                z = machine.read_dir_as_zip(_safe_exp_name(name), leaf="EXP")
+            except QS_IOError:
+                try:
+                    z = machine.read_dir_as_zip(name, leaf="EXP")
+                except QS_IOError:
+                    raise ValueError(
+                        f"Could not find experiment {name} in uncollect runs on {machine}."
+                    )
 
             z.extractall(exp._dir_base)
 
@@ -1267,12 +1287,15 @@ table, th, td {{
 
     @classmethod
     def from_machine_storage(cls, machine: MachineReference, name: str) -> Experiment:
-        """Create an experiment from the one currently running on a machine.
+        """Create an experiment from the machine's storage.
 
         Parameters
         ----------
         machine : Machine
-            the machine to connect to
+            the machine to connect to.
+
+        name: str
+            the name of the run to collect.
 
         Returns
         -------
@@ -1284,10 +1307,20 @@ table, th, td {{
         machine = exp._ensure_machine(machine)
 
         with machine.ensured_connection():
-            try:
-                o = machine.read_file(name + ".eds", context="public_run_complete")
-            except FileNotFoundError:
-                o = machine.read_file(name, context="public_run_complete")
+            o = None
+            for possible_name in [
+                _safe_exp_name(name) + ".eds",
+                _safe_exp_name(name),
+                name + ".eds",
+                name,
+            ]:
+                try:
+                    o = machine.read_file(possible_name, context="public_run_complete")
+                    break
+                except QS_IOError:
+                    continue
+            if o is None:
+                raise FileNotFoundError(f"Could not find {name} on {machine.host}.")
 
             z = zipfile.ZipFile(io.BytesIO(o))
 
@@ -1319,13 +1352,22 @@ table, th, td {{
         if isinstance(machine, str):
             machine = Machine(machine)
 
+        safename = _safe_exp_name(name)
+
         with machine.ensured_connection():
-            if name == machine.current_run_name:
+            if machine.current_run_name in [safename, name]:
                 exp = cls.from_running(machine)
-            elif name in machine.list_runs_in_storage():
+                return exp
+
+            storage_runs = machine.list_runs_in_storage()
+            if (name in storage_runs) or (safename in storage_runs):
                 exp = cls.from_machine_storage(machine, name)
-            elif name + "/" in machine.list_files("", verbose=False, leaf="EXP"):
+                return exp
+
+            exp_runs = machine.list_files("", verbose=False, leaf="EXP")
+            if ((name + "/") in exp_runs) or ((safename + "/") in exp_runs):
                 exp = cls.from_uncollected(machine, name)
+
             else:
                 raise FileNotFoundError(f"Could not find run {name} on {machine.host}.")
         return exp

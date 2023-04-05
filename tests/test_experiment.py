@@ -21,3 +21,9 @@ def test_fail_plots():
 
     with pytest.raises(ValueError, match="no data available"):
         exp.plot_anneal_melt()
+
+
+@pytest.mark.parametrize("ch", ["/", "!", "}"])
+def test_unsafe_names(ch):
+    with pytest.raises(ValueError, match=r"Invalid characters \(" + ch + r"\)"):
+        exp = Experiment(name=f"a{ch}b")
