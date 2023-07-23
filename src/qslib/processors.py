@@ -124,8 +124,8 @@ class SmoothEMWMean(Processor):
 
     def ylabel(self, previous_label: str | None = None) -> str:
         if previous_label is None:
-            return f"fluorescence (EMW-smoothed)"
-        return re.sub(r"\(([^)]+)\)", rf"(\1, EMW-smoothed)", previous_label)
+            return "fluorescence (EMW-smoothed)"
+        return re.sub(r"\(([^)]+)\)", r"(\1, EMW-smoothed)", previous_label)
 
     def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         if scope == self.scope:

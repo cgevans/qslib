@@ -133,7 +133,7 @@ class RunState:
         if self.stage:
             s += f",stage={self.stage}i,cycle={self.cycle}i,step={self.step}i"
         else:
-            s += f",stage=0i,cycle=0i,step=0i"  # FIXME: not great
+            s += ",stage=0i,cycle=0i,step=0i"  # FIXME: not great
         s += f" {timestamp}"
         return s
 
@@ -562,7 +562,7 @@ class Collector:
         else:
             self.inject(
                 Point("run_action")
-                .tag("type", f"Other")
+                .tag("type", "Other")
                 .tag("run_name", state.run.name)
                 .field("message", " ".join(str(x) for x in contents))
                 .time(timestamp)

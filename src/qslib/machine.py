@@ -26,12 +26,12 @@ from .qsconnection_async import QSConnectionAsync
 
 nest_asyncio.apply()
 
-from .base import MachineStatus, RunStatus
+from .base import MachineStatus, RunStatus  # noqa: E402
 
 log = logging.getLogger(__name__)
 
 if TYPE_CHECKING:  # pragma: no cover
-    import matplotlib.pyplot as plt
+    import matplotlib.pyplot as plt  # noqa: F401
 
     from .experiment import Experiment
 

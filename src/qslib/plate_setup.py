@@ -78,7 +78,7 @@ class Sample:
     ) -> None:
         if properties is None:
             properties = dict()
-        if not "SP_UUID" in properties:
+        if "SP_UUID" not in properties:
             if not uuid:
                 uuid = uuid1().hex
             properties["SP_UUID"] = uuid
@@ -260,11 +260,11 @@ class PlateSetup:
     def from_array(
         cls, array: Union[np.ndarray, pd.DataFrame], *, make_unique: bool = False
     ) -> PlateSetup:
-        raise NotImplemented
+        raise NotImplementedError
 
     @classmethod
     def from_tsv(cls, tsvstr: str) -> PlateSetup:
-        raise NotImplemented
+        raise NotImplementedError
 
     def to_table(
         self,
