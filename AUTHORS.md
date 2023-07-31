@@ -6,4 +6,4 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Contributors
 
--   Constantine Evans <const@costinet.org>
+-   Constantine Evans <const@costi.net>

@@ -22,6 +22,9 @@ __pycache__/*
 .mypy*
 cov.xml
 
+.hypothesis/
+Unt*ipynb
+
 .virtualdocuments
 .ipynb_checkpoints
 

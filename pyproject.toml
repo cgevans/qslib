@@ -7,14 +7,17 @@
 #build-backend = "pdm.pep517.api"
 
 [build-system]
-requires = ["setuptools>=46.1.0", "setuptools_scm[toml]>=5", "wheel"]
+requires = ["setuptools>=68", "setuptools_scm[toml]>=5", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
 version_scheme = "no-guess-dev"
 
+[tool.setuptools.packages.find]
+where = ["src"]
+
 [tool.pdm]
-version = {use_scm = true}
+version = { use_scm = true }
 
 [tool.isort]
 profile = "black"
@@ -23,9 +26,9 @@ profile = "black"
 name = "qslib"
 requires-python = ">=3.9"
 description = "Library for communicating with and using the QuantStudio qPCR machine, intended for non-qPCR uses."
-license = {file = "LICENSE.txt"}
+license = { file = "LICENSE.txt" }
 readme = "README.md"
-authors = [{name="Constantine Evans", email="const@costi.eu"}]
+authors = [{ name = "Constantine Evans", email = "const@costi.net" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python",
@@ -40,52 +43,57 @@ classifiers = [
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Framework :: Matplotlib",
-    "Framework :: Jupyter" ]
+    "Framework :: Jupyter",
+]
 
 dynamic = ["version"]
 
 dependencies = [
-"pandas >= 1.5",
-"numpy >= 1",
-"tabulate >= 0.8",
-"pyparsing >= 3",
-"typeguard >= 2",
-"nest_asyncio >= 1.5",
-"click >=8.0,<9.0",
-"toml",
-"pint",
-"attrs",
-"matplotlib",
-"markdown",
-"dacite"
+    "pandas >= 2",
+    "numpy >= 1",
+    "tabulate >= 0.8",
+    "pyparsing >= 3",
+    "typeguard >= 2",
+    "nest_asyncio >= 1.5",
+    "click >=8.0,<9.0",
+    "toml",
+    "pint",
+    "attrs",
+    "matplotlib",
+    "markdown",
+    "dacite",
 ]
 
 [project.optional-dependencies]
 # Add here additional requirements for extra features, to install with:
 # `pip install qslib[PDF]` like:
 # PDF = ReportLab; RXP
-monitor = [
-    "matrix-nio",
-    "influxdb_client",
-    "toml",
-    "lxml"
-    ]
+monitor = ["matrix-nio", "influxdb_client", "toml", "lxml"]
 docs = [
     "myst_parser",
     "influxdb_client",
     "toml",
     "lxml",
     "sphinx-click",
-    "sphinx-autodoc-typehints"
-    ]
+    "sphinx-autodoc-typehints",
+    "sphinx >= 2.4",
+    "matrix-nio",
+    "influxdb_client",
+    "toml",
+    "lxml",
+]
 # Add here test requirements (semicolon/line-separated)
 testing = [
     "setuptools",
     "pytest",
     "pytest-cov",
     "pytest-asyncio",
-    "hypothesis"
-    ]
+    "hypothesis",
+    "matrix-nio",
+    "influxdb_client",
+    "toml",
+    "lxml",
+]
 
 [project.urls]
 homepage = "https://github.com/cgevans/qslib/"
@@ -101,10 +109,7 @@ qslib = "qslib.cli:cli"
 
 [tool.pytest.ini_options]
 addopts = "--cov qslib --cov-report term-missing --verbose"
-norecursedirs = [
-    "dist",
-    "build",
-    ".tox"]
+norecursedirs = ["dist", "build", ".tox"]
 testpaths = ["tests"]
 
 
