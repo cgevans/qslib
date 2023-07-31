@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
 # SPDX-License-Identifier: AGPL-3.0-only
 
-from pathlib import Path
 
 import numpy as np
 import pytest
@@ -117,8 +116,8 @@ def test_plots(exp: Experiment) -> None:
 
     exp.plot_anneal_melt(samples="Sample 1")
 
-    ax1 = exp.protocol.plot_protocol()
-    ax2 = exp.plot_protocol()
+    exp.protocol.plot_protocol()
+    exp.plot_protocol()
 
 
 def test_rawquant(exp: Experiment) -> None:

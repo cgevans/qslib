@@ -5,7 +5,6 @@ import asyncio
 import re
 
 import pytest
-import pytest_asyncio
 
 import qslib.qs_is_protocol
 from qslib import Machine
@@ -188,7 +187,7 @@ async def test_runtitle_not_running():
 
     async with srv:
         with Machine("localhost", port=53533) as m:
-            assert m.current_run_name == None
+            assert m.current_run_name is None
 
 
 @pytest.mark.asyncio

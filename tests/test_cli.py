@@ -6,7 +6,7 @@ import sys
 import pytest
 from click.testing import CliRunner
 
-from qslib import Experiment, Machine
+from qslib import Experiment
 from qslib.cli import cli
 
 
@@ -33,7 +33,7 @@ def test_info(exp, runner: CliRunner):
 )
 def test_html(exp, tmp_path_factory: pytest.TempPathFactory, runner: CliRunner):
     tp = tmp_path_factory.mktemp("temp_html")
-    result = runner.invoke(
+    runner.invoke(
         cli,
         ["info-html", "-o", str(tp / "test.html"), "--no-open", "tests/test.eds"],
     )

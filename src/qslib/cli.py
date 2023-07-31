@@ -11,7 +11,6 @@ from pathlib import Path
 import click
 
 from qslib.common import Experiment, Machine
-from qslib.experiment import MachineError
 from qslib.qs_is_protocol import (
     AccessLevelExceeded,
     AuthError,
@@ -86,7 +85,6 @@ def protocol_plot(experiment, output, format, actual, open) -> None:
 @click.argument("experiment", type=click.Path(exists=True))
 def info_html(experiment, output, openfile) -> None:
     """Create an HTML summary of the experiment, and potentially open it."""
-    import matplotlib.pyplot as plt
 
     experiment = Path(experiment)
 
@@ -180,7 +178,7 @@ def machine_power(machine: str, state: str) -> None:
 
     with m:
         rs = m.run_status()
-        ms = m.machine_status()
+        m.machine_status()
         mn = m.run_command("SYST:SETT:NICK?")
 
         if rs.state != "Idle":
@@ -248,29 +246,29 @@ def machine_status(machine: str) -> None:
             f" and is controlled with a target of {ms.target_temperatures['Cover']:.2f} °C."
         )
     else:
-        click.echo(f" and is uncontrolled.")
+        click.echo(" and is uncontrolled.")
 
     click.echo(
-        f"Block temperatures are "
+        "Block temperatures are "
         + ", ".join("{:.2f}".format(x) for x in ms.block_temperatures)
         + " °C."
     )
     click.echo(
-        f"Sample temperatures are "
+        "Sample temperatures are "
         + ", ".join("{:.2f}".format(x) for x in ms.block_temperatures)
         + " °C."
     )
 
     if all(ms.target_controlled[f"Zone{i}"] for i in range(1, 7)):
         click.echo(
-            f"Zone temperatures are controlled with a target of "
+            "Zone temperatures are controlled with a target of "
             + ", ".join(
                 "{:.2f}".format(ms.target_temperatures[f"Zone{i}"]) for i in range(1, 7)
             )
             + " °C."
         )
     else:
-        click.echo(f"Zone temperatures are uncontrolled.")
+        click.echo("Zone temperatures are uncontrolled.")
 
     if rs.state != "Idle":
         click.echo(
@@ -385,7 +383,7 @@ def add_administrator_password(m: Machine, p: OutP, newpass: str):
 
 def start_ssh_backup(m: Machine, p: OutP, sshpass: str):
     p.out("Starting SSH in case of failure: ")
-    m.run_command(f"SYST:EXEC 'dropbear -Y appletini &'")
+    m.run_command("SYST:EXEC 'dropbear -Y appletini &'")
     psout = m.run_command("SYST:EXEC -verbose 'ps'")
     assert "dropbear" in psout
     p.good("done.")
@@ -452,7 +450,7 @@ def check_access(
 
 def stop_ssh_backup(m: Machine, p: OutP):
     p.out("Stopping SSH: ")
-    m.run_command(f"SYST:EXEC 'killall dropbear'")
+    m.run_command("SYST:EXEC 'killall dropbear'")
     psout = m.run_command("SYST:EXEC -verbose 'ps'")
     assert "dropbear" not in psout
     p.good("done.")
@@ -512,12 +510,12 @@ def setup_machine(
             if default_controller:
                 set_default_access(m, p)
     except AuthError as e:
-        p.error(f"Current password was not valid.")
+        p.error("Current password was not valid.")
         if verbose:
             p.error(str(e))
     except InsufficientAccess as e:
         p.error(
-            f"Current password was valid, but insufficient.  This script needs at least Controller access."
+            "Current password was valid, but insufficient.  This script needs at least Controller access."
         )
         p.error(str(e))
     restart_is(m, p)
@@ -543,7 +541,7 @@ def setup_machine(
                 f"    ssh root@{host} -p 2222 -o KexAlgorithms=diffie-hellman-group1-sha1"
                 " -o HostKeyAlgorithms='+ssh-rsa'"
             )
-            p.error(f"Password is 'emergencypassword'.")
+            p.error("Password is 'emergencypassword'.")
             p.error("DO NOT REBOOT THE MACHINE or SSH access will be lost.")
         else:
             p.error("New access failed, but old password still works.")

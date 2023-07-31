@@ -14,7 +14,7 @@ import time
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, TextIO, Tuple, Type, Union, cast
+from typing import Dict, Iterable, List, Optional, TextIO, Tuple, Type, Union, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -24,7 +24,6 @@ from nio.client import AsyncClient
 from nio.client.async_client import AsyncClientConfig
 from nio.responses import JoinedRoomsError
 
-from qslib.base import RunStatus
 from qslib.plate_setup import PlateSetup
 from qslib.qs_is_protocol import CommandError
 from qslib.qsconnection_async import FilterDataFilename, QSConnectionAsync

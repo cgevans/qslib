@@ -1538,7 +1538,8 @@ table, th, td {{
         except UnicodeDecodeError as error:
             log.debug(
                 "Decoding log failed. If <binary.reply> is present in log this may be the cause:"
-                "if so contact Constantine (<const@costinet.org>).  Continuing with failed characters replaced with backslash notation"
+                "if so contact Constantine (<const@costi.net>).  Continuing with failed characters"
+                " replaced with backslash notation"
                 "Failure was in this area:\n"
                 "{!r}".format(error.object[error.start - 500 : error.end + 500])
             )
@@ -1620,7 +1621,8 @@ table, th, td {{
             ):
                 # We can get the prot name too, and sample volume! FIXME: not from qslib runs!
                 rp = re.search(
-                    r"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?(?:-SampleVolume=(?P<sv>[\d.]+) )?([\w-]+) (?P<protoname>[\w-]+)",
+                    r"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?"
+                    r"(?:-SampleVolume=(?P<sv>[\d.]+) )?([\w-]+) (?P<protoname>[\w-]+)",
                     msglog,
                     re.IGNORECASE,
                 )
@@ -1986,7 +1988,7 @@ table, th, td {{
                     if re.match(samples + "$", k)
                 ]
                 if not samples:
-                    raise ValueError(f"Samples not found")
+                    raise ValueError("Samples not found")
         elif samples is None:
             samples = list(self.plate_setup.sample_wells.keys())
         return samples
@@ -2327,9 +2329,9 @@ table, th, td {{
             if sel != slice(None):
                 raise ValueError("sel and hours cannot both be set.")
             tmin, tmax = hours
-            sel = lambda x: (tmin <= x[("time", "hours")]) & (
-                x[("time", "hours")] <= tmax
-            )
+
+            def sel(x):
+                return (tmin <= x["time", "hours"]) & (x["time", "hours"] <= tmax)
 
         if ax is None:
             _, ax = plt.subplots(**(figure_kw or {}))

@@ -6,9 +6,8 @@ from __future__ import annotations
 
 import re
 import shlex
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, ClassVar, Dict, Tuple, Type, TypeVar
 
 T = TypeVar("T", bound="BaseStatus")
@@ -91,8 +90,6 @@ class RunStatus(BaseStatus):
 
 
 _sbool = {"True": True, "False": False}
-
-import re
 
 
 @dataclass

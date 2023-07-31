@@ -327,7 +327,8 @@ class QS_IS_Protocol(asyncio.Protocol):
                         i = self.quote_stack.index(m[2])
                     except ValueError:
                         log.error(
-                            f"Close quote {m[2]!r} did not have open in stack {self.quote_stack}. Disconnecting to avoid corruption."
+                            f"Close quote {m[2]!r} did not have open in stack {self.quote_stack}. "
+                            "Disconnecting to avoid corruption."
                         )
                         self.quote_stack = []
                         self.connection_lost(ConnectionError())

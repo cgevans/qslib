@@ -22,7 +22,7 @@ def test_unknown():
 
 def test_unknown_type():
     with pytest.raises(TypeError):
-        s = SCPICommand("TEST", AccessLevel).to_string()  # type: ignore
+        SCPICommand("TEST", AccessLevel).to_string()  # type: ignore
 
 
 def test_comment():
@@ -31,7 +31,7 @@ def test_comment():
         == "test comment"
     )
 
-    assert SCPICommand.from_string("COMMAND '#' b").comment == None
+    assert SCPICommand.from_string("COMMAND '#' b").comment is None
 
 
 def test_arglist():

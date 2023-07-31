@@ -3,11 +3,11 @@
 
 import pytest
 
-from qslib import *
+from qslib import Experiment, Protocol, Stage, Step
 
 
 def test_create():
-    exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
+    Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
 
 
 def test_fail_plots():
@@ -26,4 +26,4 @@ def test_fail_plots():
 @pytest.mark.parametrize("ch", ["/", "!", "}"])
 def test_unsafe_names(ch):
     with pytest.raises(ValueError, match=r"Invalid characters \(" + ch + r"\)"):
-        exp = Experiment(name=f"a{ch}b")
+        Experiment(name=f"a{ch}b")

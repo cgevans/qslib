@@ -2,12 +2,9 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import pathlib
-from os import PathLike
 
 import numpy as np
-import pytest
 
-import qslib.protocol as tc
 from qslib import Experiment
 from qslib.protocol import Q_, UR, Exposure, FilterSet, Protocol, Stage, Step
 from qslib.scpi_commands import SCPICommand  # noqa
@@ -161,7 +158,7 @@ def test_proto() -> None:
 
 
 def test_refaccess():
-    exp = []
+    pass
 
 
 def test_exp_saveload_proto(tmp_path: pathlib.Path) -> None:
@@ -260,7 +257,7 @@ def test_stepped_ramp_multi_same_increment():
         ]
     )
 
-    s = str(p1)
+    str(p1)
 
     p1.to_scpicommand()
 

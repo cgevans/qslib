@@ -218,8 +218,8 @@ class NormToMeanPerWell(Processor):
 
     def ylabel(self, previous_label: str | None = None) -> str:
         if previous_label is None:
-            return f"fluorescence (norm. to mean)"
-        return re.sub(r"\(([^)]+)\)", rf"(\1, norm. to mean)", previous_label)
+            return "fluorescence (norm. to mean)"
+        return re.sub(r"\(([^)]+)\)", r"(\1, norm. to mean)", previous_label)
 
 
 @dataclass(init=False)
@@ -295,8 +295,8 @@ class SubtractByMeanPerWell(Processor):
 
     def ylabel(self, previous_label: str | None = None) -> str:
         if previous_label is None:
-            return f"fluorescence (subtr. by mean)"
-        return re.sub(r"\(([^)]+)\)", rf"(\1, subtr. by mean)", previous_label)
+            return "fluorescence (subtr. by mean)"
+        return re.sub(r"\(([^)]+)\)", r"(\1, subtr. by mean)", previous_label)
 
 
 @dataclass
@@ -372,5 +372,5 @@ class NormToMaxPerWell(Processor):
 
     def ylabel(self, previous_label: str | None = None) -> str:
         if previous_label is None:
-            return f"fluorescence (norm. to max)"
-        return re.sub(r"\(([^)]+)\)", rf"(\1, norm. to max)", previous_label)
+            return "fluorescence (norm. to max)"
+        return re.sub(r"\(([^)]+)\)", r"(\1, norm. to max)", previous_label)

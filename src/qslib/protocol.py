@@ -12,12 +12,11 @@ import warnings
 import xml.etree.ElementTree as ET
 from abc import ABC, abstractmethod
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from itertools import zip_longest
 from typing import (
     TYPE_CHECKING,
     Any,
-    Callable,
     ClassVar,
     Collection,
     Generic,
@@ -41,7 +40,7 @@ import pint
 from qslib import scpi_commands
 from qslib.data import FilterSet
 
-from ._util import *
+from ._util import _nowuuid, _set_or_create
 from .base import RunStatus
 from .scpi_commands import SCPICommand, SCPICommandLike
 from .version import __version__
@@ -269,9 +268,7 @@ class Exposure(ProtoCommand):
     _names: ClassVar[Sequence[str]] = ("EXP", "EXPOSURE")
 
     def to_scpicommand(self, **kwargs: None) -> SCPICommand:
-        settingstrings = [
-            k.hacform + "," + ",".join(str(x) for x in v) for k, v in self.settings
-        ]
+        [k.hacform + "," + ",".join(str(x) for x in v) for k, v in self.settings]
 
         return SCPICommand(
             "EXP",
@@ -422,7 +419,7 @@ class _NumOrRefIndexer(Generic[G]):
         if isinstance(key, int):
             return key - 1
         elif isinstance(key, str):
-            raise NotImplemented
+            raise NotImplementedError
         elif isinstance(key, slice):
             return slice(key.start - 1, key.stop, key.step)
 
@@ -475,7 +472,7 @@ class CustomStep(ProtoCommand, XMLable):
         if index is not None:
             s = f"{index}. "
         else:
-            s = f"- "
+            s = "- "
         s += f"Step{' '+str(self._identifier) if self._identifier is not None else ''} of commands:\n"
         s += "\n".join(
             f"  {i+1}. " + c.to_scpicommand().to_string()
@@ -1049,7 +1046,8 @@ class Stage(XMLable, ProtoCommand):
 
             if (abs(change) > 0.05) and not autoset_step:
                 warnings.warn(
-                    f"Desired temperature step {temperature_step} differs by {100*change}% from actual {real_max_temperature_step}."
+                    f"Desired temperature step {temperature_step} differs by {100*change}% "
+                    f"from actual {real_max_temperature_step}."
                 )
 
         elif temperature_step is not None:
@@ -1169,7 +1167,8 @@ class Stage(XMLable, ProtoCommand):
 
         if abs(chg) > 0.1:
             warnings.warn(
-                f"Stage will have total time {real_total_time}, with {repeat} steps, {100*chg} different from desired time {total_time}."
+                f"Stage will have total time {real_total_time}, with {repeat} steps, "
+                f"{100*chg} different from desired time {total_time}."
             )
 
         return cls(
@@ -1187,7 +1186,7 @@ class Stage(XMLable, ProtoCommand):
     hold_for = hold_at
 
     def __repr__(self) -> str:
-        s = f"Stage(steps="
+        s = "Stage(steps="
         if len(self.steps) == 0:
             s += "[]"
         elif len(self.steps) == 1:
@@ -1753,7 +1752,7 @@ class Protocol(ProtoCommand):
         begin += ":\n"
         if self.filters:
             begin += (
-                f"(default filters "
+                "(default filters "
                 + _oxfordlist(FilterSet.fromstring(f).lowerform for f in self.filters)
                 + ")\n\n"
             )

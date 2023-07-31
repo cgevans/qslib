@@ -73,7 +73,10 @@ class FilterDataFilename:
         )
 
     def tostring(self) -> str:
-        return f"S{self.stage:02}_C{self.cycle:03}_T{self.step:02}_P{self.point:04}_M{self.filterset.em}_X{self.filterset.ex}_filterdata.xml"
+        return (
+            f"S{self.stage:02}_C{self.cycle:03}_T{self.step:02}_P{self.point:04}"
+            f"_M{self.filterset.em}_X{self.filterset.ex}_filterdata.xml"
+        )
 
     def is_same_point(self, other: FilterDataFilename) -> bool:
         return (

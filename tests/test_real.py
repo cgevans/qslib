@@ -6,10 +6,9 @@ import uuid
 from asyncio.futures import Future
 
 import pytest
-import pytest_asyncio
 
-from qslib import *
-from qslib.experiment import AlreadyExistsError, MachineBusyError
+from qslib import AccessLevel, Experiment, Machine, PlateSetup, Protocol, Stage
+from qslib.experiment import MachineBusyError
 from qslib.qs_is_protocol import (
     AccessLevelExceeded,
     AuthError,
@@ -72,7 +71,7 @@ async def test_real_experiment():
     confut: Future[bool] = asyncio.Future()
     task = mon.monitor(confut)
 
-    ttask = asyncio.tasks.create_task(task)
+    asyncio.tasks.create_task(task)
 
     await confut
 

@@ -2,4 +2,4 @@
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 
-from . import *
+from . import *  # noqa: F401, F403

@@ -9,7 +9,6 @@ from .plate_setup import PlateSetup, Sample
 from .processors import NormRaw, NormToMaxPerWell, NormToMeanPerWell, SmoothEMWMean
 from .protocol import CustomStep, Protocol, Stage, Step
 from .scpi_commands import AccessLevel
-from .version import __version__
 
 __all__ = (
     "AccessLevel",
