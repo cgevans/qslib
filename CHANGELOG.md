@@ -6,6 +6,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.9.2
+
+- Fix a communications bug where a packet that can cause commands to hang in certain rare situations.
+
 ## Version 0.9.1
 
 - Minor bug fixes and dependency updates (to fix pandas errors).

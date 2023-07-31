@@ -315,7 +315,7 @@ class QS_IS_Protocol(asyncio.Protocol):
                     if m.end() != len(data):
                         raise ValueError(data, m[0])
                     # We have an unclosed tag opener (<) at the end of the data
-                    logging.debug(f"Unclosed tag opener: {m[0]!r}")
+                    log.debug(f"Unclosed tag opener: {m[0]!r}")
                     self.buffer.write(data[lastwrite : m.start()])
                     self.unclosed_quote_pos = self.buffer.tell()
                     self.buffer.write(m[0])
