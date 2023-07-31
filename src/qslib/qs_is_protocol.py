@@ -15,8 +15,7 @@ from typing import Any, Coroutine, Optional, Protocol, Type
 
 from .scpi_commands import AccessLevel, SCPICommand, _arglist
 
-NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>)")
-Q_ONLY = re.compile(rb"<(/?)([\w.]+)[ *]*>")
+NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>?)")
 TIMESTAMP = re.compile(rb"(\d{8,}\.\d{3})")
 
 log = logging.getLogger(__name__)
@@ -227,6 +226,7 @@ class QS_IS_Protocol(asyncio.Protocol):
         self.quote_stack: list[bytes] = []
         self.topic_handlers: dict[bytes, SubHandler] = {}
         self.last_received = time.time()
+        self.unclosed_quote_pos: int | None = None
 
     async def _default_topic_handler(
         self, topic: bytes, message: bytes, timestamp: Optional[float] = None
@@ -288,6 +288,18 @@ class QS_IS_Protocol(asyncio.Protocol):
         :param data: bytes:
 
         """
+        log.debug(f"Received {data!r}")
+
+        # If we have an unclosed tag opener (<) in the buffer, add it to the data
+        if self.unclosed_quote_pos is not None:
+            self.buffer.write(data)
+            self.buffer.seek(self.unclosed_quote_pos)
+            data = self.buffer.read()
+            self.buffer.truncate(self.unclosed_quote_pos)
+            self.buffer.seek(self.unclosed_quote_pos)
+            self.unclosed_quote_pos = None
+            print(data)
+
         lastwrite = 0
         for m in NL_OR_Q.finditer(data):
             if m[0] == b"\n":
@@ -299,7 +311,16 @@ class QS_IS_Protocol(asyncio.Protocol):
                 # else:  # This is not actually needed
                 #     continue
             else:
-                if not m[1]:
+                if m[0][-1] != ord(">"):
+                    if m.end() != len(data):
+                        raise ValueError(data, m[0])
+                    # We have an unclosed tag opener (<) at the end of the data
+                    logging.debug(f"Unclosed tag opener: {m[0]!r}")
+                    self.buffer.write(data[lastwrite : m.start()])
+                    self.unclosed_quote_pos = self.buffer.tell()
+                    self.buffer.write(m[0])
+                    lastwrite = m.end()
+                elif not m[1]:
                     self.quote_stack.append(m[2])
                 else:
                     try:
