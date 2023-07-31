@@ -81,15 +81,15 @@ jobs:
     - uses: actions/checkout@v3
     - name: Install dependencies
       run: |
-        python -m pip install --upgrade pip setuptools_scm[toml] wheel setuptools
-        python -m pip install -U flake8 mypy pytest pytest-cov pytest-asyncio hypothesis
-        python -m pip install -U .[monitor] --no-build-isolation
+        ~/qpcr-sim/actions-runner/runner-venv/bin/python -m pip install -U pip setuptools_scm[toml] wheel setuptools
+        ~/qpcr-sim/actions-runner/runner-venv/bin/python -m pip install -U flake8 mypy pytest pytest-cov pytest-asyncio hypothesis
+        ~/qpcr-sim/actions-runner/runner-venv/bin/python -m pip install -U .[monitor] --no-build-isolation
     - name: Setup environment
       run: |
         start_realtest_environment
     - name: Test with tox/pytest
       run: |
-        python -m pytest -k 'test_real' --cov --cov-report=xml
+        ~/qpcr-sim/actions-runner/runner-venv/bin/python -m pytest -k 'test_real' --cov --cov-report=xml
     - name: Stop environment
       run: |
         stop_realtest_environment
