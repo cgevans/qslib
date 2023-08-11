@@ -181,21 +181,22 @@ class NormToMeanPerWell(Processor):
                 raise ValueError("Selection already set, can't specify step.")
             if cycle is not None:
                 raise ValueError("Selection already set, can't specify cycle.")
+        else:
             self.selection = selection
-        if stage is None:
-            stage = slice(None)
-        elif isinstance(stage, int):
-            stage = [stage]
-        if step is None:
-            step = slice(None)
-        elif isinstance(step, int):
-            step = [step]
-        if cycle is None:
-            cycle = slice(None)
-        elif isinstance(cycle, int):
-            cycle = [cycle]
+            if stage is None:
+                stage = slice(None)
+            elif isinstance(stage, int):
+                stage = [stage]
+            if step is None:
+                step = slice(None)
+            elif isinstance(step, int):
+                step = [step]
+            if cycle is None:
+                cycle = slice(None)
+            elif isinstance(cycle, int):
+                cycle = [cycle]
 
-        self.selection = (stage, step, cycle)
+            self.selection = (stage, cycle, step)
 
     def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         if scope == self.scope:
@@ -259,20 +260,21 @@ class SubtractByMeanPerWell(Processor):
             if cycle is not None:
                 raise ValueError("Selection already set, can't specify cycle.")
             self.selection = selection
-        if stage is None:
-            stage = slice(None)
-        elif isinstance(stage, int):
-            stage = [stage]
-        if step is None:
-            step = slice(None)
-        elif isinstance(step, int):
-            step = [step]
-        if cycle is None:
-            cycle = slice(None)
-        elif isinstance(cycle, int):
-            cycle = [cycle]
+        else:
+            if stage is None:
+                stage = slice(None)
+            elif isinstance(stage, int):
+                stage = [stage]
+            if step is None:
+                step = slice(None)
+            elif isinstance(step, int):
+                step = [step]
+            if cycle is None:
+                cycle = slice(None)
+            elif isinstance(cycle, int):
+                cycle = [cycle]
 
-        self.selection = (stage, step, cycle)
+            self.selection = (stage, cycle, step)
 
     def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         if scope == self.scope:
@@ -336,20 +338,21 @@ class NormToMaxPerWell(Processor):
             if cycle is not None:
                 raise ValueError("Selection already set, can't specify cycle.")
             self.selection = selection
-        if stage is None:
-            stage = slice(None)
-        elif isinstance(stage, int):
-            stage = [stage]
-        if step is None:
-            step = slice(None)
-        elif isinstance(step, int):
-            step = [step]
-        if cycle is None:
-            cycle = slice(None)
-        elif isinstance(cycle, int):
-            cycle = [cycle]
+        else:
+            if stage is None:
+                stage = slice(None)
+            elif isinstance(stage, int):
+                stage = [stage]
+            if step is None:
+                step = slice(None)
+            elif isinstance(step, int):
+                step = [step]
+            if cycle is None:
+                cycle = slice(None)
+            elif isinstance(cycle, int):
+                cycle = [cycle]
 
-        self.selection = (stage, step, cycle)
+            self.selection = (stage, cycle, step)
 
     def process_scoped(self, data: pd.DataFrame, scope: ScopeType) -> pd.DataFrame:
         if scope == self.scope:
