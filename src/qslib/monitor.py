@@ -66,7 +66,7 @@ class MachineConfig:
     password: Union[str, None] = None
     name: str = "localhost"
     host: str = "localhost"
-    port: str = "7000"
+    port: str | None = None
     retries: int = 3
     compile: bool = False
 

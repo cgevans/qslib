@@ -64,10 +64,14 @@ IPython.
 To use the library for communication with machines, you'll need a
 machine access password with Observer (for reading data and statuses)
 and/or Controller (for running experiments and controlling the machine)
-access, and will need access to the machine on port 7000. I strongly
-recommend against having the machines be accessible online: use a
-restricted VPN connection or port forwarding. See the documentation for
-more information.
+access.  You will also need access to the machine on port 7443 (machine
+software versions 1.3.4 and higher), or port 7000 (earlier software versions).
+
+In machine software versions 1.3.4 and higher, you can set a password using
+the "OEM Connection Only" option in "Settings".  Earlier software versions
+must have passwords set by othre methods.  Regardless of version, I strongly
+recommend against having the machines be accessible online: use a restricted VPN
+connection or port forwarding. See the documentation for more information.
 
 ## Contributing and issue reporting
 

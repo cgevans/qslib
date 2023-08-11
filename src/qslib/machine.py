@@ -81,16 +81,19 @@ class Machine:
         attribute.
 
     port
-        The port to connect to. (Use the normal SCPI port, not the line-editor connection usually
-        on 2323).  Default is 7000.
+        The port to connect to.  If None, and ssl is None, then 7443 will be tried with SSL, and if
+        it fails, then 7000 will be tried without SSL.
 
+    ssl
+        Whether or not to use SSL.  If None, then SSL will be chosen based on the port number.
     """
 
     host: str
     password: str | None = None
     automatic: bool = True
     _max_access_level: AccessLevel = AccessLevel.Controller
-    port: int = 7000
+    port: int | None = None
+    ssl: bool | None = None
     _initial_access_level: AccessLevel = AccessLevel.Observer
     _current_access_level: AccessLevel = AccessLevel.Guest
     _connection: QSConnectionAsync | None = None
@@ -103,6 +106,8 @@ class Machine:
             d["max_access_level"] = self.max_access_level.value
         if self.port != Machine.port:
             d["port"] = self.port
+        if self.ssl != Machine.ssl:
+            d["ssl"] = self.ssl
         if self.automatic != Machine.automatic:
             d["automatic"] = self.automatic
 
@@ -137,11 +142,13 @@ class Machine:
         password: str | None = None,
         automatic: bool = True,
         max_access_level: AccessLevel | str = AccessLevel.Controller,
-        port: int = 7000,
+        port: int | None = None,
+        ssl: bool | None = None,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
         self.port = port
+        self.ssl = ssl
         self.password = password
         self.automatic = automatic
         self.max_access_level = AccessLevel(max_access_level)
@@ -153,8 +160,9 @@ class Machine:
         loop = asyncio.get_event_loop()
 
         self.connection = QSConnectionAsync(
-            self.host,
-            self.port,
+            host=self.host,
+            port=self.port,
+            ssl=self.ssl,
             password=self.password,
             initial_access_level=self._initial_access_level,
         )

@@ -11,6 +11,7 @@ import io
 import logging
 import re
 import shlex
+import ssl
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
@@ -23,6 +24,13 @@ from .qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
 from .scpi_commands import AccessLevel, ArgList, SCPICommand
 
 log = logging.getLogger(__name__)
+
+CTX = ssl.create_default_context()
+CTX.check_hostname = False
+CTX.verify_mode = ssl.CERT_NONE
+CTX.minimum_version = (
+    ssl.TLSVersion.SSLv3
+)  # Yes, we actually need this for QS5 connections
 
 
 def _gen_auth_response(password: str, challenge_string: str) -> str:
@@ -227,7 +235,8 @@ class QSConnectionAsync:
     def __init__(
         self,
         host: str = "localhost",
-        port: int = 7000,
+        port: int | None = None,
+        ssl: bool | None = None,
         authenticate_on_connect: bool = True,
         initial_access_level: AccessLevel = AccessLevel.Observer,
         password: Optional[str] = None,
@@ -235,6 +244,7 @@ class QSConnectionAsync:
         """Create a connection to a QuantStudio Instrument Server."""
         self.host = host
         self.port = port
+        self.ssl = ssl
         self.password = password
         self._initial_access_level = initial_access_level
         self._authenticate_on_connect = authenticate_on_connect
@@ -265,8 +275,30 @@ class QSConnectionAsync:
             self._initial_access_level = initial_access_level
 
         self.loop = asyncio.get_running_loop()
+
+        if (self.ssl is None) and (self.port is None):
+            try:
+                self._transport, proto = await self.loop.create_connection(
+                    QS_IS_Protocol, self.host, 7443, ssl=CTX
+                )
+                self.ssl = True
+                self.port = 7443
+            except OSError:
+                self._transport, proto = await self.loop.create_connection(
+                    QS_IS_Protocol, self.host, 7000
+                )
+                self.ssl = False
+                self.port = 7000
+        elif (self.ssl is None) and (self.port is not None):
+            if self.port == 7443:
+                self.ssl = True
+            elif self.port == 7000:
+                self.ssl = False
+            else:
+                raise ValueError("Port must be 7443 or 7000 if SSL is not specified")
+
         self._transport, proto = await self.loop.create_connection(
-            QS_IS_Protocol, self.host, self.port
+            QS_IS_Protocol, self.host, self.port, ssl=CTX if self.ssl else None
         )
 
         self._protocol = cast(QS_IS_Protocol, proto)

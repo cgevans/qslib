@@ -86,7 +86,7 @@ async def test_real_experiment():
 
     exp = Experiment(uuid.uuid1().hex, proto, PlateSetup({"s": "A1"}))
 
-    m = Machine("localhost", port=7000, max_access_level="Controller")
+    m = Machine("localhost", max_access_level="Controller")
 
     exp.run("localhost", require_drawer_check=False)
 

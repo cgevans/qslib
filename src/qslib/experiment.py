@@ -194,7 +194,7 @@ class Experiment:
 
     They can also be loaded from a running experiment:
 
-    >>> machine = Machine("localhost", 7000, password="password")
+    >>> machine = Machine("localhost", password="password")
     >>> exp = Experiment.from_running(machine)
 
     Or from the machine's storage:
