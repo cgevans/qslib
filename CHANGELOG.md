@@ -9,6 +9,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 ## Version 0.9.3
 
 - Update dependencies, convert to pyproject.toml.
+- Fix cycle selection and direct pandas selection for normalization processes.
 
 ## Version 0.9.2
 

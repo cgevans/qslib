@@ -181,8 +181,8 @@ class NormToMeanPerWell(Processor):
                 raise ValueError("Selection already set, can't specify step.")
             if cycle is not None:
                 raise ValueError("Selection already set, can't specify cycle.")
-        else:
             self.selection = selection
+        else:
             if stage is None:
                 stage = slice(None)
             elif isinstance(stage, int):
