@@ -296,9 +296,17 @@ class QSConnectionAsync:
                 self.ssl = False
             else:
                 raise ValueError("Port must be 7443 or 7000 if SSL is not specified")
+        elif (self.ssl is not None) and (self.port is None):
+            if self.ssl:
+                self.port = 7443
+            else:
+                self.port = 7000
 
         self._transport, proto = await self.loop.create_connection(
-            QS_IS_Protocol, self.host, self.port, ssl=CTX if self.ssl else None
+            QS_IS_Protocol,
+            self.host,
+            int(cast("int | str", self.port)),
+            ssl=CTX if cast(bool, self.ssl) else None,
         )
 
         self._protocol = cast(QS_IS_Protocol, proto)

@@ -98,8 +98,8 @@ class Machine:
     _current_access_level: AccessLevel = AccessLevel.Guest
     _connection: QSConnectionAsync | None = None
 
-    def asdict(self, password: bool = False) -> dict[str, str | int]:
-        d: dict[str, str | int] = {"host": self.host}
+    def asdict(self, password: bool = False) -> dict[str, str | int | None]:
+        d: dict[str, str | int | None] = {"host": self.host}
         if self.password and password:
             d["password"] = self.password
         if self.max_access_level != Machine._max_access_level:

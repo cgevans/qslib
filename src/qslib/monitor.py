@@ -662,7 +662,9 @@ class Collector:
 
         async with QSConnectionAsync(
             host=self.config.machine.host,
-            port=int(self.config.machine.port),
+            port=int(self.config.machine.port)
+            if self.config.machine.port is not None
+            else None,
             password=self.config.machine.password,
         ) as c:
             log.info("monitor connected")

@@ -106,7 +106,7 @@ class MachineError(Exception):
     """Base class for an error from a machine."""
 
     host: str = field(init=False)
-    port: int | str = field(init=False)
+    port: int | str | None = field(init=False)
     machine: InitVar[Machine]
 
     def __post_init__(self, machine: Machine) -> None:
