@@ -278,8 +278,15 @@ class QSConnectionAsync:
 
         if (self.ssl is None) and (self.port is None):
             try:
-                self._transport, proto = await self.loop.create_connection(
-                    QS_IS_Protocol, self.host, 7443, ssl=CTX
+                self._transport, proto = await asyncio.wait_for(
+                    self.loop.create_connection(
+                        QS_IS_Protocol,
+                        self.host,
+                        7443,
+                        ssl=CTX,
+                        ssl_handshake_timeout=10,
+                    ),
+                    5,
                 )
                 self.ssl = True
                 self.port = 7443
