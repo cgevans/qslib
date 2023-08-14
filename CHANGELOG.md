@@ -6,6 +6,11 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+# Version 0.10.1
+
+- SSL/non-SSL autoconnection speed improvements
+- Drawer/cover annotation improvements
+
 ## Version 0.10.0
 
 - Add annotations to plots for drawer and cover open and close events.
