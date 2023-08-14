@@ -6,6 +6,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.9.4
+
+- Fix multi-temperature plotting bug.
+
 ## Version 0.9.3
 
 - Update dependencies, convert to pyproject.toml.

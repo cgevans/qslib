@@ -2338,7 +2338,7 @@ table, th, td {{
 
         reltemps = self.temperatures.loc[sel, :]
 
-        for x in range(1, self.num_zones):
+        for x in range(1, self.num_zones + 1):
             ax.plot(
                 reltemps.loc[:, ("time", "hours")],
                 reltemps.loc[:, ("sample", x)],
