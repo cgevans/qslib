@@ -1655,6 +1655,22 @@ table, th, td {{
         except ValueError:
             self._protocol_from_log = None
 
+        events = []
+        for m in re.finditer(
+            r"^Debug ([\d.]+) (Drawer|Cover) (.+)$", msglog, re.MULTILINE
+        ):
+            events.append((float(m[1]), m[2], m[3]))
+
+        self.events = pd.DataFrame(
+            events, columns=["timestamp", "type", "message"], dtype="object"
+        )
+
+        if self.activestarttime:
+            self.events["seconds"] = (
+                self.events["timestamp"] - self.activestarttime.timestamp()
+            )
+            self.events["hours"] = self.events["seconds"] / 3600.0
+
         for m in re.finditer(
             r"^Temperature ([\d.]+) -sample=([\d.,]+) -heatsink=([\d.,]+) "
             r"-cover=([\d.,]+) -block=([\d.,]+)$",
@@ -2010,7 +2026,8 @@ table, th, td {{
             | float
             | Literal["fluorescence", "temperature"]
             | Tuple[Literal["fluorescence", "temperature"], float]
-        ) = False,
+        ) = True,
+        annotate_events: bool = True,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
     ) -> "Sequence[plt.Axes]":
@@ -2087,6 +2104,9 @@ table, th, td {{
             Whether to include text annotations for stage lines.  Float parameter allows
             setting the minimum duration of stage, as a fraction of total plotted time, to
             annotate, in order to avoid overlapping annotations (default threshold is 0.05).
+
+        annotate_events
+            Whether to include annotations for events (drawer open/close, cover open/close).
 
         figure_kw
             Optional.  A dictionary of options passed through as keyword options to
@@ -2234,6 +2254,9 @@ table, th, td {{
 
         self._annotate_stages(ax[0], fl_sl, fl_asl, (xlims[1] - xlims[0]) * 3600.0)
 
+        if annotate_events:
+            self._annotate_events(ax[0])
+
         if temperatures == "axes":
             if len(ax) < 2:
                 raise ValueError("Temperature axes requires at least two axes in ax")
@@ -2251,6 +2274,7 @@ table, th, td {{
                 ax=ax[1],
                 stage_lines=t_sl,
                 annotate_stage_lines=t_asl,
+                annotate_events=annotate_events,
             )
 
             ax[0].set_xlim(xlims)
@@ -2279,6 +2303,7 @@ table, th, td {{
         ax: Optional[plt.Axes] = None,
         stage_lines: bool = True,
         annotate_stage_lines: bool | float = True,
+        annotate_events: bool = True,
         legend: bool = False,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
@@ -2308,6 +2333,9 @@ table, th, td {{
             Whether to include text annotations for stage lines.  Float parameter allows
             setting the minimum duration of stage, as a fraction of total plotted time, to
             annotate, in order to avoid overlapping annotations (default threshold is 0.05).
+
+        annotate_events
+            Whether to include annotations for events (cover opening/closing, drawer opening/closing).
 
         legend
             Whether to add a legend.
@@ -2351,6 +2379,9 @@ table, th, td {{
 
         self._annotate_stages(ax, stage_lines, annotate_stage_lines, totseconds)
 
+        if annotate_events:
+            self._annotate_events(ax)
+
         ax.set_ylabel("temperature (°C)")
         ax.set_xlabel("time (hours)")
 
@@ -2359,7 +2390,9 @@ table, th, td {{
 
         return ax
 
-    def _annotate_stages(self, ax, stage_lines, annotate_stage_lines, totseconds):
+    def _annotate_stages(
+        self, ax, stage_lines: bool, annotate_stage_lines: bool | float, totseconds
+    ):
         if stage_lines:
             if isinstance(annotate_stage_lines, float):
                 annotate_frac = annotate_stage_lines
@@ -2388,6 +2421,37 @@ table, th, td {{
                         verticalalignment="top",
                         horizontalalignment="left",
                     )
+
+    def _annotate_events(self, ax):
+        opi = self.events.index[
+            (self.events["type"] == "Cover") & (self.events["message"] == "Raising")
+        ]
+        cl = self.events.index[
+            (self.events["type"] == "Cover") & (self.events["message"] == "Lowered")
+        ]
+        cli = [cl[cl > x][0] for x in opi]
+        for x1, x2 in zip(opi, cli):
+            ax.axvspan(
+                self.events.loc[x1, "hours"],
+                self.events.loc[x2, "hours"],
+                alpha=0.5,
+                color="yellow",
+            )
+
+        opi = self.events.index[
+            (self.events["type"] == "Drawer") & (self.events["message"] == "Opening")
+        ]
+        cl = self.events.index[
+            (self.events["type"] == "Drawer") & (self.events["message"] == "Closed")
+        ]
+        cli = [cl[cl > x][0] for x in opi]
+        for x1, x2 in zip(opi, cli):
+            ax.axvspan(
+                self.events.loc[x1, "hours"],
+                self.events.loc[x2, "hours"],
+                alpha=0.5,
+                color="red",
+            )
 
 
 def _normalize_filters(

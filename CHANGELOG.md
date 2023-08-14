@@ -6,6 +6,10 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+## Version 0.10.0
+
+- Add annotations to plots for drawer and cover open and close events.
+
 ## Version 0.9.4
 
 - Fix multi-temperature plotting bug.
