@@ -168,6 +168,8 @@ class Machine:
         )
         loop.run_until_complete(self.connection.connect())
         self._current_access_level = self.get_access_level()[0]
+        self.port = self.connection.port
+        self.ssl = self.connection.ssl
 
     @property
     def connected(self) -> bool:
