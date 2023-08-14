@@ -9,6 +9,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 ## Version 0.10.0
 
 - Add annotations to plots for drawer and cover open and close events.
+- Add support for SSL / firmware 1.3.4.
 
 ## Version 0.9.4
 
