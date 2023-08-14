@@ -9,6 +9,7 @@ import pytest
 
 from qslib import AccessLevel, Experiment, Machine, PlateSetup, Protocol, Stage
 from qslib.experiment import MachineBusyError
+from qslib.monitor import MachineConfig
 from qslib.qs_is_protocol import (
     AccessLevelExceeded,
     AuthError,
@@ -19,7 +20,7 @@ from qslib.qs_is_protocol import (
 
 @pytest.mark.asyncio
 async def test_real_insufficientaccess():
-    m = Machine("localhost")
+    m = Machine("localhost", password="correctpassword")
     with m:
         with pytest.raises(InsufficientAccess):
             m.run_command("MACRO USER?")
@@ -27,7 +28,7 @@ async def test_real_insufficientaccess():
 
 @pytest.mark.asyncio
 async def test_real_accesslevelexceeded():
-    m = Machine("localhost", max_access_level="Full")
+    m = Machine("localhost", max_access_level="Full", password="correctpassword")
     with m:
         with pytest.raises(AccessLevelExceeded):
             m.set_access_level(AccessLevel.Full)
@@ -43,7 +44,7 @@ async def test_real_autherror():
 
 @pytest.mark.asyncio
 def test_real_invocationerror():
-    m = Machine("localhost")
+    m = Machine("localhost", password="correctpassword")
     with m:
         with pytest.raises(InvocationError):
             m.run_command("HELP? A B")
@@ -66,7 +67,9 @@ def test_real_invocationerror():
 async def test_real_experiment():
     from qslib.monitor import Collector, Config
 
-    mon = Collector(Config())
+    mon = Collector(
+        Config(machine=MachineConfig(host="localhost", password="correctpassword"))
+    )
 
     confut: Future[bool] = asyncio.Future()
     task = mon.monitor(confut)
@@ -86,14 +89,14 @@ async def test_real_experiment():
 
     exp = Experiment(uuid.uuid1().hex, proto, PlateSetup({"s": "A1"}))
 
-    m = Machine("localhost", max_access_level="Controller")
+    m = Machine("localhost", max_access_level="Controller", password="correctpassword")
 
-    exp.run("localhost", require_drawer_check=False)
+    exp.run(m, require_drawer_check=False)
 
     with pytest.raises(
-        MachineBusyError, match=r"Machine localhost:7000 is currently busy: .*"
+        MachineBusyError, match=r"Machine localhost:[^ ]+ is currently busy: .*"
     ):
-        exp.run("localhost")
+        exp.run(m)
 
     exp.sync_from_machine(m)
 
@@ -116,7 +119,7 @@ async def test_real_experiment():
 
     exp.change_protocol(proto2)
 
-    exp2 = Experiment.from_running("localhost")
+    exp2 = Experiment.from_running(m)
 
     # assert exp.protocol == exp2.protocol
     assert exp.name == exp2.name
@@ -136,7 +139,7 @@ async def test_real_experiment():
 
     exp.sync_from_machine(m)
 
-    exp3 = Experiment.from_machine("localhost", exp.name)
+    exp3 = Experiment.from_machine(m, exp.name)
 
     assert exp2.name == exp3.name
 

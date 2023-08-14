@@ -101,12 +101,13 @@ def crcb(crlist):
     return _fakeserver_runner
 
 
+# @pytest.mark.parametrize("ssl", [True, False])
 @pytest.mark.asyncio
 async def test_responses():
     srv = await asyncio.start_server(crcb({}), "localhost", 53533)
 
     async with srv:
-        m = Machine("localhost", port=53533)
+        m = Machine("localhost", port=53533, ssl=False)
 
         m.connect()
 
@@ -130,7 +131,7 @@ async def test_connection():
     srv = await asyncio.start_server(crcb({}), "localhost", 53533)
 
     async with srv:
-        m = Machine("localhost", port=53533)
+        m = Machine("localhost", port=53533, ssl=False)
 
         assert m.connected is False
 
@@ -142,7 +143,7 @@ async def test_connection():
 
         assert m.connected is False
 
-        m = Machine("localhost", port=53533)
+        m = Machine("localhost", port=53533, ssl=False)
 
         m.connect()
 
@@ -163,7 +164,7 @@ async def test_acc_level_set():
     srv = await asyncio.start_server(crcb({}), "localhost", 53533)
 
     async with srv:
-        m = Machine("localhost", port=53533)
+        m = Machine("localhost", port=53533, ssl=False)
 
         with m:
             with m.at_access("Observer"):
@@ -177,7 +178,7 @@ async def test_runtitle():
     srv = await asyncio.start_server(crcb({"RUNTitle?": "aoeu"}), "localhost", 53533)
 
     async with srv:
-        with Machine("localhost", port=53533) as m:
+        with Machine("localhost", port=53533, ssl=False) as m:
             assert m.current_run_name == "aoeu"
 
 
@@ -186,7 +187,7 @@ async def test_runtitle_not_running():
     srv = await asyncio.start_server(crcb({"RUNTitle?": "-"}), "localhost", 53533)
 
     async with srv:
-        with Machine("localhost", port=53533) as m:
+        with Machine("localhost", port=53533, ssl=False) as m:
             assert m.current_run_name is None
 
 
@@ -196,7 +197,7 @@ async def test_quote():
     srv = await asyncio.start_server(crcb({"TESTQUOTE": msg}), "localhost", 53533)
 
     async with srv:
-        with Machine("localhost", port=53533) as m:
+        with Machine("localhost", port=53533, ssl=False) as m:
             assert m.run_command("TESTQUOTE") == msg
 
 
@@ -206,7 +207,7 @@ async def test_invalid_quote():
     srv = await asyncio.start_server(crcb({"TESTQUOTE": msg}), "localhost", 53533)
 
     async with srv:
-        with Machine("localhost", port=53533) as m:
+        with Machine("localhost", port=53533, ssl=False) as m:
             with pytest.raises(ConnectionError):
                 m.run_command("TESTQUOTE")
 
@@ -216,7 +217,7 @@ async def test_nonuid_nonreturn():
     srv = await asyncio.start_server(crcb({}), "localhost", 53533)
 
     async with srv:
-        qsa = QSConnectionAsync("localhost", 53533)
+        qsa = QSConnectionAsync("localhost", 53533, ssl=False)
 
         assert qsa.connected is False
 

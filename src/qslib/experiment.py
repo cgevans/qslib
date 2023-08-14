@@ -2429,11 +2429,11 @@ table, th, td {{
         cl = self.events.index[
             (self.events["type"] == "Cover") & (self.events["message"] == "Lowered")
         ]
-        cli = [cl[cl > x][0] for x in opi]
+        cli = [cl[cl > x][0] if len(cl[cl > x]) > 0 else None for x in opi]
         for x1, x2 in zip(opi, cli):
             ax.axvspan(
                 self.events.loc[x1, "hours"],
-                self.events.loc[x2, "hours"],
+                self.events.loc[x2, "hours"] if x2 is not None else None,
                 alpha=0.5,
                 color="yellow",
             )
@@ -2444,11 +2444,11 @@ table, th, td {{
         cl = self.events.index[
             (self.events["type"] == "Drawer") & (self.events["message"] == "Closed")
         ]
-        cli = [cl[cl > x][0] for x in opi]
+        cli = [cl[cl > x][0] if len(cl[cl > x]) > 0 else None for x in opi]
         for x1, x2 in zip(opi, cli):
             ax.axvspan(
                 self.events.loc[x1, "hours"],
-                self.events.loc[x2, "hours"],
+                self.events.loc[x2, "hours"] if x2 is not None else None,
                 alpha=0.5,
                 color="red",
             )
