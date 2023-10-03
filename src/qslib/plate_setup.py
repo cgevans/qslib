@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+# SPDX-FileCopyrightText: 2021-2023 Constantine Evans <const@costi.net>
 #
 # SPDX-License-Identifier: AGPL-3.0-only
 
@@ -14,6 +14,7 @@ from typing import (
     Iterable,
     Iterator,
     List,
+    Literal,
     Mapping,
     Optional,
     Sequence,
@@ -29,11 +30,17 @@ import tabulate
 
 from .qsconnection_async import QSConnectionAsync
 
-_WELLNAMES = [x + str(y) for x in "ABCDEFGH" for y in range(1, 13)]
+_ROWALPHAS = "ABCDEFGHIJKLMNOP"
+_ROWALPHAS_96 = "ABCDEFGH"
 
-_WELLNAMESET = set(_WELLNAMES)
+_WELLNAMES_96 = [x + str(y) for x in _ROWALPHAS_96 for y in range(1, 13)]
+_WELLNAMES_384 = [x + str(y) for x in _ROWALPHAS for y in range(1, 25)]
 
-_WELLALPHREF = [(x, f"{y}") for x in "ABCDEFGH" for y in range(1, 13)]
+_WELLNAMESET_96 = set(_WELLNAMES_96)
+_WELLNAMESET_384 = set(_WELLNAMES_384)
+
+_WELLALPHREF_96 = [(x, f"{y}") for x in _ROWALPHAS_96 for y in range(1, 13)]
+_WELLALPHREF_384 = [(x, f"{y}") for x in _ROWALPHAS for y in range(1, 25)]
 
 
 def _process_color_from_str_int(x: str) -> Tuple[int, int, int, int]:
@@ -155,6 +162,7 @@ class _SampleWellsView(Mapping[str, list[str]]):
 @dataclass
 class PlateSetup:
     samples_by_name: Dict[str, Sample]
+    plate_type: Literal[96, 384] = 96
 
     @property
     def sample_wells(self):
@@ -162,7 +170,13 @@ class PlateSetup:
 
     @classmethod
     def from_platesetup_xml(cls, platexml: ET.Element) -> PlateSetup:  # type: ignore
-        # assert platexml.find("PlateKind/Type").text == "TYPE_8X12"
+        qs_platetype = platexml.find("PlateKind/Type").text
+        if qs_platetype == "TYPE_8X12":
+            plate_type = 96
+        elif qs_platetype == "TYPE_16X24":
+            plate_type = 384
+        else:
+            raise ValueError
 
         sample_fvs = platexml.findall(
             "FeatureMap/Feature/Id[.='sample']/../../FeatureValue"
@@ -172,6 +186,8 @@ class PlateSetup:
         samples_by_uuid: Dict[str, Sample] = dict()
 
         sample_wells: Dict[str, list[str]] = dict()
+
+        wn = _WELLNAMES_96 if plate_type == 96 else _WELLNAMES_384
 
         for fv in sample_fvs:
             if x := fv.findtext("Index"):
@@ -183,20 +199,24 @@ class PlateSetup:
             if sample.name in samples_by_name.keys():
                 assert sample == samples_by_name[sample.name]
                 assert sample == samples_by_uuid[sample.uuid]
-                sample_wells[sample.name].append(_WELLNAMES[idx])
+                sample_wells[sample.name].append(wn[idx])
             else:
                 assert sample.uuid not in samples_by_uuid.keys()
                 samples_by_name[sample.name] = sample
                 samples_by_uuid[sample.uuid] = sample
-                sample_wells[sample.name] = [_WELLNAMES[idx]]
+                sample_wells[sample.name] = [wn[idx]]
 
-        return cls(sample_wells, samples_by_name)
+        return cls(sample_wells, samples_by_name, plate_type=plate_type)
 
     def __init__(
         self,
         sample_wells: Mapping[str, str | List[str]] | None = None,
         samples: Iterable[Sample] | Mapping[str, Sample] = tuple(),
+        plate_type: Literal[96, 384] = 96,
     ) -> None:
+        assert plate_type in (96, 384)
+        self.plate_Type = plate_type
+
         if isinstance(samples, Mapping):
             self.samples_by_name = dict(samples)
         else:
@@ -213,7 +233,10 @@ class PlateSetup:
 
     @property
     def well_sample(self):
-        well_sample_name = pd.Series(np.full(8 * 12, None, object), index=_WELLNAMES)
+        well_sample_name = pd.Series(
+            np.full(8 * 12, None, object),
+            index=_WELLNAMES_96 if self.plate_Type == 96 else _WELLNAMES_384,
+        )
         for s, ws in self.sample_wells.items():
             for w in ws:
                 well_sample_name.loc[w] = s
@@ -230,7 +253,9 @@ class PlateSetup:
             samples_or_wells = [samples_or_wells]
 
         for sw in samples_or_wells:
-            if sw.upper() in _WELLNAMESET:
+            if sw.upper() in (
+                _WELLNAMESET_96 if self.plate_Type == 96 else _WELLNAMESET_384
+            ):
                 wells.append(sw.upper())
             else:
                 wells += self.sample_wells[sw]
@@ -238,7 +263,9 @@ class PlateSetup:
         return wells
 
     def get_descriptive_string(self, name: str) -> str:
-        if (w := name.upper()) in _WELLNAMESET:
+        if (w := name.upper()) in (
+            _WELLNAMESET_96 if self.plate_Type == 96 else _WELLNAMESET_384
+        ):
             return w
         sample = self.samples_by_name[name]
         return sample.description or sample.name
@@ -253,7 +280,10 @@ class PlateSetup:
             rts = ""
         return [
             f'platesetup,row={r},col={c} sample="{s}"{rts} {timestamp}'
-            for ((r, c), s) in zip(_WELLALPHREF, self.well_sample)
+            for ((r, c), s) in zip(
+                _WELLALPHREF_96 if self.plate_type == 96 else _WELLALPHREF_384,
+                self.well_sample,
+            )
         ]
 
     @classmethod
@@ -270,9 +300,11 @@ class PlateSetup:
         self,
         headers: Sequence[Union[str, int]] = list(range(1, 13)),
         tablefmt: str = "orgtbl",
-        showindex: Sequence[str] = tuple("ABCDEFGH"),
+        showindex: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> str:
+        if showindex is None:
+            showindex = _ROWALPHAS_96 if self.plate_Type == 96 else _ROWALPHAS
         return tabulate.tabulate(
             self.well_samples_as_array(),
             tablefmt=tablefmt,
@@ -284,6 +316,19 @@ class PlateSetup:
     def update_xml(self, root: ET.Element) -> None:
         samplemap = root.find("FeatureMap/Feature/Id[.='sample']/../..")
         e: Optional[ET.Element]
+
+        e = ET.SubElement(root, "PlateKind")
+        ET.SubElement(e, "Type").text = (
+            "TYPE_8X12" if self.plate_Type == 96 else "TYPE_16X24"
+        )
+        ET.SubElement(e, "Name").text = (
+            "96-Well Plate (8x12)"
+            if self.plate_Type == 96
+            else "384-Well Plate (16x24)"
+        )
+        ET.SubElement(e, "RowCount").text = "8" if self.plate_Type == 96 else "16"
+        ET.SubElement(e, "ColumnCount").text = "12" if self.plate_Type == 96 else "24"
+
         if not samplemap:
             e = ET.SubElement(root, "FeatureMap")
             v = ET.SubElement(e, "Feature")
@@ -291,7 +336,7 @@ class PlateSetup:
             ET.SubElement(v, "Name").text = "sample"
             samplemap = e
         ws = np.array(self.well_sample)
-        for welli in range(0, 96):
+        for welli in range(0, self.plate_Type):
             if ws[welli]:
                 e = samplemap.find(f"FeatureValue/Index[.='{welli}']/../FeatureItem")
                 if not e:
