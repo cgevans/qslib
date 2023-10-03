@@ -136,8 +136,8 @@ class FilterDataReading:
         assert self.plate_cols % len(self.temperatures) == 0
 
         # todo: handle other cases
-        assert self.plate_rows * self.plate_cols == 96
-        assert len(self.temperatures) == 6
+        assert self.plate_rows * self.plate_cols in (96, 384)
+        assert len(self.temperatures) in (1, 3, 6)
 
         wfs = cast(ET.Element, pde.find("WellData")).text
         if wfs is None:
