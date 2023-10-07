@@ -77,6 +77,8 @@ class FilterDataReading:
     well_fluorescence: npt.NDArray[np.float64]
     temperatures: npt.NDArray[np.float64]
     set_temperatures: npt.NDArray[np.float64] | None
+    plate_rows: int = 8
+    plate_cols: int = 12
 
     def __repr__(self):
         return (
@@ -137,7 +139,7 @@ class FilterDataReading:
 
         # todo: handle other cases
         assert self.plate_rows * self.plate_cols in (96, 384)
-        assert len(self.temperatures) in (1, 3, 6)
+        assert len(self.temperatures) in (1, 2, 3, 6)
 
         wfs = cast(ET.Element, pde.find("WellData")).text
         if wfs is None:
@@ -293,8 +295,8 @@ def df_from_readings(
             + [
                 (f"{r}{c}", v)
                 for v in ["fl", "rt", "st"]
-                for r in "ABCDEFGH"
-                for c in range(1, 13)
+                for r in _UPPERS[0 : readings[0].plate_rows]
+                for c in range(1, readings[0].plate_cols + 1)
             ]
             + [("exposure", "exposure")]
         ),
@@ -311,8 +313,8 @@ def df_from_readings(
             [(cast(str, "time"), v) for v in ["seconds", "hours", "timestamp"]]
             + [
                 (f"{r}{c}", v)
-                for r in "ABCDEFGH"
-                for c in range(1, 13)
+                for r in _UPPERS[0 : readings[0].plate_rows]
+                for c in range(1, readings[0].plate_cols + 1)
                 for v in ["fl", "rt", "st"]
             ]
             + [("exposure", "exposure")]
