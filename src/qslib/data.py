@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from glob import glob
@@ -14,6 +15,8 @@ from typing import List, Literal, Optional, Sequence, Union, cast
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
+
+from .plate_setup import _WELLNAMES_96, _WELLNAMES_384
 
 _UPPERS = "ABCDEFGHIJKLMNOP"
 
@@ -321,3 +324,146 @@ def df_from_readings(
         ),
         axis="columns",  # type: ignore
     )
+
+
+def _filterdata_df_v2(jsdata: dict):
+    dfd = {
+        "filter_set": [],
+        "stage": [],
+        "cycle": [],
+        "step": [],
+        "point": [],
+        "exposure": [],
+    }
+    dft = []
+    for w in _WELLNAMES_384:
+        dfd[w] = []
+
+    for x in jsdata:
+        cp = x["collectionPoint"]
+        for y in x["filterData"]:
+            dfd["filter_set"].append(y["filterSet"].lower().replace("_", "-"))
+            dfd["stage"].append(cp["stage"])
+            dfd["cycle"].append(cp["cycle"])
+            dfd["step"].append(cp["step"])
+            dfd["point"].append(cp["point"])
+            dfd["exposure"].append(y["exposure"])
+            for i, w in enumerate(_WELLNAMES_384):
+                dfd[w].append(y["wellFluorescences"][i])
+            dft.append(x["zoneTemperatures"])
+
+    fdd = pd.DataFrame(dfd)
+    fdd.set_index(["filter_set", "stage", "cycle", "step", "point"], inplace=True)
+    fdd.columns = pd.MultiIndex.from_tuples(
+        [("exposure", "exposure")] + [(x, "fl") for x in _WELLNAMES_384]
+    )
+
+    wrt = pd.DataFrame(
+        np.array(dft).repeat(384 / 6, axis=1),
+        columns=pd.MultiIndex.from_tuples([(x, "rt") for x in _WELLNAMES_384]),
+        index=fdd.index,
+    )
+
+    return fdd.join(wrt).sort_index(axis=1)
+
+
+def _parse_strlist(s):
+    if s == "[]":
+        return []
+    return [d for d in s[1:-1].split(", ")]
+
+
+def _parse_multicomponent_data(root: ET.Element):
+    n_wells = int(root.find("WellCount").text)
+    if n_wells == 96:
+        wellnames = _WELLNAMES_96
+    elif n_wells == 384:
+        wellnames = _WELLNAMES_384
+    else:
+        raise ValueError(
+            f"Unsupported number of wells in multicomponent data: {n_wells}"
+        )
+
+    cycle_count = int(root.find("CycleCount").text)
+
+    welldyes = {
+        int(dd.attrib["WellIndex"]): _parse_strlist(dd.find("DyeList").text)
+        for dd in root.findall("DyeData")
+    }
+
+    wellcycdata = {
+        int(d.attrib["WellIndex"]): {
+            dye: np.fromstring(sd.text[1:-1], sep=",")
+            for dye, sd in zip(
+                welldyes[int(d.attrib["WellIndex"])],
+                d.findall("CycleData"),
+            )
+        }
+        for d in root.findall("SignalData")
+    }
+
+    cycdataframes = []
+    for k, v in wellcycdata.items():
+        df = pd.DataFrame(v)
+        df["cycle"] = df.index + 1
+        df["well"] = wellnames[k]
+        cycdataframes.append(df)
+    mcd = pd.concat(cycdataframes).set_index(["well", "cycle"])
+
+    temperatures = pd.Series(
+        np.fromstring(root.find("SampleTemperatures").text, sep="\t"),
+        index=pd.MultiIndex.from_product(
+            [wellnames, range(1, cycle_count + 1)], names=["well", "cycle"]
+        ),
+        name="temperature",
+    )
+
+    cps = pd.DataFrame.from_records(
+        [
+            [
+                int(y)
+                for y in re.match(
+                    r"\[Stg:(\d+) Cyc:(\d+) Stp:(\d+) Pt:(\d+)\]", x
+                ).groups()
+            ]
+            for x in _parse_strlist(root.find("CollectionPoints").text)
+        ],
+        columns=[
+            "collected_stage",
+            "collected_cycle",
+            "collected_step",
+            "collected_point",
+        ],
+        index=pd.Index(range(1, cycle_count + 1), name="cycle"),
+    )
+
+    return mcd.join(temperatures).join(cps)
+
+
+def _parse_analysis(contents: str):
+    a = [x.splitlines() for x in re.split(r"\n(?=\d)", contents)]
+    d = (
+        pd.DataFrame.from_records(
+            [x[0].split("\t") for x in a[1:]], columns=a[0][1].split("\t")
+        )
+        .replace("", np.nan)
+        .astype(
+            {
+                "Well": int,
+                "Sample Name": "string",
+                "Detector": "string",
+                "Task": "string",
+                "Ct": float,
+                "Avg Ct": float,
+                "Ct SD": float,
+                "Delta Ct": float,
+                "Qty": float,
+                "Avg Qty": float,
+                "Qty SD": float,
+            }
+        )
+        .rename(columns={"Well": "WellIndex"})
+    )
+    d["Well"] = np.array(_WELLNAMES_384)[d["WellIndex"]]  # fixme
+    d = d.astype({"Well": "string"}).set_index(["Well"])
+    return d
