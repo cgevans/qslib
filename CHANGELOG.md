@@ -6,6 +6,13 @@ SPDX-License-Identifier: AGPL-3.0-only
 
 # Changelog
 
+# Version 0.11.0
+
+- Initial support for 384-well blocks, at least in data/file reading.
+- Initial support for v2.0 EDS specification machines (eg, QS6Pro), at least in data/file reading.
+- Parsing of multicomponent data for v1 and v2 machines, and partial analysis data for v1 machines.
+- Available data is shown in experiment information.
+
 # Version 0.10.1
 
 - SSL/non-SSL autoconnection speed improvements
