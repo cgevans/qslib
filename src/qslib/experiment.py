@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 import logging
 import os
 import re
@@ -46,7 +47,13 @@ from qslib.scpi_commands import AccessLevel, SCPICommand
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
 from ._util import _nowuuid, _pp_seqsliceint, _set_or_create
 from .base import RunStatus
-from .data import FilterDataReading, FilterSet, df_from_readings
+from .data import (
+    FilterDataReading,
+    FilterSet,
+    _filterdata_df_v2,
+    _parse_multicomponent_data,
+    df_from_readings,
+)
 from .machine import Machine
 from .processors import NormRaw, Processor
 from .protocol import Protocol, Stage, Step
@@ -339,6 +346,7 @@ class Experiment:
 
     num_zones: int
     """The number of temperature zones (excluding cover), or -1 if not known."""
+    spec_major_version: int = 1
 
     @property
     def all_filters(self) -> Collection[FilterSet]:
@@ -388,6 +396,15 @@ class Experiment:
             raise ValueError("Run hasn't started yet: no data available.")
         else:
             raise ValueError("Experiment data is not available")
+
+    @property
+    def multicomponentdata(self) -> pd.DataFrame:
+        if self._multicomponentdata is not None:
+            return self._multicomponentdata
+        elif self.runstate == "INIT":
+            raise ValueError("Run hasn't started yet: no data available.")
+        else:
+            raise ValueError("Multicomponent data is not available")
 
     def summary(self, format: str = "markdown", plate: str = "list") -> str:
         return self.info(format, plate)
@@ -1196,14 +1213,13 @@ table, th, td {{
         """
         exp = cls(_create_xml=False)
 
-        with zipfile.ZipFile(file) as z:
-            # Ensure that this actually looks like an EDS file:
-            try:
-                z.getinfo("apldbio/sds/experiment.xml")
-            except KeyError:
-                raise ValueError(f"{file} does not appear to be an EDS file.") from None
+        z = zipfile.ZipFile(file)
 
-            z.extractall(exp._dir_base)
+        manifest_info = _get_eds_info(z, checkinfo=True)
+
+        z.extractall(exp._dir_base)
+
+        exp.spec_major_version = int(manifest_info["Specification-Version"][0])
 
         exp._update_from_files()
 
@@ -1488,25 +1504,43 @@ table, th, td {{
         self.plate_setup = PlateSetup.from_platesetup_xml(x)
 
     def _update_from_data(self) -> None:
-        fdp = os.path.join(self._dir_eds, "filterdata.xml")
-        if os.path.isfile(fdp):
-            fdx = ET.parse(fdp)
-            fdrs = [
-                FilterDataReading(x, sds_dir=self._dir_eds)
-                for x in fdx.findall(".//PlateData")
-            ]
-            self._welldata = df_from_readings(
-                fdrs, self.activestarttime.timestamp() if self.activestarttime else None
-            )
-        elif fdfs := glob(os.path.join(self._dir_eds, "filter", "*_filterdata.xml")):
-            fdrs = [
-                FilterDataReading.from_file(fdf, sds_dir=self._dir_eds) for fdf in fdfs
-            ]
-            self._welldata = df_from_readings(
-                fdrs, self.activestarttime.timestamp() if self.activestarttime else None
-            )
-        else:
-            self._welldata = None
+        if self.spec_major_version == 1:
+            fdp = os.path.join(self._dir_eds, "filterdata.xml")
+            if os.path.isfile(fdp):
+                fdx = ET.parse(fdp)
+                fdrs = [
+                    FilterDataReading(x, sds_dir=self._dir_eds)
+                    for x in fdx.findall(".//PlateData")
+                ]
+                self._welldata = df_from_readings(
+                    fdrs,
+                    self.activestarttime.timestamp() if self.activestarttime else None,
+                )
+            elif fdfs := glob(
+                os.path.join(self._dir_eds, "filter", "*_filterdata.xml")
+            ):
+                fdrs = [
+                    FilterDataReading.from_file(fdf, sds_dir=self._dir_eds)
+                    for fdf in fdfs
+                ]
+                self._welldata = df_from_readings(
+                    fdrs,
+                    self.activestarttime.timestamp() if self.activestarttime else None,
+                )
+            else:
+                self._welldata = None
+
+            fdp = os.path.join(self._dir_eds, "multicomponentdata.xml")
+            if os.path.isfile(fdp):
+                fdx = ET.parse(fdp)
+                self._multicomponentdata = _parse_multicomponent_data(fdx)
+            else:
+                self._multicomponentdata = None
+        else:  # spec version 2
+            fdp = os.path.join(self._dir_base, "run/filter_data.json")
+            if os.path.isfile(fdp):
+                with open(fdp, "r") as f:
+                    self._welldata = _filterdata_df_v2(json.load(f))
 
     def data_for_sample(self, sample: str) -> pd.DataFrame:
         """Convenience function to return data for a specific sample.
@@ -2508,3 +2542,53 @@ def _gen_axtitle(
         val += ": " + ", ".join(elems)
 
     return val
+
+
+def _get_eds_info(f: zipfile.ZipFile | os.PathLike[str], checkinfo=True):
+    try:
+        if isinstance(f, zipfile.ZipFile):
+            m = f.open("apldbio/sds/Manifest.mf")
+        else:
+            m = (Path(f) / "apldbio/sds/Manifest.mf").open("rb")
+    except KeyError:
+        try:
+            if isinstance(f, zipfile.ZipFile):
+                m = f.open("Manifest.mf")
+            else:
+                m = (Path(f) / "Manifest.mf").open("rb")
+        except KeyError:
+            raise ValueError("No EDS manifest file found. Is this a valid EDS?")
+
+    # Manifest files for EDS archives should just be splittable by : into key/value pairs
+    manifest_properties = dict(
+        line.decode("utf-8").rstrip().split(": ", 1)
+        for line in m.readlines()
+        if len(line) > 2
+    )
+    m.close()
+
+    if not checkinfo:
+        return manifest_properties
+
+    if (
+        v := manifest_properties.get("Specification-Title")
+    ) != "Experiment Document Specification":
+        raise ValueError(
+            f"Manifest file does not appear to be for an EDS (Specification-Title is {v})"
+        )
+
+    sv = manifest_properties["Specification-Version"]
+    if sv[0] not in ("1", "2"):
+        raise ValueError(
+            f"QSLib does not support EDS files of specification version {sv}"
+        )
+    elif sv[0] == "2":
+        warn(
+            f"QSLib support for EDS specification version 2 is preliminary.  This file is version {sv}"
+        )
+    elif sv not in ("1.3.0", "1.3.1"):
+        warn(
+            f"{sv} is an EDS specification version QSLib hasn't been specifically tested with."
+        )
+
+    return manifest_properties
