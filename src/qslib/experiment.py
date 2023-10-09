@@ -39,7 +39,6 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 import toml as toml
-from pandas.errors import DataError
 
 from qslib.plate_setup import PlateSetup
 from qslib.scpi_commands import AccessLevel, SCPICommand
@@ -51,14 +50,15 @@ from .data import (
     FilterDataReading,
     FilterSet,
     _filterdata_df_v2,
-    _parse_multicomponent_data,
+    _parse_analysis_result,
+    _parse_multicomponent_data_v1,
+    _parse_multicomponent_data_v2,
     df_from_readings,
 )
 from .machine import Machine
 from .processors import NormRaw, Processor
 from .protocol import Protocol, Stage, Step
 from .qs_is_protocol import QS_IOError
-from .rawquant_compat import _fdc_to_rawdata
 from .version import __version__
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -317,6 +317,9 @@ class Experiment:
     A string describing the software and version used to write the file.
     """
     _welldata: pd.DataFrame | None = None
+    _multicomponent_data: pd.DataFrame | None = None
+    _analysis_result: pd.DataFrame | None = None
+    _amplification_data: pd.DataFrame | None = None
 
     temperatures: pd.DataFrame | None = None
     """
@@ -355,7 +358,7 @@ class Experiment:
         If the experiment has data, this is based on the existing data.  Otherwise, it is based
         on the experiment protocol.
         """
-        if self._welldata is not None:
+        if self._filter_data is not None:
             return [
                 FilterSet.fromstring(f)
                 for f in self.welldata.index.get_level_values(0).unique()
@@ -390,21 +393,39 @@ class Experiment:
             Exposure time from filterdata.xml.  Misleading, because it only refers to the
             longest exposure of multiple exposures.
         """
-        if self._welldata is not None:
-            return self._welldata
+        if self._filter_data is not None:
+            return self._filter_data
         elif self.runstate == "INIT":
             raise ValueError("Run hasn't started yet: no data available.")
         else:
             raise ValueError("Experiment data is not available")
 
     @property
-    def multicomponentdata(self) -> pd.DataFrame:
-        if self._multicomponentdata is not None:
-            return self._multicomponentdata
+    def multicomponent_data(self) -> pd.DataFrame:
+        if self._multicomponent_data is not None:
+            return self._multicomponent_data
         elif self.runstate == "INIT":
             raise ValueError("Run hasn't started yet: no data available.")
         else:
             raise ValueError("Multicomponent data is not available")
+
+    @property
+    def analysis_result(self) -> pd.DataFrame:
+        if self._analysis_result is not None:
+            return self._analysis_result
+        elif self.runstate == "INIT":
+            raise ValueError("Run hasn't started yet: no data available.")
+        else:
+            raise ValueError("Analysis result is not available")
+
+    @property
+    def amplification_data(self) -> pd.DataFrame:
+        if self._amplification_data is not None:
+            return self._amplification_data
+        elif self.runstate == "INIT":
+            raise ValueError("Run hasn't started yet: no data available.")
+        else:
+            raise ValueError("Amplification data is not available")
 
     def summary(self, format: str = "markdown", plate: str = "list") -> str:
         return self.info(format, plate)
@@ -439,9 +460,25 @@ class Experiment:
             s += f"- Run Started: {self.runstarttime}\n"
         if self.runendtime:
             s += f"- Run Ended: {self.runendtime}\n"
+        if self.runstate != "INIT":
+            s += "- Available data types: " + ", ".join(self.available_data()) + "\n"
         s += f"- Written by: {self.writesoftware}\n"
         s += f"- Read by: QSLib {__version__}\n"
         return s
+
+    def available_data(self) -> list[str]:
+        d = []
+        if self._filter_data is not None:
+            d.append("filter_data")
+        if self._multicomponent_data is not None:
+            d.append("multicomponent_data")
+        if self._amplification_data is not None:
+            d.append("amplification_data")
+        if self._analysis_result is not None:
+            d.append("analysis_result")
+        if self.temperatures is not None:
+            d.append("temperatures")
+        return d
 
     def info_html(self) -> str:
         """Create a self-contained HTML summary (returned as a string, but very large) of the experiment."""
@@ -512,19 +549,12 @@ table, th, td {{
         return _safe_exp_name(self.name)
 
     @property
-    def rawdata(self) -> pd.DataFrame:
-        warn("rawdata is deprecated; use welldata instead")
-        if (self.activestarttime is None) or (self.welldata is None):
-            raise DataError
-        return _fdc_to_rawdata(
-            self.welldata,
-            self.activestarttime.timestamp(),
-        )
+    def raw_data(self) -> pd.DataFrame:
+        return self.welldata
 
     @property
-    def filterdata(self) -> pd.DataFrame:
-        warn("filterdata is deprecated; use welldata instead")
-        return self.rawdata
+    def filter_data(self) -> pd.DataFrame:
+        return self.welldata
 
     def _ensure_machine(
         self,
@@ -1049,6 +1079,13 @@ table, th, td {{
         raise NotImplementedError
         # self.plate_setup.sample_wells = new_sample_wells
 
+    @property
+    def root_dir(self):
+        if self.spec_major_version == 1:
+            return self._dir_eds
+        else:
+            return self._dir_base
+
     def __init__(
         self,
         name: str | None = None,
@@ -1177,15 +1214,29 @@ table, th, td {{
         self._update_platesetup_xml()
 
     def _update_from_files(self) -> None:
-        p = Path(self._dir_eds)
-        if (p / "experiment.xml").is_file():
-            self._update_from_experiment_xml()
-        if (p / "tcprotocol.xml").is_file():
-            self._update_from_tcprotocol_xml()
-        if (p / "plate_setup.xml").is_file():
-            self._update_from_platesetup_xml()
-        if (p / "messages.log").is_file():
-            self._update_from_log()
+        if self.spec_major_version == 1:
+            p = Path(self._dir_eds)
+            if (p / "experiment.xml").is_file():
+                self._update_from_experiment_xml()
+            if (p / "tcprotocol.xml").is_file():
+                self._update_from_tcprotocol_xml()
+            if (p / "plate_setup.xml").is_file():
+                self._update_from_platesetup_xml()
+            if (p / "messages.log").is_file():
+                self._update_from_log()
+        elif self.spec_major_version == 2:
+            p = Path(self._dir_base)
+            manifest = _get_manifest_info(self._dir_base, checkinfo=False)
+            self.spec_version = manifest["Specification-Version"]
+            self.writesoftware = (
+                manifest["Implementation-Title"]
+                + " "
+                + manifest["Implementation-Version"]
+            )
+            self._update_from_expdata_v2()
+            if (p / "run" / "messages.log").is_file():
+                self._update_from_log()
+
         self._update_from_data()
 
         if self._protocol_from_xml:
@@ -1215,7 +1266,7 @@ table, th, td {{
 
         z = zipfile.ZipFile(file)
 
-        manifest_info = _get_eds_info(z, checkinfo=True)
+        manifest_info = _get_manifest_info(z, checkinfo=True)
 
         z.extractall(exp._dir_base)
 
@@ -1437,6 +1488,15 @@ table, th, td {{
             float(_find_or_raise(exml, "CreatedTime").text) / 1000.0  # type: ignore
         )
         self.runstate = exml.findtext("RunState") or "UNKNOWN"  # type: ignore
+
+        self._plate_type_id = exml.findtext("PlateTypeID") or None
+        if self._plate_type_id == "TYPE_8X12":
+            self.plate_type = 96
+        elif self._plate_type_id == "TYPE_16X24":
+            self.plate_type = 384
+        else:
+            self.plate_type = None
+
         self.writesoftware = (
             exml.findtext(
                 "ExperimentProperty[@type='RunInfo']/PropertyValue[@key='softwareVersion']/String"
@@ -1447,6 +1507,25 @@ table, th, td {{
             self.runstarttime = datetime.fromtimestamp(float(x) / 1000.0)
         if x := exml.findtext("RunEndTime"):
             self.runendtime = datetime.fromtimestamp(float(x) / 1000.0)
+
+    def _update_from_expdata_v2(self) -> None:
+        summary = json.load(open(os.path.join(self._dir_base, "summary.json")))
+        # fixme: this should go elsewhere, we have it here now because we need it for filterdata
+
+        self.name = summary.get("name", "unknown")
+
+        self.runstate = summary.get("runStatus", "UNKNOWN")
+        self.createdtime = datetime.fromtimestamp(
+            summary.get("createdTime", 0) / 1000.0
+        )
+
+        self._plate_type_id = summary["blockType"]
+        if self._plate_type_id == "BLOCK_384W":
+            self.plate_type = 384
+        elif self._plate_type_id == "BLOCK_96W":
+            self.plate_type = 96
+        else:
+            raise ValueError(f"Unknown block type {self._plate_type_id}")
 
     def _update_tcprotocol_xml(self) -> None:
         if self.protocol:
@@ -1512,7 +1591,7 @@ table, th, td {{
                     FilterDataReading(x, sds_dir=self._dir_eds)
                     for x in fdx.findall(".//PlateData")
                 ]
-                self._welldata = df_from_readings(
+                self._filter_data = df_from_readings(
                     fdrs,
                     self.activestarttime.timestamp() if self.activestarttime else None,
                 )
@@ -1523,24 +1602,51 @@ table, th, td {{
                     FilterDataReading.from_file(fdf, sds_dir=self._dir_eds)
                     for fdf in fdfs
                 ]
-                self._welldata = df_from_readings(
+                self._filter_data = df_from_readings(
                     fdrs,
                     self.activestarttime.timestamp() if self.activestarttime else None,
                 )
             else:
-                self._welldata = None
+                self._filter_data = None
 
-            fdp = os.path.join(self._dir_eds, "multicomponentdata.xml")
-            if os.path.isfile(fdp):
-                fdx = ET.parse(fdp)
-                self._multicomponentdata = _parse_multicomponent_data(fdx)
+            mdp = os.path.join(self._dir_eds, "multicomponentdata.xml")
+            if os.path.isfile(mdp):
+                fdx = ET.parse(mdp)
+                self._multicomponent_data = _parse_multicomponent_data_v1(fdx)
             else:
-                self._multicomponentdata = None
+                self._multicomponent_data = None
+
+            adp = os.path.join(self._dir_eds, "analysis_result.txt")
+            if os.path.isfile(adp):
+                with open(adp, "r") as f:
+                    (
+                        self._analysis_result,
+                        self._amplification_data,
+                    ) = _parse_analysis_result(
+                        f.read(), plate_type=self.plate_type
+                    )  # FIXME: plate type
+
         else:  # spec version 2
             fdp = os.path.join(self._dir_base, "run/filter_data.json")
             if os.path.isfile(fdp):
                 with open(fdp, "r") as f:
-                    self._welldata = _filterdata_df_v2(json.load(f))
+                    self._filter_data = _filterdata_df_v2(
+                        json.load(f),
+                        self.plate_type,
+                        quant_files_path=(Path(self.root_dir) / "run/quant"),
+                        start_time=self.activestarttime.timestamp()
+                        if self.activestarttime
+                        else None,
+                    )
+            mdp = os.path.join(self._dir_base, "primary/multicomponent_data.json")
+            if os.path.isfile(mdp):
+                with open(mdp, "r") as f:
+                    self._multicomponent_data = _parse_multicomponent_data_v2(
+                        json.load(f), self.plate_type
+                    )
+            ap = Path(self.root_dir) / "primary" / "analysis_result.json"
+            if ap.is_file():
+                self._analysis_dict = json.load(ap.open())
 
     def data_for_sample(self, sample: str) -> pd.DataFrame:
         """Convenience function to return data for a specific sample.
@@ -1565,10 +1671,14 @@ table, th, td {{
         return x
 
     def _update_from_log(self) -> None:
-        if not os.path.isfile(os.path.join(self._dir_eds, "messages.log")):
+        if self.spec_major_version == 1:
+            logpath = os.path.join(self._dir_eds, "messages.log")
+        else:
+            logpath = os.path.join(self._dir_base, "run/messages.log")
+        if not os.path.isfile(logpath):
             return
         try:
-            msglog = open(os.path.join(self._dir_eds, "messages.log"), "r").read()
+            msglog = open(logpath, "r").read()
         except UnicodeDecodeError as error:
             log.debug(
                 "Decoding log failed. If <binary.reply> is present in log this may be the cause:"
@@ -1578,7 +1688,7 @@ table, th, td {{
                 "{!r}".format(error.object[error.start - 500 : error.end + 500])
             )
             msglog = open(
-                os.path.join(self._dir_eds, "messages.log"),
+                logpath,
                 "r",
                 errors="backslashreplace",
             ).read()
@@ -2544,19 +2654,19 @@ def _gen_axtitle(
     return val
 
 
-def _get_eds_info(f: zipfile.ZipFile | os.PathLike[str], checkinfo=True):
+def _get_manifest_info(f: zipfile.ZipFile | os.PathLike[str], checkinfo=True):
     try:
         if isinstance(f, zipfile.ZipFile):
             m = f.open("apldbio/sds/Manifest.mf")
         else:
             m = (Path(f) / "apldbio/sds/Manifest.mf").open("rb")
-    except KeyError:
+    except (KeyError, FileNotFoundError):
         try:
             if isinstance(f, zipfile.ZipFile):
                 m = f.open("Manifest.mf")
             else:
                 m = (Path(f) / "Manifest.mf").open("rb")
-        except KeyError:
+        except (KeyError, FileNotFoundError):
             raise ValueError("No EDS manifest file found. Is this a valid EDS?")
 
     # Manifest files for EDS archives should just be splittable by : into key/value pairs

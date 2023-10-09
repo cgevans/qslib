@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from glob import glob
 from os import PathLike
+from pathlib import Path
 from typing import List, Literal, Optional, Sequence, Union, cast
 
 import numpy as np
@@ -326,7 +327,12 @@ def df_from_readings(
     )
 
 
-def _filterdata_df_v2(jsdata: dict):
+def _filterdata_df_v2(
+    jsdata: dict,
+    plate_type: int,
+    quant_files_path: Path | None = None,
+    start_time: float | None = None,
+):
     dfd = {
         "filter_set": [],
         "stage": [],
@@ -336,7 +342,10 @@ def _filterdata_df_v2(jsdata: dict):
         "exposure": [],
     }
     dft = []
-    for w in _WELLNAMES_384:
+
+    wellnames = _WELLNAMES_96 if plate_type == 96 else _WELLNAMES_384
+
+    for w in wellnames:
         dfd[w] = []
 
     for x in jsdata:
@@ -348,23 +357,47 @@ def _filterdata_df_v2(jsdata: dict):
             dfd["step"].append(cp["step"])
             dfd["point"].append(cp["point"])
             dfd["exposure"].append(y["exposure"])
-            for i, w in enumerate(_WELLNAMES_384):
-                dfd[w].append(y["wellFluorescences"][i])
+            for w, v in zip(wellnames, y["wellFluorescences"], strict=True):
+                dfd[w].append(v)
             dft.append(x["zoneTemperatures"])
 
     fdd = pd.DataFrame(dfd)
     fdd.set_index(["filter_set", "stage", "cycle", "step", "point"], inplace=True)
     fdd.columns = pd.MultiIndex.from_tuples(
-        [("exposure", "exposure")] + [(x, "fl") for x in _WELLNAMES_384]
+        [("exposure", "exposure")] + [(x, "fl") for x in wellnames]
     )
 
     wrt = pd.DataFrame(
-        np.array(dft).repeat(384 / 6, axis=1),
-        columns=pd.MultiIndex.from_tuples([(x, "rt") for x in _WELLNAMES_384]),
+        np.array(dft).repeat(int(plate_type / len(dft[0])), axis=1),
+        columns=pd.MultiIndex.from_tuples([(x, "rt") for x in wellnames]),
         index=fdd.index,
     )
 
+    if quant_files_path is not None:
+        timestamps = []
+        for filter_set, stage, cycle, step, point in fdd.index:
+            filename = (
+                f"S{stage:02}_C{cycle:03}_T{step:02}_"
+                f"P{point:04}_{FilterSet.fromstring(filter_set).upperform}"
+                "_E1.quant"  # fixme: make consistent
+            )
+            qstring = (quant_files_path / filename).open().read()
+            qss = qstring.split("\n\n")[3].split("\n")
+            assert len(qss) == 3
+            assert qss[0] == "[conditions]"
+            qd = {k: v for k, v in zip(qss[1].split("\t"), qss[2].split("\t"))}
+            timestamp = float(qd["Time"])
+            timestamps.append(timestamp)
+        fdd["time", "timestamp"] = timestamps
+        if start_time is not None:
+            fdd[("time", "seconds")] = fdd[("time", "timestamp")] - start_time
+            fdd[("time", "hours")] = fdd[("time", "seconds")] / 3600.0
+
     return fdd.join(wrt).sort_index(axis=1)
+
+    @property
+    def filename_reading_string(self) -> str:
+        return ()
 
 
 def _parse_strlist(s):
@@ -373,7 +406,7 @@ def _parse_strlist(s):
     return [d for d in s[1:-1].split(", ")]
 
 
-def _parse_multicomponent_data(root: ET.Element):
+def _parse_multicomponent_data_v1(root: ET.Element):
     n_wells = int(root.find("WellCount").text)
     if n_wells == 96:
         wellnames = _WELLNAMES_96
@@ -405,15 +438,15 @@ def _parse_multicomponent_data(root: ET.Element):
     cycdataframes = []
     for k, v in wellcycdata.items():
         df = pd.DataFrame(v)
-        df["cycle"] = df.index + 1
+        df["collection_cycle"] = df.index + 1
         df["well"] = wellnames[k]
         cycdataframes.append(df)
-    mcd = pd.concat(cycdataframes).set_index(["well", "cycle"])
+    mcd = pd.concat(cycdataframes).set_index(["well", "collection_cycle"])
 
     temperatures = pd.Series(
         np.fromstring(root.find("SampleTemperatures").text, sep="\t"),
         index=pd.MultiIndex.from_product(
-            [wellnames, range(1, cycle_count + 1)], names=["well", "cycle"]
+            [wellnames, range(1, cycle_count + 1)], names=["well", "collection_cycle"]
         ),
         name="temperature",
     )
@@ -429,41 +462,95 @@ def _parse_multicomponent_data(root: ET.Element):
             for x in _parse_strlist(root.find("CollectionPoints").text)
         ],
         columns=[
-            "collected_stage",
-            "collected_cycle",
-            "collected_step",
-            "collected_point",
+            "stage",
+            "cycle",
+            "step",
+            "point",
         ],
-        index=pd.Index(range(1, cycle_count + 1), name="cycle"),
+        index=pd.Index(range(1, cycle_count + 1), name="collection_cycle"),
     )
 
     return mcd.join(temperatures).join(cps)
 
 
-def _parse_analysis(contents: str):
-    a = [x.splitlines() for x in re.split(r"\n(?=\d)", contents)]
-    d = (
-        pd.DataFrame.from_records(
-            [x[0].split("\t") for x in a[1:]], columns=a[0][1].split("\t")
+def _parse_multicomponent_data_v2(jd: dict, plate_type: int):
+    if plate_type == 96:
+        wellnames = _WELLNAMES_96
+    elif plate_type == 384:
+        wellnames = _WELLNAMES_384
+    else:
+        raise ValueError(
+            f"Unsupported number of wells in multicomponent data: {plate_type}"
         )
-        .replace("", np.nan)
-        .astype(
-            {
-                "Well": int,
-                "Sample Name": "string",
-                "Detector": "string",
-                "Task": "string",
-                "Ct": float,
-                "Avg Ct": float,
-                "Ct SD": float,
-                "Delta Ct": float,
-                "Qty": float,
-                "Avg Qty": float,
-                "Qty SD": float,
-            }
-        )
-        .rename(columns={"Well": "WellIndex"})
+
+    cycle_count = len(jd["collectionPoints"])
+
+    wellcycdata = {
+        int(d["wellIndex"]): {
+            dd["dyeName"]: np.array(dd["fluorescences"]) for dd in d["dyeData"]
+        }
+        | {"temperature": d["temperatures"]}
+        for d in jd["wellData"]
+    }
+
+    # FIXME: bubble data
+
+    cycdataframes = []
+    for k, v in wellcycdata.items():
+        df = pd.DataFrame(v)
+        df["collection_cycle"] = df.index + 1
+        df["well"] = wellnames[k]
+        cycdataframes.append(df)
+    mcd = pd.concat(cycdataframes).set_index(["well", "collection_cycle"])
+
+    cps = pd.DataFrame.from_records(
+        jd["collectionPoints"],
+        index=pd.Index(range(1, cycle_count + 1), name="collection_cycle"),
     )
-    d["Well"] = np.array(_WELLNAMES_384)[d["WellIndex"]]  # fixme
-    d = d.astype({"Well": "string"}).set_index(["Well"])
-    return d
+
+    return mcd.join(cps)
+
+
+def _parse_analysis_result(contents: str, plate_type: int):
+    wellnames = _WELLNAMES_96 if plate_type == 96 else _WELLNAMES_384
+
+    a = [x.splitlines() for x in re.split(r"\n(?=\d)", contents)]
+
+    colnames = a[0][1].split("\t")
+    ard_d = {y: [] for y in colnames}
+
+    ard_d |= {
+        "Std Curve Results": [],
+        "Std Curve Results X Values": [],
+        "Std Curve Results Y Values": [],
+        "Rn values": [],
+        "Delta Rn values": [],
+    }
+    # FIXME: will fail if there are unexpected columns
+
+    for x in a[1:]:
+        for k, v in zip(colnames, x[0].split("\t")):
+            if v == "":
+                v = np.nan
+            # FIXME:
+            else:
+                try:
+                    v = int(v)
+                except ValueError:
+                    try:
+                        v = float(v)
+                    except ValueError:
+                        pass
+            ard_d[k].append(v)
+        for y in x[1:]:
+            z = y.split("\t")
+            k = z[0]
+            v = z[1:]
+            ard_d[k].append(v)
+
+    d = pd.DataFrame(ard_d)
+    d.rename({"Well": "WellIndex"}, axis=1, inplace=True)
+    d["Well"] = np.array(wellnames)[d["WellIndex"]]
+    d.set_index(["Well"], inplace=True)
+
+    return (d, None)  # fixme: parse ampl data
