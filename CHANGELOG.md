@@ -1,7 +1,7 @@
 <!--
-SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+SPDX-FileCopyrightText: 2021-2023 Constantine Evans <qslib@mb.costi.net>
 
-SPDX-License-Identifier: AGPL-3.0-only
+SPDX-License-Identifier: EUPL-1.2
 -->
 
 # Changelog
@@ -12,6 +12,7 @@ SPDX-License-Identifier: AGPL-3.0-only
 - Initial support for v2.0 EDS specification machines (eg, QS6Pro), at least in data/file reading.
 - Parsing of multicomponent data for v1 and v2 machines, and partial analysis data for v1 machines.
 - Available data is shown in experiment information.
+- Change license to EUPL-1.2.
 
 # Version 0.10.1
 

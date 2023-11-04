@@ -1,10 +1,6 @@
-# SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+# SPDX-FileCopyrightText: 2021 - 2023 Constantine Evans <qslib@mb.costi.net>
 #
-# SPDX-License-Identifier: AGPL-3.0-only
-
-#[build-system]
-#requires = ["pdm-pep517"]
-#build-backend = "pdm.pep517.api"
+# SPDX-License-Identifier: EUPL-1.2
 
 [build-system]
 requires = ["setuptools>=68", "setuptools_scm[toml]>=5", "wheel"]
