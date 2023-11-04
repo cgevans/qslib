@@ -161,7 +161,7 @@ def _wrapunitmaybelist_degC(
     return uv
 
 
-def _durformat(time: pint.Quantity[int]) -> str:
+def _durformat(time: pint.Quantity) -> str:  # intquantitiy
     """Convert time in seconds to a nice string"""
     time_s: int = time.to(UR.seconds).magnitude
     s = ""
@@ -217,10 +217,10 @@ class ProtoCommand(ABC):
 class Ramp(ProtoCommand):
     """Ramps temperature to a new setting."""
 
-    temperature: pint.Quantity[np.ndarray] = attr.field(
+    temperature: pint.Quantity = attr.field(  # [np.ndarray]
         converter=_wrapunitmaybelist_degC, on_setattr=attr.setters.convert
     )
-    increment: pint.Quantity[float] = attr.field(
+    increment: pint.Quantity = attr.field(  # [float]
         converter=_wrap_delta_degC_or_zero,
         on_setattr=attr.setters.convert,
         default=_ZEROTEMPDELTA,
@@ -228,7 +228,7 @@ class Ramp(ProtoCommand):
     incrementcycle: int = 1
     incrementstep: int = 1
     rate: float = 100.0  # This is a percent
-    cover: pint.Quantity[float] | None = attr.field(
+    cover: pint.Quantity | None = attr.field(  # [float]
         converter=_wrap_degC_or_none,
         on_setattr=attr.setters.convert,
         default=None,
@@ -330,8 +330,8 @@ class HACFILT(ProtoCommand):
 class HoldAndCollect(ProtoCommand):
     """A protocol hold (for a time) and collect (set by HACFILT) command."""
 
-    time: pint.Quantity[int]
-    increment: pint.Quantity[int] = Q_(0, "seconds")
+    time: pint.Quantity  # [int]
+    increment: pint.Quantity = Q_(0, "seconds")  # [int]
     incrementcycle: int = 1
     incrementstep: int = 1
     tiff: bool = False

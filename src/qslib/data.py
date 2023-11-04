@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from glob import glob
 from os import PathLike
 from pathlib import Path
-from typing import List, Literal, Optional, Sequence, Union, cast
+from typing import Any, List, Literal, Optional, Sequence, TypeVar, Union, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -20,6 +20,28 @@ import pandas as pd
 from .plate_setup import _WELLNAMES_96, _WELLNAMES_384
 
 _UPPERS = "ABCDEFGHIJKLMNOP"
+
+
+def _find_text_or_raise(e: ET.ElementTree | ET.Element, path: str) -> str:
+    "Find the text of the element at path and return it, or raise an error."
+    x = e.find(path)
+    if x is None:
+        raise ValueError(f"{path} not found in {x}.")
+    else:
+        t = x.text
+        if t is None:
+            raise ValueError(f"{path} has no text.")
+        else:
+            return t
+
+
+def _get_text_or_raise(e: ET.Element) -> str:
+    "Get the text of the element or raise an error."
+    t = e.text
+    if t is None:
+        raise ValueError(f"{e} has no text.")
+    else:
+        return t
 
 
 @dataclass(frozen=True, order=True, eq=True)
@@ -333,7 +355,7 @@ def _filterdata_df_v2(
     quant_files_path: Path | None = None,
     start_time: float | None = None,
 ):
-    dfd = {
+    dfd: dict[str, list[Any]] = {
         "filter_set": [],
         "stage": [],
         "cycle": [],
@@ -395,10 +417,6 @@ def _filterdata_df_v2(
 
     return fdd.join(wrt).sort_index(axis=1)
 
-    @property
-    def filename_reading_string(self) -> str:
-        return ()
-
 
 def _parse_strlist(s):
     if s == "[]":
@@ -406,8 +424,11 @@ def _parse_strlist(s):
     return [d for d in s[1:-1].split(", ")]
 
 
-def _parse_multicomponent_data_v1(root: ET.Element):
-    n_wells = int(root.find("WellCount").text)
+T = TypeVar("T")
+
+
+def _parse_multicomponent_data_v1(root: ET.ElementTree):
+    n_wells = int(_find_text_or_raise(root, "WellCount"))
     if n_wells == 96:
         wellnames = _WELLNAMES_96
     elif n_wells == 384:
@@ -417,16 +438,16 @@ def _parse_multicomponent_data_v1(root: ET.Element):
             f"Unsupported number of wells in multicomponent data: {n_wells}"
         )
 
-    cycle_count = int(root.find("CycleCount").text)
+    cycle_count = int(_find_text_or_raise(root, "CycleCount"))
 
     welldyes = {
-        int(dd.attrib["WellIndex"]): _parse_strlist(dd.find("DyeList").text)
+        int(dd.attrib["WellIndex"]): _parse_strlist(dd.find("DyeList"))
         for dd in root.findall("DyeData")
     }
 
     wellcycdata = {
         int(d.attrib["WellIndex"]): {
-            dye: np.fromstring(sd.text[1:-1], sep=",")
+            dye: np.fromstring(_get_text_or_raise(sd)[1:-1], sep=",")
             for dye, sd in zip(
                 welldyes[int(d.attrib["WellIndex"])],
                 d.findall("CycleData"),
@@ -444,7 +465,7 @@ def _parse_multicomponent_data_v1(root: ET.Element):
     mcd = pd.concat(cycdataframes).set_index(["well", "collection_cycle"])
 
     temperatures = pd.Series(
-        np.fromstring(root.find("SampleTemperatures").text, sep="\t"),
+        np.fromstring(_find_text_or_raise(root, "SampleTemperatures"), sep="\t"),
         index=pd.MultiIndex.from_product(
             [wellnames, range(1, cycle_count + 1)], names=["well", "collection_cycle"]
         ),
@@ -455,11 +476,12 @@ def _parse_multicomponent_data_v1(root: ET.Element):
         [
             [
                 int(y)
-                for y in re.match(
-                    r"\[Stg:(\d+) Cyc:(\d+) Stp:(\d+) Pt:(\d+)\]", x
+                for y in cast(
+                    re.Match[str],
+                    re.match(r"\[Stg:(\d+) Cyc:(\d+) Stp:(\d+) Pt:(\d+)\]", x),
                 ).groups()
             ]
-            for x in _parse_strlist(root.find("CollectionPoints").text)
+            for x in _parse_strlist(_find_text_or_raise(root, "CollectionPoints"))
         ],
         columns=[
             "stage",
@@ -517,7 +539,7 @@ def _parse_analysis_result(contents: str, plate_type: int):
     a = [x.splitlines() for x in re.split(r"\n(?=\d)", contents)]
 
     colnames = a[0][1].split("\t")
-    ard_d = {y: [] for y in colnames}
+    ard_d: dict[str, list[Any]] = {y: [] for y in colnames}
 
     ard_d |= {
         "Std Curve Results": [],
