@@ -39,6 +39,7 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 import toml as toml
+from matplotlib.lines import Line2D
 
 from qslib.plate_setup import PlateSetup
 from qslib.scpi_commands import AccessLevel, SCPICommand
@@ -2054,16 +2055,14 @@ table, th, td {{
             if len(between_stages) > 0:
                 betweendat: pd.DataFrame = filterdat.loc[between_stages, :]  # type: ignore
 
-            anneallines = []
-            meltlines = []
-            betweenlines = []
+            anneallines: list[list[Line2D]] = []
+            meltlines: list[list[Line2D]] = []
+            betweenlines: list[list[Line2D]] = []
 
             for sample in samples:
                 wells = self.plate_setup.get_wells(sample)
 
                 for well in wells:
-                    color = next(ax._get_lines.prop_cycler)["color"]
-
                     label = _gen_label(
                         self.plate_setup.get_descriptive_string(sample),
                         well,
@@ -2077,12 +2076,13 @@ table, th, td {{
                         ax.plot(
                             annealdat.loc[:, (well, "st")],
                             annealdat.loc[:, (well, "fl")],
-                            color=color,
                             label=label,
                             marker=marker,
                             **(line_kw if line_kw is not None else {}),
                         )
                     )
+
+                    color = anneallines[-1][-1].get_color()
 
                     meltlines.append(
                         ax.plot(
@@ -2325,8 +2325,6 @@ table, th, td {{
                 wells = self.plate_setup.get_wells(sample)
 
                 for well in wells:
-                    color = next(ax[0]._get_lines.prop_cycler)["color"]
-
                     label = _gen_label(
                         self.plate_setup.get_descriptive_string(sample),
                         well,
@@ -2340,7 +2338,6 @@ table, th, td {{
                         ax[0].plot(
                             filterdat.loc[stages, ("time", "hours")],
                             filterdat.loc[stages, (well, "fl")],
-                            color=color,
                             label=label,
                             marker=marker,
                             **(line_kw if line_kw is not None else {}),
@@ -2654,7 +2651,7 @@ def _gen_axtitle(
     return val
 
 
-def _get_manifest_info(f: zipfile.ZipFile | os.PathLike[str], checkinfo=True):
+def _get_manifest_info(f: zipfile.ZipFile | os.PathLike[str] | str, checkinfo=True):
     try:
         if isinstance(f, zipfile.ZipFile):
             m = f.open("apldbio/sds/Manifest.mf")
