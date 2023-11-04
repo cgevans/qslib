@@ -1,7 +1,7 @@
 <!--
-SPDX-FileCopyrightText: 2021-2022 Constantine Evans <const@costi.eu>
+SPDX-FileCopyrightText: 2021 - 2023 Constantine Evans <qslib@mb.costi.net>
 
-SPDX-License-Identifier: AGPL-3.0-only
+SPDX-License-Identifier: EUPL-1.2
 -->
 
 [![Documentation Status](https://readthedocs.org/projects/qslib/badge/?version=latest)](https://qslib.readthedocs.io/en/latest/?badge=latest)

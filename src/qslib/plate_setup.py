@@ -1,6 +1,7 @@
-# SPDX-FileCopyrightText: 2021-2023 Constantine Evans <const@costi.net>
+# SPDX-FileCopyrightText: 2021 - 2023 Constantine Evans <const@costi.net>
+# SPDX-FileCopyrightText: 2021 - 2023 Constantine Evans <qslib@mb.costi.net>
 #
-# SPDX-License-Identifier: AGPL-3.0-only
+# SPDX-License-Identifier: EUPL-1.2
 
 """Code for handling plate setup."""
 from __future__ import annotations
