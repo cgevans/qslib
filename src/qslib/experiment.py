@@ -318,7 +318,7 @@ class Experiment:
     """
     A string describing the software and version used to write the file.
     """
-    _welldata: pd.DataFrame | None = None
+    _filter_data: pd.DataFrame | None = None
     _multicomponent_data: pd.DataFrame | None = None
     _analysis_result: pd.DataFrame | None = None
     _amplification_data: pd.DataFrame | None = None
@@ -2308,7 +2308,7 @@ table, th, td {{
         elif (not isinstance(ax, (Sequence, np.ndarray))) or isinstance(ax, plt.Axes):
             ax = [ax]
 
-        ax = cast(Sequence[Axes], ax)
+        ax = cast("Sequence[Axes]", ax)
 
         data = self.welldata
 
@@ -2698,7 +2698,7 @@ def _get_manifest_info(f: zipfile.ZipFile | os.PathLike[str] | str, checkinfo=Tr
         warn(
             f"QSLib support for EDS specification version 2 is preliminary.  This file is version {sv}"
         )
-    elif sv not in ("1.3.0", "1.3.1"):
+    elif sv not in ("1.3.0", "1.3.1", "1.3.2"):
         warn(
             f"{sv} is an EDS specification version QSLib hasn't been specifically tested with."
         )
