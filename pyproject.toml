@@ -22,14 +22,14 @@ profile = "black"
 name = "qslib"
 requires-python = ">=3.9"
 description = "Library for communicating with and using the QuantStudio qPCR machine, intended for non-qPCR uses."
-license = { file = "LICENSE.txt" }
+license = { text = "EUPL-1.2" }
 readme = "README.md"
 authors = [{ name = "Constantine Evans", email = "const@costi.net" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Programming Language :: Python",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "License :: OSI Approved :: European Union Public Licence 1.2 (EUPL 1.2)",
     "Natural Language :: English",
     "Topic :: Scientific/Engineering",
     "Topic :: Scientific/Engineering :: Chemistry",
@@ -38,6 +38,7 @@ classifiers = [
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Framework :: Matplotlib",
     "Framework :: Jupyter",
 ]
