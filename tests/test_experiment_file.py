@@ -120,5 +120,6 @@ def test_plots(exp: Experiment) -> None:
     exp.plot_protocol()
 
 
-def test_rawquant(exp: Experiment) -> None:
-    exp.rawdata.loc[:, :]
+# rawquant has been removed
+# def test_rawquant(exp: Experiment) -> None:
+#     exp.rawdata.loc[:, :]

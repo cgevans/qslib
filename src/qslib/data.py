@@ -441,7 +441,7 @@ def _parse_multicomponent_data_v1(root: ET.ElementTree):
     cycle_count = int(_find_text_or_raise(root, "CycleCount"))
 
     welldyes = {
-        int(dd.attrib["WellIndex"]): _parse_strlist(dd.find("DyeList"))
+        int(dd.attrib["WellIndex"]): _parse_strlist(dd.find("DyeList").text)  # fixme
         for dd in root.findall("DyeData")
     }
 
@@ -541,13 +541,13 @@ def _parse_analysis_result(contents: str, plate_type: int):
     colnames = a[0][1].split("\t")
     ard_d: dict[str, list[Any]] = {y: [] for y in colnames}
 
-    ard_d |= {
-        "Std Curve Results": [],
-        "Std Curve Results X Values": [],
-        "Std Curve Results Y Values": [],
-        "Rn values": [],
-        "Delta Rn values": [],
-    }
+    # ard_d |= {
+    #     "Std Curve Results": [],
+    #     "Std Curve Results X Values": [],
+    #     "Std Curve Results Y Values": [],
+    #     "Rn values": [],
+    #     "Delta Rn values": [],
+    # }
     # FIXME: will fail if there are unexpected columns
 
     for x in a[1:]:
@@ -563,11 +563,15 @@ def _parse_analysis_result(contents: str, plate_type: int):
                         v = float(v)
                     except ValueError:
                         pass
+            if k not in ard_d:
+                ard_d[k] = []
             ard_d[k].append(v)
         for y in x[1:]:
             z = y.split("\t")
             k = z[0]
             v = z[1:]
+            if k not in ard_d:
+                ard_d[k] = []
             ard_d[k].append(v)
 
     d = pd.DataFrame(ard_d)
