@@ -39,9 +39,8 @@ from warnings import warn
 import numpy as np
 import pandas as pd
 import toml as toml
-from matplotlib.lines import Line2D
 
-from qslib.plate_setup import PlateSetup
+from qslib.plate_setup import PlateSetup, _SampleWellsView
 from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
@@ -64,6 +63,8 @@ from .version import __version__
 
 if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt
+    from matplotlib.axes import Axes
+    from matplotlib.lines import Line2D
 
 # Let's just assume all of these are problematic, for now.
 INVALID_NAME_RE = re.compile(r"[\[\]{}!/:;@&=+$,?#|\\]")
@@ -1071,7 +1072,7 @@ table, th, td {{
     #     return self.save_file(path, overwrite, update_files=False)
 
     @property
-    def sample_wells(self) -> dict[str, list[str]]:
+    def sample_wells(self) -> _SampleWellsView:
         """A dictionary of sample names to sample wells (convenience read/write access to the :class:`PlateSetup` ."""
         return self.plate_setup.sample_wells
 
@@ -1492,7 +1493,7 @@ table, th, td {{
 
         self._plate_type_id = exml.findtext("PlateTypeID") or None
         if self._plate_type_id == "TYPE_8X12":
-            self.plate_type = 96
+            self.plate_type: Literal[96, 384, None] = 96
         elif self._plate_type_id == "TYPE_16X24":
             self.plate_type = 384
         else:
@@ -1618,6 +1619,8 @@ table, th, td {{
                 self._multicomponent_data = None
 
             adp = os.path.join(self._dir_eds, "analysis_result.txt")
+            if self.plate_type is None:
+                raise ValueError("Plate type must be set before loading analysis.")
             if os.path.isfile(adp):
                 with open(adp, "r") as f:
                     (
@@ -1629,6 +1632,8 @@ table, th, td {{
 
         else:  # spec version 2
             fdp = os.path.join(self._dir_base, "run/filter_data.json")
+            if self.plate_type is None:
+                raise ValueError("Plate type must be set before loading analysis.")
             if os.path.isfile(fdp):
                 with open(fdp, "r") as f:
                     self._filter_data = _filterdata_df_v2(
@@ -2055,9 +2060,9 @@ table, th, td {{
             if len(between_stages) > 0:
                 betweendat: pd.DataFrame = filterdat.loc[between_stages, :]  # type: ignore
 
-            anneallines: list[list[Line2D]] = []
-            meltlines: list[list[Line2D]] = []
-            betweenlines: list[list[Line2D]] = []
+            anneallines: "list[list[Line2D]]" = []
+            meltlines: "list[list[Line2D]]" = []
+            betweenlines: "list[list[Line2D]]" = []
 
             for sample in samples:
                 wells = self.plate_setup.get_wells(sample)
@@ -2160,7 +2165,7 @@ table, th, td {{
         stages: slice | int | Sequence[int] = slice(None),
         process: Sequence[Processor] | Processor | None = None,
         normalization: Processor | None = None,
-        ax: "plt.Axes" | "Sequence[plt.Axes]" | None = None,
+        ax: "Axes" | "Sequence[Axes]" | None = None,
         legend: bool | Literal["inset", "right"] = True,
         temperatures: Literal[False, "axes", "inset", "twin"] = "axes",
         marker: str | None = None,
@@ -2174,7 +2179,7 @@ table, th, td {{
         annotate_events: bool = True,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
-    ) -> "Sequence[plt.Axes]":
+    ) -> "Sequence[Axes]":
         """
         Plots fluorescence over time, optionally with temperatures over time.
 
@@ -2298,12 +2303,12 @@ table, th, td {{
                 )
             else:
                 fig, ax = plt.subplots(1, 1, **({} if figure_kw is None else figure_kw))
-                ax = [ax]
+                ax = [cast("Axes", ax)]
 
         elif (not isinstance(ax, (Sequence, np.ndarray))) or isinstance(ax, plt.Axes):
             ax = [ax]
 
-        ax = cast(Sequence[plt.Axes], ax)
+        ax = cast(Sequence[Axes], ax)
 
         data = self.welldata
 

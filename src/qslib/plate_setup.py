@@ -171,9 +171,12 @@ class PlateSetup:
 
     @classmethod
     def from_platesetup_xml(cls, platexml: ET.Element) -> PlateSetup:  # type: ignore
-        qs_platetype = platexml.find("PlateKind/Type").text
+        pt = platexml.find("PlateKind/Type")
+        if pt is None:
+            raise ValueError
+        qs_platetype = pt.text
         if qs_platetype == "TYPE_8X12":
-            plate_type = 96
+            plate_type = 96  # type: Literal[96, 384]
         elif qs_platetype == "TYPE_16X24":
             plate_type = 384
         else:
