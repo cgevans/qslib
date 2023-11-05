@@ -6,7 +6,7 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
-# Version 0.11.0
+## Version 0.11.0
 
 - Initial support for 384-well blocks, at least in data/file reading.
 - Initial support for v2.0 EDS specification machines (eg, QS6Pro), at least in data/file reading.
@@ -16,7 +16,7 @@ SPDX-License-Identifier: EUPL-1.2
 - Fixes for new matplotlib versions.
 - Support for Python 3.12.
 
-# Version 0.10.1
+## Version 0.10.1
 
 - SSL/non-SSL autoconnection speed improvements
 - Drawer/cover annotation improvements
