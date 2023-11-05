@@ -441,7 +441,9 @@ def _parse_multicomponent_data_v1(root: ET.ElementTree):
     cycle_count = int(_find_text_or_raise(root, "CycleCount"))
 
     welldyes = {
-        int(dd.attrib["WellIndex"]): _parse_strlist(dd.find("DyeList").text)  # fixme
+        int(dd.attrib["WellIndex"]): _parse_strlist(
+            _find_text_or_raise(dd, "DyeList")
+        )  # fixme
         for dd in root.findall("DyeData")
     }
 
