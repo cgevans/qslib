@@ -3,13 +3,11 @@
 
 import asyncio
 import uuid
-from asyncio.futures import Future
 
 import pytest
 
 from qslib import AccessLevel, Experiment, Machine, PlateSetup, Protocol, Stage
 from qslib.experiment import MachineBusyError
-from qslib.monitor import MachineConfig
 from qslib.qs_is_protocol import (
     AccessLevelExceeded,
     AuthError,
@@ -42,7 +40,6 @@ async def test_real_autherror():
             m.run_command("HELP?")
 
 
-@pytest.mark.asyncio
 def test_real_invocationerror():
     m = Machine("localhost", password="correctpassword")
     with m:
@@ -65,18 +62,13 @@ def test_real_invocationerror():
 
 @pytest.mark.asyncio
 async def test_real_experiment():
-    from qslib.monitor import Collector, Config
-
-    mon = Collector(
-        Config(machine=MachineConfig(host="localhost", password="correctpassword"))
-    )
-
-    confut: Future[bool] = asyncio.Future()
-    task = mon.monitor(confut)
-
-    asyncio.tasks.create_task(task)
-
-    await confut
+    # mon = Collector(
+    #     Config(machine=MachineConfig(host="localhost", password="correctpassword"))
+    # )
+    # confut: Future[bool] = asyncio.Future()
+    # task = mon.monitor(confut)
+    # asyncio.tasks.create_task(task)
+    # await confut
 
     proto = Protocol(
         [

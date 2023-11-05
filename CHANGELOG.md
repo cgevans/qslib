@@ -13,6 +13,7 @@ SPDX-License-Identifier: EUPL-1.2
 - Parsing of multicomponent data for v1 and v2 machines, and partial analysis data for v1 machines.
 - Available data is shown in experiment information.
 - Change license to EUPL-1.2.
+- Fixes for new matplotlib versions.
 
 # Version 0.10.1
 
