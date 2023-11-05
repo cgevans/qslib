@@ -62,34 +62,27 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Add here additional requirements for extra features, to install with:
-# `pip install qslib[PDF]` like:
-# PDF = ReportLab; RXP
-monitor = ["matrix-nio", "influxdb_client", "toml", "lxml"]
+monitor = [
+    "aiohttp~=3.9.0b0; python_version >= '3.12'",
+    "matrix-nio",
+    "influxdb_client",
+    "lxml"]
 docs = [
     "myst_parser",
     "influxdb_client",
-    "toml",
     "lxml",
     "sphinx-click",
     "sphinx-autodoc-typehints",
     "sphinx >= 2.4",
-    "matrix-nio",
-    "influxdb_client",
-    "toml",
-    "lxml",
+    "qslib[monitor]"
 ]
-# Add here test requirements (semicolon/line-separated)
 testing = [
     "setuptools",
     "pytest",
     "pytest-cov",
     "pytest-asyncio",
     "hypothesis",
-    "matrix-nio",
-    "influxdb_client",
-    "toml",
-    "lxml",
+    "qslib[monitor]",
 ]
 
 [project.urls]

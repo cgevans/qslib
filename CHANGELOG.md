@@ -14,6 +14,7 @@ SPDX-License-Identifier: EUPL-1.2
 - Available data is shown in experiment information.
 - Change license to EUPL-1.2.
 - Fixes for new matplotlib versions.
+- Support for Python 3.12.
 
 # Version 0.10.1
 
