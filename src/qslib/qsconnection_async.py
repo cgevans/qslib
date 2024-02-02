@@ -25,14 +25,6 @@ from .scpi_commands import AccessLevel, ArgList, SCPICommand
 
 log = logging.getLogger(__name__)
 
-CTX = ssl.create_default_context()
-CTX.check_hostname = False
-CTX.verify_mode = ssl.CERT_NONE
-CTX.minimum_version = (
-    ssl.TLSVersion.SSLv3
-)  # Yes, we actually need this for QS5 connections
-
-
 def _gen_auth_response(password: str, challenge_string: str) -> str:
     return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
 
@@ -240,6 +232,8 @@ class QSConnectionAsync:
         authenticate_on_connect: bool = True,
         initial_access_level: AccessLevel = AccessLevel.Observer,
         password: Optional[str] = None,
+        client_certificate_path: Optional[str] = None,
+        server_ca_file: Optional[str] = None,
     ):
         """Create a connection to a QuantStudio Instrument Server."""
         self.host = host
@@ -248,6 +242,8 @@ class QSConnectionAsync:
         self.password = password
         self._initial_access_level = initial_access_level
         self._authenticate_on_connect = authenticate_on_connect
+        self.client_certificate_path = client_certificate_path
+        self.server_ca_file = server_ca_file
 
     def _parse_access_line(self, aline: str) -> None:
         # pylint: disable=attribute-defined-outside-init
@@ -273,6 +269,19 @@ class QSConnectionAsync:
             self.password = password
         if initial_access_level is not None:
             self._initial_access_level = initial_access_level
+
+
+        CTX = ssl.create_default_context()
+        CTX.check_hostname = False
+        CTX.verify_mode = ssl.CERT_NONE
+        CTX.minimum_version = (
+            ssl.TLSVersion.SSLv3
+        )  # Yes, we actually need this for QS5 connections
+        if self.client_certificate_path is not None:
+            CTX.load_cert_chain(self.client_certificate_path)
+        if self.server_ca_file is not None:
+            CTX.load_verify_locations(self.server_ca_file)
+            CTX.verify_mode = ssl.CERT_REQUIRED
 
         self.loop = asyncio.get_running_loop()
 

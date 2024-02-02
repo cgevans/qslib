@@ -144,6 +144,8 @@ class Machine:
         max_access_level: AccessLevel | str = AccessLevel.Controller,
         port: int | None = None,
         ssl: bool | None = None,
+        client_certificate_path: str | None = None,
+        server_ca_file: str | None = None,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
@@ -154,6 +156,8 @@ class Machine:
         self.max_access_level = AccessLevel(max_access_level)
         self._initial_access_level = AccessLevel(_initial_access_level)
         self._connection = None
+        self.client_certificate_path = client_certificate_path
+        self.server_ca_file = server_ca_file
 
     def connect(self) -> None:
         """Open the connection manually."""
@@ -165,6 +169,8 @@ class Machine:
             ssl=self.ssl,
             password=self.password,
             initial_access_level=self._initial_access_level,
+            client_certificate_path=self.client_certificate_path,
+            server_ca_file=self.server_ca_file,
         )
         loop.run_until_complete(self.connection.connect())
         self._current_access_level = self.get_access_level()[0]
