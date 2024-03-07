@@ -20,6 +20,64 @@ The machine has a password authentication mechanism.  However, it is extremely i
 
 Guest appears to be intended to provide access only to the help system and authentication, while higher access levels are related to programming the machine.
 
+.. _new_setup_recs:
+
+New recommended configuration (2024)
+------------------------------------
+
+In general, QuantStudio machines are not safe to connect to the
+internet. Access controls provide no real authentication or security,
+and are easily bypassed. SSL on more recent firmware versions is both
+not secure (SSLv3, known to be unsafe in 2014), in any case provides no
+protection against simple root access methods, and is generally not
+supported by many recent builds of OpenSSL and Python.
+
+To allow access on a secure network, where any user on the network is
+trusted to have full access to the machine, you can then use socat to
+provide a modern SSL connection. After generating a self-signed SSL
+certificate, use something like one or more of the following:
+
+.. code:: bash
+
+   # For old firmware versions with plain-text network access
+   socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,verify=0 \
+       tcp:$MACHINE_IP_ADDRESS:7000 
+
+   # For newer firmware versions with SSL network access
+   socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,verify=0 \
+       openssl:$MACHINE_IP_ADDRESS:7443,openssl-min-proto-version=SSLv3,verify=0
+   socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,verify=0,bind=$SERVER_NETWORK_IP \ 
+       openssl:$MACHINE_IP_ADDRESS:7443,openssl-min-proto-version=SSLv3,verify=0
+
+To allow access on a *public*, or otherwise untrusted network, you can
+use client certificates. In that case, you’ll need the root CA for the
+client certificates, which we’ll assume is ``ca.pem``. Then use:
+
+.. code:: bash
+
+   # For old firmware versions with plain-text network access
+   socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,cafile=ca.pem \
+       tcp:$MACHINE_IP_ADDRESS:7000
+
+   # For newer firmware versions with SSL network access
+   socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,cafile=ca.pem \
+       openssl:$MACHINE_IP_ADDRESS:7443,openssl-min-proto-version=SSLv3,verify=0
+   socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,cafile=ca.pem,bind=$SERVER_NETWORK_IP \
+       openssl:$MACHINE_IP_ADDRESS:7443,openssl-min-proto-version=SSLv3,verify=0
+
+Then, you can use the ``client_certificate_path`` option for ``Machine``
+to specify a client certificate while connecting. If you’d like to check
+the server certificate, you can also specify ``server_ca_file``.
+
+.. code:: python
+
+   from qslib import Machine
+   m = Machine('qpcr1.example.com', 
+               client_certificate_path='client.pem', 
+               server_ca_file='ca.pem')
+   print(m.machine_status())
+
+
 Configuration suggestions
 -------------------------
 
