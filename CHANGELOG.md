@@ -6,6 +6,10 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Development
+
+- `Machine.block` command to directly control block temperatures.
+
 ## Version 0.11.0
 
 - Initial support for 384-well blocks, at least in data/file reading.
