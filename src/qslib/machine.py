@@ -4,9 +4,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
+from queue import Queue
 import re
 import zipfile
 from asyncio.futures import Future
@@ -15,16 +15,11 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload
 
-import nest_asyncio
-
-from qslib.qs_is_protocol import CommandError
 from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from ._util import _unwrap_tags
 from .protocol import Protocol
-from .qsconnection_async import QSConnectionAsync
-
-nest_asyncio.apply()
+from .qsconnection_async import QSConnectionAsync, CommandError, QSReturn
 
 from .base import MachineStatus, RunStatus  # noqa: E402
 
@@ -161,7 +156,6 @@ class Machine:
 
     def connect(self) -> None:
         """Open the connection manually."""
-        loop = asyncio.get_event_loop()
 
         self.connection = QSConnectionAsync(
             host=self.host,
@@ -172,7 +166,6 @@ class Machine:
             client_certificate_path=self.client_certificate_path,
             server_ca_file=self.server_ca_file,
         )
-        loop.run_until_complete(self.connection.connect())
         self._current_access_level = self.get_access_level()[0]
         self.port = self.connection.port
         self.ssl = self.connection.ssl
@@ -219,9 +212,8 @@ class Machine:
         """
         if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}.")
-        loop = asyncio.get_event_loop()
         try:
-            return loop.run_until_complete(self.connection.run_command(command))
+            return self.connection.run_command(command)
         except CommandError as e:
             e.__traceback__ = None
             raise e
@@ -249,9 +241,8 @@ class Machine:
         """
         if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}")
-        loop = asyncio.get_event_loop()
         try:
-            return loop.run_until_complete(self.connection.run_command(command, just_ack=True))
+            return self.connection.run_command(command, just_ack=True)
         except CommandError as e:
             e.__traceback__ = None
             raise e
@@ -279,10 +270,7 @@ class Machine:
         """
         if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}.")
-        if isinstance(command, str):
-            command = command.encode()
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.connection._protocol.run_command(command))
+        return self.connection.run_command_to_bytes(command)
 
     @_ensure_connection(AccessLevel.Controller)
     def define_protocol(self, protocol: Protocol) -> None:
@@ -313,8 +301,7 @@ class Machine:
         zipfile.ZipFile
             the returned zip file
         """
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.connection.read_dir_as_zip(path, leaf))
+        return self.connection.read_dir_as_zip(path, leaf)
 
     @overload
     def list_files(
@@ -347,10 +334,7 @@ class Machine:
         verbose: bool = False,
         recursive: bool = False,
     ) -> list[str] | list[dict[str, Any]]:
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(
-            self.connection.list_files(path, leaf=leaf, verbose=verbose, recursive=recursive)
-        )
+        return self.connection.list_files(path, leaf=leaf, verbose=verbose, recursive=recursive)
 
     @_ensure_connection(AccessLevel.Observer)
     def read_file(self, path: str, context: str | None = None, leaf: str = "FILE") -> bytes:
@@ -369,7 +353,7 @@ class Machine:
         bytes
             returned file
         """
-        return asyncio.get_event_loop().run_until_complete(self.connection.read_file(path, context, leaf))
+        return self.connection.read_file(path, context, leaf)
 
     @_ensure_connection(AccessLevel.Controller)
     def write_file(self, path: str, data: str | bytes) -> None:
@@ -435,28 +419,27 @@ class Machine:
 
     @_ensure_connection(AccessLevel.Observer)
     def _get_log_from_byte(self, name: str | bytes, byte: int) -> bytes:
-        logfuture: Future[tuple[bytes, bytes, Future[tuple[bytes, bytes, None]] | None]] = asyncio.Future()
+        logret: Queue[QSReturn] = Queue()
         if self.connection is None:
             raise Exception
         if isinstance(name, bytes):
             name = name.decode()
-        self.connection._protocol.waiting_commands.append((b"logtransfer", logfuture))
+        self.connection.waiting_commands.append((b"logtransfer", logret))
 
-        logcommand = self.connection._protocol.run_command(
+        self.connection.run_command_to_bytes(
             f"eval? session.writeQueue.put(('OK logtransfer \\<quote.base64\\>\\\\n'"
             f" + (lambda x: [x.seek({byte}), __import__('base64').encodestring(x.read())][1])"
             f"(open('/data/vendor/IS/experiments/{name}/apldbio/sds/messages.log')) +"
             " '\\</quote.base64\\>\\\\n', None))",
             ack_timeout=200,
         )
+        
+        ret = logret.get()
+        
+        if ret.d != "OK":
+            raise CommandError(f"Error getting log: {ret.d}")
 
-        loop = asyncio.get_event_loop()
-
-        loop.run_until_complete(logcommand)
-
-        loop.run_until_complete(logfuture)
-
-        return base64.decodebytes(logfuture.result()[1][15:-17])
+        return base64.decodebytes(ret.v[15:-17])
 
     @_ensure_connection(AccessLevel.Observer)
     def run_status(self) -> RunStatus:
@@ -624,9 +607,8 @@ class Machine:
         if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}.")
 
-        loop = asyncio.get_event_loop()
 
-        loop.run_until_complete(self.connection.disconnect())
+        self.connection.disconnect()
         self._connection = None
         self._current_access_level = AccessLevel.Guest
 

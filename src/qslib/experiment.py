@@ -58,7 +58,7 @@ from .data import (
 from .machine import Machine
 from .processors import NormRaw, Processor
 from .protocol import Protocol, Stage, Step
-from .qs_is_protocol import QS_IOError
+from .qsconnection_async import QS_IOError
 from .version import __version__
 
 if TYPE_CHECKING:  # pragma: no cover

@@ -12,6 +12,7 @@ import logging
 import re
 import shlex
 import ssl
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
@@ -20,7 +21,196 @@ from typing import Any, Dict, List, Literal, Optional, Union, cast, overload
 import pandas as pd
 
 from . import data
-from .qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
+
+
+import asyncio
+import io
+import logging
+import re
+import ssl
+import time
+from asyncio.futures import Future
+from dataclasses import dataclass
+from typing import Any, Coroutine, Literal, Optional, Protocol, Sequence, Type
+
+from qslib.scpi_commands import AccessLevel, SCPICommand, _arglist
+
+NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>?)")
+TIMESTAMP = re.compile(rb"(\d{8,}\.\d{3})")
+
+log = logging.getLogger(__name__)
+
+
+def _validate_command_format(commandstring: bytes) -> None:
+    # This is meant to validate that the command will not mess up comms
+    # The command may be completely malformed otherwise
+
+    tagseq: list[tuple[bytes, bytes, bytes]] = re.findall(
+        rb"<(/?)([\w.]+)[ *]*>|(\n)", commandstring.rstrip()
+    )  # tuple of close?,tag,newline?
+
+    tagstack: list[bytes] = []
+    for c, t, n in tagseq:
+        if n and not tagstack:
+            raise ValueError("newline outside of quotation")
+        elif t and not c:
+            tagstack.append(t)
+        elif c:
+            if not tagstack:
+                raise ValueError(f"unbalanced tag <{c.decode()}{t.decode()}>")
+            opentag = tagstack.pop()
+            if opentag != t:
+                raise ValueError(f"unbalanced tags <{opentag.decode()}> <{c.decode()}{t.decode()}>")
+        elif n:
+            continue
+        else:
+            raise ValueError("Unknown")
+    if tagstack:
+        raise ValueError("Unclosed tags")
+
+
+class Error(Exception):
+    pass
+
+
+class CommandError(Error):
+    @staticmethod
+    def parse(command: str, ref_index: str, response: str) -> CommandError:
+        m = re.match(r"\[(\w+)\] (.*)", response)
+        if (not m) or (m[1] not in COM_ERRORS):
+            return UnparsedCommandError(command, ref_index, response)
+        try:
+            return COM_ERRORS[m[1]].parse(command, ref_index, m[2])
+        except ValueError:
+            return UnparsedCommandError(command, ref_index, response)
+
+
+@dataclass
+class UnparsedCommandError(CommandError):
+    """The machine has returned an error that we are not familiar with,
+    and that we haven't parsed."""
+
+    command: Optional[str]
+    ref_index: Optional[str]
+    response: str
+
+
+@dataclass
+class QS_IOError(CommandError):
+    command: str
+    message: str
+    data: dict[str, str]
+
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> QS_IOError:
+        m = re.match(r"(.*) --> (.*)", message)
+        if not m:
+            raise ValueError
+
+        data = _arglist.parse_string(m[1])[0].opts
+
+        return cls(command, m[2], data)
+
+
+@dataclass
+class InsufficientAccess(CommandError):
+    command: str
+    requiredAccess: AccessLevel
+    currentAccess: AccessLevel
+    message: str
+
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> InsufficientAccess:
+        m = re.match(r'-requiredAccess="(\w+)" -currentAccess="(\w+)" --> (.*)', message)
+        if not m:
+            raise ValueError
+        return cls(command, AccessLevel(m[1]), AccessLevel(m[2]), m[3])
+
+
+@dataclass
+class AuthError(CommandError):
+    command: str
+    message: str
+
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> AuthError:
+        m = re.match(r"--> (.*)", message)
+        if not m:
+            raise ValueError
+        return cls(command, m[1])
+
+
+@dataclass
+class AccessLevelExceeded(CommandError):
+    command: str
+    accessLimit: AccessLevel
+    message: str
+
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> AccessLevelExceeded:
+        m = re.match(r'-accessLimit="(\w+)" --> (.*)', message)
+        if not m:
+            raise ValueError
+        return cls(command, AccessLevel(m[1]), m[2])
+
+
+@dataclass
+class InvocationError(CommandError):
+    command: str
+    message: str
+
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> InvocationError:
+        return cls(command, message)
+
+
+@dataclass
+class NoMatch(CommandError):
+    command: str
+    message: str
+
+    @classmethod
+    def parse(cls, command: str, ref_index: str, message: str) -> NoMatch:
+        return cls(command, message)
+
+
+COM_ERRORS: dict[str, Type[CommandError]] = {
+    "InsufficientAccess": InsufficientAccess,
+    "AuthError": AuthError,
+    "AccessLevelExceeded": AccessLevelExceeded,
+    "InvocationError": InvocationError,
+    "NoMatch": NoMatch,
+    "IOError": QS_IOError,
+}
+
+
+class ReplyError(IOError):
+    pass
+
+
+class SubHandler(Protocol):
+    def __call__(
+        self, topic: bytes, message: bytes, timestamp: float | None
+    ) -> Coroutine[None, None, None]:  # pragma: no cover
+        ...
+
+
+import socket
+from queue import Queue
+from threading import Event, Thread
+import select
+
+
+@dataclass
+class QSCommand:
+    ref: bytes
+    ret_queue: Queue | None
+
+
+@dataclass
+class QSReturn:
+    d: Literal[b"NEXT", b"OK", b"ERRor"]
+    v: bytes
 from .scpi_commands import AccessLevel, ArgList, SCPICommand
 
 log = logging.getLogger(__name__)
@@ -90,35 +280,22 @@ class FilterDataFilename:
 class QSConnectionAsync:
     """Class for connection to a QuantStudio instrument server, using asyncio"""
 
-    _protocol: QS_IS_Protocol
-
-    async def __aenter__(self) -> QSConnectionAsync:
-        await self.connect()
+    def __enter__(self) -> QSConnectionAsync:
+        self.connect()
         return self
 
-    async def __aexit__(self, exc_type: type, exc: Error, tb: Any) -> None:
-        if self._transport.is_closing():
-            return
-        await self.disconnect()
-
-    async def disconnect(self) -> None:
-        if self._transport.is_closing():
-            return
-        await self._protocol.disconnect()
-        self._transport.close()
+    def __exit__(self, exc_type: type, exc: Error, tb: Any) -> None:
+        self.disconnect()
 
     @property
     def connected(self) -> bool:
-        if hasattr(self, "_protocol"):
-            if self._protocol.lostconnection.done():
-                return False
-            else:
-                return True
+        if self.qs_socket:
+            return True
         else:
             return False
 
     @overload
-    async def list_files(
+    def list_files(
         self,
         path: str,
         *,
@@ -129,7 +306,7 @@ class QSConnectionAsync:
         ...
 
     @overload
-    async def list_files(
+    def list_files(
         self,
         path: str,
         *,
@@ -140,7 +317,7 @@ class QSConnectionAsync:
         ...
 
     @overload
-    async def list_files(
+    def list_files(
         self,
         path: str,
         *,
@@ -150,7 +327,7 @@ class QSConnectionAsync:
     ) -> list[str] | list[dict[str, Any]]:
         ...
 
-    async def list_files(
+    def list_files(
         self,
         path: str,
         *,
@@ -161,9 +338,9 @@ class QSConnectionAsync:
         if not verbose:
             if recursive:
                 raise NotImplementedError
-            return (await self.run_command(f"{leaf}:LIST? {path}")).split("\n")[1:-1]
+            return (self.run_command(f"{leaf}:LIST? {path}")).split("\n")[1:-1]
         else:
-            v = (await self.run_command(f"{leaf}:LIST? -verbose {path}")).split("\n")[
+            v = (self.run_command(f"{leaf}:LIST? -verbose {path}")).split("\n")[
                 1:-1
             ]
             ret: list[dict[str, str | float | int]] = []
@@ -186,18 +363,18 @@ class QSConnectionAsync:
                     d["atime"] = float(rm.group(5))
                     d["ctime"] = float(rm.group(6))
                 if d["type"] == "folder" and recursive:
-                    ret += await self.list_files(
+                    ret += self.list_files(
                         cast(str, d["path"]), leaf=leaf, verbose=True, recursive=True
                     )
                 else:
                     ret.append(d)
             return ret
 
-    async def compile_eds(self, run_name: str) -> None:
+    def compile_eds(self, run_name: str) -> None:
         """Take a finished run directory in experiments:, compile it into an EDS, and move it to
         public_run_complete:"""
 
-        expfiles = await self.list_files("", leaf="experiment", verbose=True)
+        expfiles = self.list_files("", leaf="experiment", verbose=True)
 
         results = [r for r in expfiles if r["path"] == run_name]
 
@@ -214,15 +391,15 @@ class QSConnectionAsync:
         if ("collected" in res) and (res["collected"]):
             raise AlreadyCollectedError(res)
 
-        await self.run_command(
+        self.run_command(
             f'exp:run -asynchronous <block> zip "{run_name}.eds" "{run_name}" </block>'
         )
 
-        await self.run_command(
+        self.run_command(
             f'file:move "experiments:{run_name}.eds" "public_run_complete:{run_name}.eds"'
         )
 
-        await self.run_command(f'exp:attr= "{run_name}" collected True')
+        self.run_command(f'exp:attr= "{run_name}" collected True')
 
     def __init__(
         self,
@@ -236,6 +413,8 @@ class QSConnectionAsync:
         server_ca_file: Optional[str] = None,
     ):
         """Create a connection to a QuantStudio Instrument Server."""
+        self.should_be_connected = False
+        self.last_received = time.time()
         self.host = host
         self.port = port
         self.ssl = ssl
@@ -244,7 +423,10 @@ class QSConnectionAsync:
         self._authenticate_on_connect = authenticate_on_connect
         self.client_certificate_path = client_certificate_path
         self.server_ca_file = server_ca_file
-
+        self.qs_socket = None
+        
+        self.connect()
+        
     def _parse_access_line(self, aline: str) -> None:
         # pylint: disable=attribute-defined-outside-init
         if not aline.startswith("READy"):
@@ -257,7 +439,7 @@ class QSConnectionAsync:
         self.server_capabilities = args["capabilities"]
         self.server_hello_args = args
 
-    async def connect(
+    def connect(
         self,
         authenticate: Optional[bool] = None,
         initial_access_level: AccessLevel | None = None,
@@ -270,6 +452,7 @@ class QSConnectionAsync:
         if initial_access_level is not None:
             self._initial_access_level = initial_access_level
 
+        self.ready = Event()
 
         CTX = ssl.create_default_context()
         CTX.check_hostname = False
@@ -283,26 +466,17 @@ class QSConnectionAsync:
             CTX.load_verify_locations(self.server_ca_file)
             CTX.verify_mode = ssl.CERT_REQUIRED
 
-        self.loop = asyncio.get_running_loop()
+        self.close_socket, self.close_socket_trigger = socket.socketpair()
+        self.qs_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         if (self.ssl is None) and (self.port is None):
             try:
-                self._transport, proto = await asyncio.wait_for(
-                    self.loop.create_connection(
-                        QS_IS_Protocol,
-                        self.host,
-                        7443,
-                        ssl=CTX,
-                        ssl_handshake_timeout=10,
-                    ),
-                    5,
-                )
+                rs = socket.create_connection((self.host, 7443))
+                self.qs_socket = CTX.wrap_socket(rs)
                 self.ssl = True
                 self.port = 7443
             except OSError:
-                self._transport, proto = await self.loop.create_connection(
-                    QS_IS_Protocol, self.host, 7000
-                )
+                self.qs_socket = socket.create_connection((self.host, 7000))
                 self.ssl = False
                 self.port = 7000
         elif (self.ssl is None) and (self.port is not None):
@@ -318,61 +492,240 @@ class QSConnectionAsync:
             else:
                 self.port = 7000
 
-        self._transport, proto = await self.loop.create_connection(
-            QS_IS_Protocol,
-            self.host,
-            int(cast("int | str", self.port)),
-            ssl=CTX if cast(bool, self.ssl) else None,
-        )
+        if self.ssl:
+            rs = socket.create_connection((self.host, self.port))
+            self.qs_socket = CTX.wrap_socket(rs)
+        else:     
+            self.qs_socket = socket.create_connection((self.host, self.port))       
 
-        self._protocol = cast(QS_IS_Protocol, proto)
+        self.connection_thread = Thread(target=self.connection_loop)
+        self.connection_thread.start()
 
-        await self._protocol.readymsg
-        resp = self._protocol.readymsg.result()
+        self.ready.wait()
+        resp = self.readymsg
+
         self._parse_access_line(resp)
 
         if self._authenticate_on_connect:
             if self.password is not None:
-                await self.authenticate(self.password)
+                self.authenticate(self.password)
 
         if self._initial_access_level is not None:
-            await self.set_access_level(self._initial_access_level)
+            self.set_access_level(self._initial_access_level)
 
         return resp
 
-    async def run_command_to_bytes(
-        self, command: str | bytes | SCPICommand, just_ack: bool = True
-    ) -> bytes:
-        try:
-            return (
-                await self._protocol.run_command(command, just_ack=just_ack)
-            ).rstrip()
-        except CommandError as e:
-            e.__traceback__ = None
-            raise e
+    def connection_loop(self):
+        log.info("Made connection")
+        self.should_be_connected = True
+        # setup connection.
+        self.waiting_commands = []
+        self.buffer = io.BytesIO()
+        self.quote_stack: list[bytes] = []
+        self.topic_handlers: dict[bytes, SubHandler] = {}
+        self.last_received = time.time()
+        self.unclosed_quote_pos: int | None = None
 
-    async def run_command(
+        soft_close = False
+
+        while not soft_close:
+            r, _, _ = select.select([self.qs_socket, self.close_socket], [], [])
+
+            if len(r) > 1:
+                soft_close = True
+            elif self.close_socket in r:
+                log.debug("Closing connection.")
+                break
+
+            data = self.qs_socket.recv(4096)
+            
+            if len(data) == 0:
+                log.debug("Connection closed")
+                break
+
+            log.debug(f"Received {data!r}")
+
+            # If we have an unclosed tag opener (<) in the buffer, add it to the data
+            if self.unclosed_quote_pos is not None:
+                self.buffer.write(data)
+                self.buffer.seek(self.unclosed_quote_pos)
+                data = self.buffer.read()
+                self.buffer.truncate(self.unclosed_quote_pos)
+                self.buffer.seek(self.unclosed_quote_pos)
+                self.unclosed_quote_pos = None
+                print(data)
+
+            lastwrite = 0
+            for m in NL_OR_Q.finditer(data):
+                if m[0] == b"\n":
+                    if len(self.quote_stack) == 0:
+                        self.buffer.write(data[lastwrite : m.end()])
+                        lastwrite = m.end()
+                        self.parse_message(self.buffer.getvalue())
+                        self.buffer = io.BytesIO()
+                    # else:  # This is not actually needed
+                    #     continue
+                else:
+                    if m[0][-1] != ord(">"):
+                        if m.end() != len(data):
+                            raise ValueError(data, m[0])
+                        # We have an unclosed tag opener (<) at the end of the data
+                        log.debug(f"Unclosed tag opener: {m[0]!r}")
+                        self.buffer.write(data[lastwrite : m.start()])
+                        self.unclosed_quote_pos = self.buffer.tell()
+                        self.buffer.write(m[0])
+                        lastwrite = m.end()
+                    elif not m[1]:
+                        self.quote_stack.append(m[2])
+                    else:
+                        try:
+                            i = self.quote_stack.index(m[2])
+                        except ValueError:
+                            log.error(
+                                f"Close quote {m[2]!r} did not have open in stack {self.quote_stack}. "
+                                "Disconnecting to avoid corruption."
+                            )
+                            self.quote_stack = []
+                            self.connection_lost(ConnectionError())
+                        else:
+                            self.quote_stack = self.quote_stack[:i]
+                    self.buffer.write(data[lastwrite : m.end()])
+                    lastwrite = m.end()
+            self.buffer.write(data[lastwrite:])
+            self.last_received = time.time()
+
+    def handle_sub_message(self, message: bytes) -> None:
+        i = message.index(b" ")
+        topic = message[0:i]
+        if m := TIMESTAMP.match(message, i + 1):
+            timestamp: float | None = float(m[1])
+            i = m.end()
+        else:
+            timestamp = None
+        for q in self.message_queues.get(topic, self.default_message_queues):
+            q.put({'topic': topic, 'message': message[i + 1 :], 'timestamp': timestamp})
+
+    def parse_message(self, ds: bytes) -> None:
+        if ds.startswith((b"ERRor", b"OK", b"NEXT")):
+            ms = ds.index(b" ")
+            r = None
+            for i, qsc in enumerate(self.waiting_commands):
+                if ds.startswith(qsc.ref, ms + 1):
+                    if qsc.ret_queue is not None:
+                        qsc.ret_queue.put(
+                            QSReturn(ds[:ms], ds[ms + len(qsc.ref) + 2 :])  # type: ignore
+                        )
+                    else:
+                        log.info(f"{qsc.ref!r} complete: {ds!r}")
+                    r = i
+                    break
+            if r is None:
+                log.error(f"received unexpected command response: {ds!r}")
+            elif not ds.startswith(b"NEXT"):
+                del self.waiting_commands[r]
+        elif ds.startswith(b"MESSage"):
+            self.handle_sub_message(ds[8:])
+        elif ds.startswith(b"READy"):
+            self.readymsg = ds.decode()
+            self.ready.set()
+        else:
+            log.error(f"Unknown message: {ds!r}")
+        
+    def run_command_to_bytes(
+        self,
+        comm: str | bytes | SCPICommand,
+        ack_timeout: int = 300,
+        just_ack: bool = True,
+        uid: bool = True,
+    ) -> bytes:
+        if isinstance(comm, str):
+            comm = comm.encode()
+        elif isinstance(comm, SCPICommand):
+            comm = comm.to_string().encode()
+        comm = comm.rstrip()
+        _validate_command_format(comm)
+        log.debug(f"Running command {comm.decode()}")
+
+        q = Queue()
+        if uid:
+            import random
+
+            commref = str(random.randint(1, 2**30)).encode()
+            comm_with_ref = commref + b" " + comm
+        else:
+            comm_with_ref = comm
+        self.qs_socket.sendall(comm_with_ref + b"\n")
+        log.debug(f"Sent command {comm_with_ref!r}")
+        if m := re.match(rb"^(\d+) ", comm_with_ref):
+            commref = m[1]
+        else:
+            commref = comm
+        self.waiting_commands.append(QSCommand(commref, q))
+
+        ret: QSReturn = q.get()
+        
+
+        log.debug(f"Received ({ret.d!r}, {ret.v!r})")
+
+        if ret.d == b"NEXT":
+            if just_ack:
+                return b""
+            else:
+                ret = q.get()
+                assert ret.d != "NEXXT"
+                log.debug(f"Received ({ret.d!r}, {ret.v!r})")
+
+        if ret.d == b"OK":
+            return ret.v.rstrip()
+        elif ret.d == b"ERRor":
+            raise CommandError.parse(comm.decode(), commref.decode(), ret.v.decode().rstrip()) from None
+        else:  # pragma: no cover
+            raise CommandError.parse(comm.decode(), commref.decode(), (ret.d + b" " + ret.v).decode())
+
+    def run_command(
         self, command: str | bytes | SCPICommand, just_ack: bool = False
     ) -> str:
         try:
-            return (await self.run_command_to_bytes(command, just_ack)).decode()
+            return self.run_command_to_bytes(command, just_ack).decode()
         except CommandError as e:
             e.__traceback__ = None
             raise e
 
-    async def authenticate(self, password: str) -> None:
-        challenge_key = await self.run_command(SCPICommand("CHAL?"))
+    def disconnect(self) -> None:
+        self.should_be_connected = False
+        if self.qs_socket:
+            self.run_command("QUIT")
+            self.close_socket_trigger.close()
+
+    def connection_lost(self, exc: Optional[Exception]) -> None:
+        if self.should_be_connected:
+            log.warn("Lost connection")
+        else:
+            log.info("Connection closed")
+        # self.lostconnection.set_result(exc)
+        # self.should_be_connected = False
+
+        # # Cancel all futures; we'll never recover them.
+        # for _, future in self.waiting_commands:
+        #     if future is not None:
+        #         future.cancel()
+
+        self.waiting_commands = []
+
+
+    def authenticate(self, password: str) -> None:
+        challenge_key = self.run_command(SCPICommand("CHAL?"))
         auth_rep = _gen_auth_response(password, challenge_key)
-        await self.run_command(SCPICommand("AUTH", auth_rep))
+        self.run_command(SCPICommand("AUTH", auth_rep))
 
-    async def set_access_level(self, level: AccessLevel) -> None:
-        await self.run_command(SCPICommand("ACC", level.value))
+    def set_access_level(self, level: AccessLevel) -> None:
+        self.run_command(SCPICommand("ACC", level.value))
 
-    async def get_expfile_list(
+    def get_expfile_list(
         self, glob: str, allow_nomatch: bool = False
     ) -> List[str]:
         try:
-            fl = await self.run_command(SCPICommand("EXP:LIST?", glob))
+            fl = self.run_command(SCPICommand("EXP:LIST?", glob))
         except NoMatch as ce:
             if allow_nomatch:
                 return []
@@ -383,13 +736,13 @@ class QSConnectionAsync:
             assert fl.endswith("</quote.reply>")
             return fl.split("\n")[1:-1]
 
-    async def get_run_title(self) -> str:
-        return (await self.run_command("RUNTitle?")).strip('"')
+    def get_run_title(self) -> str:
+        return (self.run_command("RUNTitle?")).strip('"')
 
-    async def get_exp_file(
+    def get_exp_file(
         self, path: str, encoding: Literal["plain", "base64"] = "base64"
     ) -> bytes:
-        reply = await self.run_command_to_bytes(
+        reply = self.run_command_to_bytes(
             f"EXP:READ? -encoding={encoding} {shlex.quote(path)}"
         )
         assert reply.startswith(b"<quote>\n")
@@ -400,7 +753,7 @@ class QSConnectionAsync:
         else:
             return r
 
-    async def read_dir_as_zip(self, path: str, leaf: str = "FILE") -> zipfile.ZipFile:
+    def read_dir_as_zip(self, path: str, leaf: str = "FILE") -> zipfile.ZipFile:
         """Read a directory on the
 
         Parameters
@@ -419,11 +772,11 @@ class QSConnectionAsync:
         if (path[0] != '"') and (path[-1] != '"'):
             path = '"' + path + '"'
 
-        x = await self.run_command_to_bytes(f"{leaf}:ZIPREAD? {path}")
+        x = self.run_command_to_bytes(f"{leaf}:ZIPREAD? {path}")
 
         return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-8])))
 
-    async def read_file(
+    def read_file(
         self,
         path: str,
         context: str | None = None,
@@ -436,7 +789,7 @@ class QSConnectionAsync:
             contexts = context
         else:
             contexts = context + ":"
-        reply = await self.run_command_to_bytes(
+        reply = self.run_command_to_bytes(
             SCPICommand(f"{leaf}:READ?", contexts + path, encoding=encoding)
         )
         assert reply.startswith(b"<quote>\n")
@@ -447,21 +800,21 @@ class QSConnectionAsync:
         else:
             return r
 
-    async def get_sds_file(
+    def get_sds_file(
         self,
         path: str,
         runtitle: Optional[str] = None,
         encoding: Literal["base64", "plain"] = "base64",
     ) -> bytes:
         if runtitle is None:
-            runtitle = await self.get_run_title()
-        return await self.get_exp_file(f"{runtitle}/apldbio/sds/{path}", encoding)
+            runtitle = self.get_run_title()
+        return self.get_exp_file(f"{runtitle}/apldbio/sds/{path}", encoding)
 
-    async def get_run_start_time(self) -> float:
-        return float(await self.run_command("RET ${RunStartTime:--}"))
+    def get_run_start_time(self) -> float:
+        return float(self.run_command("RET ${RunStartTime:--}"))
 
     @overload
-    async def get_filterdata_one(
+    def get_filterdata_one(
         self,
         ref: FilterDataFilename,
         *,
@@ -471,7 +824,7 @@ class QSConnectionAsync:
         ...
 
     @overload
-    async def get_filterdata_one(
+    def get_filterdata_one(
         self,
         ref: FilterDataFilename,
         *,
@@ -480,7 +833,7 @@ class QSConnectionAsync:
     ) -> data.FilterDataReading:
         ...
 
-    async def get_filterdata_one(
+    def get_filterdata_one(
         self,
         ref: FilterDataFilename,
         *,
@@ -490,9 +843,9 @@ class QSConnectionAsync:
         data.FilterDataReading, list[tuple[str, bytes]]
     ]:
         if run is None:
-            run = await self.get_run_title()
+            run = self.get_run_title()
 
-        fl = await self.get_exp_file(f"{run}/apldbio/sds/filter/" + ref.tostring())
+        fl = self.get_exp_file(f"{run}/apldbio/sds/filter/" + ref.tostring())
 
         if (x := ET.parse(io.BytesIO(fl)).find("PlatePointData/PlateData")) is not None:
             f = data.FilterDataReading(x)
@@ -500,11 +853,11 @@ class QSConnectionAsync:
             raise ValueError("PlateData not found")
 
         ql = (
-            await self.get_expfile_list(
+            self.get_expfile_list(
                 f"{run}/apldbio/sds/quant/{f.filename_reading_string}_E*.quant"
             )
         )[-1]
-        qf = await self.get_exp_file(ql)
+        qf = self.get_exp_file(ql)
 
         f.set_timestamp_by_quantdata(qf.decode())
 
@@ -518,26 +871,26 @@ class QSConnectionAsync:
             return f
 
     @overload
-    async def get_all_filterdata(
+    def get_all_filterdata(
         self, run: Optional[str], as_list: Literal[True]
     ) -> List[data.FilterDataReading]:
         ...
 
     @overload
-    async def get_all_filterdata(
+    def get_all_filterdata(
         self, run: Optional[str], as_list: Literal[False]
     ) -> pd.DataFrame:
         ...
 
-    async def get_all_filterdata(
+    def get_all_filterdata(
         self, run: str | None = None, as_list: bool = False
     ) -> Union[pd.DataFrame, List[data.FilterDataReading]]:
         if run is None:
-            run = await self.get_run_title()
+            run = self.get_run_title()
 
         pl = [
-            await self.get_filterdata_one(FilterDataFilename.fromstring(x))
-            for x in await self.get_expfile_list(
+            self.get_filterdata_one(FilterDataFilename.fromstring(x))
+            for x in self.get_expfile_list(
                 f"{run}/apldbio/sds/filter/*_filterdata.xml"
             )
         ]

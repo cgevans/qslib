@@ -660,7 +660,7 @@ class Collector:
             if self.config.matrix.room not in joinedrooms:
                 await self.matrix_client.join(self.config.matrix.room)
 
-        async with QSConnectionAsync(
+        with QSConnectionAsync(
             host=self.config.machine.host,
             port=int(self.config.machine.port)
             if self.config.machine.port is not None
@@ -688,7 +688,7 @@ class Collector:
             if state.run.name and self.ipdir:
                 await self.setup_new_rundir(c, state.run.name, overwrite=True)
 
-            await c.run_command("SUBS -timestamp Temperature Time Run LEDStatus")
+            c.run_command("SUBS -timestamp Temperature Time Run LEDStatus")
             log.debug("subscriptions made")
 
             for t in [b"Temperature", b"Time"]:
