@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 import tabulate
 
-from .qsconnection_async import QSConnectionAsync
+from .qsconnection import QSConnection
 
 _ROWALPHAS = "ABCDEFGHIJKLMNOP"
 _ROWALPHAS_96 = "ABCDEFGH"
@@ -355,10 +355,10 @@ class PlateSetup:
                     samplemap.remove(e)
 
     @classmethod
-    async def from_machine(
-        cls, c: QSConnectionAsync, runtitle: Optional[str] = None
+    def from_machine(
+        cls, c: QSConnection, runtitle: Optional[str] = None
     ) -> PlateSetup:
-        s = await c.get_sds_file("plate_setup.xml", runtitle=runtitle)
+        s = c.get_sds_file("plate_setup.xml", runtitle=runtitle)
         x = ET.parse(BytesIO(s), parser=None)
         return cls.from_platesetup_xml(x.getroot())
 

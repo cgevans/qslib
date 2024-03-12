@@ -3,7 +3,6 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 import argparse
-import asyncio
 import logging
 import sys
 from pathlib import Path
@@ -89,7 +88,7 @@ def main(args: List[str]):
 
     collector = Collector(from_dict(Config, config))
 
-    asyncio.run(collector.reliable_monitor())
+    collector.reliable_monitor()
 
 
 def run():

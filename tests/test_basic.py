@@ -4,7 +4,7 @@
 import pytest
 
 import qslib.qs_is_protocol as qsp
-import qslib.qsconnection_async as qsa
+import qslib.qsconnection as qsa
 from qslib.data import FilterSet
 
 

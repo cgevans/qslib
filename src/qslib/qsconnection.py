@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import hmac
 import io
@@ -23,14 +22,6 @@ import pandas as pd
 from . import data
 
 
-import asyncio
-import io
-import logging
-import re
-import ssl
-import time
-from asyncio.futures import Future
-from dataclasses import dataclass
 from typing import Any, Coroutine, Literal, Optional, Protocol, Sequence, Type
 
 from qslib.scpi_commands import AccessLevel, SCPICommand, _arglist
@@ -277,10 +268,10 @@ class FilterDataFilename:
         )
 
 
-class QSConnectionAsync:
+class QSConnection:
     """Class for connection to a QuantStudio instrument server, using asyncio"""
 
-    def __enter__(self) -> QSConnectionAsync:
+    def __enter__(self) -> QSConnection:
         self.connect()
         return self
 

@@ -63,9 +63,7 @@ Or, for the current Github version:
 
     pip3 install -U --pre git+https://github.com/cgevans/qslib
 
-It requires at least version 3.9 of Python. While it uses async code at
-its core for communication, it can be used conveniently in Jupyter or
-IPython.
+It requires at least version 3.9 of Python. 
 
 To use the library for communication with machines, you'll need a
 machine access password with Observer (for reading data and statuses)

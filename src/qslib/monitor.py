@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import functools
 import logging
 import os
@@ -26,7 +25,7 @@ from nio.responses import JoinedRoomsError
 
 from qslib.plate_setup import PlateSetup
 from qslib.qs_is_protocol import CommandError
-from qslib.qsconnection_async import FilterDataFilename, QSConnectionAsync
+from qslib.qsconnection import FilterDataFilename, QSConnection
 from qslib.scpi_commands import AccessLevel, ArgList
 
 log = logging.getLogger("monitor")
@@ -93,8 +92,8 @@ class RunState:
     step: Optional[int] = None
     plate_setup: Optional[PlateSetup] = None
 
-    async def refresh(self, c: QSConnectionAsync) -> None:
-        runmsg = ArgList.from_string(await c.run_command("RunProgress?"))
+    def refresh(self, c: QSConnection) -> None:
+        runmsg = ArgList.from_string(c.run_command("RunProgress?"))
         name = cast(str, runmsg.opts["RunTitle"])
         if name == "-":
             self.name = None
@@ -117,14 +116,14 @@ class RunState:
             self.step = cast(Optional[int], step)
         if self.name:
             try:
-                self.plate_setup = await PlateSetup.from_machine(c)
+                self.plate_setup = PlateSetup.from_machine(c)
             except CommandError:
                 self.plate_setup = None
 
     @classmethod
-    async def from_machine(cls: Type[RunState], c: QSConnectionAsync) -> RunState:
+    def from_machine(cls: Type[RunState], c: QSConnection) -> RunState:
         n = cls.__new__(cls)
-        await n.refresh(c)
+        n.refresh(c)
         return n
 
     def statemsg(self, timestamp: str) -> str:
@@ -145,25 +144,25 @@ class MachineState:
     cover_control: bool
     drawer: str
 
-    async def refresh(self, c: QSConnectionAsync) -> None:
-        targmsg = ArgList.from_string(await c.run_command("TBC:SETT?"))
+    def refresh(self, c: QSConnection) -> None:
+        targmsg = ArgList.from_string(c.run_command("TBC:SETT?"))
         self.cover_target = cast(float, targmsg.opts["Cover"])
         self.zone_targets = cast(
             List[float], [targmsg.opts[f"Zone{i}"] for i in range(1, 7)]
         )
 
-        contmsg = ArgList.from_string(await c.run_command("TBC:CONT?"))
+        contmsg = ArgList.from_string(c.run_command("TBC:CONT?"))
         self.cover_control = cast(bool, contmsg.opts["Cover"])
         self.zone_controls = cast(
             List[bool], [contmsg.opts[f"Zone{i}"] for i in range(1, 7)]
         )
 
-        self.drawer = await c.run_command("DRAW?")
+        self.drawer = c.run_command("DRAW?")
 
     @classmethod
-    async def from_machine(cls, c: QSConnectionAsync) -> MachineState:
+    def from_machine(cls, c: QSConnection) -> MachineState:
         n = cast(MachineState, cls.__new__(cls))
-        await n.refresh(c)
+        n.refresh(c)
         return n
 
     # def targetmsg(timestamp):
@@ -176,9 +175,9 @@ class State:
     machine: MachineState
 
     @classmethod
-    async def from_machine(cls, c: QSConnectionAsync) -> State:
-        run = await RunState.from_machine(c)
-        machine = await MachineState.from_machine(c)
+    def from_machine(cls, c: QSConnection) -> State:
+        run = RunState.from_machine(c)
+        machine = MachineState.from_machine(c)
         return cls(run, machine)
 
 
@@ -193,8 +192,8 @@ def index_to_filename_ref(i: Tuple[str, int, int, int, int]) -> str:
     return f"S{s:02}_C{c:03}_T{t:02}_P{p:04}_M{x[4]}_X{x[1]}"
 
 
-async def get_runinfo(c: QSConnectionAsync) -> State:
-    state = await State.from_machine(c)
+def get_runinfo(c: QSConnection) -> State:
+    state = State.from_machine(c)
     return state
 
 
@@ -249,9 +248,9 @@ class Collector:
 
         await self.matrix_client.sync()
 
-    async def setup_new_rundir(
+    def setup_new_rundir(
         self,
-        connection: QSConnectionAsync,
+        connection: QSConnection,
         name: str,
         *,
         firstmsg: str | None = None,
@@ -275,7 +274,7 @@ class Collector:
             shutil.rmtree(dirpath)
 
         dirpath.mkdir()
-        zf = await connection.read_dir_as_zip(name, "experiment")
+        zf = connection.read_dir_as_zip(name, "experiment")
         zf.extractall(dirpath)
 
         (dirpath / "apldbio" / "sds" / "quant").mkdir(exist_ok=True)
@@ -302,25 +301,25 @@ class Collector:
             raise ValueError
         return ipdir / name / "apldbio" / "sds"
 
-    async def compile_eds(self, connection: QSConnectionAsync, name: str) -> None:
+    def compile_eds(self, connection: QSConnection, name: str) -> None:
         # name = name.replace(" ", "_")
 
         # Wait 5 minutes in case machine compiles it (AB sofware run)
-        await asyncio.sleep(300.0)
+        time.sleep(300.0)
 
         try:
-            await connection.set_access_level(AccessLevel.Controller)
-            await connection.compile_eds(name)
+            connection.set_access_level(AccessLevel.Controller)
+            connection.compile_eds(name)
         except FileNotFoundError as e:
             raise e
         finally:
-            await connection.set_access_level(AccessLevel.Observer)
+            connection.set_access_level(AccessLevel.Observer)
 
-    async def sync_completed(self, connection: QSConnectionAsync, name: str) -> None:
+    def sync_completed(self, connection: QSConnection, name: str) -> None:
         # name = name.replace(" ", "_")
 
         try:
-            await self.compile_eds(connection, name)
+            self.compile_eds(connection, name)
         except FileNotFoundError:
             pass
 
@@ -338,7 +337,7 @@ class Collector:
 
         try:
             with path.open("wb") as f:
-                edsfile = await connection.read_file(f"public_run_complete:{name}.eds")
+                edsfile = connection.read_file(f"public_run_complete:{name}.eds")
                 f.write(edsfile)
         except Exception as e:
             log.error(f"Error synchronizing completed EDS {name}: {e}")
@@ -352,11 +351,11 @@ class Collector:
             if (x := (self.ipdir / (name + ".eds"))).exists():
                 x.unlink()
 
-    async def docollect(
+    def docollect(
         self,
         args: Dict[str, Union[str, int, bool, float]],
         state: State,
-        connection: QSConnectionAsync,
+        connection: QSConnection,
     ) -> None:
         if state.run.plate_setup:
             pa: npt.NDArray[
@@ -376,7 +375,7 @@ class Collector:
                 args[k] = int(v)
         pl = [
             FilterDataFilename.fromstring(x)
-            for x in await connection.get_expfile_list(
+            for x in connection.get_expfile_list(
                 "{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
                 "_T{step:02}_P{point:04}_*_filterdata.xml".format(
                     run=run, **cast(Dict[str, int], args)
@@ -397,14 +396,14 @@ class Collector:
             ).exists()
         ):
             for fdf in toget:
-                fdr, files_one = await connection.get_filterdata_one(
+                fdr, files_one = connection.get_filterdata_one(
                     fdf, return_files=True
                 )
                 lp += fdr.to_lineprotocol(run_name=run, sample_array=pa)
                 files += files_one
         else:
             for fdf in toget:
-                lp += (await connection.get_filterdata_one(fdf)).to_lineprotocol(
+                lp += (connection.get_filterdata_one(fdf)).to_lineprotocol(
                     run_name=run, sample_array=pa
                 )
 
@@ -429,10 +428,10 @@ class Collector:
                         fpath = os.path.join(root, zfile)
                         z.write(fpath, os.path.relpath(fpath, ipp))
 
-    async def handle_run_msg(
+    def handle_run_msg(
         self: Collector,
         state: State,
-        c: QSConnectionAsync,
+        c: QSConnection,
         topic: bytes,
         message: bytes,
         timestamp: float | None,
@@ -458,14 +457,14 @@ class Collector:
                 Point("run_action")
                 .tag("type", action.lower())
                 .field(action.lower(), contents[1])
-                .time(timestamp)
+                .time(str(timestamp))
                 .to_line_protocol()
             )
             self.inject(
                 Point("run_status")
                 .tag("type", action.lower())
                 .field(action.lower(), contents[1])
-                .time(timestamp)
+                .time(str(timestamp))
                 .to_line_protocol()
             )
         elif action == "Cycle":
@@ -474,14 +473,14 @@ class Collector:
                 Point("run_action")
                 .tag("type", action.lower())
                 .field(action.lower(), contents[1])
-                .time(timestamp)
+                .time(str(timestamp))
                 .to_line_protocol()
             )
             self.inject(
                 Point("run_status")
                 .tag("type", action.lower())
                 .field(action.lower(), contents[1])
-                .time(timestamp)
+                .time(str(timestamp))
                 .to_line_protocol()
             )
         elif action == "Step":
@@ -490,14 +489,14 @@ class Collector:
                 Point("run_status")
                 .tag("type", action.lower())
                 .field(action.lower(), contents[1])
-                .time(timestamp)
+                .time(str(timestamp))
                 .to_line_protocol()
             )
             self.inject(
                 Point("run_action")
                 .tag("type", action.lower())
                 .field(action.lower(), contents[1])
-                .time(timestamp)
+                .time(str(timestamp))
                 .to_line_protocol()
             )
         elif action == "Holding":
@@ -581,7 +580,7 @@ class Collector:
         if self.idbw:
             self.idbw.flush()
 
-    async def handle_led(
+    def handle_led(
         self, topic: bytes, message: bytes, timestamp: float | None
     ) -> None:
         # Are we logging?
@@ -601,10 +600,10 @@ class Collector:
         )
         self.inject(p, flush=True)
 
-    async def handle_msg(
+    def handle_msg(
         self,
         state: State,
-        c: QSConnectionAsync,
+        c: QSConnection,
         topic: bytes,
         message: bytes,
         timestamp: float | None,
@@ -660,7 +659,7 @@ class Collector:
             if self.config.matrix.room not in joinedrooms:
                 await self.matrix_client.join(self.config.matrix.room)
 
-        with QSConnectionAsync(
+        with QSConnection(
             host=self.config.machine.host,
             port=int(self.config.machine.port)
             if self.config.machine.port is not None
@@ -729,7 +728,7 @@ class Collector:
                     await c.disconnect()
                     raise TimeoutError
 
-    async def reliable_monitor(
+    def reliable_monitor(
         self, connected_fut: asyncio.Future[bool] | None = None
     ) -> None:
         log.info("starting reconnectable monitoring")
@@ -754,4 +753,4 @@ class Collector:
                     log.critical(f"giving up, error {e}")
                     restart = False
             log.debug("awaiting retry")
-            await asyncio.sleep(30)
+            time.sleep(30)

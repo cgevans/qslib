@@ -20,9 +20,8 @@ There are a few different ways to use QSLib:
 - Through its command-line script, `qslib`, which has a number of subcommands allowing basic machine control, experiment
   file information, and data export.
 
-- As a library in Python, often either in the REPL, or via a notebook system like Jupyter.  QSLib uses nest-asyncio to
-  allow it to operate seamlessly within Jupyter notebooks.  This allows experiment creation, modification, and processing,
-  data plotting, machine control, and all other features.  Machine communication, however, does require some setup.
+- As a library in Python, often either in the REPL, or via a notebook system like Jupyter. This allows experiment creation, 
+  modification, and processing, data plotting, machine control, and all other features.  Machine communication, however, does require some setup.
 
 - As a monitoring system integrated with Matrix and InfluxDB.  This allows real-time storage of machine and run state
   and fluorescence data, and almost-live synchronization of in-progress and finished experiment files (in-progress

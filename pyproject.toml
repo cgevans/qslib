@@ -51,7 +51,6 @@ dependencies = [
     "tabulate >= 0.8",
     "pyparsing >= 3",
     "typeguard >= 2",
-    "nest_asyncio >= 1.5",
     "click >=8.0,<9.0",
     "toml",
     "pint",
@@ -80,7 +79,6 @@ testing = [
     "setuptools",
     "pytest",
     "pytest-cov",
-    "pytest-asyncio",
     "hypothesis",
     "qslib[monitor]",
 ]

@@ -8,7 +8,7 @@ import pytest
 
 import qslib.qs_is_protocol
 from qslib import Machine
-from qslib.qsconnection_async import QSConnectionAsync
+from qslib.qsconnection import QSConnection
 
 
 def crcb(crlist):
@@ -217,7 +217,7 @@ async def test_nonuid_nonreturn():
     srv = await asyncio.start_server(crcb({}), "localhost", 53533)
 
     async with srv:
-        qsa = QSConnectionAsync("localhost", 53533, ssl=False)
+        qsa = QSConnection("localhost", 53533, ssl=False)
 
         assert qsa.connected is False
 

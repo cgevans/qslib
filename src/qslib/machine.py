@@ -9,7 +9,6 @@ import logging
 from queue import Queue
 import re
 import zipfile
-from asyncio.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
@@ -19,7 +18,7 @@ from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from ._util import _unwrap_tags
 from .protocol import Protocol
-from .qsconnection_async import QSConnectionAsync, CommandError, QSReturn
+from .qsconnection import QSConnection, CommandError, QSReturn
 
 from .base import MachineStatus, RunStatus  # noqa: E402
 
@@ -91,7 +90,7 @@ class Machine:
     ssl: bool | None = None
     _initial_access_level: AccessLevel = AccessLevel.Observer
     _current_access_level: AccessLevel = AccessLevel.Guest
-    _connection: QSConnectionAsync | None = None
+    _connection: QSConnection | None = None
 
     def asdict(self, password: bool = False) -> dict[str, str | int | None]:
         d: dict[str, str | int | None] = {"host": self.host}
@@ -109,7 +108,7 @@ class Machine:
         return d
 
     @property
-    def connection(self) -> QSConnectionAsync:
+    def connection(self) -> QSConnection:
         """The :class:`QSConnectionAsync` for the connection, or a :class:`ConnectionError`."""
         if self._connection is None:
             raise ConnectionError
@@ -117,7 +116,7 @@ class Machine:
             return self._connection
 
     @connection.setter
-    def connection(self, v: QSConnectionAsync | None) -> None:
+    def connection(self, v: QSConnection | None) -> None:
         self._connection = v
 
     @property
@@ -157,7 +156,7 @@ class Machine:
     def connect(self) -> None:
         """Open the connection manually."""
 
-        self.connection = QSConnectionAsync(
+        self.connection = QSConnection(
             host=self.host,
             port=self.port,
             ssl=self.ssl,
