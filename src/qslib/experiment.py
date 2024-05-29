@@ -1268,11 +1268,15 @@ table, th, td {{
 
         z = zipfile.ZipFile(file)
 
-        manifest_info = _get_manifest_info(z, checkinfo=True)
+        try:
+            manifest_info = _get_manifest_info(z, checkinfo=True)
+            exp.spec_major_version = int(manifest_info["Specification-Version"][0])
+        except ValueError:
+            exp.spec_major_version = 1
+
 
         z.extractall(exp._dir_base)
 
-        exp.spec_major_version = int(manifest_info["Specification-Version"][0])
 
         exp._update_from_files()
 
@@ -2179,6 +2183,8 @@ table, th, td {{
         annotate_events: bool = True,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
+        start_time = None,
+        time_units: Literal["hours","seconds"] = "hours"
     ) -> "Sequence[Axes]":
         """
         Plots fluorescence over time, optionally with temperatures over time.
@@ -2322,6 +2328,13 @@ table, th, td {{
         for processor in process:
             reduceddata = processor.process_scoped(reduceddata, "limited")
 
+        if start_time is None:
+            start_time_value = 0.0
+        elif isinstance(start_time, (int, float)):
+            start_time_value = start_time
+        else:
+            raise TypeError("start_time invalid type")
+
         lines = []
         for filter in filters:
             filterdat: pd.DataFrame = reduceddata.loc[filter.lowerform, :]  # type: ignore
@@ -2341,7 +2354,7 @@ table, th, td {{
 
                     lines.append(
                         ax[0].plot(
-                            filterdat.loc[stages, ("time", "hours")],
+                            filterdat.loc[stages, ("time", time_units)] - start_time_value,
                             filterdat.loc[stages, (well, "fl")],
                             label=label,
                             marker=marker,
@@ -2411,7 +2424,7 @@ table, th, td {{
             tmin, tmax = np.inf, 0.0
 
             for i, fr in reduceddata.groupby("filter_set", as_index=False):
-                d = fr.loc[i, ("time", "hours")].loc[stages]
+                d = fr.loc[i, ("time", time_units)].loc[stages]
                 tmin = min(tmin, d.min())
                 tmax = max(tmax, d.max())
 

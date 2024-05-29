@@ -15,7 +15,7 @@ from typing import Any, Coroutine, Optional, Protocol, Type
 
 from .scpi_commands import AccessLevel, SCPICommand, _arglist
 
-NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]+)[ *]*>?)")
+NL_OR_Q = re.compile(rb"(?:\n|<(/?)([\w.]*)[ *]*>?)")
 TIMESTAMP = re.compile(rb"(\d{8,}\.\d{3})")
 
 log = logging.getLogger(__name__)
