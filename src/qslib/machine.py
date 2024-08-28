@@ -555,7 +555,7 @@ class Machine:
 
     @block.setter
     @_ensure_connection(AccessLevel.Controller)
-    def block(self, value: float | None | False | True | tuple[bool, float]):
+    def block(self, value: float | None | bool | tuple[bool, float]):
         """Set the block temperature control.
 
         If a float is given, it will be set to that temperature; None or False will

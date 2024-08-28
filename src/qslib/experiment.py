@@ -1917,12 +1917,12 @@ table, th, td {{
         between_stages: int | Sequence[int] | None = None,
         process: Sequence[Processor] | Processor | None = None,
         normalization: Processor | None = None,
-        ax: "plt.Axes" | None = None,
+        ax: "Axes | None" = None,
         marker: str | None = None,
         legend: bool | Literal["inset", "right"] = True,
-        figure_kw: Mapping[str, Any] | None = None,
-        line_kw: Mapping[str, Any] | None = None,
-    ) -> "plt.Axes":
+        figure_kw: dict[str, Any] | None = None,
+        line_kw: dict[str, Any] | None = None,
+    ) -> "Axes":
         """
         Plots anneal/melt curves.
 
@@ -1988,7 +1988,7 @@ table, th, td {{
         Returns
         -------
 
-        plt.Axes
+        Axes
             The axes object of the plot.
 
         """
@@ -2033,15 +2033,12 @@ table, th, td {{
             between_stages = list(between_stages)
 
         if ax is None:
-            ax = cast(
-                plt.Axes,
-                plt.figure(
+            ax = plt.figure(
                     **(
                         {"constrained_layout": True}
                         | (({} if figure_kw is None else figure_kw))
                     )
-                ).add_subplot(),
-            )
+                ).add_subplot()
 
         data = self.welldata
 
@@ -2051,6 +2048,10 @@ table, th, td {{
         all_wells = self.plate_setup.get_wells(samples)
 
         reduceddata = data.loc[[f.lowerform for f in filters], all_wells]
+
+        anneallines: "list[list[Line2D]]" = []
+        meltlines: "list[list[Line2D]]" = []
+        betweenlines: "list[list[Line2D]]" = []
 
         for processor in process:
             reduceddata = processor.process_scoped(reduceddata, "limited")
@@ -2062,11 +2063,10 @@ table, th, td {{
             meltdat: pd.DataFrame = filterdat.loc[melt_stages, :]  # type: ignore
 
             if len(between_stages) > 0:
-                betweendat: pd.DataFrame = filterdat.loc[between_stages, :]  # type: ignore
+                betweendat: pd.DataFrame | None = filterdat.loc[between_stages, :]  # type: ignore
+            else:
+                betweendat = None
 
-            anneallines: "list[list[Line2D]]" = []
-            meltlines: "list[list[Line2D]]" = []
-            betweenlines: "list[list[Line2D]]" = []
 
             for sample in samples:
                 wells = self.plate_setup.get_wells(sample)
@@ -2104,7 +2104,7 @@ table, th, td {{
                         )
                     )
 
-                    if len(between_stages) > 0:
+                    if betweendat is not None:
                         betweenlines.append(
                             ax.plot(
                                 betweendat.loc[:, (well, "st")],
@@ -2181,8 +2181,8 @@ table, th, td {{
             | Tuple[Literal["fluorescence", "temperature"], float]
         ) = True,
         annotate_events: bool = True,
-        figure_kw: Mapping[str, Any] | None = None,
-        line_kw: Mapping[str, Any] | None = None,
+        figure_kw: dict[str, Any] | None = None,
+        line_kw: dict[str, Any] | None = None,
         start_time = None,
         time_units: Literal["hours","seconds"] = "hours"
     ) -> "Sequence[Axes]":
@@ -2297,21 +2297,22 @@ table, th, td {{
 
         if ax is None:
             if temperatures == "axes":
-                fig, ax = plt.subplots(
+                fig, ax_arr = plt.subplots(
                     2,
                     1,
                     sharex="all",
                     gridspec_kw={"height_ratios": [3, 1]},
                     **(
-                        {"constrained_layout": True}
+                        cast(dict[str, Any], {"constrained_layout": True})
                         | (({} if figure_kw is None else figure_kw))
                     ),
                 )
+                ax = list(ax_arr)
             else:
                 fig, ax = plt.subplots(1, 1, **({} if figure_kw is None else figure_kw))
                 ax = [cast("Axes", ax)]
 
-        elif (not isinstance(ax, (Sequence, np.ndarray))) or isinstance(ax, plt.Axes):
+        elif (not isinstance(ax, (Sequence, np.ndarray))) or isinstance(ax, Axes):
             ax = [ax]
 
         ax = cast("Sequence[Axes]", ax)
@@ -2448,8 +2449,8 @@ table, th, td {{
         return ax
 
     def plot_protocol(
-        self, ax: Optional[plt.Axes] = None
-    ) -> Tuple[plt.Axes, Tuple[List[plt.Line2D], List[plt.Line2D]]]:
+        self, ax: Optional[Axes] = None
+    ) -> "Tuple[Axes, Tuple[List[Line2D], List[Line2D]]]":
         """A plot of the temperature and data collection points in the experiment's protocol."""
 
         return self.protocol.plot_protocol(ax)
@@ -2459,14 +2460,14 @@ table, th, td {{
         *,
         sel: slice | Callable[[pd.DataFrame], bool] = slice(None),
         hours: tuple[float, float] | None = None,
-        ax: Optional[plt.Axes] = None,
+        ax: Optional[Axes] = None,
         stage_lines: bool = True,
         annotate_stage_lines: bool | float = True,
         annotate_events: bool = True,
         legend: bool = False,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
-    ) -> "plt.Axes":
+    ) -> "Axes":
         """Plot sample temperature readings.
 
         Parameters
@@ -2517,11 +2518,12 @@ table, th, td {{
                 raise ValueError("sel and hours cannot both be set.")
             tmin, tmax = hours
 
-            def sel(x):
-                return (tmin <= x["time", "hours"]) & (x["time", "hours"] <= tmax)
+            sel = lambda x: (tmin <= x["time", "hours"]) & (x["time", "hours"] <= tmax)
 
         if ax is None:
             _, ax = plt.subplots(**(figure_kw or {}))
+
+        ax = cast(Axes, ax)
 
         reltemps = self.temperatures.loc[sel, :]
 
