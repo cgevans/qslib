@@ -487,6 +487,8 @@ class Experiment:
         summary = self.info(plate="table")
 
         import matplotlib.pyplot as plt
+        from matplotlib.axes import Axes
+        from matplotlib.lines import Line2D
 
         fig, ax = plt.subplots(figsize=(21.0 / 2.54, 15.0 / 2.54))
         self.protocol.plot_protocol(ax)
@@ -1152,9 +1154,9 @@ table, th, td {{
         ET.SubElement(tp, "Name").text = "Custom"
         ET.SubElement(tp, "Description").text = "Custom QSLib experiment"
         ET.SubElement(tp, "ResultPersisterName").text = "scAnalysisResultPersister"
-        ET.SubElement(
-            tp, "ContributedResultPersisterName"
-        ).text = "mcAnalysisResultPersister"
+        ET.SubElement(tp, "ContributedResultPersisterName").text = (
+            "mcAnalysisResultPersister"
+        )
         ET.SubElement(e.getroot(), "ChemistryType").text = "Other"
         ET.SubElement(e.getroot(), "TCProtocolMode").text = "Standard"
         ET.SubElement(e.getroot(), "DNATemplateType").text = "WET_DNA"
@@ -1274,9 +1276,7 @@ table, th, td {{
         except ValueError:
             exp.spec_major_version = 1
 
-
         z.extractall(exp._dir_base)
-
 
         exp._update_from_files()
 
@@ -1644,9 +1644,11 @@ table, th, td {{
                         json.load(f),
                         self.plate_type,
                         quant_files_path=(Path(self.root_dir) / "run/quant"),
-                        start_time=self.activestarttime.timestamp()
-                        if self.activestarttime
-                        else None,
+                        start_time=(
+                            self.activestarttime.timestamp()
+                            if self.activestarttime
+                            else None
+                        ),
                     )
             mdp = os.path.join(self._dir_base, "primary/multicomponent_data.json")
             if os.path.isfile(mdp):
@@ -2034,11 +2036,11 @@ table, th, td {{
 
         if ax is None:
             ax = plt.figure(
-                    **(
-                        {"constrained_layout": True}
-                        | (({} if figure_kw is None else figure_kw))
-                    )
-                ).add_subplot()
+                **(
+                    {"constrained_layout": True}
+                    | (({} if figure_kw is None else figure_kw))
+                )
+            ).add_subplot()
 
         data = self.welldata
 
@@ -2066,7 +2068,6 @@ table, th, td {{
                 betweendat: pd.DataFrame | None = filterdat.loc[between_stages, :]  # type: ignore
             else:
                 betweendat = None
-
 
             for sample in samples:
                 wells = self.plate_setup.get_wells(sample)
@@ -2183,8 +2184,8 @@ table, th, td {{
         annotate_events: bool = True,
         figure_kw: dict[str, Any] | None = None,
         line_kw: dict[str, Any] | None = None,
-        start_time = None,
-        time_units: Literal["hours","seconds"] = "hours"
+        start_time=None,
+        time_units: Literal["hours", "seconds"] = "hours",
     ) -> "Sequence[Axes]":
         """
         Plots fluorescence over time, optionally with temperatures over time.
@@ -2355,7 +2356,8 @@ table, th, td {{
 
                     lines.append(
                         ax[0].plot(
-                            filterdat.loc[stages, ("time", time_units)] - start_time_value,
+                            filterdat.loc[stages, ("time", time_units)]
+                            - start_time_value,
                             filterdat.loc[stages, (well, "fl")],
                             label=label,
                             marker=marker,
@@ -2412,10 +2414,12 @@ table, th, td {{
             t_sl = stage_lines
             fl_sl = stage_lines
 
-        self._annotate_stages(ax[0], fl_sl, fl_asl, (xlims[1] - xlims[0]) * 3600.0)
+        self._annotate_stages(
+            ax[0], fl_sl, fl_asl, (xlims[1] - xlims[0]) * 3600.0, stages=stages
+        )
 
         if annotate_events:
-            self._annotate_events(ax[0])
+            self._annotate_events(ax[0], stages=stages)
 
         if temperatures == "axes":
             if len(ax) < 2:
@@ -2509,6 +2513,7 @@ table, th, td {{
         """
 
         import matplotlib.pyplot as plt
+        from matplotlib.axes import Axes
 
         if not hasattr(self, "temperatures") or self.temperatures is None:
             raise ValueError("Experiment has no temperature data.")
@@ -2538,10 +2543,12 @@ table, th, td {{
         v = reltemps.loc[:, ("time", "hours")]
         totseconds = 3600.0 * (v.iloc[-1] - v.iloc[0])
 
-        self._annotate_stages(ax, stage_lines, annotate_stage_lines, totseconds)
+        self._annotate_stages(
+            ax, stage_lines, annotate_stage_lines, totseconds, stages=False
+        )
 
         if annotate_events:
-            self._annotate_events(ax)
+            self._annotate_events(ax, stages=False)
 
         ax.set_ylabel("temperature (°C)")
         ax.set_xlabel("time (hours)")
@@ -2552,7 +2559,12 @@ table, th, td {{
         return ax
 
     def _annotate_stages(
-        self, ax, stage_lines: bool, annotate_stage_lines: bool | float, totseconds
+        self,
+        ax: "Axes",
+        stage_lines: bool,
+        annotate_stage_lines: bool | float,
+        totseconds,
+        stages: slice | Sequence[int] | bool = slice(None),
     ):
         if stage_lines:
             if isinstance(annotate_stage_lines, float):
@@ -2562,16 +2574,18 @@ table, th, td {{
                 annotate_frac = 0.05
 
             for _, s in self.stages.iterrows():
-                if s.stage == "PRERUN" or s.stage == "POSTRUN":
-                    continue
+                if s.stage == "PRERUN" or s.stage == "POSTRUN" or s.stage == "POSTRun":
+                    continue  # FIXME: maybe we should include these
                     #
 
                 xlim = ax.get_xlim()
-                if not (xlim[0] <= s.start_seconds / 3600.0 <= xlim[1]):
+                if (stages != slice(None)) and (
+                    not (xlim[0] <= s.start_seconds / 3600.0 <= xlim[1])
+                ):
                     continue
 
                 xtrans = ax.get_xaxis_transform()
-                ax.axvline(
+                vline = ax.axvline(
                     s.start_seconds / 3600.0,
                     linestyle="dotted",
                     color="black",
@@ -2579,17 +2593,21 @@ table, th, td {{
                 )
                 durfrac = (s.end_seconds - s.start_seconds) / totseconds
                 if annotate_stage_lines and (durfrac > annotate_frac):
-                    ax.text(
-                        s.start_seconds / 3600.0 + 0.02,
-                        0.9,
+                    ax.annotate(
                         f"stage {s.stage}",
-                        transform=xtrans,
+                        xy=(1, 0.9),
+                        xycoords=vline,
+                        xytext=(5, 0),
+                        textcoords="offset points",
                         rotation=90,
                         verticalalignment="top",
                         horizontalalignment="left",
                     )
 
-    def _annotate_events(self, ax):
+    def _annotate_events(self, ax, stages: slice | Sequence[int] | bool = slice(None)):
+        first_time = self.stages.iloc[0, :]["start_seconds"] / 3600.0
+        last_time = self.stages.iloc[-1, :]["end_seconds"] / 3600.0
+
         opi = self.events.index[
             (self.events["type"] == "Cover") & (self.events["message"] == "Raising")
         ]
@@ -2599,12 +2617,18 @@ table, th, td {{
         cli = [cl[cl > x][0] if len(cl[cl > x]) > 0 else None for x in opi]
         for x1, x2 in zip(opi, cli):
             xlim = ax.get_xlim()
-            if not (xlim[0] <= self.events.loc[x1, "hours"] <= xlim[1] or
-                    (x2 is not None and xlim[0] <= self.events.loc[x2, "hours"] <= xlim[1])):
-                continue
+            if not (
+                xlim[0] <= self.events.loc[x1, "hours"] <= xlim[1]
+                or (
+                    x2 is not None
+                    and xlim[0] <= self.events.loc[x2, "hours"] <= xlim[1]
+                )
+            ):
+                if stages != slice(None):
+                    continue
             ax.axvspan(
                 self.events.loc[x1, "hours"],
-                self.events.loc[x2, "hours"] if x2 is not None else None,
+                self.events.loc[x2, "hours"] if x2 is not None else last_time,
                 alpha=0.5,
                 color="yellow",
             )
@@ -2618,12 +2642,18 @@ table, th, td {{
         cli = [cl[cl > x][0] if len(cl[cl > x]) > 0 else None for x in opi]
         for x1, x2 in zip(opi, cli):
             xlim = ax.get_xlim()
-            if not (xlim[0] <= self.events.loc[x1, "hours"] <= xlim[1] or
-                    (x2 is not None and xlim[0] <= self.events.loc[x2, "hours"] <= xlim[1])):
-                continue
+            if not (
+                xlim[0] <= self.events.loc[x1, "hours"] <= xlim[1]
+                or (
+                    x2 is not None
+                    and xlim[0] <= self.events.loc[x2, "hours"] <= xlim[1]
+                )
+            ):
+                if stages != slice(None):
+                    continue
             ax.axvspan(
                 self.events.loc[x1, "hours"],
-                self.events.loc[x2, "hours"] if x2 is not None else None,
+                self.events.loc[x2, "hours"] if x2 is not None else last_time,
                 alpha=0.5,
                 color="red",
             )

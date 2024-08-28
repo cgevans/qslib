@@ -25,6 +25,7 @@ from .scpi_commands import AccessLevel, ArgList, SCPICommand
 
 log = logging.getLogger(__name__)
 
+
 def _gen_auth_response(password: str, challenge_string: str) -> str:
     return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
 
@@ -43,12 +44,10 @@ def _parse_argstring(argstring: str) -> Dict[str, str]:
     return args
 
 
-class AlreadyCollectedError(Exception):
-    ...
+class AlreadyCollectedError(Exception): ...
 
 
-class RunNotFinishedError(Exception):
-    ...
+class RunNotFinishedError(Exception): ...
 
 
 @dataclass(frozen=True, order=True, eq=True)
@@ -125,8 +124,7 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: Literal[True],
         recursive: bool = False,
-    ) -> list[dict[str, Any]]:
-        ...
+    ) -> list[dict[str, Any]]: ...
 
     @overload
     async def list_files(
@@ -136,8 +134,7 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: Literal[False],
         recursive: bool = False,
-    ) -> list[str]:
-        ...
+    ) -> list[str]: ...
 
     @overload
     async def list_files(
@@ -147,8 +144,7 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: bool = False,
         recursive: bool = False,
-    ) -> list[str] | list[dict[str, Any]]:
-        ...
+    ) -> list[str] | list[dict[str, Any]]: ...
 
     async def list_files(
         self,
@@ -269,7 +265,6 @@ class QSConnectionAsync:
             self.password = password
         if initial_access_level is not None:
             self._initial_access_level = initial_access_level
-
 
         CTX = ssl.create_default_context()
         CTX.check_hostname = False
@@ -467,8 +462,7 @@ class QSConnectionAsync:
         *,
         run: Optional[str] = None,
         return_files: Literal[True],
-    ) -> tuple[data.FilterDataReading, list[tuple[str, bytes]]]:
-        ...
+    ) -> tuple[data.FilterDataReading, list[tuple[str, bytes]]]: ...
 
     @overload
     async def get_filterdata_one(
@@ -477,8 +471,7 @@ class QSConnectionAsync:
         *,
         run: Optional[str] = None,
         return_files: Literal[False] = False,
-    ) -> data.FilterDataReading:
-        ...
+    ) -> data.FilterDataReading: ...
 
     async def get_filterdata_one(
         self,
@@ -486,9 +479,9 @@ class QSConnectionAsync:
         *,
         run: Optional[str] = None,
         return_files: bool = False,
-    ) -> data.FilterDataReading | tuple[
-        data.FilterDataReading, list[tuple[str, bytes]]
-    ]:
+    ) -> (
+        data.FilterDataReading | tuple[data.FilterDataReading, list[tuple[str, bytes]]]
+    ):
         if run is None:
             run = await self.get_run_title()
 
@@ -520,14 +513,12 @@ class QSConnectionAsync:
     @overload
     async def get_all_filterdata(
         self, run: Optional[str], as_list: Literal[True]
-    ) -> List[data.FilterDataReading]:
-        ...
+    ) -> List[data.FilterDataReading]: ...
 
     @overload
     async def get_all_filterdata(
         self, run: Optional[str], as_list: Literal[False]
-    ) -> pd.DataFrame:
-        ...
+    ) -> pd.DataFrame: ...
 
     async def get_all_filterdata(
         self, run: str | None = None, as_list: bool = False

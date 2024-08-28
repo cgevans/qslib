@@ -73,9 +73,11 @@ _opt_value_one = (
 _ovcl = pp.delimited_list(_opt_value_one, ",")
 
 _opt_value = (_commands_block | _ovcl | _opt_value_one).setParseAction(
-    lambda toks: toks[0]
-    if not isinstance(toks[0], SCPICommand) and len(toks) == 1
-    else (list(toks[:]),)
+    lambda toks: (
+        toks[0]
+        if not isinstance(toks[0], SCPICommand) and len(toks) == 1
+        else (list(toks[:]),)
+    )
 )
 
 _opt_kv_pair = (
@@ -256,11 +258,13 @@ class SCPICommand(SCPICommandLike):
         | Sequence[str | int | float | np.number[Any]]
         | Sequence["SCPICommand"],
         comment: str | None = None,
-        **kwargs: str
-        | int
-        | float
-        | np.number[Any]
-        | Sequence[str | int | float | np.number[Any]],
+        **kwargs: (
+            str
+            | int
+            | float
+            | np.number[Any]
+            | Sequence[str | int | float | np.number[Any]]
+        ),
     ) -> None:
         if " " in command:
             if args or comment or kwargs:
@@ -279,13 +283,15 @@ class SCPICommand(SCPICommandLike):
 
     def _optformat(
         self,
-        opt_val: str
-        | int
-        | float
-        | np.number[Any]
-        | Sequence[str | int | float | np.number[Any]]
-        | Sequence[SCPICommand]
-        | SCPICommand,
+        opt_val: (
+            str
+            | int
+            | float
+            | np.number[Any]
+            | Sequence[str | int | float | np.number[Any]]
+            | Sequence[SCPICommand]
+            | SCPICommand
+        ),
     ) -> str:
         if isinstance(opt_val, SCPICommand):
             opt_val = [opt_val]

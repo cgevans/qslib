@@ -337,12 +337,10 @@ class OutP:
         click.secho(s, fg="red")
 
 
-class NoNewAccess(BaseException):
-    ...
+class NoNewAccess(BaseException): ...
 
 
-class NoAccess(BaseException):
-    ...
+class NoAccess(BaseException): ...
 
 
 def set_default_access(m: Machine, p: OutP):

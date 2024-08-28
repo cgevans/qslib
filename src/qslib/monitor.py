@@ -359,9 +359,9 @@ class Collector:
         connection: QSConnectionAsync,
     ) -> None:
         if state.run.plate_setup:
-            pa: npt.NDArray[
-                np.object_
-            ] | None = state.run.plate_setup.well_samples_as_array()
+            pa: npt.NDArray[np.object_] | None = (
+                state.run.plate_setup.well_samples_as_array()
+            )
         else:
             pa = None
 
@@ -662,9 +662,11 @@ class Collector:
 
         async with QSConnectionAsync(
             host=self.config.machine.host,
-            port=int(self.config.machine.port)
-            if self.config.machine.port is not None
-            else None,
+            port=(
+                int(self.config.machine.port)
+                if self.config.machine.port is not None
+                else None
+            ),
             password=self.config.machine.password,
         ) as c:
             log.info("monitor connected")

@@ -75,7 +75,7 @@ def test_plots(exp: Experiment) -> None:
     )
 
     # +2 here is for stage lines
-    assert len(axf.get_lines()) == 5 * len(exp.all_filters) + 3
+    assert len(axf.get_lines()) == 5 * len(exp.all_filters) + 2
     assert np.allclose(axf.get_xlim(), (-0.004825680553913112, 0.10133929163217542))
 
     with pytest.raises(ValueError, match="Samples not found"):
