@@ -6,7 +6,7 @@ from . import protocol
 from .experiment import Experiment
 from .machine import Machine, MachineStatus, RunStatus
 from .plate_setup import PlateSetup, Sample
-from .processors import NormRaw, NormToMaxPerWell, NormToMeanPerWell, SmoothEMWMean
+from .processors import NormRaw, NormToMaxPerWell, NormToMeanPerWell, SmoothEMWMean, SmoothWindowMean
 from .protocol import CustomStep, Protocol, Stage, Step
 from .scpi_commands import AccessLevel
 

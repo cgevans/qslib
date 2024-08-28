@@ -2562,6 +2562,12 @@ table, th, td {{
             for _, s in self.stages.iterrows():
                 if s.stage == "PRERUN" or s.stage == "POSTRUN":
                     continue
+                    #
+
+                xlim = ax.get_xlim()
+                if not (xlim[0] <= s.start_seconds / 3600.0 <= xlim[1]):
+                    continue
+
                 xtrans = ax.get_xaxis_transform()
                 ax.axvline(
                     s.start_seconds / 3600.0,
@@ -2590,6 +2596,10 @@ table, th, td {{
         ]
         cli = [cl[cl > x][0] if len(cl[cl > x]) > 0 else None for x in opi]
         for x1, x2 in zip(opi, cli):
+            xlim = ax.get_xlim()
+            if not (xlim[0] <= self.events.loc[x1, "hours"] <= xlim[1] or
+                    (x2 is not None and xlim[0] <= self.events.loc[x2, "hours"] <= xlim[1])):
+                continue
             ax.axvspan(
                 self.events.loc[x1, "hours"],
                 self.events.loc[x2, "hours"] if x2 is not None else None,
@@ -2605,6 +2615,10 @@ table, th, td {{
         ]
         cli = [cl[cl > x][0] if len(cl[cl > x]) > 0 else None for x in opi]
         for x1, x2 in zip(opi, cli):
+            xlim = ax.get_xlim()
+            if not (xlim[0] <= self.events.loc[x1, "hours"] <= xlim[1] or
+                    (x2 is not None and xlim[0] <= self.events.loc[x2, "hours"] <= xlim[1])):
+                continue
             ax.axvspan(
                 self.events.loc[x1, "hours"],
                 self.events.loc[x2, "hours"] if x2 is not None else None,

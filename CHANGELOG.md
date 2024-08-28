@@ -10,6 +10,7 @@ SPDX-License-Identifier: EUPL-1.2
 
 - `Machine.block` command to directly control block temperatures.
 - Certificate support for SSL, and new connection recommendations.
+- Stage lines and event spans now are now not plotted if they are outside of the selected time range / stages.
 
 ## Version 0.11.0
 
