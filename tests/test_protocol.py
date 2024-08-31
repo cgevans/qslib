@@ -288,6 +288,6 @@ def test_hold():
     h = Stage.hold_at("60 °C", "1 hour", "10 minutes")
     assert h == Stage(Step("10 min", "60 °C"), 6)
 
-    assert Stage.hold_at("50 °C", total_time="1 hour").steps[0].duration_at_cycle(
+    assert Stage.hold_at("50 °C", total_time="1 hour").steps[0].duration_at_cycle_point(
         0
     ) == Q_("1 hour")
