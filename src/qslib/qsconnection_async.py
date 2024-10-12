@@ -44,10 +44,12 @@ def _parse_argstring(argstring: str) -> Dict[str, str]:
     return args
 
 
-class AlreadyCollectedError(Exception): ...
+class AlreadyCollectedError(Exception):
+    ...
 
 
-class RunNotFinishedError(Exception): ...
+class RunNotFinishedError(Exception):
+    ...
 
 
 @dataclass(frozen=True, order=True, eq=True)
@@ -124,7 +126,8 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: Literal[True],
         recursive: bool = False,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[dict[str, Any]]:
+        ...
 
     @overload
     async def list_files(
@@ -134,7 +137,8 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: Literal[False],
         recursive: bool = False,
-    ) -> list[str]: ...
+    ) -> list[str]:
+        ...
 
     @overload
     async def list_files(
@@ -144,7 +148,8 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: bool = False,
         recursive: bool = False,
-    ) -> list[str] | list[dict[str, Any]]: ...
+    ) -> list[str] | list[dict[str, Any]]:
+        ...
 
     async def list_files(
         self,
@@ -313,12 +318,19 @@ class QSConnectionAsync:
             else:
                 self.port = 7000
 
-        self._transport, proto = await self.loop.create_connection(
-            QS_IS_Protocol,
-            self.host,
-            int(cast("int | str", self.port)),
-            ssl=CTX if cast(bool, self.ssl) else None,
-        )
+            self._transport, proto = await self.loop.create_connection(
+                QS_IS_Protocol,
+                self.host,
+                int(cast("int | str", self.port)),
+                ssl=CTX if cast(bool, self.ssl) else None,
+            )
+        else:
+            self._transport, proto = await self.loop.create_connection(
+                QS_IS_Protocol,
+                self.host,
+                int(cast("int | str", self.port)),
+                ssl=CTX if cast(bool, self.ssl) else None,
+            )
 
         self._protocol = cast(QS_IS_Protocol, proto)
 
@@ -462,7 +474,8 @@ class QSConnectionAsync:
         *,
         run: Optional[str] = None,
         return_files: Literal[True],
-    ) -> tuple[data.FilterDataReading, list[tuple[str, bytes]]]: ...
+    ) -> tuple[data.FilterDataReading, list[tuple[str, bytes]]]:
+        ...
 
     @overload
     async def get_filterdata_one(
@@ -471,7 +484,8 @@ class QSConnectionAsync:
         *,
         run: Optional[str] = None,
         return_files: Literal[False] = False,
-    ) -> data.FilterDataReading: ...
+    ) -> data.FilterDataReading:
+        ...
 
     async def get_filterdata_one(
         self,
@@ -513,12 +527,14 @@ class QSConnectionAsync:
     @overload
     async def get_all_filterdata(
         self, run: Optional[str], as_list: Literal[True]
-    ) -> List[data.FilterDataReading]: ...
+    ) -> List[data.FilterDataReading]:
+        ...
 
     @overload
     async def get_all_filterdata(
         self, run: Optional[str], as_list: Literal[False]
-    ) -> pd.DataFrame: ...
+    ) -> pd.DataFrame:
+        ...
 
     async def get_all_filterdata(
         self, run: str | None = None, as_list: bool = False
