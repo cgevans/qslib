@@ -201,7 +201,7 @@ async def test_quote():
             assert m.run_command("TESTQUOTE") == msg
 
 
-@pytest.mark.skip # FIXME
+@pytest.mark.skip  # FIXME
 @pytest.mark.asyncio
 async def test_invalid_quote():
     msg = "<quote>a\nu\n</quote.2>\n  </quote>"

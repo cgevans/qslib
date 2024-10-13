@@ -26,6 +26,7 @@ from typing import (
     Sequence,
     Tuple,
     Type,
+    TypeAlias,
     TypeVar,
     Union,
     cast,
@@ -48,6 +49,13 @@ from .version import __version__
 if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt
 
+from pint.facets.plain import PlainUnit
+
+FloatQuantity = pint.Quantity
+IntQuantity = pint.Quantity
+PlainQuantity: TypeAlias = pint.Quantity
+ArrayQuantity: TypeAlias = pint.Quantity
+
 NZONES = 6
 
 UR: pint.UnitRegistry = pint.UnitRegistry(
@@ -63,16 +71,16 @@ _DEGC = Q_("0 °C").u
 log = logging.getLogger(__name__)
 
 
-def _check_unit_or_fail(val: pint.Quantity, unit: str | pint.Unit) -> None:
+def _check_unit_or_fail(val: PlainQuantity, unit: str | PlainUnit) -> None:
     if not val.check(unit):
         raise pint.DimensionalityError(val.u, unit)
 
 
-def _wrap_seconds(val: int | float | str | pint.Quantity) -> pint.Quantity:
+def _wrap_seconds(val: int | float | str | PlainQuantity) -> PlainQuantity:
     if isinstance(val, str):
         uv = Q_(val)
         _check_unit_or_fail(uv, _SECONDS)
-    elif isinstance(val, pint.Quantity):
+    elif isinstance(val, PlainQuantity):
         uv = val
         _check_unit_or_fail(uv, _SECONDS)
     else:
@@ -81,14 +89,14 @@ def _wrap_seconds(val: int | float | str | pint.Quantity) -> pint.Quantity:
 
 
 def _maybe_wrap_seconds(
-    val: int | float | str | pint.Quantity | None,
-) -> pint.Quantity | None:
+    val: int | float | str | PlainQuantity | None,
+) -> PlainQuantity | None:
     if val is None:
         return None
     elif isinstance(val, str):
         uv = Q_(val)
         _check_unit_or_fail(uv, _SECONDS)
-    elif isinstance(val, pint.Quantity):
+    elif isinstance(val, PlainQuantity):
         uv = val
         _check_unit_or_fail(uv, _SECONDS)
     else:
@@ -96,11 +104,11 @@ def _maybe_wrap_seconds(
     return uv
 
 
-def _wrap_degC(val: int | float | str | pint.Quantity) -> pint.Quantity:
+def _wrap_degC(val: int | float | str | PlainQuantity) -> PlainQuantity:
     if isinstance(val, str):
         uv = Q_(val)
         _check_unit_or_fail(uv, _DEGC)
-    elif isinstance(val, pint.Quantity):
+    elif isinstance(val, PlainQuantity):
         uv = val
         _check_unit_or_fail(uv, _DEGC)
     else:
@@ -108,11 +116,11 @@ def _wrap_degC(val: int | float | str | pint.Quantity) -> pint.Quantity:
     return uv
 
 
-def _wrap_delta_degC(val: int | float | str | pint.Quantity) -> pint.Quantity:
+def _wrap_delta_degC(val: int | float | str | PlainQuantity) -> PlainQuantity:
     if isinstance(val, str):
         uv = Q_(val)
         uv = _ensure_delta_temperature(uv)
-    elif isinstance(val, pint.Quantity):
+    elif isinstance(val, PlainQuantity):
         uv = val
         uv = _ensure_delta_temperature(uv)
     else:
@@ -120,7 +128,7 @@ def _wrap_delta_degC(val: int | float | str | pint.Quantity) -> pint.Quantity:
     return uv
 
 
-def _ensure_delta_temperature(val: pint.Quantity) -> pint.Quantity:
+def _ensure_delta_temperature(val: PlainQuantity) -> PlainQuantity:
     _check_unit_or_fail(val, "delta_degC")
 
     # Are we multiplicative?
@@ -134,8 +142,8 @@ _ZEROTEMPDELTA = Q_(0.0, "delta_degC")
 
 
 def _wrap_delta_degC_or_zero(
-    val: int | float | str | pint.Quantity | None,
-) -> pint.Quantity:
+    val: int | float | str | PlainQuantity | None,
+) -> PlainQuantity:
     if val is None:
         return _ZEROTEMPDELTA
     else:
@@ -143,8 +151,8 @@ def _wrap_delta_degC_or_zero(
 
 
 def _wrap_degC_or_none(
-    val: int | float | str | pint.Quantity | None,
-) -> pint.Quantity | None:
+    val: int | float | str | PlainQuantity | None,
+) -> PlainQuantity | None:
     if val is None:
         return None
     else:
@@ -153,12 +161,12 @@ def _wrap_degC_or_none(
 
 def _wrapunitmaybelist_degC(
     val: (
-        int | float | str | pint.Quantity | Sequence[int | float | str | pint.Quantity]
+        int | float | str | PlainQuantity | Sequence[int | float | str | PlainQuantity]
     ),
-) -> pint.Quantity:
+) -> PlainQuantity:
     unit: pint.Unit = UR.Unit("degC")
 
-    if isinstance(val, pint.Quantity):
+    if isinstance(val, PlainQuantity):
         uv = val
         _check_unit_or_fail(uv, unit)
     elif isinstance(val, str):
@@ -167,7 +175,7 @@ def _wrapunitmaybelist_degC(
     elif isinstance(val, Sequence):
         m = []
         for x in val:
-            if isinstance(x, pint.Quantity):
+            if isinstance(x, PlainQuantity):
                 m.append(x.to(unit).magnitude)
             elif isinstance(x, str):
                 m.append(Q_(x).to(unit).magnitude)
@@ -179,7 +187,7 @@ def _wrapunitmaybelist_degC(
     return uv
 
 
-def _durformat(time: pint.Quantity) -> str:
+def _durformat(time: PlainQuantity) -> str:
     """Convert time in seconds to a nice string"""
     time_s: int = time.to(UR.seconds).magnitude
     s = ""
@@ -235,10 +243,10 @@ class ProtoCommand(ABC):
 class Ramp(ProtoCommand):
     """Ramps temperature to a new setting."""
 
-    temperature: pint.Quantity = attr.field(  # [np.ndarray]
+    temperature: PlainQuantity = attr.field(  # [np.ndarray]
         converter=_wrapunitmaybelist_degC, on_setattr=attr.setters.convert
     )
-    increment: pint.Quantity = attr.field(  # [float]
+    increment: PlainQuantity = attr.field(  # [float]
         converter=_wrap_delta_degC_or_zero,
         on_setattr=attr.setters.convert,
         default=_ZEROTEMPDELTA,
@@ -246,7 +254,7 @@ class Ramp(ProtoCommand):
     incrementcycle: int = 1
     incrementstep: int = 1
     rate: float = 100.0  # This is a percent
-    cover: pint.Quantity | None = attr.field(  # [float]
+    cover: PlainQuantity | None = attr.field(  # [float]
         converter=_wrap_degC_or_none,
         on_setattr=attr.setters.convert,
         default=None,
@@ -344,15 +352,15 @@ class HACFILT(ProtoCommand):
         return c
 
 
-def _quantity_to_seconds_int(q: pint.Quantity | int) -> int:
-    if isinstance(q, pint.Quantity):
+def _quantity_to_seconds_int(q: PlainQuantity | int) -> int:
+    if isinstance(q, PlainQuantity):
         return int(q.m_as("s"))
     else:
         return q
 
 
-def _maybe_quantity_to_seconds_int(q: pint.Quantity | int | None) -> int | None:
-    if isinstance(q, pint.Quantity):
+def _maybe_quantity_to_seconds_int(q: PlainQuantity | int | None) -> int | None:
+    if isinstance(q, PlainQuantity):
         return int(q.m_as("s"))
     else:
         return q
@@ -362,10 +370,10 @@ def _maybe_quantity_to_seconds_int(q: pint.Quantity | int | None) -> int | None:
 class HoldAndCollect(ProtoCommand):
     """A protocol hold (for a time) and collect (set by HACFILT) command."""
 
-    time: pint.Quantity = attr.field(
+    time: PlainQuantity = attr.field(
         converter=_wrap_seconds, on_setattr=attr.setters.convert
     )
-    increment: pint.Quantity = attr.field(
+    increment: PlainQuantity = attr.field(
         default=_ZERO_SECONDS, converter=_wrap_seconds, on_setattr=attr.setters.convert
     )
     incrementcycle: int = 1
@@ -395,17 +403,17 @@ class HoldAndCollect(ProtoCommand):
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> HoldAndCollect:
-        return HoldAndCollect(sc.args[0], **sc.opts)
+        return HoldAndCollect(sc.args[0], **sc.opts)  # type: ignore
 
 
 @attr.define()
 class Hold(ProtoCommand):
     """A protocol hold (for a time) command."""
 
-    time: pint.Quantity | None = attr.field(
+    time: PlainQuantity | None = attr.field(
         converter=_maybe_wrap_seconds, on_setattr=attr.setters.convert
     )
-    increment: pint.Quantity = attr.field(
+    increment: PlainQuantity = attr.field(
         converter=_wrap_seconds, on_setattr=attr.setters.convert, default=_ZERO_SECONDS
     )
     incrementcycle: int = 1
@@ -520,13 +528,18 @@ class CustomStep(ProtoCommand, XMLable):
         )
         return s
 
-    def duration_at_cycle_point(self, cycle: int) -> pint.Quantity[int]:  # cycle from 1
+    def duration_at_cycle_point(
+        self, cycle: int, point: int = 1
+    ) -> IntQuantity:  # cycle from 1
         return Q_(0, "second")
 
-    def temperatures_at_cycle(self, cycle: int) -> pint.Quantity[np.ndarray]:
+    def temperatures_at_cycle(self, cycle: int) -> ArrayQuantity:
         return Q_(np.array(6 * [math.nan]), "degC")
 
-    def total_duration(self, repeat: int = 1) -> pint.Quantity[int]:
+    def temperatures_at_cycle_point(self, cycle: int, point: int) -> ArrayQuantity:
+        return Q_(np.array(6 * [math.nan]), "degC")
+
+    def total_duration(self, repeat: int = 1) -> IntQuantity:
         return 0 * UR.seconds
 
     @property
@@ -635,26 +648,26 @@ class Step(CustomStep, XMLable):
     This currently does not support step-level repeats, which do exist on the machine.
     """
 
-    time: pint.Quantity = attr.field(
+    time: PlainQuantity = attr.field(
         converter=_wrap_seconds, on_setattr=attr.setters.convert
     )
-    temperature: pint.Quantity = attr.field(
+    temperature: PlainQuantity = attr.field(
         converter=_wrapunitmaybelist_degC, on_setattr=attr.setters.convert
     )
     collect: bool | None = None
-    temp_increment: pint.Quantity[float] = attr.field(
+    temp_increment: FloatQuantity = attr.field(
         default=_ZEROTEMPDELTA,
         converter=_wrap_delta_degC,
         on_setattr=attr.setters.convert,
     )
-    temp_incrementcycle: int | None = 2
+    temp_incrementcycle: int = 2
     temp_incrementpoint: int | None = None
-    time_increment: pint.Quantity[int] = attr.field(
-        default=Q_(0, UR.second),
+    time_increment: IntQuantity = attr.field(
+        default=_ZERO_SECONDS,
         converter=_wrap_seconds,
         on_setattr=attr.setters.convert,
     )
-    time_incrementcycle: int | None = 2
+    time_incrementcycle: int = 2
     time_incrementpoint: int | None = None
     filters: Sequence[FilterSet] = attr.field(
         default=tuple(),
@@ -699,13 +712,13 @@ class Step(CustomStep, XMLable):
         return True
 
     @property
-    def collects(self):
+    def collects(self) -> bool:
         if self.collect is None:
             return len(self.filters) > 0
         return self.collect
 
     @property
-    def _filtersets(self):
+    def _filtersets(self) -> list[FilterSet]:
         return [FilterSet.fromstring(x) for x in self.filters]
 
     @property
@@ -828,36 +841,34 @@ class Step(CustomStep, XMLable):
 
         return s
 
-    def total_duration(self, repeats: int = 1) -> pint.Quantity:
+    def total_duration(self, repeats: int = 1) -> PlainQuantity:
         return sum(
             (self.duration_of_cycle(c) for c in range(1, repeats + 1)), 0 * UR.seconds
         )
 
-    def duration_at_cycle_point(self, cycle: int, point: int = 1) -> pint.Quantity:
+    def duration_at_cycle_point(self, cycle: int, point: int = 1) -> PlainQuantity:
         "Durations of the step at `cycle` (from 1)"
         inccycles = max(0, cycle + 1 - self.time_incrementcycle)
         incpoints = max(0, point + 1 - self._machine_time_incrementpoint)
         return self.time + (inccycles + incpoints) * self.time_increment
 
-    def duration_of_cycle(self, cycle: int) -> pint.Quantity:
+    def duration_of_cycle(self, cycle: int) -> PlainQuantity:
         return sum(self.durations_at_cycle(cycle), 0 * UR.seconds)
 
-    def durations_at_cycle(self, cycle: int) -> list[pint.Quantity]:  # cycle from 1
+    def durations_at_cycle(self, cycle: int) -> list[PlainQuantity]:  # cycle from 1
         "Duration of the step (excluding ramp) at `cycle` (from 1)"
         return [
             self.duration_at_cycle_point(cycle, point)
             for point in range(1, self.repeat + 1)
         ]
 
-    def temperatures_at_cycle_point(
-        self, cycle: int, point: int
-    ) -> pint.Quantity[np.ndarray]:
+    def temperatures_at_cycle_point(self, cycle: int, point: int) -> ArrayQuantity:
         "Temperatures of the step at `cycle` (from 1)"
         inccycles = max(0, cycle + 1 - self.temp_incrementcycle)
         incpoints = max(0, point + 1 - self._machine_temp_incrementpoint)
         return self.temperature_list + (inccycles + incpoints) * self.temp_increment
 
-    def temperatures_at_cycle(self, cycle: int) -> list[pint.Quantity[np.ndarray]]:
+    def temperatures_at_cycle(self, cycle: int) -> list[ArrayQuantity]:
         "Temperatures of the step at `cycle` (from 1)"
         return [
             self.temperatures_at_cycle_point(cycle, point)
@@ -873,7 +884,7 @@ class Step(CustomStep, XMLable):
         raise ValueError
 
     @property
-    def temperature_list(self) -> pint.Quantity[np.ndarray]:
+    def temperature_list(self) -> ArrayQuantity:
         mag = self.temperature.to("degC").magnitude  # FIXME
         if isinstance(mag, np.ndarray):
             return Q_(mag, "degC")
@@ -926,18 +937,29 @@ class Step(CustomStep, XMLable):
         cls, e: ET.Element, *, etc: int = 1, ehtc: int = 1, he: bool = False
     ) -> Step:
         collect = bool(int(e.findtext("CollectionFlag") or 0))
-        ts: pint.Quantity[np.ndarray] = Q_(
+        ts: ArrayQuantity = Q_(
             [float(x.text or math.nan) for x in e.findall("Temperature")], "degC"
         )
-        ht: pint.Quantity[int] = int(e.findtext("HoldTime") or 0) * UR.seconds
-        et: pint.Quantity[float] = (
-            float(e.findtext("ExtTemperature") or 0.0) * UR.delta_degC
-        )
-        eht: pint.Quantity[int] = int(e.findtext("ExtHoldTime") or 0) * UR.seconds
+        ht: IntQuantity = int(e.findtext("HoldTime") or 0) * UR.seconds
+        et: FloatQuantity = float(e.findtext("ExtTemperature") or 0.0) * UR.delta_degC
+        eht: IntQuantity = int(e.findtext("ExtHoldTime") or 0) * UR.seconds
         if not he:
             et = _ZEROTEMPDELTA
             eht = 0 * UR.seconds
-        return Step(ht, ts, collect, et, etc, 1, eht, ehtc, 1, [], True)
+
+        return Step(
+            time=ht,
+            temperature=ts,
+            collect=collect,
+            temp_increment=et,
+            temp_incrementcycle=etc,
+            temp_incrementpoint=1,
+            time_increment=eht,
+            time_incrementcycle=ehtc,
+            time_incrementpoint=1,
+            filters=[],
+            pcr=True,
+        )
 
     def to_xml(self, **kwargs: Any) -> ET.Element:
         assert not kwargs
@@ -968,7 +990,7 @@ class Step(CustomStep, XMLable):
 
         h: Hold | HoldAndCollect
 
-        repeat = sc.opts.get("repeat", 1)
+        repeat = cast(int, sc.opts.get("repeat", 1))  # FIXME: check cast
 
         com_classes = [x.__class__ for x in coms]
         if com_classes == [Ramp, HACFILT, HoldAndCollect]:
@@ -1032,7 +1054,7 @@ class Step(CustomStep, XMLable):
         return cls(**d)
 
 
-def _temp_format(x: pint.Quantity | pint.Quantity[np.ndarray]) -> str:
+def _temp_format(x: PlainQuantity | ArrayQuantity) -> str:
     if isinstance(x.m, np.ndarray):
         if len(set(x.m)) == 1:
             return f"{x.m[0]:.2f}{x.u:~}"
@@ -1088,12 +1110,12 @@ class Stage(XMLable, ProtoCommand):
     @classmethod
     def stepped_ramp(
         cls: Type[Stage],
-        from_temperature: float | str | pint.Quantity[float] | Sequence[float] | None,
-        to_temperature: float | str | pint.Quantity[float] | Sequence[float],
-        total_time: int | str | pint.Quantity[int],
+        from_temperature: float | str | FloatQuantity | Sequence[float],
+        to_temperature: float | str | FloatQuantity | Sequence[float],
+        total_time: int | str | IntQuantity,
         *,
         n_steps: int | None = None,
-        temperature_step: float | str | pint.Quantity[float] | None = None,
+        temperature_step: float | str | FloatQuantity | None = None,
         points_per_step: int = 1,
         collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
@@ -1105,7 +1127,7 @@ class Stage(XMLable, ProtoCommand):
         ----------
         from_temperature
             Initial temperature/s (inclusive).  If None, uses the final temperature of
-            the previous stage.
+            the previous stage (FIXME: None is not currently handled).
         to_temperature
             Final temperature/s (inclusive).
         total_time
@@ -1154,18 +1176,18 @@ class Stage(XMLable, ProtoCommand):
         multistep = False
 
         if hasattr(delta, "shape") and len(delta.shape) > 0:
-            max_delta = delta.max()  # type: pint.Quantity[float]
+            max_delta = delta.max()  # type: FloatQuantity
         else:
             max_delta = delta
 
-        total_time = _wrap_seconds(total_time).to("seconds")
+        total_time = cast(IntQuantity, _wrap_seconds(total_time).to("seconds"))
 
         if n_steps is None:
             if temperature_step is None:
                 temperature_step = Q_(1.0, "delta_degC")
                 autoset_step = True
             else:
-                temperature_step = abs(_wrap_delta_degC(temperature_step))
+                temperature_step = abs(_wrap_delta_degC(temperature_step))  # type: ignore
                 autoset_step = False
 
             n_steps = max(
@@ -1191,7 +1213,7 @@ class Stage(XMLable, ProtoCommand):
                 )
 
         elif temperature_step is not None:
-            temperature_step = abs(_wrap_delta_degC(temperature_step))
+            temperature_step = abs(_wrap_delta_degC(temperature_step))  # type: ignore
             if (
                 abs(round((max_delta / temperature_step).to("").magnitude))
                 + (0 if start_increment else 1)
@@ -1215,7 +1237,7 @@ class Stage(XMLable, ProtoCommand):
             else:
                 temp_increment = temp_increment[0]
 
-        step_time = (total_time / n_steps).round()
+        step_time = cast(IntQuantity, total_time / n_steps).round()
 
         if not multistep:
             return cls(
@@ -1253,8 +1275,8 @@ class Stage(XMLable, ProtoCommand):
     def hold_at(
         cls: Type[Stage],
         temperature: float | str | Sequence[float],
-        total_time: int | str | pint.Quantity[int],
-        step_time: int | str | pint.Quantity[int] | None = None,
+        total_time: int | str | IntQuantity,
+        step_time: int | str | IntQuantity | None = None,
         collect: bool | None = None,
         filters: Sequence[str | FilterSet] = tuple(),
     ) -> Stage:
@@ -1550,7 +1572,7 @@ class Stage(XMLable, ProtoCommand):
         try:
             tot_dur = sum(
                 (x.total_duration(self.repeat) for x in self.steps),
-                Q_(0, UR.seconds),
+                _ZERO_SECONDS,
             )
             stagestr += f" (total duration {_durformat(tot_dur)})"
         except KeyError:
