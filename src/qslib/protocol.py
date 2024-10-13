@@ -442,8 +442,7 @@ class Hold(ProtoCommand):
 
 class XMLable(ABC):
     @abstractmethod
-    def to_xml(self, **kwargs: Any) -> ET.Element:
-        ...
+    def to_xml(self, **kwargs: Any) -> ET.Element: ...
 
 
 G = TypeVar("G")
@@ -456,12 +455,10 @@ class _NumOrRefIndexer(Generic[G]):
         self._list = val_list
 
     @overload
-    def _translate_key(self, key: int | str) -> int:
-        ...
+    def _translate_key(self, key: int | str) -> int: ...
 
     @overload
-    def _translate_key(self, key: slice) -> slice:
-        ...
+    def _translate_key(self, key: slice) -> slice: ...
 
     def _translate_key(self, key: int | str | slice) -> int | slice:
         if isinstance(key, int):
@@ -475,12 +472,10 @@ class _NumOrRefIndexer(Generic[G]):
         return self._list[self._translate_key(key)]
 
     @overload
-    def __setitem__(self, key: int | str, val: G) -> None:
-        ...
+    def __setitem__(self, key: int | str, val: G) -> None: ...
 
     @overload
-    def __setitem__(self, key: slice, val: Sequence[G]) -> None:
-        ...
+    def __setitem__(self, key: slice, val: Sequence[G]) -> None: ...
 
     def __setitem__(self, key, val):
         self._list.__setitem__(self._translate_key(key), val)
@@ -533,8 +528,8 @@ class CustomStep(ProtoCommand, XMLable):
     ) -> IntQuantity:  # cycle from 1
         return Q_(0, "second")
 
-    def temperatures_at_cycle(self, cycle: int) -> ArrayQuantity:
-        return Q_(np.array(6 * [math.nan]), "degC")
+    def temperatures_at_cycle(self, cycle: int) -> list[ArrayQuantity]:
+        return [Q_(np.array(6 * [math.nan]), "degC")]
 
     def temperatures_at_cycle_point(self, cycle: int, point: int) -> ArrayQuantity:
         return Q_(np.array(6 * [math.nan]), "degC")
@@ -1899,9 +1894,9 @@ class Protocol(ProtoCommand):
             " placeholder for the real protocol, contained as"
             " an SCPI command in QSLibProtocolCommand."
         )
-        _set_or_create(
-            qe, "QSLibProtocolCommand"
-        ).text = self.to_scpicommand().to_string()
+        _set_or_create(qe, "QSLibProtocolCommand").text = (
+            self.to_scpicommand().to_string()
+        )
         _set_or_create(qe, "QSLibProtocol").text = str(attr.asdict(self))
         _set_or_create(qe, "QSLibVerson").text = __version__
         _set_or_create(e, "CoverTemperature").text = str(covertemperature)

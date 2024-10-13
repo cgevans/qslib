@@ -41,12 +41,12 @@ certificate, use something like one or more of the following:
 
    # For old firmware versions with plain-text network access
    socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,verify=0 \
-       tcp:$MACHINE_IP_ADDRESS:7000 
+       tcp:$MACHINE_IP_ADDRESS:7000
 
    # For newer firmware versions with SSL network access
    socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,verify=0 \
        openssl:$MACHINE_IP_ADDRESS:7443,openssl-min-proto-version=SSLv3,verify=0
-   socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,verify=0,bind=$SERVER_NETWORK_IP \ 
+   socat openssl-listen:7443,reuseaddr,fork,cert=server.pem,verify=0,bind=$SERVER_NETWORK_IP \
        openssl:$MACHINE_IP_ADDRESS:7443,openssl-min-proto-version=SSLv3,verify=0
 
 To allow access on a *public*, or otherwise untrusted network, you can
@@ -72,8 +72,8 @@ the server certificate, you can also specify ``server_ca_file``.
 .. code:: python
 
    from qslib import Machine
-   m = Machine('qpcr1.example.com', 
-               client_certificate_path='client.pem', 
+   m = Machine('qpcr1.example.com',
+               client_certificate_path='client.pem',
                server_ca_file='ca.pem')
    print(m.machine_status())
 

@@ -62,7 +62,6 @@ from .qs_is_protocol import QS_IOError
 from .version import __version__
 
 if TYPE_CHECKING:  # pragma: no cover
-    import matplotlib.pyplot as plt
     from matplotlib.axes import Axes
     from matplotlib.lines import Line2D
 
@@ -487,8 +486,6 @@ class Experiment:
         summary = self.info(plate="table")
 
         import matplotlib.pyplot as plt
-        from matplotlib.axes import Axes
-        from matplotlib.lines import Line2D
 
         fig, ax = plt.subplots(figsize=(21.0 / 2.54, 15.0 / 2.54))
         self.protocol.plot_protocol(ax)
