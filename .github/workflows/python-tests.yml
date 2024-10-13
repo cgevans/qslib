@@ -39,6 +39,7 @@ jobs:
           python -m pip install --upgrade pip setuptools_scm[toml] wheel setuptools
           python -m pip install --upgrade attrs types-attrs
           python -m pip install flake8 tox mypy
+          python -m pip install .
       - name: Mypy
         run: |
           mypy --cache-dir .mypy_cache --install-types --non-interactive ./src
