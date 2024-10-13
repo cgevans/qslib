@@ -6,7 +6,7 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
-## Development
+## Version 0.12.0
 
 - `Machine.block` command to directly control block temperatures.
 - Certificate support for SSL, and new connection recommendations.

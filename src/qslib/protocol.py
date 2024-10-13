@@ -26,12 +26,12 @@ from typing import (
     Sequence,
     Tuple,
     Type,
-    TypeAlias,
     TypeVar,
     Union,
     cast,
     overload,
 )
+from typing_extensions import TypeAlias
 
 import attr
 import numpy as np
