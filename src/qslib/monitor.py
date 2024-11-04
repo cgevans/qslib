@@ -66,7 +66,8 @@ class MachineConfig:
     password: Union[str, None] = None
     name: str = "localhost"
     host: str = "localhost"
-    port: str | None = None
+    ssl: bool | None = True
+    port: str | int | None = None
     retries: int = 3
     compile: bool = False
 
@@ -667,6 +668,7 @@ class Collector:
                 if self.config.machine.port is not None
                 else None
             ),
+            ssl=self.config.machine.ssl,
             password=self.config.machine.password,
         ) as c:
             log.info("monitor connected")
