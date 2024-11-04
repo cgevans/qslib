@@ -743,17 +743,18 @@ class Collector:
                 await self.monitor(connected_fut=connected_fut)
             except asyncio.exceptions.TimeoutError as e:
                 successive_failures = 0
-                log.warn(f"lost connection with timeout {e}")
+                log.warn(f"lost connection with timeout {e}", exc_info=True)
             except OSError as e:
-                log.error(f"connectio error {e}, retrying")
+                log.error(f"connection error {e}, retrying", exc_info=True)
             except Exception as e:
                 if self.config.machine.retries - successive_failures > 0:
                     log.error(
-                        f"Error {repr(e)}, retrying {self.config.machine.retries-successive_failures} times"  # noqa: E501
+                        f"Error {repr(e)}\nRetrying {self.config.machine.retries-successive_failures} times",
+                        exc_info=True
                     )
                     successive_failures += 1
                 else:
-                    log.critical(f"giving up, error {e}")
+                    log.critical(f"giving up, error {e}", exc_info=True)
                     restart = False
             log.debug("awaiting retry")
             await asyncio.sleep(30)
