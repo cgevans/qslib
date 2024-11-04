@@ -757,6 +757,18 @@ class Collector:
                     successive_failures += 1
                 else:
                     log.critical(f"giving up, error {e}", exc_info=True)
+                    if self.matrix_client and self.matrix_config:
+                        try:
+                            await self.matrix_client.room_send(
+                                room_id=self.matrix_config.room,
+                                message_type="m.room.message",
+                                content={
+                                    "msgtype": "m.text",
+                                    "body": f"Unrecoverable error in QS monitoring (tried 3 times), giving up: {e}, {e.__traceback__}"
+                                }
+                            )
+                        except Exception as matrix_e:
+                            log.error(f"Failed to send Matrix message: {matrix_e}")
                     restart = False
             log.debug("awaiting retry")
             await asyncio.sleep(30)
