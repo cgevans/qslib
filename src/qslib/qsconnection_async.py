@@ -197,8 +197,10 @@ class QSConnectionAsync:
 
         results = [r for r in expfiles if r["path"] == run_name]
 
-        if len(results) != 1:
-            raise ValueError
+        if len(results) == 0:
+            raise FileNotFoundError(run_name)
+        elif len(results) > 1:
+            raise ValueError(f"Multiple runs with name {run_name}: {results}")
         res = results[0]
 
         if "run" not in res:
