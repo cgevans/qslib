@@ -6,6 +6,13 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Version 0.13.0
+
+- Add `PlateSetup.from_picklist` method to generate a PlateSetup from a Kithairon PickList, if Kithairon is installed.
+- Improve ssl support for monitor.
+- Have monitor complain to matrix if it exits unexpectedly.
+- Fix compile_eds when there is no folder to compile (if, eg, something else has already compiled the EDS).
+
 ## Version 0.12.0
 
 - `Machine.block` command to directly control block temperatures.
