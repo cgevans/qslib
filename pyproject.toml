@@ -12,9 +12,6 @@ version_scheme = "no-guess-dev"
 [tool.setuptools.packages.find]
 where = ["src"]
 
-[tool.pdm]
-version = { use_scm = true }
-
 [tool.isort]
 profile = "black"
 
