@@ -21,6 +21,7 @@ from typing import (
     Sequence,
     Tuple,
     Union,
+    TYPE_CHECKING
 )
 from uuid import uuid1
 
@@ -28,6 +29,10 @@ import attrs
 import numpy as np
 import pandas as pd
 import tabulate
+
+if TYPE_CHECKING:
+    from kithairon import PickList, Labware
+    from typing import Self
 
 from .qsconnection_async import QSConnectionAsync
 
@@ -378,3 +383,89 @@ class PlateSetup:
             return str(self)
         else:
             return self.to_table(tablefmt="pipe")
+
+    @classmethod
+    def from_picklist(cls, picklist: 'PickList' | str, plate_name: str | None = None, labware: 'Labware' | None = None) -> 'Self':
+        """Create a PlateSetup from a Kithairon PickList.
+
+        Parameters
+        ----------
+        picklist: PickList or str
+            The picklist to read.  If a string, it is treated as a path to a CSV picklist.
+        plate_name: str or None
+            The destination plate that the PlateSetup is for.  If None, and there is only one destination plate, that one is used.  If there are multiple destination plates, the user must specify one.
+        labware: Labware or None
+            The Kithairon labware to use.  If None, the default labware is used.
+
+        Raises
+        ------
+        ValueError
+            If:
+            - There is more than one destination plate and no plate_name is specified.
+            - There are multiple sample names in a single well.
+            - The destination plate is not a destination plate type in the Labware.
+            - The destination plate shape is not 96 or 384 (taken from Labware)
+        """
+        try:
+            import polars as pl
+        except ImportError:
+            raise ValueError("Polars is required to use this method")
+        try:
+            import kithairon as kt
+        except ImportError:
+            raise ValueError("Kithairon is required to use this method")
+
+        if isinstance(picklist, str):
+            picklist = kt.PickList.read_csv(picklist)
+
+        destplates = picklist.data.select("Destination Plate Name", "Destination Plate Type").unique()
+
+        if plate_name is None:
+            if len(destplates) > 1:
+                raise ValueError("Multiple destination plates found; please specify one: " + ", ".join(destplates["Destination Plate Name"].to_list()))
+            plate_name = destplates["Destination Plate Name"][0]
+            plate_type = destplates["Destination Plate Type"][0]
+        else:
+            if plate_name not in destplates["Destination Plate Name"].to_list():
+                raise ValueError(f"Destination plate {plate_name} not a destination.  Destinations are: " + ", ".join(destplates["Destination Plate Name"].to_list()))
+            plate_type = destplates.filter(pl.col("Destination Plate Name") == plate_name)["Destination Plate Type"][0]
+
+        if labware is None:
+            lw = kt.labware.get_default_labware()
+        else:
+            lw = labware
+
+        try:
+            plate = lw[plate_type]
+        except KeyError:
+            raise ValueError(f"Labware does not have a plate type {plate_type}")
+
+        if plate.shape == (8, 12):
+            plate_type = 96
+        elif plate.shape == (16, 24):
+            plate_type = 384
+        else:
+            raise ValueError(f"Plate shape {plate.shape} not supported")
+        
+        if plate.usage != "DEST":
+            raise ValueError(f"Plate {plate_name} is not a destination plate type")
+        
+        plate = picklist.data.filter(pl.col("Destination Plate Name") == plate_name)
+        
+        u = pl.col("Destination Sample Name").unique()
+        sample_names = plate.group_by("Destination Well").agg(
+            u.alias("sample_names"), u.len().alias("n_sample_names")
+        )
+
+        errs = sample_names.filter(pl.col("n_sample_names") > 1).sort("Destination Well")
+        if not errs.is_empty():
+            errstring = ", ".join(f"{r['Destination Well']}: {r['sample_names']}" for r in errs.iter_rows(named=True))
+            raise ValueError(f"Multiple sample names found in well(s): {errstring}")
+
+        return cls(
+            samples=[
+                Sample(r["sample_names"][0], wells=r["Destination Well"])
+                for r in sample_names.iter_rows(named=True)
+            ],
+            plate_type=plate_type
+        )
