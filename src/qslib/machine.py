@@ -338,9 +338,17 @@ class Machine:
         leaf: str = "FILE",
         verbose: Literal[False] = False,
         recursive: bool = False,
+    ) -> list[str]: ...
+
+    @overload
+    def list_files(
+        self,
+        path: str,
+        *,
+        leaf: str = "FILE",
+        verbose: bool = False,
+        recursive: bool = False,
     ) -> list[str] | list[FileListInfo]: ...
-
-
 
     @_ensure_connection(AccessLevel.Observer)
     def list_files(
@@ -394,8 +402,19 @@ class Machine:
             + b"\n</quote.base64>"
         )
 
+    @overload
+    def list_runs_in_storage(self, glob: str = "*", *, verbose: Literal[True]) -> list[FileListInfo]: ...
+
+    @overload
+    def list_runs_in_storage(self, glob: str = "*", *, verbose: Literal[False] = False) -> list[str]: ...
+
+    @overload
+    def list_runs_in_storage(self, glob: str = "*", *, verbose: bool = False) -> list[str] | list[FileListInfo]: ...
+
     @_ensure_connection(AccessLevel.Observer)
-    def list_runs_in_storage(self, glob: str = "*", verbose: bool = False) -> list[str]:
+    def list_runs_in_storage(
+        self, glob: str = "*", *, verbose: bool = False
+    ) -> list[str] | list[FileListInfo]:
         """List runs in machine storage.
 
         Returns
@@ -407,12 +426,13 @@ class Machine:
         """
         if not glob.endswith("eds"):
             glob = f"{glob}eds"
-        a = self.list_files(f"public_run_complete:{glob}", verbose=verbose)
         if not verbose:
             return [
-                re.sub("^public_run_complete:", "", s)[:-4] for s in a
+                re.sub("^public_run_complete:", "", s)[:-4]
+                for s in self.list_files(f"public_run_complete:{glob}", verbose=False)
             ]
         else:
+            a = self.list_files(f"public_run_complete:{glob}", verbose=True)
             for e in a:
                 e["path"] = re.sub("^public_run_complete:", "", e["path"])[:-4]
             return a

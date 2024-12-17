@@ -24,7 +24,7 @@ from . import data
 from .qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
 from .scpi_commands import AccessLevel, ArgList, SCPICommand
 
-class FileListInfo(TypedDict):
+class FileListInfo(TypedDict, total=False):
     """Information about a file when verbose=True"""
     path: str
     type: str
@@ -32,6 +32,8 @@ class FileListInfo(TypedDict):
     mtime: datetime
     atime: datetime
     ctime: datetime
+    state: str
+    collected: bool
 
 log = logging.getLogger(__name__)
 
@@ -180,8 +182,8 @@ class QSConnectionAsync:
                 )
                 if rm is None:
                     ag = ArgList.from_string(x)
-                    d: dict[str, str | float | int] = {}
-                    d["path"] = ag.args[0]
+                    d: dict[str, Any] = {}
+                    d["path"] = cast(str, ag.args[0])
                     d |= ag.opts
                 else:
                     d = {}
@@ -196,7 +198,7 @@ class QSConnectionAsync:
                         cast(str, d["path"]), leaf=leaf, verbose=True, recursive=True
                     )
                 else:
-                    ret.append(d)
+                    ret.append(cast(FileListInfo, d))
             return ret
 
     async def compile_eds(self, run_name: str) -> None:

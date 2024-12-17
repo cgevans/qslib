@@ -32,7 +32,7 @@ import tabulate
 
 if TYPE_CHECKING:
     from kithairon import PickList, Labware
-    from typing import Self
+    from typing_extensions import Self
 
 from .qsconnection_async import QSConnectionAsync
 

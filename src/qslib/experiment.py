@@ -831,7 +831,7 @@ table, th, td {{
                 )
                 log.debug(f"checking {f['path']} mtime {f['mtime']} to {sdspath}")
                 if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(
-                    f["mtime"]
+                    f["mtime"].timestamp()
                 ):
                     log.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
                     continue
@@ -878,7 +878,7 @@ table, th, td {{
                                 b.write(machine.read_file(f["path"]))
                 else:
                     raise NotImplementedError
-                os.utime(sdspath, (f["atime"], f["mtime"]))
+                os.utime(sdspath, (f["atime"].timestamp(), f["mtime"].timestamp()))
 
             # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
             self._update_from_files()
