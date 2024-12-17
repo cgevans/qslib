@@ -372,7 +372,7 @@ def copy(
 @click.option("-f", "--force/--no-force", default=False, help="Overwrite existing files")
 @click.option("-q", "--quiet/--no-quiet", default=False, help="Suppress output messages")
 @click.option("-o", "--output-dir", type=click.Path(), help="Output directory for saved files")
-def get_eds(path: tuple[str, ...], regex: bool, force: bool, quiet: bool, output_dir: str | None) -> None:
+def get_eds(path: tuple[str, ...], force: bool, quiet: bool, output_dir: str | None) -> None:
     """Get all experiments matching a name from the machine.
     
     Each argument should be of the form machine:name, where machine is the machine address
@@ -392,7 +392,11 @@ def get_eds(path: tuple[str, ...], regex: bool, force: bool, quiet: bool, output
             continue
 
         m = Machine(machine, max_access_level="Observer")
-        runs = m.list_runs_in_storage(name)
+        try:
+            runs = m.list_runs_in_storage(name)
+        except NoMatch:
+            click.echo(f"No runs found matching {name} on {machine}", err=True)
+            continue
 
         for r in runs:
             click.echo(f"Getting {r} from {machine}: ", nl=False)
