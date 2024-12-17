@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime
 import logging
 import re
 import zipfile
@@ -13,7 +14,7 @@ from asyncio.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
-from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload
+from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload, TypedDict
 
 import nest_asyncio
 
@@ -22,13 +23,14 @@ from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from ._util import _unwrap_tags
 from .protocol import Protocol
-from .qsconnection_async import QSConnectionAsync
+from .qsconnection_async import FileListInfo, QSConnectionAsync
 
 nest_asyncio.apply()
 
 from .base import MachineStatus, RunStatus  # noqa: E402
 
 log = logging.getLogger(__name__)
+
 
 if TYPE_CHECKING:  # pragma: no cover
     import matplotlib.pyplot as plt  # noqa: F401
@@ -326,7 +328,7 @@ class Machine:
         leaf: str = "FILE",
         verbose: Literal[True],
         recursive: bool = False,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[FileListInfo]: ...
 
     @overload
     def list_files(
@@ -336,7 +338,9 @@ class Machine:
         leaf: str = "FILE",
         verbose: Literal[False] = False,
         recursive: bool = False,
-    ) -> list[str]: ...
+    ) -> list[str] | list[FileListInfo]: ...
+
+
 
     @_ensure_connection(AccessLevel.Observer)
     def list_files(
@@ -346,7 +350,7 @@ class Machine:
         leaf: str = "FILE",
         verbose: bool = False,
         recursive: bool = False,
-    ) -> list[str] | list[dict[str, Any]]:
+    ) -> list[str] | list[FileListInfo]:
         loop = asyncio.get_event_loop()
         return loop.run_until_complete(
             self.connection.list_files(
@@ -391,7 +395,7 @@ class Machine:
         )
 
     @_ensure_connection(AccessLevel.Observer)
-    def list_runs_in_storage(self) -> list[str]:
+    def list_runs_in_storage(self, glob: str = "*", verbose: bool = False) -> list[str]:
         """List runs in machine storage.
 
         Returns
@@ -401,11 +405,17 @@ class Machine:
             (to open as :any`Experiment`) or save_run_from_storage
             (to download and save it without opening.)
         """
-        x = self.run_command("FILE:LIST? public_run_complete:")
-        a = x.split("\n")[1:-1]
-        return [
-            re.sub("^public_run_complete:", "", s)[:-4] for s in a if s.endswith(".eds")
-        ]
+        if not glob.endswith("eds"):
+            glob = f"{glob}eds"
+        a = self.list_files(f"public_run_complete:{glob}", verbose=verbose)
+        if not verbose:
+            return [
+                re.sub("^public_run_complete:", "", s)[:-4] for s in a
+            ]
+        else:
+            for e in a:
+                e["path"] = re.sub("^public_run_complete:", "", e["path"])[:-4]
+            return a
 
     @_ensure_connection(AccessLevel.Observer)
     def load_run_from_storage(self, path: str) -> "Experiment":  # type: ignore

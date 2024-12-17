@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from datetime import datetime
 import hmac
 import io
 import logging
@@ -15,13 +16,22 @@ import ssl
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
-from typing import Any, Dict, List, Literal, Optional, Union, cast, overload
+from typing import Any, Dict, List, Literal, Optional, Union, cast, overload, TypedDict
 
 import pandas as pd
 
 from . import data
 from .qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
 from .scpi_commands import AccessLevel, ArgList, SCPICommand
+
+class FileListInfo(TypedDict):
+    """Information about a file when verbose=True"""
+    path: str
+    type: str
+    size: int
+    mtime: datetime
+    atime: datetime
+    ctime: datetime
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +134,7 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: Literal[True],
         recursive: bool = False,
-    ) -> list[dict[str, Any]]: ...
+    ) -> list[FileListInfo]: ...
 
     @overload
     async def list_files(
@@ -144,7 +154,7 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: bool = False,
         recursive: bool = False,
-    ) -> list[str] | list[dict[str, Any]]: ...
+    ) -> list[str] | list[FileListInfo]: ...
 
     async def list_files(
         self,
@@ -153,7 +163,7 @@ class QSConnectionAsync:
         leaf: str = "FILE",
         verbose: bool = False,
         recursive: bool = False,
-    ) -> list[str] | list[dict[str, Any]]:
+    ) -> list[str] | list[FileListInfo]:
         if not verbose:
             if recursive:
                 raise NotImplementedError
@@ -162,7 +172,7 @@ class QSConnectionAsync:
             v = (await self.run_command(f"{leaf}:LIST? -verbose {path}")).split("\n")[
                 1:-1
             ]
-            ret: list[dict[str, str | float | int]] = []
+            ret: list[FileListInfo] = []
             for x in v:
                 rm = re.match(
                     r'"([^"]+)" -type=(\S+) -size=(\S+) -mtime=(\S+) -atime=(\S+) -ctime=(\S+)$',
@@ -178,9 +188,9 @@ class QSConnectionAsync:
                     d["path"] = rm.group(1)
                     d["type"] = rm.group(2)
                     d["size"] = int(rm.group(3))
-                    d["mtime"] = float(rm.group(4))
-                    d["atime"] = float(rm.group(5))
-                    d["ctime"] = float(rm.group(6))
+                    d["mtime"] = datetime.fromtimestamp(float(rm.group(4)))
+                    d["atime"] = datetime.fromtimestamp(float(rm.group(5)))
+                    d["ctime"] = datetime.fromtimestamp(float(rm.group(6)))
                 if d["type"] == "folder" and recursive:
                     ret += await self.list_files(
                         cast(str, d["path"]), leaf=leaf, verbose=True, recursive=True

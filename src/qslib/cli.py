@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import click
+from click_aliases import ClickAliasedGroup
 
 from qslib.common import Experiment, Machine
 from qslib.qs_is_protocol import (
@@ -16,11 +17,14 @@ from qslib.qs_is_protocol import (
     AuthError,
     CommandError,
     InsufficientAccess,
+    NoMatch,
 )
 from qslib.scpi_commands import AccessLevel
+from .version import __version__
 
 
-@click.group()
+@click.group(cls=ClickAliasedGroup)
+@click.version_option(__version__, "--version", "-V")
 def cli():
     pass
 
@@ -278,20 +282,68 @@ def machine_status(machine: str) -> None:
 
     del m
 
+@cli.command(name="list-stored")
+@click.argument("machine_path", nargs=-1)
+@click.option("-v", "--verbose", is_flag=True, help="Show detailed file information")
+@click.option("-s", "--sort", type=click.Choice(['name', 'time', 'size', 'created']), default='name',
+              help="Sort by name, modification time, creation time, or file size")
+@click.option("-r", "--reverse", is_flag=True, help="Reverse the sort order")
+@click.option("-U", "--created", is_flag=True, help="Use creation time instead of modification time")
+def list_stored(machine_path: tuple[str, ...], verbose: bool, sort: str, reverse: bool, created: bool) -> None:
+    """List experiments stored on a machine.
+    
+    MACHINE_PATH can be either just a machine name/address, or machine:pattern where
+    pattern is used to filter results using shell-style wildcards (*, ?, etc)."""
+    
+    for mp in machine_path:
+        if mp.startswith("["):
+            # Handle IPv6 address in brackets
+            closing_bracket = mp.find("]")
+            if closing_bracket == -1:
+                raise click.UsageError("Missing closing bracket for IPv6 address")
+        
+            machine = mp[1:closing_bracket]
+            if len(mp) > closing_bracket + 1:
+                if mp[closing_bracket + 1] != ":":
+                    raise click.UsageError("Expected ':' after IPv6 address")
+                pattern = mp[closing_bracket + 2:]
+            else:
+                pattern = "*"
+        elif ":" in mp:
+            machine, pattern = mp.split(":", 1)
+        else:
+            machine = mp
+            pattern = "*"
 
-@cli.command()
-@click.argument("machine")
-def list_stored(machine: str) -> None:
-    """List experiments stored on a machine."""
-    m = Machine(
-        machine,
-        max_access_level="Observer",
-    )
+        m = Machine(
+            machine,
+            max_access_level="Observer",
+        )
 
-    with m:
-        for f in m.list_runs_in_storage():
-            click.echo(f)
-
+        with m:
+            if len(machine_path) > 1:
+                click.echo(f"{machine}:")
+            try:
+                files = m.list_runs_in_storage(pattern, verbose=True)
+                
+                # Sort the files according to the specified criteria
+                if sort == 'name':
+                    files.sort(key=lambda x: x['path'], reverse=reverse)
+                elif sort == 'time':
+                    files.sort(key=lambda x: x['mtime'] if not created else x['ctime'], reverse=reverse)
+                elif sort == 'size':
+                    files.sort(key=lambda x: x['size'], reverse=reverse)
+                    
+            except NoMatch:
+                click.echo(f"No runs found matching {pattern}")
+                continue
+            for f in files:
+                if verbose:
+                    size_str = f"{f['size']/1000/1000:.1f}M" if f['size'] > 1000*1000 else f"{f['size']/1000:.1f}k"
+                    time_str = f['ctime'].strftime("%Y-%m-%d %H:%M") if created else f['mtime'].strftime("%Y-%m-%d %H:%M")
+                    click.echo(f"{size_str:>8}  {time_str}  {f['path']}")
+                else:
+                    click.echo(f['path'])
 
 @cli.command()
 @click.argument("machine")
@@ -315,6 +367,48 @@ def copy(
         exp = Experiment.from_machine(m, experiment)
         exp.save_file(output, update_files=False)
 
+@cli.command()
+@click.argument("path", nargs=-1)
+@click.option("-f", "--force/--no-force", default=False, help="Overwrite existing files")
+@click.option("-q", "--quiet/--no-quiet", default=False, help="Suppress output messages")
+@click.option("-o", "--output-dir", type=click.Path(), help="Output directory for saved files")
+def get_eds(path: tuple[str, ...], regex: bool, force: bool, quiet: bool, output_dir: str | None) -> None:
+    """Get all experiments matching a name from the machine.
+    
+    Each argument should be of the form machine:name, where machine is the machine address
+    and name is the glob pattern to match experiment names against.
+    """
+    if output_dir is not None:
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+    else:
+        output_path = Path(".")
+
+    for machine_name in path:
+        try:
+            machine, name = machine_name.split(":", 1)
+        except ValueError:
+            click.echo(f"Error: argument '{machine_name}' must be in format 'machine:name'", err=True)
+            continue
+
+        m = Machine(machine, max_access_level="Observer")
+        runs = m.list_runs_in_storage(name)
+
+        for r in runs:
+            click.echo(f"Getting {r} from {machine}: ", nl=False)
+            exp = Experiment.from_machine(m, r)
+
+            oname = exp.runtitle_safe
+
+            output_file = output_path / (oname + ".eds")
+            if not force and output_file.exists():
+                if not quiet:
+                    click.echo(f"skipping, {output_file} already exists")
+                continue
+                
+            if not quiet:
+                click.echo(f"saving to {output_file}")
+            exp.save_file(output_file, update_files=False)
 
 @dataclass
 class OutP:

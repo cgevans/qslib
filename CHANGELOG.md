@@ -6,6 +6,12 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Version 0.14.0
+
+- Improve cli commands, in particular, `list-stored` and `get-eds`.
+- Add more parsing and typing to `Machine.list_runs_in_storage` and `Machine.list_files` (breaking change if relying on atime/mtime/ctime being floats instead of datetime objects).
+- Use setuptools_scm to write version number.
+
 ## Version 0.13.0
 
 - Add `PlateSetup.from_picklist` method to generate a PlateSetup from a Kithairon PickList, if Kithairon is installed.

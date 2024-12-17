@@ -8,6 +8,8 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools_scm]
 version_scheme = "no-guess-dev"
+version_file = "src/qslib/version.py"
+
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -50,6 +52,7 @@ dependencies = [
     "typeguard >= 2",
     "nest_asyncio >= 1.5",
     "click >=8.0,<9.0",
+    "click-aliases",
     "typing-extensions >= 4",
     "toml",
     "pint",
