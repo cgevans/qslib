@@ -125,3 +125,27 @@ def test_plots(exp: Experiment) -> None:
 # rawquant has been removed
 # def test_rawquant(exp: Experiment) -> None:
 #     exp.rawdata.loc[:, :]
+
+
+def test_save_file_with_dots(exp: Experiment, tmp_path_factory: pytest.TempPathFactory) -> None: # test for issue #33
+    tmp_path = tmp_path_factory.mktemp("exp")
+    
+    # Create a new experiment with dots in the name
+    exp.name = "test.with.dots"
+    exp.save_file(tmp_path)
+    
+    # Check that the file was saved with correct name
+    saved_file = tmp_path / "test.with.dots.eds"
+    assert saved_file.exists()
+    
+    # Load the file back to verify it's valid
+    loaded_exp = Experiment.from_file(saved_file)
+    assert loaded_exp.name == "test.with.dots"
+
+    # Now try with dots and spaces in the name; the spaces should be converted to underscores
+    exp.name = "test.with.dots and spaces"
+    exp.save_file(tmp_path)
+    
+    # Check that the file was saved with correct name
+    saved_file = tmp_path / "test.with.dots_and_spaces.eds"
+    assert saved_file.exists()

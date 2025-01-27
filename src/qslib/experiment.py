@@ -1042,33 +1042,13 @@ table, th, td {{
         else:
             path = Path(path_or_stream)
             if path.is_dir():
-                path = (path / self.runtitle_safe).with_suffix(".eds")
+                path = (path / (self.runtitle_safe + ".eds"))
 
         with zipfile.ZipFile(path, mode) as z:
             for root, _, files in os.walk(self._dir_base):
                 for file in files:
                     fpath = os.path.join(root, file)
                     z.write(fpath, os.path.relpath(fpath, self._dir_base))
-
-    # def save_file_without_changes(
-    #     self, path: str | os.PathLike[str] | IO[bytes], overwrite: bool = False
-    # ) -> None:
-    #     """
-    #     Save an EDS file of the experiment. Unlike :any:`save_file`, this will not
-    #     update any parts of the file, so if it has not been modified elsewhere,
-    #     it will be the same as when it was loaded. By default, this will refuse to
-    #     overwrite an existing file.
-
-    #     Parameters
-    #     ----------
-    #     path_or_stream : str or os.PathLike[str] or IO[bytes]
-    #         A filename, open binary IO, or directory.  If a directory, the file will
-    #         be saved with the name from `Experiment.runtitle_safe`.
-    #     overwrite : bool, optional
-    #         If True, overwrite any existing file without warning. Defaults to False.
-    #     """
-
-    #     return self.save_file(path, overwrite, update_files=False)
 
     @property
     def sample_wells(self) -> _SampleWellsView:
