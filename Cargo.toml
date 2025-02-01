@@ -1,0 +1,28 @@
+[package]
+name = "qslib-rs"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+name = "qslib_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+enum_dispatch = "0.3.13"
+indexmap = "2.7.1"
+log = "0.4.25"
+pyo3 = { version = "0.23.3", optional = true, features = ["extension-module"] }
+pyo3-async-runtimes = { version = "0.23.0", optional = true, features = ["tokio-runtime"] }
+regex = "1.11.1"
+rustls = "0.23.20"
+rustls-pki-types = "1.10.1"
+thiserror = "2.0.9"
+tokio = { version = "1.42.0", features = ["net", "sync", "rt", "io-util", "macros"] }
+tokio-rustls = "0.26.1"
+winnow = "0.6.22"
+
+[features]
+debug = ["winnow/debug"]
+python = ["pyo3", "pyo3-async-runtimes"]
+# default = ["python"]
