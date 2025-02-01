@@ -30,11 +30,12 @@ import numpy as np
 import pandas as pd
 import tabulate
 
+
 if TYPE_CHECKING:
+    from qslib.machine import Machine
     from kithairon import PickList, Labware
     from typing_extensions import Self
 
-from .qsconnection_async import QSConnectionAsync
 
 _ROWALPHAS = "ABCDEFGHIJKLMNOP"
 _ROWALPHAS_96 = "ABCDEFGH"
@@ -360,10 +361,10 @@ class PlateSetup:
                     samplemap.remove(e)
 
     @classmethod
-    async def from_machine(
-        cls, c: QSConnectionAsync, runtitle: Optional[str] = None
+    def from_machine(
+        cls, c: Machine, runtitle: str | None = None
     ) -> PlateSetup:
-        s = await c.get_sds_file("plate_setup.xml", runtitle=runtitle)
+        s = c.get_sds_file("plate_setup.xml", runtitle=runtitle)
         x = ET.parse(BytesIO(s), parser=None)
         return cls.from_platesetup_xml(x.getroot())
 
