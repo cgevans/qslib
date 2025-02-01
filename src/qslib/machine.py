@@ -14,21 +14,93 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload
-
+from datetime import datetime
+from typing import TypedDict
 from qslib_rs import QSConnection
+import io
+from .data import FilterSet, FilterDataReading, df_from_readings
 
-import nest_asyncio
 
-from qslib.qs_is_protocol import CommandError
-from qslib.scpi_commands import AccessLevel, SCPICommand
+from qslib.qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
+from qslib.scpi_commands import AccessLevel, SCPICommand, ArgList
 
 from ._util import _unwrap_tags
 from .protocol import Protocol
-from .qsconnection_async import FileListInfo, QSConnectionAsync
-
-nest_asyncio.apply()
 
 from .base import MachineStatus, RunStatus  # noqa: E402
+
+class FileListInfo(TypedDict, total=False):
+    """Information about a file when verbose=True"""
+    path: str
+    type: str
+    size: int
+    mtime: datetime
+    atime: datetime
+    ctime: datetime
+    state: str
+    collected: bool
+
+
+def _gen_auth_response(password: str, challenge_string: str) -> str:
+    import hmac
+    return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
+
+
+def _parse_argstring(argstring: str) -> dict[str, str]:
+    unparsed = argstring.split()
+
+    args: dict[str, str] = dict()
+    # FIXME: do quotes allow spaces?
+    for u in unparsed:
+        m = re.match("-([^=]+)=(.*)$", u)
+        if m is None:
+            raise ValueError(f"Can't parse {u} in argstring.", u)
+        args[m[1]] = m[2]
+
+    return args
+
+
+class AlreadyCollectedError(Exception): ...
+
+
+class RunNotFinishedError(Exception): ...
+
+
+@dataclass(frozen=True, order=True, eq=True)
+class FilterDataFilename:
+    filterset: FilterSet
+    stage: int
+    cycle: int
+    step: int
+    point: int
+
+    @classmethod
+    def fromstring(cls, x: str) -> FilterDataFilename:
+        s = re.search(r"S(\d+)_C(\d+)_T(\d+)_P(\d+)_M(\d)_X(\d)_filterdata.xml$", x)
+        if s is None:
+            raise ValueError
+        return cls(
+            FilterSet.fromstring(f"x{s[6]}-m{s[5]}"),
+            int(s[1]),
+            int(s[2]),
+            int(s[3]),
+            int(s[4]),
+        )
+
+    def tostring(self) -> str:
+        return (
+            f"S{self.stage:02}_C{self.cycle:03}_T{self.step:02}_P{self.point:04}"
+            f"_M{self.filterset.em}_X{self.filterset.ex}_filterdata.xml"
+        )
+
+    def is_same_point(self, other: FilterDataFilename) -> bool:
+        return (
+            (self.stage == other.stage)
+            and (self.cycle == other.cycle)
+            and (self.step == other.step)
+            and (self.point == other.point)
+        )
+
 
 log = logging.getLogger(__name__)
 
@@ -253,9 +325,7 @@ class Machine:
             raise ConnectionError(f"Not connected to {self.host}")
         loop = asyncio.get_event_loop()
         try:
-            return loop.run_until_complete(
-                self.connection.run_command(command, just_ack=True)
-            )
+            return self.connection.run_command(command).get_ack()
         except CommandError as e:
             e.__traceback__ = None
             raise e
@@ -316,8 +386,14 @@ class Machine:
         zipfile.ZipFile
             the returned zip file
         """
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.connection.read_dir_as_zip(path, leaf))
+
+        if (path[0] != '"') and (path[-1] != '"'):
+            path = '"' + path + '"'
+
+        x = self.run_command_to_bytes(f"{leaf}:ZIPREAD? {path}")
+
+        return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-8])))
+
 
     @overload
     def list_files(
@@ -395,7 +471,7 @@ class Machine:
 
     @_ensure_connection(AccessLevel.Observer)
     def read_file(
-        self, path: str, context: str | None = None, leaf: str = "FILE"
+        self, path: str, context: str | None = None, leaf: str = "FILE", encoding: Literal["base64", "plain"] = "base64"
     ) -> bytes:
         """Read a file.
 
@@ -412,9 +488,22 @@ class Machine:
         bytes
             returned file
         """
-        return asyncio.get_event_loop().run_until_complete(
-            self.connection.read_file(path, context, leaf)
+        if not context:
+            contexts = ""
+        elif context[-1] == ":":
+            contexts = context
+        else:
+            contexts = context + ":"
+        reply = self.run_command_to_bytes(
+            SCPICommand(f"{leaf}:READ?", contexts + path, encoding=encoding)
         )
+        assert reply.startswith(b"<quote>\n")
+        assert reply.endswith(b"</quote>")
+        r = reply[8:-8]
+        if encoding == "base64":
+            return base64.decodebytes(r)
+        else:
+            return r
 
     @_ensure_connection(AccessLevel.Controller)
     def write_file(self, path: str, data: str | bytes) -> None:
@@ -580,6 +669,13 @@ class Machine:
         level = AccessLevel(m[3])
         self._current_access_level = level
         return level, m[2] == "True", m[1] == "True"
+
+    def authenticate(self, password: str) -> None:
+        challenge_key = self.run_command(SCPICommand("CHAL?"))
+        auth_rep = _gen_auth_response(password, challenge_key)
+        self.run_command(SCPICommand("AUTH", auth_rep))
+    
+
 
     @property
     def access_level(self) -> AccessLevel:
@@ -805,3 +901,165 @@ class Machine:
                 self.set_access_level(old_access)
         else:
             yield self
+
+    @_ensure_connection(AccessLevel.Controller)
+    def compile_eds(self, run_name: str) -> None:
+        """Take a finished run directory in experiments:, compile it into an EDS, and move it to
+        public_run_complete:"""
+
+        expfiles = self.list_files("", leaf="experiment", verbose=True)
+
+        results = [r for r in expfiles if r["path"] == run_name]
+
+        if len(results) == 0:
+            raise FileNotFoundError(run_name)
+        elif len(results) > 1:
+            raise ValueError(f"Multiple runs with name {run_name}: {results}")
+        res = results[0]
+
+        if "run" not in res:
+            raise FileNotFoundError(res)
+
+        if res["state"] not in ["Completed", "Terminated"]:
+            raise RunNotFinishedError(res)
+
+        if ("collected" in res) and (res["collected"]):
+            raise AlreadyCollectedError(res)
+
+        self.run_command(
+            f'exp:run -asynchronous <block> zip "{run_name}.eds" "{run_name}" </block>'
+        )
+
+        self.run_command(
+            f'file:move "experiments:{run_name}.eds" "public_run_complete:{run_name}.eds"'
+        )
+
+        self.run_command(f'exp:attr= "{run_name}" collected True')
+
+    def get_exp_file(
+        self, path: str, encoding: Literal["plain", "base64"] = "base64"
+    ) -> bytes:
+        reply = self.run_command_to_bytes(
+            f"EXP:READ? -encoding={encoding} {shlex.quote(path)}"
+        )
+        assert reply.startswith(b"<quote>\n")
+        assert reply.endswith(b"</quote>")
+        r = reply[8:-8]
+        if encoding == "base64":
+            return base64.decodebytes(r)
+        else:
+            return r
+
+    def get_sds_file(
+        self,
+        path: str,
+        runtitle: str | None = None,
+        encoding: Literal["base64", "plain"] = "base64",
+    ) -> bytes:
+        if runtitle is None:
+            runtitle = self.get_run_title()
+        return self.get_exp_file(f"{runtitle}/apldbio/sds/{path}", encoding)
+
+    def get_run_start_time(self) -> float:
+        return float(self.run_command("RET ${RunStartTime:--}"))
+
+    @overload
+    def get_filterdata_one(
+        self,
+        ref: FilterDataFilename,
+        *,
+        run: str | None = None,
+        return_files: Literal[True],
+    ) -> tuple[FilterDataReading, list[tuple[str, bytes]]]: ...
+
+    @overload
+    def get_filterdata_one(
+        self,
+        ref: FilterDataFilename,
+        *,
+        run: str | None = None,
+        return_files: bool = False,
+    ) -> FilterDataReading: ...
+
+    def get_filterdata_one(
+        self,
+        ref: FilterDataFilename,
+        *,
+        run: str | None = None,
+        return_files: bool = False,
+    ) -> (
+        FilterDataReading | tuple[FilterDataReading, list[tuple[str, bytes]]]
+    ):
+        if run is None:
+            run = self.get_run_title()
+
+        fl = self.get_exp_file(f"{run}/apldbio/sds/filter/" + ref.tostring())
+
+        if (x := ET.parse(io.BytesIO(fl)).find("PlatePointData/PlateData")) is not None:
+            f = FilterDataReading(x)
+        else:
+            raise ValueError("PlateData not found")
+
+        ql = (
+            self.get_expfile_list(
+                f"{run}/apldbio/sds/quant/{f.filename_reading_string}_E*.quant"
+            )
+        )[-1]
+        qf = self.get_exp_file(ql)
+
+        f.set_timestamp_by_quantdata(qf.decode())
+
+        if return_files:
+            files = [("filter/" + ref.tostring(), fl)]
+            qn = re.search("quant/.*$", ql)
+            assert qn is not None
+            files.append((qn[0], qf))
+            return f, files
+        else:
+            return f
+
+    @overload
+    def get_all_filterdata(
+        self, as_list: Literal[True], run: str | None = None
+    ) -> list[FilterDataReading]: ...
+
+    @overload
+    def get_all_filterdata(
+        self, run: str | None = None, as_list: bool = False
+    ) -> "pd.DataFrame": ...
+
+    def get_all_filterdata(
+        self, run: str | None = None, as_list: bool = False
+    ) -> "pd.DataFrame | list[FilterDataReading]":
+        if run is None:
+            run = self.get_run_title()
+
+        pl = [
+            self.get_filterdata_one(FilterDataFilename.fromstring(x))
+            for x in self.get_expfile_list(
+                f"{run}/apldbio/sds/filter/*_filterdata.xml"
+            )
+        ]
+
+        if as_list:
+            return pl
+
+        return df_from_readings(pl)
+
+    def get_expfile_list(
+        self, glob: str, allow_nomatch: bool = False
+    ) -> list[str]:
+        try:
+            fl = self.run_command(SCPICommand("EXP:LIST?", glob))
+        except NoMatch as ce:
+            if allow_nomatch:
+                return []
+            else:
+                raise ce
+        else:
+            assert fl.startswith("<quote.reply>")
+            assert fl.endswith("</quote.reply>")
+            return fl.split("\n")[1:-1]
+
+    def get_run_title(self) -> str:
+        return (self.run_command("RUNTitle?")).strip('"')
