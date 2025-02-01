@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from functools import wraps
 from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload
 
+from qslib_rs import QSConnection
+
 import nest_asyncio
 
 from qslib.qs_is_protocol import CommandError
@@ -97,7 +99,7 @@ class Machine:
     ssl: bool | None = None
     _initial_access_level: AccessLevel = AccessLevel.Observer
     _current_access_level: AccessLevel = AccessLevel.Guest
-    _connection: QSConnectionAsync | None = None
+    _connection: QSConnection | None = None
 
     def asdict(self, password: bool = False) -> dict[str, str | int | None]:
         d: dict[str, str | int | None] = {"host": self.host}
@@ -115,15 +117,15 @@ class Machine:
         return d
 
     @property
-    def connection(self) -> QSConnectionAsync:
-        """The :class:`QSConnectionAsync` for the connection, or a :class:`ConnectionError`."""
+    def connection(self) -> QSConnection:
+        """The :class:`QSConnection` for the connection, or a :class:`ConnectionError`."""
         if self._connection is None:
             raise ConnectionError
         else:
             return self._connection
 
     @connection.setter
-    def connection(self, v: QSConnectionAsync | None) -> None:
+    def connection(self, v: QSConnection | None) -> None:
         self._connection = v
 
     @property
@@ -150,7 +152,7 @@ class Machine:
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
-        self.port = port
+        self.port = port or 7443
         self.ssl = ssl
         self.password = password
         self.automatic = automatic
@@ -164,19 +166,19 @@ class Machine:
         """Open the connection manually."""
         loop = asyncio.get_event_loop()
 
-        self.connection = QSConnectionAsync(
+        self.connection = QSConnection(
             host=self.host,
             port=self.port,
-            ssl=self.ssl,
-            password=self.password,
-            initial_access_level=self._initial_access_level,
-            client_certificate_path=self.client_certificate_path,
-            server_ca_file=self.server_ca_file,
+            # ssl=self.ssl,
+            #password=self.password,
+            #initial_access_level=self._initial_access_level,
+            #client_certificate_path=self.client_certificate_path,
+            #server_ca_file=self.server_ca_file,
         )
-        loop.run_until_complete(self.connection.connect())
+        if self._initial_access_level is not None:
+            self.set_access_level(self._initial_access_level)
         self._current_access_level = self.get_access_level()[0]
-        self.port = self.connection.port
-        self.ssl = self.connection.ssl
+
 
     @property
     def connected(self) -> bool:
@@ -218,15 +220,14 @@ class Machine:
         CommandError
             Received an Error response.
         """
-        if self.connection is None:
-            raise ConnectionError(f"Not connected to {self.host}.")
-        loop = asyncio.get_event_loop()
-        try:
-            return loop.run_until_complete(self.connection.run_command(command))
-        except CommandError as e:
-            e.__traceback__ = None
-            raise e
-
+        match command:
+            case str():
+                return str(next(self.connection.run_command_bytes(command.encode())))
+            case SCPICommand():
+                return str(next(self.connection.run_command_bytes(command.to_string().encode())))
+            case _:
+                raise ValueError(f"Invalid command: {command}")
+        
     @_ensure_connection(AccessLevel.Guest)
     def run_command_to_ack(self, command: str | SCPICommand) -> str:
         """Run an SCPI command, and return the response as a string.
@@ -284,8 +285,7 @@ class Machine:
             raise ConnectionError(f"Not connected to {self.host}.")
         if isinstance(command, str):
             command = command.encode()
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(self.connection._protocol.run_command(command))
+        return str(next(self.connection.run_command_bytes(command))).encode()
 
     @_ensure_connection(AccessLevel.Controller)
     def define_protocol(self, protocol: Protocol) -> None:
@@ -358,12 +358,40 @@ class Machine:
         verbose: bool = False,
         recursive: bool = False,
     ) -> list[str] | list[FileListInfo]:
-        loop = asyncio.get_event_loop()
-        return loop.run_until_complete(
-            self.connection.list_files(
-                path, leaf=leaf, verbose=verbose, recursive=recursive
-            )
-        )
+        if not verbose:
+            if recursive:
+                raise NotImplementedError
+            return (self.run_command(f"{leaf}:LIST? {path}")).split("\n")[1:-1]
+        else:
+            v = (self.run_command(f"{leaf}:LIST? -verbose {path}")).split("\n")[
+                1:-1
+            ]
+            ret: list[FileListInfo] = []
+            for x in v:
+                rm = re.match(
+                    r'"([^"]+)" -type=(\S+) -size=(\S+) -mtime=(\S+) -atime=(\S+) -ctime=(\S+)$',
+                    x,
+                )
+                if rm is None:
+                    ag = ArgList.from_string(x)
+                    d: dict[str, Any] = {}
+                    d["path"] = cast(str, ag.args[0])
+                    d |= ag.opts
+                else:
+                    d = {}
+                    d["path"] = rm.group(1)
+                    d["type"] = rm.group(2)
+                    d["size"] = int(rm.group(3))
+                    d["mtime"] = datetime.fromtimestamp(float(rm.group(4)))
+                    d["atime"] = datetime.fromtimestamp(float(rm.group(5)))
+                    d["ctime"] = datetime.fromtimestamp(float(rm.group(6)))
+                if d["type"] == "folder" and recursive:
+                    ret += self.list_files(
+                        cast(str, d["path"]), leaf=leaf, verbose=True, recursive=True
+                    )
+                else:
+                    ret.append(cast(FileListInfo, d))
+            return ret
 
     @_ensure_connection(AccessLevel.Observer)
     def read_file(
@@ -673,9 +701,8 @@ class Machine:
         if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}.")
 
-        loop = asyncio.get_event_loop()
+        del self._connection
 
-        loop.run_until_complete(self.connection.disconnect())
         self._connection = None
         self._current_access_level = AccessLevel.Guest
 
