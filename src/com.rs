@@ -1,27 +1,32 @@
 use enum_dispatch::enum_dispatch;
 
+use futures::stream::SelectAll;
+use log::trace;
 use rustls::{
     client::danger::HandshakeSignatureValid, client::danger::ServerCertVerified,
     client::danger::ServerCertVerifier, DigitallySignedStruct, Error as TLSError, SignatureScheme,
 };
 use rustls_pki_types::{ServerName, UnixTime};
+use tokio::sync::RwLock;
+use std::sync::{Arc};
+use thiserror::Error;
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
-use std::sync::Arc;
-use thiserror::Error;
 use tokio::{io::Interest, net::TcpStream, select};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::{
     client::TlsStream,
     rustls::{ClientConfig, RootCertStore},
 };
-use log::trace;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::StreamMap;
+use dashmap::DashMap;
 
 #[cfg(feature = "python")]
-use pyo3::prelude::*;
-#[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use pyo3::ToPyErr;
 
@@ -96,7 +101,6 @@ pub enum ConnectionError {
 pub(crate) enum StreamTypes {
     Tls(TlsStream<TcpStream>),
 }
-
 
 use crate::parser::{self, Command, LogMessage, Message, MessageIdent, MessageResponse};
 use log::warn;
@@ -245,7 +249,7 @@ impl MsgRecv {
 pub struct QSConnectionInner {
     stream_read: ReadHalf<TlsStream<TcpStream>>,
     pub receiver: MsgRecv,
-    pub logchannels: HashMap<String, broadcast::Sender<LogMessage>>,
+    pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
     pub messagechannels: HashMap<MessageIdent, mpsc::Sender<MessageResponse>>,
     pub commandchannel: mpsc::Receiver<(MessageIdent, mpsc::Sender<MessageResponse>)>,
     buf: [u8; 1024],
@@ -279,14 +283,19 @@ impl QSConnectionInner {
                     trace!("Received message: {:?}", msg);
                     match msg {
                         Ok(MessageResponse::Message(msg)) => {
-                            // Send to all matching channels
-                            for (topic, channel) in &self.logchannels {
-                                if topic == "*" || topic == &msg.topic || msg.topic.starts_with(topic) {
-                                    match channel.send(msg.clone()) {
-                                        Ok(_) => (),
-                                        Err(e) => {
-                                            trace!("Error sending log message: {:?}", e);
-                                        }
+                            if let Some(channel) = self.logchannels.get(&msg.topic) {
+                                match channel.send(msg.clone()) {
+                                    Ok(_) => (),
+                                    Err(e) => {
+                                        trace!("No topic listeners for: {:?}", e);
+                                    }
+                                }
+                            }
+                            if let Some(channel) = self.logchannels.get("*") {
+                                match channel.send(msg.clone()) {
+                                    Ok(_) => (),
+                                    Err(e) => {
+                                        trace!("No * listeners for: {:?}", e);
                                     }
                                 }
                             }
@@ -303,18 +312,9 @@ impl QSConnectionInner {
                                 trace!("No channel for message ident: {:?}", ident);
                             }
                         }
-                        Ok(MessageResponse::Error {
-                            ident,
-                            error,
-                        }) => {
+                        Ok(MessageResponse::Error { ident, error }) => {
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                match channel
-                                    .send(MessageResponse::Error {
-                                        ident,
-                                        error,
-                                    })
-                                    .await
-                                {
+                                match channel.send(MessageResponse::Error { ident, error }).await {
                                     Ok(_) => (),
                                     Err(e) => {
                                         trace!("Error sending message: {:?}", e);
@@ -372,9 +372,9 @@ impl QSConnectionInner {
 pub struct QSConnection {
     pub task: JoinHandle<Result<(), QSConnectionError>>,
     pub commandchannel: mpsc::Sender<(MessageIdent, mpsc::Sender<MessageResponse>)>,
-    pub logchannels: HashMap<String, broadcast::Sender<LogMessage>>,
     pub next_ident: u32,
     pub stream_write: WriteHalf<TlsStream<TcpStream>>,
+    pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
 }
 
 impl QSConnection {
@@ -387,19 +387,25 @@ impl QSConnection {
             command: command.into(),
         };
         let (tx, rx) = mpsc::channel(5);
-        self.commandchannel.send((msg.ident.clone().unwrap(), tx)).await.unwrap();
-        
+        self.commandchannel
+            .send((msg.ident.clone().unwrap(), tx))
+            .await
+            .unwrap();
+
         // Convert message to bytes for logging
         let mut bytes = Vec::new();
         msg.write_bytes(&mut bytes)?;
         trace!("Sending: {}", String::from_utf8_lossy(&bytes));
-        
+
         self.stream_write.write_all(&bytes).await?;
         self.next_ident += 1;
         Ok(rx)
     }
 
-    pub async fn send_command_bytes(&mut self, bytes: &[u8]) -> Result<mpsc::Receiver<MessageResponse>, QSConnectionError> {
+    pub async fn send_command_bytes(
+        &mut self,
+        bytes: &[u8],
+    ) -> Result<mpsc::Receiver<MessageResponse>, QSConnectionError> {
         let ident = MessageIdent::Number(self.next_ident);
         let (tx, rx) = mpsc::channel(5);
         self.commandchannel.send((ident.clone(), tx)).await.unwrap();
@@ -414,7 +420,6 @@ impl QSConnection {
         Ok(rx)
     }
 
-
     pub async fn connect(host: &str, port: u16) -> Result<QSConnection, ConnectionError> {
         let root_cert_store = RootCertStore::empty();
         let mut config = ClientConfig::builder()
@@ -428,14 +433,12 @@ impl QSConnection {
         let connector = TlsConnector::from(Arc::new(config));
         let stream = TcpStream::connect((host, port)).await?;
 
-        let mut c =  connector
-        .connect(ServerName::try_from(host.to_string())?, stream)
-        .await?;
+        let mut c = connector
+            .connect(ServerName::try_from(host.to_string())?, stream)
+            .await?;
 
         let (com_tx, com_rx) = mpsc::channel(100);
-        let mut logchannels = HashMap::new();
-        let (all_tx, _) = broadcast::channel(100);
-        logchannels.insert("*".to_string(), all_tx);
+        let logchannels = Arc::new(DashMap::new());
 
         // Read ready message
         let mut b = [0; 1024];
@@ -449,7 +452,7 @@ impl QSConnection {
         let mut qsi = QSConnectionInner {
             stream_read: r,
             receiver: MsgRecv::new(),
-            logchannels,
+            logchannels: logchannels.clone(),
             messagechannels: HashMap::new(),
             commandchannel: com_rx,
             buf: [0; 1024],
@@ -458,27 +461,30 @@ impl QSConnection {
         Ok(QSConnection {
             task: tokio::spawn(async move { qsi.receive().await }),
             commandchannel: com_tx,
-            logchannels: HashMap::new(),
             next_ident: 0,
+            logchannels,
             stream_write: w,
         })
     }
 
-    pub async fn subscribe_log(&mut self, topics: &[&str]) -> broadcast::Receiver<LogMessage> {
-        // Always include "*" in the topics list if not already present
-        let has_wildcard = topics.contains(&"*");
-        
-        // Create new channels for any topics that don't exist
+    pub async fn subscribe_log(
+        &mut self,
+        topics: &[&str],
+    ) -> StreamMap<String, BroadcastStream<LogMessage>> {
+        let mut s = StreamMap::new();
         for &topic in topics {
             if !self.logchannels.contains_key(topic) {
                 let (tx, _) = broadcast::channel(100);
                 self.logchannels.insert(topic.to_string(), tx);
             }
+            if let Some(channel) = self.logchannels.get(topic) {
+                s.insert(
+                    topic.to_string(),
+                    BroadcastStream::new(channel.subscribe()),
+                );
+            }
         }
-
-        // Return subscription to first topic, it will get messages for all topics
-        let first_topic = if has_wildcard { "*" } else { topics[0] };
-        self.logchannels.get(first_topic).unwrap().subscribe()
+        s
     }
 
     pub async fn is_connected(&self) -> bool {
