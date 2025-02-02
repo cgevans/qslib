@@ -3,9 +3,10 @@ use std::collections::HashMap;
 use quick_xml::{de::from_str, se::to_string};
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
+use zip;
 
 #[derive(Debug, Serialize, Deserialize)]
-#[serde(rename = "Plate")]
+#[serde(rename = "Plate", deny_unknown_fields)]
 pub struct PlateSetup {
     #[serde(rename = "Name")]
     pub name: Option<String>,
@@ -293,6 +294,9 @@ impl<'de> Deserialize<'de> for PlateType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs::File;
+    use std::path::{Path, PathBuf};
+    use zip::ZipArchive;
 
     #[test]
     fn test_deserialize_plate_setup() {
@@ -756,5 +760,101 @@ mod tests {
             lines[383],
             "platesetup,row=P,col=24 sample=\"\" 1234567890"
         );
+    }
+
+    #[test]
+    fn test_parse_example_eds_files() {
+        let example_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("example-eds");
+
+        // Get all .eds files in the directory
+        let eds_files: Vec<PathBuf> = std::fs::read_dir(example_dir)
+            .expect("Failed to read example-eds directory")
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let path = entry.path();
+                if path.extension()? == "eds" {
+                    Some(path)
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if eds_files.is_empty() {
+            return;
+        }
+
+        for eds_path in eds_files {
+            let file = File::open(&eds_path).unwrap_or_else(|e| {
+                panic!("Failed to open {}: {}", eds_path.display(), e)
+            });
+
+            let mut archive = ZipArchive::new(file).unwrap_or_else(|e| {
+                panic!("Failed to read {} as zip: {}", eds_path.display(), e)
+            });
+
+            // Try to find and read the plate setup XML file
+            let mut plate_setup_xml = archive
+                .by_name("apldbio/sds/plate_setup.xml")
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to find plate_setup.xml in {}: {}",
+                        eds_path.display(),
+                        e
+                    )
+                });
+
+            let mut xml_content = String::new();
+            std::io::Read::read_to_string(&mut plate_setup_xml, &mut xml_content)
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "Failed to read plate_setup.xml content from {}: {}",
+                        eds_path.display(),
+                        e
+                    )
+                });
+
+            // Try to parse the XML
+            let result = PlateSetup::from_xml(&xml_content);
+            assert!(
+                result.is_ok(),
+                "Failed to parse plate_setup.xml from {}: {:?}",
+                eds_path.display(),
+                result.err()
+            );
+
+            // Additional validation of the parsed plate setup
+            let plate = result.unwrap();
+            
+            // Verify plate type matches dimensions
+            match plate.plate_type {
+                PlateType::Well96 => {
+                    assert_eq!(plate.rows, 8, "96-well plate should have 8 rows in {}", eds_path.display());
+                    assert_eq!(plate.columns, 12, "96-well plate should have 12 columns in {}", eds_path.display());
+                }
+                PlateType::Well384 => {
+                    assert_eq!(plate.rows, 16, "384-well plate should have 16 rows in {}", eds_path.display());
+                    assert_eq!(plate.columns, 24, "384-well plate should have 24 columns in {}", eds_path.display());
+                }
+            }
+
+            // Test round-trip serialization
+            let serialized = plate.to_xml().unwrap_or_else(|e| {
+                panic!(
+                    "Failed to serialize plate setup from {}: {}",
+                    eds_path.display(),
+                    e
+                )
+            });
+            
+            let reparse_result = PlateSetup::from_xml(&serialized);
+            assert!(
+                reparse_result.is_ok(),
+                "Failed to reparse serialized plate setup from {}: {:?}",
+                eds_path.display(),
+                reparse_result.err()
+            );
+        }
     }
 }

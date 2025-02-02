@@ -16,7 +16,7 @@ indexmap = "2.7.1"
 log = "0.4.25"
 pyo3 = { version = "0.23.3", optional = true, features = ["extension-module"] }
 pyo3-async-runtimes = { version = "0.23.0", optional = true, features = ["tokio-runtime"] }
-quick-xml = { version = "0.37.2", features = ["serialize"] }
+quick-xml = { version = "0.37.2", features = ["overlapped-lists", "serialize"] }
 regex = "1.11.1"
 rustls = "0.23.20"
 rustls-pki-types = "1.10.1"
@@ -27,6 +27,7 @@ tokio-rustls = "0.26.1"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 uuid = { version = "1.12.1", features = ["v4"] }
 winnow = "0.6.22"
+zip = "2.2.2"
 
 [features]
 debug = ["winnow/debug"]
