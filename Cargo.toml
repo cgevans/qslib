@@ -37,7 +37,12 @@ python = ["pyo3", "pyo3-async-runtimes"]
 env_logger = "0.11.6"
 rcgen = "0.13.2"
 rustls-pemfile = "2.2.0"
+criterion = { version = "0.5", features = ["html_reports"] }
 # default = ["python"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
+
+[[bench]]
+name = "msg_recv"
+harness = false
