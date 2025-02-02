@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use qslib_rs::parser::{Command, MessageResponse};
+use qslib_rs::parser::MessageResponse;
 use base64::{Engine as _, engine::general_purpose::STANDARD as b64};
 
 fn create_base64_message() -> Vec<u8> {
@@ -11,6 +11,19 @@ fn create_base64_message() -> Vec<u8> {
         "MESSage DataUpload -type=image/jpeg <reply.base64>{}</reply.base64>\n",
         b64_payload
     ).into_bytes()
+}
+
+fn create_binary_message() -> Vec<u8> {
+    // Create a 5MB random payload
+    let payload = vec![42u8; 5 * 1024 * 1024];
+    
+    // Format binary message with length prefix and payload
+    let mut message = format!(
+        "MESSage DataUpload -type=image/jpeg <reply.binary>",
+    ).into_bytes();
+    message.extend(payload);
+    message.extend(b"</reply.binary>\n");
+    message
 }
 
 fn bench_message_parsing(c: &mut Criterion) {
@@ -39,6 +52,14 @@ fn bench_message_parsing(c: &mut Criterion) {
     //         Command::try_from(black_box(&command[..])).unwrap()
     //     });
     // });
+
+    // Binary message benchmark
+    let binary_msg = create_binary_message();
+    group.bench_function("binary_message", |b| {
+        b.iter(|| {
+            MessageResponse::try_from(black_box(&binary_msg[..])).unwrap()
+        });
+    });
 
     // Base64 message benchmark
     let base64_msg = create_base64_message();
