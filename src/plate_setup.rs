@@ -67,8 +67,10 @@ pub struct FeatureValue {
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FeatureItem {
-    #[serde(rename = "Sample")]
-    pub sample: Sample,
+    #[serde(rename = "Sample", skip_serializing_if = "Option::is_none")]
+    pub sample: Option<Sample>,
+    #[serde(flatten)]
+    pub other: HashMap<String, String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -207,15 +209,15 @@ impl PlateSetup {
         let mut sample_wells: HashMap<String, Vec<String>> = HashMap::new();
 
         for feature_map in &self.feature_maps {
-            // Find the sample feature
             if feature_map.feature.id == "sample" {
                 for value in &feature_map.feature_values {
                     if let Some(well_name) = well_names.get(value.index as usize) {
-                        let sample_name = &value.feature_item.sample.name;
-                        sample_wells
-                            .entry(sample_name.clone())
-                            .or_default()
-                            .push(well_name.clone());
+                        if let Some(sample) = &value.feature_item.sample {
+                            sample_wells
+                                .entry(sample.name.clone())
+                                .or_default()
+                                .push(well_name.clone());
+                        }
                     }
                 }
             }
@@ -318,25 +320,31 @@ impl PlateSetup {
         let mut feature_value = FeatureValue {
             index: 0,
             feature_item: FeatureItem {
-                sample: Sample {
-                    name: String::new(),
-                    color: Color::rgb(0, 0, 0),
-                    custom_properties: Vec::new(),
-                },
+                sample: None,
+                other: HashMap::new(),
             },
         };
 
         let mut buf = Vec::new();
         let mut current_path = Vec::new();
         let mut current_property: Option<CustomProperty> = None;
+        let mut current_sample: Option<Sample> = None;
+        let mut in_sample = false;
 
         loop {
             match reader.read_event_into(&mut buf) {
                 Ok(Event::Start(e)) => {
                     let name = e.name().into_inner().to_vec();
-                    current_path.push(name);
+                    current_path.push(name.clone());
 
-                    if e.name() == quick_xml::name::QName(b"CustomProperty") {
+                    if e.name() == QName(b"Sample") {
+                        in_sample = true;
+                        current_sample = Some(Sample {
+                            name: String::new(),
+                            color: Color::rgb(0, 0, 0),
+                            custom_properties: Vec::new(),
+                        });
+                    } else if e.name() == QName(b"CustomProperty") && in_sample {
                         current_property = Some(CustomProperty {
                             property: Vec::new(),
                             value: Vec::new(),
@@ -351,42 +359,54 @@ impl PlateSetup {
                                 .parse()
                                 .map_err(|_| quick_xml::DeError::Custom("Invalid index".into()))?;
                         }
-                        Some(path) if path == b"Name" => {
-                            let current = current_path.last().unwrap();
-                            if current == b"Sample" {
-                                feature_value.feature_item.sample.name = text;
+                        Some(path) if path == b"Name" && in_sample => {
+                            if let Some(sample) = &mut current_sample {
+                                sample.name = text;
                             }
                         }
-                        Some(path) if path == b"Color" => {
-                            let color_value: i32 = text.parse().map_err(|_| {
-                                quick_xml::DeError::Custom("Invalid color value".into())
-                            })?;
-                            let [r, g, b, a] = color_value.to_le_bytes();
-                            feature_value.feature_item.sample.color = Color::new(r, g, b, a);
+                        Some(path) if path == b"Color" && in_sample => {
+                            if let Some(sample) = &mut current_sample {
+                                let color_value: i32 = text.parse().map_err(|_| {
+                                    quick_xml::DeError::Custom("Invalid color value".into())
+                                })?;
+                                let [r, g, b, a] = color_value.to_le_bytes();
+                                sample.color = Color::new(r, g, b, a);
+                            }
                         }
-                        Some(path) if path == b"Property" => {
+                        Some(path) if path == b"Property" && in_sample => {
                             if let Some(prop) = &mut current_property {
                                 prop.property.push(text);
                             }
                         }
-                        Some(path) if path == b"Value" => {
+                        Some(path) if path == b"Value" && in_sample => {
                             if let Some(prop) = &mut current_property {
                                 prop.value.push(text);
                             }
+                        }
+                        Some(path) if !in_sample => {
+                            // Store non-Sample content in the other HashMap
+                            feature_value.feature_item.other.insert(
+                                String::from_utf8_lossy(path).into_owned(),
+                                text,
+                            );
                         }
                         _ => (),
                     }
                 }
                 Ok(Event::End(e)) => {
-                    if e.name().into_inner() == b"CustomProperty" {
+                    let name = e.name().into_inner();
+                    if name == b"CustomProperty" && in_sample {
                         if let Some(prop) = current_property.take() {
-                            feature_value
-                                .feature_item
-                                .sample
-                                .custom_properties
-                                .push(prop);
+                            if let Some(sample) = &mut current_sample {
+                                sample.custom_properties.push(prop);
+                            }
                         }
-                    } else if e.name().into_inner() == b"FeatureValue" {
+                    } else if name == b"Sample" {
+                        in_sample = false;
+                        if let Some(sample) = current_sample.take() {
+                            feature_value.feature_item.sample = Some(sample);
+                        }
+                    } else if name == b"FeatureValue" {
                         break;
                     }
                     current_path.pop();
