@@ -245,7 +245,7 @@ impl MsgRecv {
 pub struct QSConnectionInner {
     stream_read: ReadHalf<TlsStream<TcpStream>>,
     pub receiver: MsgRecv,
-    pub logchannel: broadcast::Sender<LogMessage>,
+    pub logchannels: HashMap<String, broadcast::Sender<LogMessage>>,
     pub messagechannels: HashMap<MessageIdent, mpsc::Sender<MessageResponse>>,
     pub commandchannel: mpsc::Receiver<(MessageIdent, mpsc::Sender<MessageResponse>)>,
     buf: [u8; 1024],
