@@ -14,3 +14,11 @@ dynamic = ["version"]
 
 [tool.maturin]
 features = ["python"]
+
+[tool.poetry]
+packages = [
+    { include = "qslib-rs-stubs", format = "sdist" }
+]
+
+[tool.poetry.package-data]
+qslib_rs = ["py.typed", "*.pyi"]
