@@ -28,16 +28,19 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 uuid = { version = "1.12.1", features = ["v4"] }
 winnow = "0.6.22"
 zip = "2.2.2"
+memchr = { version = "2.7", optional = true }
 
 [features]
 debug = ["winnow/debug"]
 python = ["pyo3", "pyo3-async-runtimes"]
+simd = ["dep:memchr", "winnow/simd"]
 
 [dev-dependencies]
 env_logger = "0.11.6"
 rcgen = "0.13.2"
 rustls-pemfile = "2.2.0"
 criterion = { version = "0.5", features = ["html_reports"] }
+base64 = "0.21"
 # default = ["python"]
 
 [lints.rust]
@@ -45,4 +48,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)
 
 [[bench]]
 name = "msg_recv"
+harness = false
+
+[[bench]]
+name = "message_parsing"
 harness = false

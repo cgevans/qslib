@@ -2,6 +2,9 @@ use regex::bytes::Regex;
 use std::sync::LazyLock;
 use thiserror::Error;
 
+#[cfg(feature = "simd")]
+use memchr::memchr3;
+
 static TAG_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^<(/?)([A-Za-z0-9_.-]*)(>|$)").unwrap());
 
@@ -73,6 +76,59 @@ impl MsgRecv {
         }
         self.parttag = None;
         let mut pos = start_pos;
+        
+        #[cfg(feature = "simd")]
+        while let Some(offset) = memchr3(b'<', b'\n', b'>', &self.buf[pos..]) {
+            let c = self.buf[pos + offset];
+            if c == b'\n' {
+                if self.tagstack.len() == 0 {
+                    self.msg_end = Some(pos + offset + 1);
+                    return Ok(true);
+                }
+            } else if c == b'<' {
+                match TAG_REGEX.captures(&self.buf[pos + offset..]) {
+                    Some(captures) => {
+                        let (_a, [close, tag, end]) = captures.extract();
+                        match (end, close) {
+                            (b"", _) => {
+                                self.parttag = Some(pos + offset);
+                                return Ok(false);
+                            }
+                            (_, b"/") => match self.tagstack.pop() {
+                                Some(old_tag) => {
+                                    if old_tag.0 != tag {
+                                        self.msg_error =
+                                            Some(MsgReceiveError::MismatchedCloseTag(
+                                                old_tag.1,
+                                                pos + offset,
+                                                String::from_utf8_lossy(&old_tag.0).to_string(),
+                                                String::from_utf8_lossy(&tag).to_string(),
+                                            ));
+                                        self.tagstack.clear();
+                                    }
+                                }
+                                None => {
+                                    self.msg_error = Some(MsgReceiveError::UnexpectedCloseTag(
+                                        pos + offset,
+                                        String::from_utf8_lossy(&tag).to_string(),
+                                    ));
+                                    self.tagstack.clear();
+                                }
+                            },
+                            (_, _) => {
+                                // if self.msg_error.is_none() {
+                                    self.tagstack.push((tag.to_vec(), pos + offset));
+                                // }
+                            }
+                        }
+                    }
+                    None => {}
+                }
+            }
+            pos += offset + 1;
+        }
+
+        #[cfg(not(feature = "simd"))]
         while let Some(offset) = self.buf[pos..]
             .iter()
             .position(|&c| c == b'<' || c == b'\n' || c == b'>')

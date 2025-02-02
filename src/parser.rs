@@ -20,7 +20,7 @@ pub enum Value {
     Bool(bool),
     QuotedString(String),
     XmlString { value: String, tag: String },
-    XmlBinaryString { value: Vec<u8> },
+    XmlBinary { value: Vec<u8>, tag: String },
 }
 
 impl Display for Value {
@@ -32,7 +32,7 @@ impl Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::QuotedString(s) => write!(f, "{}", s),
             Value::XmlString { value, tag: _ } => write!(f, "{}", value),
-            Value::XmlBinaryString { value } => write!(f, "{}", value.len()),
+            Value::XmlBinary { value, tag: _ } => write!(f, "{:?}", value),
         }
     }
 }
@@ -89,9 +89,18 @@ impl Value {
     pub fn parse(input: &mut &[u8]) -> ModalResult<Value> {
         let v = alt((
             xml_delimited
-                .map(|(tag, val)| Value::XmlString {
-                    value: String::from_utf8_lossy(val).to_string(),
-                    tag: String::from_utf8_lossy(tag).to_string(),
+                .map(|(tag, val)| {
+                    let tag_str = String::from_utf8_lossy(tag).to_string();
+                    match String::from_utf8(val.to_vec()) {
+                        Ok(str_val) => Value::XmlString {
+                            value: str_val,
+                            tag: tag_str
+                        },
+                        Err(_) => Value::XmlBinary {
+                            value: val.to_vec(),
+                            tag: tag_str
+                        }
+                    }
                 })
                 .context(StrContext::Label("xml")),
             // Handle quoted strings
@@ -123,10 +132,10 @@ impl Value {
             Value::XmlString { value, tag } => {
                 bytes.write_all(format!("<{}>{}</{}>", tag, value, tag).as_bytes())
             }
-            Value::XmlBinaryString { value } => {
-                bytes.write_all(b"<quote.binary>")?;
+            Value::XmlBinary { value, tag } => {
+                bytes.write_all(format!("<{}>", tag).as_bytes())?;
                 bytes.write_all(&value)?;
-                bytes.write_all(b"</quote.binary>")
+                bytes.write_all(format!("</{}>", tag).as_bytes())
             }
         }
     }
@@ -608,5 +617,56 @@ mod tests {
     fn test_parse_missing_newline() {
         let input = b"MESSage Topic message"; // Missing required newline
         assert!(MessageResponse::try_from(&input[..]).is_err());
+    }
+
+    #[test]
+    fn test_parse_binary_xml() {
+        let binary_data = vec![0x00, 0x01, 0x02, 0xFF];
+        let mut input = b"<binary.data>".to_vec();
+        input.extend_from_slice(&binary_data);
+        input.extend_from_slice(b"</binary.data>");
+        let result = Value::parse(&mut &input[..]).unwrap();
+        
+        match result {
+            Value::XmlBinary { value, tag } => {
+                assert_eq!(tag, "binary.data");
+                assert_eq!(value, binary_data);
+            },
+            _ => panic!("Expected XmlBinary, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_parse_xml_string() {
+        let mut input = b"<quote>Hello\nWorld</quote>";
+        let result = Value::parse(&mut &input[..]).unwrap();
+        
+        match result {
+            Value::XmlString { value, tag } => {
+                assert_eq!(tag, "quote");
+                assert_eq!(value, "Hello\nWorld");
+            },
+            _ => panic!("Expected XmlString, got {:?}", result),
+        }
+    }
+
+    #[test]
+    fn test_write_binary_xml() {
+        let binary_data = vec![0x00, 0x01, 0x02, 0xFF];
+        let value = Value::XmlBinary {
+            value: binary_data.clone(),
+            tag: "quote".to_string(),
+        };
+        
+        let mut output = Vec::new();
+        value.write_bytes(&mut output).unwrap();
+        
+        let mut expected = b"<quote>".to_vec();
+        expected.extend_from_slice(&binary_data);
+        expected.extend_from_slice(b"</quote>");
+        assert_eq!(output, expected);
+
+        let result = Value::parse(&mut &output[..]).unwrap();
+        assert_eq!(result, value);   
     }
 }
