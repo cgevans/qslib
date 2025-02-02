@@ -27,7 +27,22 @@ pub struct PlateSetup {
     pub feature_maps: Vec<FeatureMap>,
     #[serde(skip)]
     pub plate_type: PlateType,
+    #[serde(rename = "Wells", default)]
+    pub wells: Vec<OtherTag>,
+    #[serde(rename = "MultiZoneEnabled")]
+    pub multi_zone_enabled: Option<String>,
+    #[serde(rename = "LogicalZone", default)]
+    pub logical_zones: Vec<OtherTag>,
+    #[serde(rename = "PassiveReferenceDye", default)]
+    pub passive_reference_dye: Option<String>,
 }
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct OtherTag {
+    #[serde(flatten)]
+    pub other: HashMap<String, MapOrString>,
+}
+
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlateKind {
@@ -66,11 +81,18 @@ pub struct FeatureValue {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum MapOrString {
+    Map(HashMap<String, MapOrString>),
+    String(String),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 pub struct FeatureItem {
     #[serde(rename = "Sample", skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sample>,
     #[serde(flatten)]
-    pub other: HashMap<String, String>,
+    pub other: HashMap<String, MapOrString>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -262,166 +284,6 @@ impl PlateSetup {
                 })
             })
             .collect()
-    }
-
-    fn parse_feature_map(reader: &mut Reader<&[u8]>) -> Result<FeatureMap, quick_xml::DeError> {
-        let mut feature_map = FeatureMap {
-            feature: Feature {
-                id: String::new(),
-                name: String::new(),
-            },
-            feature_values: Vec::new(),
-        };
-
-        let mut buf = Vec::new();
-        let mut current_path = Vec::new();
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
-                    let name = e.name().into_inner().to_vec();
-                    current_path.push(name);
-
-                    if current_path.last().unwrap() == b"FeatureValue" {
-                        let value = Self::parse_feature_value(reader)?;
-                        feature_map.feature_values.push(value);
-                        current_path.pop();
-                    }
-                }
-                Ok(Event::Text(e)) => {
-                    let text = e.unescape()?.into_owned();
-                    match current_path.as_slice() {
-                        path if path.ends_with(&[b"Feature".to_vec(), b"Id".to_vec()]) => feature_map.feature.id = text,
-                        path if path.ends_with(&[b"Feature".to_vec(), b"Name".to_vec()]) => feature_map.feature.name = text,
-                        _ => (),
-                    }
-                }
-                Ok(Event::End(e)) => {
-                    let name = e.name().into_inner().to_vec();
-                    if name == b"FeatureMap" {
-                        break;
-                    }
-                    current_path.pop();
-                }
-                Ok(Event::Eof) => {
-                    return Err(quick_xml::DeError::Custom(
-                        "Unexpected EOF in FeatureMap".into(),
-                    ))
-                }
-                Err(e) => return Err(quick_xml::DeError::from(e)),
-                _ => (),
-            }
-        }
-
-        Ok(feature_map)
-    }
-
-    fn parse_feature_value(reader: &mut Reader<&[u8]>) -> Result<FeatureValue, quick_xml::DeError> {
-        let mut feature_value = FeatureValue {
-            index: 0,
-            feature_item: FeatureItem {
-                sample: None,
-                other: HashMap::new(),
-            },
-        };
-
-        let mut buf = Vec::new();
-        let mut current_path = Vec::new();
-        let mut current_property: Option<CustomProperty> = None;
-        let mut current_sample: Option<Sample> = None;
-        let mut in_sample = false;
-
-        loop {
-            match reader.read_event_into(&mut buf) {
-                Ok(Event::Start(e)) => {
-                    let name = e.name().into_inner().to_vec();
-                    current_path.push(name.clone());
-
-                    if e.name() == QName(b"Sample") {
-                        in_sample = true;
-                        current_sample = Some(Sample {
-                            name: String::new(),
-                            color: Color::rgb(0, 0, 0),
-                            custom_properties: Vec::new(),
-                        });
-                    } else if e.name() == QName(b"CustomProperty") && in_sample {
-                        current_property = Some(CustomProperty {
-                            property: Vec::new(),
-                            value: Vec::new(),
-                        });
-                    }
-                }
-                Ok(Event::Text(e)) => {
-                    let text = e.unescape()?.into_owned();
-                    match current_path.last() {
-                        Some(path) if path == b"Index" => {
-                            feature_value.index = text
-                                .parse()
-                                .map_err(|_| quick_xml::DeError::Custom("Invalid index".into()))?;
-                        }
-                        Some(path) if path == b"Name" && in_sample => {
-                            if let Some(sample) = &mut current_sample {
-                                sample.name = text;
-                            }
-                        }
-                        Some(path) if path == b"Color" && in_sample => {
-                            if let Some(sample) = &mut current_sample {
-                                let color_value: i32 = text.parse().map_err(|_| {
-                                    quick_xml::DeError::Custom("Invalid color value".into())
-                                })?;
-                                let [r, g, b, a] = color_value.to_le_bytes();
-                                sample.color = Color::new(r, g, b, a);
-                            }
-                        }
-                        Some(path) if path == b"Property" && in_sample => {
-                            if let Some(prop) = &mut current_property {
-                                prop.property.push(text);
-                            }
-                        }
-                        Some(path) if path == b"Value" && in_sample => {
-                            if let Some(prop) = &mut current_property {
-                                prop.value.push(text);
-                            }
-                        }
-                        Some(path) if !in_sample => {
-                            // Store non-Sample content in the other HashMap
-                            feature_value.feature_item.other.insert(
-                                String::from_utf8_lossy(path).into_owned(),
-                                text,
-                            );
-                        }
-                        _ => (),
-                    }
-                }
-                Ok(Event::End(e)) => {
-                    let name = e.name().into_inner();
-                    if name == b"CustomProperty" && in_sample {
-                        if let Some(prop) = current_property.take() {
-                            if let Some(sample) = &mut current_sample {
-                                sample.custom_properties.push(prop);
-                            }
-                        }
-                    } else if name == b"Sample" {
-                        in_sample = false;
-                        if let Some(sample) = current_sample.take() {
-                            feature_value.feature_item.sample = Some(sample);
-                        }
-                    } else if name == b"FeatureValue" {
-                        break;
-                    }
-                    current_path.pop();
-                }
-                Ok(Event::Eof) => {
-                    return Err(quick_xml::DeError::Custom(
-                        "Unexpected EOF in FeatureValue".into(),
-                    ))
-                }
-                Err(e) => return Err(quick_xml::DeError::from(e)),
-                _ => (),
-            }
-        }
-
-        Ok(feature_value)
     }
 }
 
