@@ -77,3 +77,4 @@ Cargo.lock
 *.ipynb
 *.crt
 *.key
+.aider*

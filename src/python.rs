@@ -13,6 +13,8 @@ use crate::parser;
 use crate::com::ConnectionError;
 use tokio::time::Duration;
 use tokio::select;
+use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::{StreamMap, StreamExt};
 
 #[cfg(feature = "python")]
 use pyo3_async_runtimes::tokio::future_into_py;
@@ -85,7 +87,7 @@ impl PyMessageResponse {
 #[cfg(feature = "python")]
 #[pyclass]
 pub struct PyLogReceiver {
-    rx: broadcast::Receiver<LogMessage>,
+    rx: StreamMap<String, BroadcastStream<LogMessage>>,
     rt: Arc<Runtime>,
 }
 
@@ -93,7 +95,11 @@ pub struct PyLogReceiver {
 #[pymethods]
 impl PyLogReceiver {
     fn __next__(&mut self) -> PyResult<LogMessage> {
-        self.rt.block_on(self.rx.recv()).map_err(|e| PyValueError::new_err(e.to_string()))
+        let x =self.rt.block_on(self.rx.next());
+        match x {
+            Some(x) => x.1.map_err(|e| PyValueError::new_err(e.to_string())),
+            None => Err(PyValueError::new_err("No message received")),
+        }
     }
 }
 
@@ -124,6 +130,7 @@ enum CommandInput {
 #[pymethods]
 impl PyQSConnection {
     #[new]
+    #[pyo3(signature = (host, port = 7443)) ]
     fn new(host: &str, port: u16) -> PyResult<Self> {
         let rt = Runtime::new()?;
         let conn = rt.block_on(QSConnection::connect(host, port))?;
@@ -139,6 +146,7 @@ impl PyQSConnection {
         Ok(PyMessageResponse { rx, rt: self.rt.clone() })
     }
 
+    #[pyo3(signature = (bytes)) ]
     fn run_command_bytes(&mut self, bytes: &[u8]) -> PyResult<PyMessageResponse> {
         let rx = self.rt.block_on(self.conn.send_command_bytes(bytes))?;
         Ok(PyMessageResponse { rx, rt: self.rt.clone() })
@@ -156,8 +164,10 @@ impl PyQSConnection {
     //     Ok(PyMessageResponse { rx, rt: self.rt.clone() })
     // }
 
-    fn subscribe_log(&self) -> PyResult<PyLogReceiver> {
-        let rx = self.rt.block_on(self.conn.subscribe_log());
+    #[pyo3(signature = (topics) )]
+    fn subscribe_log(&mut self, topics: Vec<String>) -> PyResult<PyLogReceiver> {
+        let topics_refs: Vec<&str> = topics.iter().map(|s| s.as_str()).collect();
+        let rx = self.rt.block_on(self.conn.subscribe_log(&topics_refs));
         Ok(PyLogReceiver { rx, rt: self.rt.clone() })
     }
 
