@@ -1,5 +1,3 @@
-use enum_dispatch::enum_dispatch;
-
 use dashmap::DashMap;
 use log::trace;
 use rustls::{
@@ -7,9 +5,10 @@ use rustls::{
     client::danger::ServerCertVerifier, DigitallySignedStruct, Error as TLSError, SignatureScheme,
 };
 use rustls_pki_types::{ServerName, UnixTime};
+use std::pin::Pin;
 use std::sync::Arc;
 use thiserror::Error;
-use tokio::io::{ReadHalf, WriteHalf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::task::JoinHandle;
 use tokio::{net::TcpStream, select};
 use tokio_rustls::TlsConnector;
@@ -94,12 +93,7 @@ pub enum ConnectionError {
     InvalidDnsNameError(#[from] rustls_pki_types::InvalidDnsNameError),
 }
 
-#[enum_dispatch(AsyncReadExt, AsyncWriteExt, Unpin, AsyncRead, AsyncWrite)]
-pub(crate) enum StreamTypes {
-    Tls(TlsStream<TcpStream>),
-}
-
-use crate::parser::{self, Command, LogMessage, Message, MessageIdent, MessageResponse};
+use crate::parser::{self, Command, LogMessage, Message, MessageIdent, MessageResponse, Ready};
 use regex::bytes::Regex;
 use std::{collections::HashMap, sync::LazyLock};
 use tokio::{
@@ -242,8 +236,28 @@ impl MsgRecv {
     }
 }
 
+enum ReadHalfOptions {
+    Tls(ReadHalf<TlsStream<TcpStream>>),
+    Tcp(ReadHalf<TcpStream>),
+}
+
+impl AsyncRead for ReadHalfOptions {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        // Safety: we're not moving the data, just accessing it through the pin
+        let this = unsafe { self.get_unchecked_mut() };
+        match this {
+            ReadHalfOptions::Tls(r) => Pin::new(r).poll_read(cx, buf),
+            ReadHalfOptions::Tcp(r) => Pin::new(r).poll_read(cx, buf),
+        }
+    }
+}
+
 pub struct QSConnectionInner {
-    stream_read: ReadHalf<TlsStream<TcpStream>>,
+    stream_read: ReadHalfOptions,
     pub receiver: MsgRecv,
     pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
     pub messagechannels: HashMap<MessageIdent, mpsc::Sender<MessageResponse>>,
@@ -365,12 +379,55 @@ impl QSConnectionInner {
     }
 }
 
+enum WriteHalfOptions {
+    Tls(WriteHalf<TlsStream<TcpStream>>),
+    Tcp(WriteHalf<TcpStream>),
+}
+
+impl AsyncWrite for WriteHalfOptions {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        // Safety: we're not moving the data, just accessing it through the pin
+        let this = unsafe { self.get_unchecked_mut() };
+        match this {
+            WriteHalfOptions::Tls(w) => Pin::new(w).poll_write(cx, buf),
+            WriteHalfOptions::Tcp(w) => Pin::new(w).poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let this = unsafe { self.get_unchecked_mut() };
+        match this {
+            WriteHalfOptions::Tls(w) => Pin::new(w).poll_flush(cx),
+            WriteHalfOptions::Tcp(w) => Pin::new(w).poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Result<(), std::io::Error>> {
+        let this = unsafe { self.get_unchecked_mut() };
+        match this {
+            WriteHalfOptions::Tls(w) => Pin::new(w).poll_shutdown(cx),
+            WriteHalfOptions::Tcp(w) => Pin::new(w).poll_shutdown(cx),
+        }
+    }
+}
+
 pub struct QSConnection {
     pub task: JoinHandle<Result<(), QSConnectionError>>,
     pub commandchannel: mpsc::Sender<(MessageIdent, mpsc::Sender<MessageResponse>)>,
     pub next_ident: u32,
-    pub stream_write: WriteHalf<TlsStream<TcpStream>>,
+    pub stream_write: WriteHalfOptions,
     pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
+    pub ready_message: Ready
 }
 
 impl QSConnection {
@@ -416,7 +473,33 @@ impl QSConnection {
         Ok(rx)
     }
 
-    pub async fn connect(host: &str, port: u16) -> Result<QSConnection, ConnectionError> {
+    pub async fn connect(host: &str, port: u16, connection_type: ConnectionType) -> Result<QSConnection, ConnectionError> {
+        match connection_type {
+            ConnectionType::SSL => Self::connect_ssl(host, port).await,
+            ConnectionType::TCP => Self::connect_tcp(host, port).await,
+            ConnectionType::Auto => {
+
+                // If port is 7443, use SSL
+                // If port is 7000, use TCP
+                // Otherwise, try an SSL connection first, then fall back to TCP
+                if port == 7443 {
+                    Self::connect_ssl(host, port).await
+                } else if port == 7000 {
+                    Self::connect_tcp(host, port).await
+                } else {
+                    match Self::connect_ssl(host, port).await {
+                        Ok(conn) => Ok(conn),
+                        Err(_) => Self::connect_tcp(host, port).await,
+                    }
+                }
+            }
+        }
+    }
+
+    pub async fn connect_ssl(
+        host: &str,
+        port: u16,
+    ) -> Result<QSConnection, ConnectionError> {
         let root_cert_store = RootCertStore::empty();
         let mut config = ClientConfig::builder()
             .with_root_certificates(root_cert_store)
@@ -440,10 +523,12 @@ impl QSConnection {
         let mut b = [0; 1024];
         c.read(&mut b).await?;
         trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..]));
-        let msg = parser::Ready::parse(&mut &b[..]);
+        let msg = parser::Ready::parse(&mut &b[..]).unwrap(); // FIXME: handle error
         trace!("Ready message: {:?}", msg);
 
         let (r, w) = tokio::io::split(c);
+        let r = ReadHalfOptions::Tls(r);
+        let w = WriteHalfOptions::Tls(w);
 
         let mut qsi = QSConnectionInner {
             stream_read: r,
@@ -460,6 +545,47 @@ impl QSConnection {
             next_ident: 0,
             logchannels,
             stream_write: w,
+            ready_message: msg,
+        })
+    }
+
+    pub async fn connect_tcp(
+        host: &str,
+        port: u16,
+    ) -> Result<QSConnection, ConnectionError> {
+        let stream = TcpStream::connect((host, port)).await?;
+        
+        let (com_tx, com_rx) = mpsc::channel(100);
+        let logchannels = Arc::new(DashMap::new());
+
+        // Read ready message
+        let mut b = [0; 1024];
+        stream.readable().await?;
+        let n = stream.try_read(&mut b)?;
+        trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..n]));
+        let msg = parser::Ready::parse(&mut &b[..]).unwrap(); // FIXME: handle error
+        trace!("Ready message: {:?}", msg);
+
+        let (r, w) = tokio::io::split(stream);
+        let r = ReadHalfOptions::Tcp(r);
+        let w = WriteHalfOptions::Tcp(w);
+
+        let mut qsi = QSConnectionInner {
+            stream_read: r,
+            receiver: MsgRecv::new(),
+            logchannels: logchannels.clone(),
+            messagechannels: HashMap::new(),
+            commandchannel: com_rx,
+            buf: [0; 1024],
+        };
+
+        Ok(QSConnection {
+            task: tokio::spawn(async move { qsi.receive().await }),
+            commandchannel: com_tx,
+            next_ident: 0,
+            logchannels,
+            stream_write: w,
+            ready_message: msg,
         })
     }
 
@@ -483,4 +609,10 @@ impl QSConnection {
     pub async fn is_connected(&self) -> bool {
         self.task.is_finished()
     }
+}
+
+pub enum ConnectionType {
+    SSL,
+    TCP,
+    Auto
 }

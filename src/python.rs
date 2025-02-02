@@ -154,10 +154,10 @@ enum CommandInput {
 #[pymethods]
 impl PyQSConnection {
     #[new]
-    #[pyo3(signature = (host, port = 7443)) ]
-    fn new(host: &str, port: u16) -> PyResult<Self> {
+    #[pyo3(signature = (host, port = 7443, connection_type = "Auto")) ]
+    fn new(host: &str, port: u16, connection_type: &str) -> PyResult<Self> {
         let rt = Runtime::new()?;
-        let conn = rt.block_on(QSConnection::connect(host, port))?;
+        let conn = rt.block_on(QSConnection::connect(host, port, connection_type))?;
         Ok(Self {
             conn,
             rt: Arc::new(rt),

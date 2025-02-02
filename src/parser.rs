@@ -169,7 +169,7 @@ impl Message {
             ident.write_bytes(bytes)?;
             bytes.write_all(b" ")?;
         }
-        self.command.write_bytes(bytes);
+        self.command.write_bytes(bytes)?;
         bytes.write_all(b"\n")?;
         Ok(())
     }
@@ -391,7 +391,7 @@ pub struct ErrorResponse {
 impl Display for ErrorResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.error)?;
-        for (key, value) in &self.args {
+        for (key, _value) in &self.args {
             write!(f, " -{}=", key)?;
         }
         //FIXME
@@ -456,7 +456,7 @@ fn parse_next(input: &mut &[u8]) -> ModalResult<MessageResponse> {
 
 #[derive(Debug)]
 pub struct Ready {
-    args: IndexMap<String, Value>,
+    pub args: IndexMap<String, Value>,
 }
 
 impl Ready {

@@ -192,11 +192,7 @@ impl PlateSetup {
 
         // Determine plate type from PlateKind
         if let Some(kind) = plate.plate_kinds.first() {
-            plate.plate_type = match kind.kind_type {
-                PlateType::Well96 => PlateType::Well96,
-                PlateType::Well384 => PlateType::Well384,
-                _ => return Err(quick_xml::DeError::Custom("Invalid plate type".into())),
-            };
+            plate.plate_type = kind.kind_type;
         } else {
             return Err(quick_xml::DeError::Custom("Missing plate kind".into()));
         }
