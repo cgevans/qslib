@@ -79,3 +79,4 @@ Cargo.lock
 *.crt
 *.key
 .aider*
+example-eds/
