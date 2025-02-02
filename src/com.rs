@@ -281,7 +281,7 @@ impl QSConnectionInner {
                         Ok(MessageResponse::Message(msg)) => {
                             // Send to all matching channels
                             for (topic, channel) in &self.logchannels {
-                                if topic == "*" || topic == &msg.topic {
+                                if topic == "*" || topic == &msg.topic || msg.topic.starts_with(topic) {
                                     match channel.send(msg.clone()) {
                                         Ok(_) => (),
                                         Err(e) => {
@@ -464,14 +464,21 @@ impl QSConnection {
         })
     }
 
-    pub async fn subscribe_log(&mut self, topic: &str) -> broadcast::Receiver<LogMessage> {
-        if let Some(channel) = self.logchannels.get(topic) {
-            channel.subscribe()
-        } else {
-            let (tx, rx) = broadcast::channel(100);
-            self.logchannels.insert(topic.to_string(), tx);
-            rx
+    pub async fn subscribe_log(&mut self, topics: &[&str]) -> broadcast::Receiver<LogMessage> {
+        // Always include "*" in the topics list if not already present
+        let has_wildcard = topics.contains(&"*");
+        
+        // Create new channels for any topics that don't exist
+        for &topic in topics {
+            if !self.logchannels.contains_key(topic) {
+                let (tx, _) = broadcast::channel(100);
+                self.logchannels.insert(topic.to_string(), tx);
+            }
         }
+
+        // Return subscription to first topic, it will get messages for all topics
+        let first_topic = if has_wildcard { "*" } else { topics[0] };
+        self.logchannels.get(first_topic).unwrap().subscribe()
     }
 
     pub async fn is_connected(&self) -> bool {
