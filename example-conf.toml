@@ -1,0 +1,47 @@
+## QS Monitor configuration
+## Multiple instrument configuration example
+
+## Global settings
+[global]
+
+
+[[instruments]]
+name = "qpcr1"
+host = "qpcr1"
+
+
+[[instruments]]
+name = "qpcr2"
+host = "qpcr2"
+
+[[instruments]]
+name = "qpcr3"
+host = "qpcr3"
+
+[[instruments]]
+name = "qpcr4"
+host = "qpcr4"
+
+
+## Matrix bot for notification and control
+[matrix]
+host = "https://matrix.org"
+user = "qsbot"
+password = "your-secure-password"
+room = "!roomid:matrix.org"
+session_file = "matrix_session.json"
+allow_verification = false  # Enable temporarily for session verification
+allow_commands = true      # Allow commands to be sent to the bot
+allow_control = false      # Allow commands that can control the instruments
+
+# InfluxDB settings for status and log tracking
+[influxdb]
+url = "http://localhost:8086"
+org = "my-org"
+bucket = "qpcr-data"
+token = "your-token-here"
+batch_size = 100  # Optional, defaults to 100
+flush_interval_ms = 1000  # Optional, defaults to 1000ms
+
+## Optional stdout logging can be enabled without configuration
+# [stdout]

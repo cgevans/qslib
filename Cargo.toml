@@ -1,0 +1,19 @@
+[package]
+name = "qs-monitor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.95"
+serde = { version = "1.0", features = ["derive"] }
+serde_derive = "1.0"
+clap = "4.5.27"
+config = "0.15.7"
+influxdb2 = "0.5.2"
+log = "0.4.25"
+qslib-rs = { path = "../qslib-rs" }
+stderrlog = "0.6.0"
+tokio = { version = "1.42", features = ["net", "sync", "rt", "io-util", "macros", "rt-multi-thread"] }
+tokio-stream = "0.1.11"
+chrono = "0.4.39"
+futures = "0.3"
