@@ -425,7 +425,7 @@ pub struct QSConnection {
     pub task: JoinHandle<Result<(), QSConnectionError>>,
     pub commandchannel: mpsc::Sender<(MessageIdent, mpsc::Sender<MessageResponse>)>,
     pub next_ident: u32,
-    pub stream_write: WriteHalfOptions,
+    stream_write: WriteHalfOptions,
     pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
     pub ready_message: Ready
 }
