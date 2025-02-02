@@ -1,19 +1,17 @@
 use enum_dispatch::enum_dispatch;
 
-use futures::stream::SelectAll;
+use dashmap::DashMap;
 use log::trace;
 use rustls::{
     client::danger::HandshakeSignatureValid, client::danger::ServerCertVerified,
     client::danger::ServerCertVerifier, DigitallySignedStruct, Error as TLSError, SignatureScheme,
 };
 use rustls_pki_types::{ServerName, UnixTime};
-use tokio::sync::RwLock;
-use std::sync::{Arc};
+use std::sync::Arc;
 use thiserror::Error;
 use tokio::io::{ReadHalf, WriteHalf};
-use tokio::runtime::Runtime;
 use tokio::task::JoinHandle;
-use tokio::{io::Interest, net::TcpStream, select};
+use tokio::{net::TcpStream, select};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::{
     client::TlsStream,
@@ -21,7 +19,6 @@ use tokio_rustls::{
 };
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
-use dashmap::DashMap;
 
 #[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
@@ -103,7 +100,6 @@ pub(crate) enum StreamTypes {
 }
 
 use crate::parser::{self, Command, LogMessage, Message, MessageIdent, MessageResponse};
-use log::warn;
 use regex::bytes::Regex;
 use std::{collections::HashMap, sync::LazyLock};
 use tokio::{
@@ -478,10 +474,7 @@ impl QSConnection {
                 self.logchannels.insert(topic.to_string(), tx);
             }
             if let Some(channel) = self.logchannels.get(topic) {
-                s.insert(
-                    topic.to_string(),
-                    BroadcastStream::new(channel.subscribe()),
-                );
+                s.insert(topic.to_string(), BroadcastStream::new(channel.subscribe()));
             }
         }
         s

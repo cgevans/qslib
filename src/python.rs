@@ -1,24 +1,22 @@
-
+use crate::com::ConnectionError;
 use crate::com::{QSConnection, QSConnectionError};
-use crate::parser::{MessageResponse, LogMessage};
+use crate::parser;
 use crate::parser::Command;
+use crate::parser::{LogMessage, MessageResponse};
+use pyo3::exceptions::{PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::exceptions::{PyValueError, PyTimeoutError};
 use pyo3::ToPyErr;
-use tokio::sync::mpsc;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
-use tokio::sync::broadcast;
-use crate::parser;
-use crate::com::ConnectionError;
-use tokio::time::Duration;
 use tokio::select;
+use tokio::sync::broadcast;
+use tokio::sync::mpsc;
+use tokio::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::{StreamMap, StreamExt};
+use tokio_stream::{StreamExt, StreamMap};
 
 #[cfg(feature = "python")]
 use pyo3_async_runtimes::tokio::future_into_py;
-
 
 #[pyclass]
 #[pyo3(name = "QSConnection")]
@@ -42,9 +40,15 @@ impl PyMessageResponse {
         match x {
             Some(x) => match x {
                 MessageResponse::Ok { ident, message } => Ok(message.to_string()),
-                MessageResponse::Error { ident, error } => Err(PyValueError::new_err(error.to_string())),
-                MessageResponse::Next { ident } => Err(PyValueError::new_err("Next message received")),
-                MessageResponse::Message(message) => panic!("Received log message as response to command"),
+                MessageResponse::Error { ident, error } => {
+                    Err(PyValueError::new_err(error.to_string()))
+                }
+                MessageResponse::Next { ident } => {
+                    Err(PyValueError::new_err("Next message received"))
+                }
+                MessageResponse::Message(message) => {
+                    panic!("Received log message as response to command")
+                }
             },
             None => Err(PyValueError::new_err("No message received")),
         }
@@ -58,17 +62,23 @@ impl PyMessageResponse {
         let x = self.rt.block_on(self.rx.recv());
         match x {
             Some(x) => match x {
-                MessageResponse::Ok { ident, message } => Err(PyValueError::new_err("OK message received")),
-                MessageResponse::Error { ident, error } => Err(PyValueError::new_err(error.to_string())),
+                MessageResponse::Ok { ident, message } => {
+                    Err(PyValueError::new_err("OK message received"))
+                }
+                MessageResponse::Error { ident, error } => {
+                    Err(PyValueError::new_err(error.to_string()))
+                }
                 MessageResponse::Next { ident } => Ok("".to_string()),
-                MessageResponse::Message(message) => panic!("Received log message as response to command"),
+                MessageResponse::Message(message) => {
+                    panic!("Received log message as response to command")
+                }
             },
             None => Err(PyValueError::new_err("No message received")),
         }
     }
-    
+
     pub fn get_response_with_timeout(&mut self, timeout: u64) -> PyResult<String> {
-        let x = self.rt.block_on(async  {
+        let x = self.rt.block_on(async {
             select! {
                 rx = self.rx.recv() => Ok(rx),
                 _ = tokio::time::sleep(Duration::from_secs(timeout)) => {
@@ -79,9 +89,15 @@ impl PyMessageResponse {
         match x {
             Some(x) => match x {
                 MessageResponse::Ok { ident, message } => Ok(message.to_string()),
-                MessageResponse::Error { ident, error } => Err(PyValueError::new_err(error.to_string())),
-                MessageResponse::Next { ident } => Err(PyValueError::new_err("Next message received")),
-                MessageResponse::Message(message) => panic!("Received log message as response to command"),
+                MessageResponse::Error { ident, error } => {
+                    Err(PyValueError::new_err(error.to_string()))
+                }
+                MessageResponse::Next { ident } => {
+                    Err(PyValueError::new_err("Next message received"))
+                }
+                MessageResponse::Message(message) => {
+                    panic!("Received log message as response to command")
+                }
             },
             None => Err(PyValueError::new_err("No message received")),
         }
@@ -99,7 +115,7 @@ pub struct PyLogReceiver {
 #[pymethods]
 impl PyLogReceiver {
     fn __next__(&mut self) -> PyResult<LogMessage> {
-        let x =self.rt.block_on(self.rx.next());
+        let x = self.rt.block_on(self.rx.next());
         match x {
             Some(x) => x.1.map_err(|e| PyValueError::new_err(e.to_string())),
             None => Err(PyValueError::new_err("No message received")),
@@ -142,7 +158,10 @@ impl PyQSConnection {
     fn new(host: &str, port: u16) -> PyResult<Self> {
         let rt = Runtime::new()?;
         let conn = rt.block_on(QSConnection::connect(host, port))?;
-        Ok(Self { conn, rt: Arc::new(rt) })
+        Ok(Self {
+            conn,
+            rt: Arc::new(rt),
+        })
     }
 
     fn run_command(&mut self, command: CommandInput) -> PyResult<PyMessageResponse> {
@@ -151,13 +170,19 @@ impl PyQSConnection {
             CommandInput::Bytes(b) => Command::try_from(b)?,
         };
         let rx = self.rt.block_on(self.conn.send_command(command))?;
-        Ok(PyMessageResponse { rx, rt: self.rt.clone() })
+        Ok(PyMessageResponse {
+            rx,
+            rt: self.rt.clone(),
+        })
     }
 
     #[pyo3(signature = (bytes)) ]
     fn run_command_bytes(&mut self, bytes: &[u8]) -> PyResult<PyMessageResponse> {
         let rx = self.rt.block_on(self.conn.send_command_bytes(bytes))?;
-        Ok(PyMessageResponse { rx, rt: self.rt.clone() })
+        Ok(PyMessageResponse {
+            rx,
+            rt: self.rt.clone(),
+        })
     }
 
     // fn run_command_bytes_with_timeout(&mut self, bytes: &[u8], timeout: u64) -> PyResult<PyMessageResponse> {
@@ -176,7 +201,10 @@ impl PyQSConnection {
     fn subscribe_log(&mut self, topics: Vec<String>) -> PyResult<PyLogReceiver> {
         let topics_refs: Vec<&str> = topics.iter().map(|s| s.as_str()).collect();
         let rx = self.rt.block_on(self.conn.subscribe_log(&topics_refs));
-        Ok(PyLogReceiver { rx, rt: self.rt.clone() })
+        Ok(PyLogReceiver {
+            rx,
+            rt: self.rt.clone(),
+        })
     }
 
     fn connected(&self) -> bool {

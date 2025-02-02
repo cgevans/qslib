@@ -61,7 +61,10 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>> CommandReceiver<T> {
                 return Err(CommandResponseError::UnexpectedOk(message))
             }
             Some(MessageResponse::Message(message)) => {
-                panic!("Message response to command should not be possible: {:?}", message)
+                panic!(
+                    "Message response to command should not be possible: {:?}",
+                    message
+                )
             }
         }
     }
@@ -70,7 +73,11 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>> CommandReceiver<T> {
 pub trait CommandBuilder: Into<Command> {
     type Response: TryFrom<OkResponse>;
     // fn send(&self) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send;
-    fn send(self, connection: &mut QSConnection) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send {
+    fn send(
+        self,
+        connection: &mut QSConnection,
+    ) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send
+    {
         let command: Command = self.into();
         let command_clone = command.clone();
         let r = connection.send_command(command);
@@ -92,7 +99,10 @@ impl TryFrom<OkResponse> for () {
         if value.args.is_empty() && value.options.is_empty() {
             Ok(())
         } else {
-            Err(OkParseError::UnexpectedValues(value, "response should have been empty".to_string()))
+            Err(OkParseError::UnexpectedValues(
+                value,
+                "response should have been empty".to_string(),
+            ))
         }
     }
 }
@@ -115,7 +125,6 @@ impl Subscribe {
         Self(topic.to_string())
     }
 }
-
 
 #[derive(Debug)]
 pub enum AccessLevel {
@@ -204,7 +213,10 @@ impl TryFrom<OkResponse> for Power {
         match value.args.get(0) {
             Some(Value::String(s)) if s == "ON" => Ok(Power::On),
             Some(Value::String(s)) if s == "OFF" => Ok(Power::Off),
-            _ => Err(OkParseError::UnexpectedValues(value, "response should have been ON or OFF".to_string())),
+            _ => Err(OkParseError::UnexpectedValues(
+                value,
+                "response should have been ON or OFF".to_string(),
+            )),
         }
     }
 }
@@ -258,7 +270,7 @@ impl From<PowerSet> for Command {
 }
 
 impl CommandBuilder for Command {
-    type Response = OkResponse; 
+    type Response = OkResponse;
 }
 
 // '-RunMode=- -Step=- -RunTitle=- -Cycle=- -Stage=-'
@@ -280,29 +292,71 @@ impl TryFrom<OkResponse> for PossibleRunProgress {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         let rp = RunProgress {
-            run_mode: value.options.get("RunMode").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing RunMode".to_string()))?.to_string(),
-            step: value.options.get("Step").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing Step".to_string()))?.to_string(),
-            run_title: value.options.get("RunTitle").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing RunTitle".to_string()))?.to_string(),
-            cycle: value.options.get("Cycle").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing Cycle".to_string()))?.to_string(),
-            stage: value.options.get("Stage").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing Stage".to_string()))?.to_string(),
+            run_mode: value
+                .options
+                .get("RunMode")
+                .ok_or_else(|| {
+                    OkParseError::UnexpectedValues(value.clone(), "missing RunMode".to_string())
+                })?
+                .to_string(),
+            step: value
+                .options
+                .get("Step")
+                .ok_or_else(|| {
+                    OkParseError::UnexpectedValues(value.clone(), "missing Step".to_string())
+                })?
+                .to_string(),
+            run_title: value
+                .options
+                .get("RunTitle")
+                .ok_or_else(|| {
+                    OkParseError::UnexpectedValues(value.clone(), "missing RunTitle".to_string())
+                })?
+                .to_string(),
+            cycle: value
+                .options
+                .get("Cycle")
+                .ok_or_else(|| {
+                    OkParseError::UnexpectedValues(value.clone(), "missing Cycle".to_string())
+                })?
+                .to_string(),
+            stage: value
+                .options
+                .get("Stage")
+                .ok_or_else(|| {
+                    OkParseError::UnexpectedValues(value.clone(), "missing Stage".to_string())
+                })?
+                .to_string(),
         };
 
         if rp.run_mode == "-" {
             if rp.step != "-" || rp.run_title != "-" || rp.cycle != "-" || rp.stage != "-" {
-                return Err(OkParseError::UnexpectedValues(value, "not running but some fields were not empty".to_string()));
+                return Err(OkParseError::UnexpectedValues(
+                    value,
+                    "not running but some fields were not empty".to_string(),
+                ));
             }
             return Ok(PossibleRunProgress::NotRunning);
         }
 
         if !value.args.is_empty() {
-            return Err(OkParseError::UnexpectedValues(value, "unexpected arguments".to_string()));
+            return Err(OkParseError::UnexpectedValues(
+                value,
+                "unexpected arguments".to_string(),
+            ));
         }
         if rp.step == "-" || rp.run_title == "-" || rp.cycle == "-" || rp.stage == "-" {
-            return Err(OkParseError::UnexpectedValues(value, "running but some fields were empty".to_string()));
+            return Err(OkParseError::UnexpectedValues(
+                value,
+                "running but some fields were empty".to_string(),
+            ));
         }
         for (key, _) in value.options.iter() {
             if !["RunMode", "Step", "RunTitle", "Cycle", "Stage"].contains(&key.as_str()) {
-                return Err(OkParseError::UnexpectedValues(value.clone(), format!("unexpected option {}", key)));
+                return Err(OkParseError::UnexpectedValues(
+                    value.clone(),
+                    format!("unexpected option {}", key),
+                ));
             }
         }
 

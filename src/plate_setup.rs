@@ -1,12 +1,8 @@
 use std::collections::HashMap;
 
-use quick_xml::events::Event;
-use quick_xml::name::QName;
-use quick_xml::Reader;
 use quick_xml::{de::from_str, se::to_string};
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
-use zip;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename = "Plate", deny_unknown_fields)]
@@ -42,7 +38,6 @@ pub struct OtherTag {
     #[serde(flatten)]
     pub other: HashMap<String, MapOrString>,
 }
-
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PlateKind {

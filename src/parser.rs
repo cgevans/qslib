@@ -1,12 +1,12 @@
 use core::fmt;
-use std::fmt::Display;
-use std::{io::Write};
 use indexmap::IndexMap;
+use std::fmt::Display;
+use std::io::Write;
 use thiserror::Error;
 use winnow::combinator::seq;
 use winnow::{
     ascii::{alphanumeric1, digit1, newline, space0, space1},
-    combinator::{alt, delimited, opt},
+    combinator::{alt, delimited},
     error::{ErrMode, ParserError, StrContext},
     prelude::*,
     token::{literal, take_till, take_until, take_while},
@@ -88,10 +88,12 @@ impl From<String> for Value {
 impl Value {
     pub fn parse(input: &mut &[u8]) -> ModalResult<Value> {
         let v = alt((
-            xml_delimited.map(|(tag, val)| Value::XmlString {
-                value: String::from_utf8_lossy(val).to_string(),
-                tag: String::from_utf8_lossy(tag).to_string(),
-            }).context(StrContext::Label("xml")),
+            xml_delimited
+                .map(|(tag, val)| Value::XmlString {
+                    value: String::from_utf8_lossy(val).to_string(),
+                    tag: String::from_utf8_lossy(tag).to_string(),
+                })
+                .context(StrContext::Label("xml")),
             take_till(0.., |c: u8| c == b' ' || c == b'\n')
                 .map(|val| Value::String(String::from_utf8_lossy(val).to_string()))
                 .context(StrContext::Label("value")),
@@ -187,7 +189,7 @@ impl TryFrom<&str> for Command {
         let c = Command::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
         // FIXME: check if input is empty
         Ok(c)
-    }   
+    }
 }
 
 impl TryFrom<Vec<u8>> for Command {
@@ -242,11 +244,21 @@ impl Command {
         })
         .context(StrContext::Label("command"))
         .parse_next(input)?;
-        space0.context(StrContext::Label("space")).parse_next(input)?;
-        let kv = parse_options.context(StrContext::Label("options")).parse_next(input)?;
-        space0.context(StrContext::Label("space")).parse_next(input)?;
-        let args = parse_args.context(StrContext::Label("arguments")).parse_next(input)?;
-        space0.context(StrContext::Label("space")).parse_next(input)?;
+        space0
+            .context(StrContext::Label("space"))
+            .parse_next(input)?;
+        let kv = parse_options
+            .context(StrContext::Label("options"))
+            .parse_next(input)?;
+        space0
+            .context(StrContext::Label("space"))
+            .parse_next(input)?;
+        let args = parse_args
+            .context(StrContext::Label("arguments"))
+            .parse_next(input)?;
+        space0
+            .context(StrContext::Label("space"))
+            .parse_next(input)?;
         // newline.context(StrContext::Label("newline")).parse_next(input)?;
         Ok(Command {
             command: String::from_utf8_lossy(comm).to_string(),

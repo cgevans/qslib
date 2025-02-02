@@ -1,8 +1,8 @@
 // use pyo3::prelude::*;
 
 pub mod com;
-pub mod parser;
 pub mod commands;
+pub mod parser;
 pub mod plate_setup;
 #[cfg(feature = "python")]
 pub mod python;
@@ -24,4 +24,3 @@ mod qslib_rs {
     #[pymodule_export]
     use crate::python::PyLogReceiver;
 }
-
