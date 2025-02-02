@@ -1,5 +1,8 @@
 use std::collections::HashMap;
 
+use quick_xml::events::Event;
+use quick_xml::name::QName;
+use quick_xml::Reader;
 use quick_xml::{de::from_str, se::to_string};
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
@@ -221,16 +224,15 @@ impl PlateSetup {
     }
 
     /// Convert plate setup to InfluxDB line protocol format
-    /// 
+    ///
     /// # Arguments
     /// * `timestamp` - Unix timestamp in nanoseconds
     /// * `run_name` - Optional run name to include in the tags
     pub fn to_lineprotocol(&self, timestamp: i64, run_name: Option<&str>) -> Vec<String> {
-        let well_sample = self.get_sample_wells()
+        let well_sample = self
+            .get_sample_wells()
             .into_iter()
-            .flat_map(|(sample, wells)| {
-                wells.into_iter().map(move |well| (well, sample.clone()))
-            })
+            .flat_map(|(sample, wells)| wells.into_iter().map(move |well| (well, sample.clone())))
             .collect::<HashMap<_, _>>();
 
         let (rows, cols) = match self.plate_type {
@@ -247,7 +249,10 @@ impl PlateSetup {
             .flat_map(|row| {
                 (1..=cols).map(move |col| {
                     let well = format!("{}{}", row, col);
-                    let sample = well_sample_ref.get(&well).map_or("", |s| s.as_str()).to_string();
+                    let sample = well_sample_ref
+                        .get(&well)
+                        .map_or("", |s| s.as_str())
+                        .to_string();
                     format!(
                         "platesetup,row={},col={}{} sample=\"{}\" {}",
                         row, col, run_tag_ref, sample, timestamp
@@ -255,6 +260,148 @@ impl PlateSetup {
                 })
             })
             .collect()
+    }
+
+    fn parse_feature_map(reader: &mut Reader<&[u8]>) -> Result<FeatureMap, quick_xml::DeError> {
+        let mut feature_map = FeatureMap {
+            feature: Feature {
+                id: String::new(),
+                name: String::new(),
+            },
+            feature_values: Vec::new(),
+        };
+
+        let mut buf = Vec::new();
+        let mut current_path = Vec::new();
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => {
+                    let name = e.name().into_inner().to_vec();
+                    current_path.push(name);
+
+                    if current_path.last().unwrap() == b"FeatureValue" {
+                        let value = Self::parse_feature_value(reader)?;
+                        feature_map.feature_values.push(value);
+                        current_path.pop();
+                    }
+                }
+                Ok(Event::Text(e)) => {
+                    let text = e.unescape()?.into_owned();
+                    match current_path.as_slice() {
+                        path if path.ends_with(&[b"Feature".to_vec(), b"Id".to_vec()]) => feature_map.feature.id = text,
+                        path if path.ends_with(&[b"Feature".to_vec(), b"Name".to_vec()]) => feature_map.feature.name = text,
+                        _ => (),
+                    }
+                }
+                Ok(Event::End(e)) => {
+                    let name = e.name().into_inner().to_vec();
+                    if name == b"FeatureMap" {
+                        break;
+                    }
+                    current_path.pop();
+                }
+                Ok(Event::Eof) => {
+                    return Err(quick_xml::DeError::Custom(
+                        "Unexpected EOF in FeatureMap".into(),
+                    ))
+                }
+                Err(e) => return Err(quick_xml::DeError::from(e)),
+                _ => (),
+            }
+        }
+
+        Ok(feature_map)
+    }
+
+    fn parse_feature_value(reader: &mut Reader<&[u8]>) -> Result<FeatureValue, quick_xml::DeError> {
+        let mut feature_value = FeatureValue {
+            index: 0,
+            feature_item: FeatureItem {
+                sample: Sample {
+                    name: String::new(),
+                    color: Color::rgb(0, 0, 0),
+                    custom_properties: Vec::new(),
+                },
+            },
+        };
+
+        let mut buf = Vec::new();
+        let mut current_path = Vec::new();
+        let mut current_property: Option<CustomProperty> = None;
+
+        loop {
+            match reader.read_event_into(&mut buf) {
+                Ok(Event::Start(e)) => {
+                    let name = e.name().into_inner().to_vec();
+                    current_path.push(name);
+
+                    if e.name() == quick_xml::name::QName(b"CustomProperty") {
+                        current_property = Some(CustomProperty {
+                            property: Vec::new(),
+                            value: Vec::new(),
+                        });
+                    }
+                }
+                Ok(Event::Text(e)) => {
+                    let text = e.unescape()?.into_owned();
+                    match current_path.last() {
+                        Some(path) if path == b"Index" => {
+                            feature_value.index = text
+                                .parse()
+                                .map_err(|_| quick_xml::DeError::Custom("Invalid index".into()))?;
+                        }
+                        Some(path) if path == b"Name" => {
+                            let current = current_path.last().unwrap();
+                            if current == b"Sample" {
+                                feature_value.feature_item.sample.name = text;
+                            }
+                        }
+                        Some(path) if path == b"Color" => {
+                            let color_value: i32 = text.parse().map_err(|_| {
+                                quick_xml::DeError::Custom("Invalid color value".into())
+                            })?;
+                            let [r, g, b, a] = color_value.to_le_bytes();
+                            feature_value.feature_item.sample.color = Color::new(r, g, b, a);
+                        }
+                        Some(path) if path == b"Property" => {
+                            if let Some(prop) = &mut current_property {
+                                prop.property.push(text);
+                            }
+                        }
+                        Some(path) if path == b"Value" => {
+                            if let Some(prop) = &mut current_property {
+                                prop.value.push(text);
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+                Ok(Event::End(e)) => {
+                    if e.name().into_inner() == b"CustomProperty" {
+                        if let Some(prop) = current_property.take() {
+                            feature_value
+                                .feature_item
+                                .sample
+                                .custom_properties
+                                .push(prop);
+                        }
+                    } else if e.name().into_inner() == b"FeatureValue" {
+                        break;
+                    }
+                    current_path.pop();
+                }
+                Ok(Event::Eof) => {
+                    return Err(quick_xml::DeError::Custom(
+                        "Unexpected EOF in FeatureValue".into(),
+                    ))
+                }
+                Err(e) => return Err(quick_xml::DeError::from(e)),
+                _ => (),
+            }
+        }
+
+        Ok(feature_value)
     }
 }
 
@@ -693,10 +840,7 @@ mod tests {
         );
 
         // Check a random empty well (H12)
-        assert_eq!(
-            lines[95],
-            "platesetup,row=H,col=12 sample=\"\" 1234567890"
-        );
+        assert_eq!(lines[95], "platesetup,row=H,col=12 sample=\"\" 1234567890");
 
         // Test with run name
         let lines_with_run = plate.to_lineprotocol(1234567890, Some("Test Run"));
@@ -756,16 +900,12 @@ mod tests {
         );
 
         // Check last well (P24)
-        assert_eq!(
-            lines[383],
-            "platesetup,row=P,col=24 sample=\"\" 1234567890"
-        );
+        assert_eq!(lines[383], "platesetup,row=P,col=24 sample=\"\" 1234567890");
     }
 
     #[test]
     fn test_parse_example_eds_files() {
-        let example_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("example-eds");
+        let example_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("example-eds");
 
         // Get all .eds files in the directory
         let eds_files: Vec<PathBuf> = std::fs::read_dir(example_dir)
@@ -786,13 +926,11 @@ mod tests {
         }
 
         for eds_path in eds_files {
-            let file = File::open(&eds_path).unwrap_or_else(|e| {
-                panic!("Failed to open {}: {}", eds_path.display(), e)
-            });
+            let file = File::open(&eds_path)
+                .unwrap_or_else(|e| panic!("Failed to open {}: {}", eds_path.display(), e));
 
-            let mut archive = ZipArchive::new(file).unwrap_or_else(|e| {
-                panic!("Failed to read {} as zip: {}", eds_path.display(), e)
-            });
+            let mut archive = ZipArchive::new(file)
+                .unwrap_or_else(|e| panic!("Failed to read {} as zip: {}", eds_path.display(), e));
 
             // Try to find and read the plate setup XML file
             let mut plate_setup_xml = archive
@@ -806,14 +944,15 @@ mod tests {
                 });
 
             let mut xml_content = String::new();
-            std::io::Read::read_to_string(&mut plate_setup_xml, &mut xml_content)
-                .unwrap_or_else(|e| {
+            std::io::Read::read_to_string(&mut plate_setup_xml, &mut xml_content).unwrap_or_else(
+                |e| {
                     panic!(
                         "Failed to read plate_setup.xml content from {}: {}",
                         eds_path.display(),
                         e
                     )
-                });
+                },
+            );
 
             // Try to parse the XML
             let result = PlateSetup::from_xml(&xml_content);
@@ -826,16 +965,36 @@ mod tests {
 
             // Additional validation of the parsed plate setup
             let plate = result.unwrap();
-            
+
             // Verify plate type matches dimensions
             match plate.plate_type {
                 PlateType::Well96 => {
-                    assert_eq!(plate.rows, 8, "96-well plate should have 8 rows in {}", eds_path.display());
-                    assert_eq!(plate.columns, 12, "96-well plate should have 12 columns in {}", eds_path.display());
+                    assert_eq!(
+                        plate.rows,
+                        8,
+                        "96-well plate should have 8 rows in {}",
+                        eds_path.display()
+                    );
+                    assert_eq!(
+                        plate.columns,
+                        12,
+                        "96-well plate should have 12 columns in {}",
+                        eds_path.display()
+                    );
                 }
                 PlateType::Well384 => {
-                    assert_eq!(plate.rows, 16, "384-well plate should have 16 rows in {}", eds_path.display());
-                    assert_eq!(plate.columns, 24, "384-well plate should have 24 columns in {}", eds_path.display());
+                    assert_eq!(
+                        plate.rows,
+                        16,
+                        "384-well plate should have 16 rows in {}",
+                        eds_path.display()
+                    );
+                    assert_eq!(
+                        plate.columns,
+                        24,
+                        "384-well plate should have 24 columns in {}",
+                        eds_path.display()
+                    );
                 }
             }
 
@@ -847,7 +1006,7 @@ mod tests {
                     e
                 )
             });
-            
+
             let reparse_result = PlateSetup::from_xml(&serialized);
             assert!(
                 reparse_result.is_ok(),
