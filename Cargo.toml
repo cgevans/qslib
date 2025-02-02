@@ -32,4 +32,12 @@ zip = "2.2.2"
 [features]
 debug = ["winnow/debug"]
 python = ["pyo3", "pyo3-async-runtimes"]
+
+[dev-dependencies]
+env_logger = "0.11.6"
+rcgen = "0.13.2"
+rustls-pemfile = "2.2.0"
 # default = ["python"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }

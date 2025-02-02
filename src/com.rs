@@ -1,5 +1,5 @@
 use dashmap::DashMap;
-use log::trace;
+use log::{error, trace};
 use rustls::{
     client::danger::HandshakeSignatureValid, client::danger::ServerCertVerified,
     client::danger::ServerCertVerifier, DigitallySignedStruct, Error as TLSError, SignatureScheme,
@@ -18,6 +18,8 @@ use tokio_rustls::{
 };
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
+
+use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
 
 #[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
@@ -94,147 +96,11 @@ pub enum ConnectionError {
 }
 
 use crate::parser::{self, Command, LogMessage, Message, MessageIdent, MessageResponse, Ready};
-use regex::bytes::Regex;
-use std::{collections::HashMap, sync::LazyLock};
+use std::collections::HashMap;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     sync::{broadcast, mpsc},
 };
-
-// use pyo3::prelude::*;
-static TAG_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^<(/?)([A-Za-z0-9_.-]*)(>|$)").unwrap());
-
-/*
-This isn't quite right: the quote mismatchees for InstrumentServer appear to be at a line level.
-*/
-
-#[derive(Error, Debug)]
-pub enum MsgReceiveError {
-    #[error("Unexpected close tag: </{1}> at {0}.")]
-    UnexpectedCloseTag(usize, String),
-    #[error("Mismatched close tag: </{2}> at {1} closes <{3}> at {0}.")]
-    MismatchedCloseTag(usize, usize, String, String),
-}
-
-#[derive(Error, Debug)]
-pub enum MsgPushError {
-    #[error("Message waiting.")]
-    MessageWaiting,
-}
-
-#[derive(Debug)]
-pub struct MsgRecv {
-    buf: Vec<u8>,
-    tagstack: Vec<(Vec<u8>, usize)>,
-    parttag: Option<usize>,
-    msg_end: Option<usize>,
-    msg_error: Option<MsgReceiveError>,
-}
-
-impl MsgRecv {
-    pub fn new() -> Self {
-        Self {
-            buf: Vec::with_capacity(1024),
-            tagstack: Vec::new(),
-            parttag: None,
-            msg_end: None,
-            msg_error: None,
-        }
-    }
-
-    pub fn try_get_msg(&mut self) -> Result<Option<Vec<u8>>, MsgReceiveError> {
-        match self.msg_end {
-            Some(msg_end) => {
-                let msg = Vec::from_iter(self.buf.drain(0..msg_end));
-                self.msg_end = None;
-                let cur_error = self.msg_error.take();
-                self.tagstack.clear();
-                self.parttag = None;
-                let _another = self.check_from_pos(0).unwrap(); // We know no message is waiting now.
-                if let Some(err) = cur_error {
-                    return Err(err);
-                }
-                Ok(Some(msg))
-            }
-            None => Ok(None),
-        }
-    }
-
-    fn check_from_pos(&mut self, start_pos: usize) -> Result<bool, MsgPushError> {
-        if self.msg_error.is_some() || self.msg_end.is_some() {
-            return Err(MsgPushError::MessageWaiting);
-        }
-        let mut pos = start_pos;
-        while let Some(offset) = self.buf[pos..]
-            .iter()
-            .position(|&c| c == b'<' || c == b'\n' || c == b'>')
-        {
-            let c = self.buf[pos + offset];
-            if c == b'\n' {
-                if self.tagstack.len() == 0 {
-                    self.msg_end = Some(pos + offset + 1);
-                    return Ok(true);
-                }
-            } else if c == b'<' {
-                match TAG_REGEX.captures(&self.buf[pos + offset..]) {
-                    Some(captures) => {
-                        let (_a, [close, tag, end]) = captures.extract();
-                        if end == b"" {
-                            self.parttag = Some(pos + offset);
-                            return Ok(false);
-                        } else {
-                            if close == b"/" {
-                                match self.tagstack.pop() {
-                                    Some(old_tag) => {
-                                        if old_tag.0 != tag {
-                                            self.msg_error =
-                                                Some(MsgReceiveError::MismatchedCloseTag(
-                                                    old_tag.1,
-                                                    pos + offset,
-                                                    String::from_utf8_lossy(&old_tag.0).to_string(),
-                                                    String::from_utf8_lossy(&tag).to_string(),
-                                                ));
-                                            self.tagstack.clear();
-                                        }
-                                    }
-                                    None => {
-                                        self.msg_error = Some(MsgReceiveError::UnexpectedCloseTag(
-                                            pos + offset,
-                                            String::from_utf8_lossy(&tag).to_string(),
-                                        ));
-                                        self.tagstack.clear();
-                                    }
-                                }
-                            } else {
-                                if self.msg_error.is_none() {
-                                    self.tagstack.push((tag.to_vec(), pos + offset));
-                                }
-                            }
-                        }
-                    }
-                    None => {}
-                }
-            }
-            pos += offset + 1;
-        }
-
-        Ok(false)
-    }
-
-    pub fn push_data<'a>(&mut self, data: &'a [u8]) -> Result<bool, MsgPushError> {
-        let last_pos = self.parttag.unwrap_or(self.buf.len());
-        self.buf.extend_from_slice(&data);
-        self.check_from_pos(last_pos)
-    }
-
-    pub fn reset(&mut self) {
-        self.buf.clear();
-        self.tagstack.clear();
-        self.parttag = None;
-        self.msg_end = None;
-    }
-}
 
 enum ReadHalfOptions {
     Tls(ReadHalf<TlsStream<TcpStream>>),
@@ -279,19 +145,21 @@ pub enum QSConnectionError {
 
 impl QSConnectionInner {
     async fn handle_receive(&mut self, n: usize) -> Result<(), QSConnectionError> {
-        trace!("Received data: {:?}", n);
+        trace!(
+            "Received data: {:?}",
+            String::from_utf8_lossy(&self.buf[..n])
+        );
         if n == 0 {
             return Ok(());
         }
         self.receiver.push_data(&self.buf[..n]).unwrap();
-        trace!("Pushed data");
         'inner: loop {
             let msg = self.receiver.try_get_msg();
             match msg {
                 Ok(Some(msg)) => {
-                    let msg = MessageResponse::try_from(&msg[..]);
-                    trace!("Received message: {:?}", msg);
-                    match msg {
+                    let parsed_msg = MessageResponse::try_from(&msg[..]);
+                    trace!("Received message: {:?}", parsed_msg);
+                    match parsed_msg {
                         Ok(MessageResponse::Message(msg)) => {
                             if let Some(channel) = self.logchannels.get(&msg.topic) {
                                 match channel.send(msg.clone()) {
@@ -347,12 +215,16 @@ impl QSConnectionInner {
                             }
                         }
                         Err(e) => {
-                            panic!("Error receiving message: {:?}", e);
+                            error!(
+                                "Error receiving message: {:?} ({:?})",
+                                e,
+                                String::from_utf8_lossy(&msg)
+                            );
                         }
                     }
                 }
                 Err(e) => {
-                    panic!("Error receiving message: {:?}", e);
+                    error!("Error receiving message: {:?}", e);
                 }
                 Ok(None) => break 'inner Ok(()),
             }
@@ -425,9 +297,12 @@ pub struct QSConnection {
     pub task: JoinHandle<Result<(), QSConnectionError>>,
     pub commandchannel: mpsc::Sender<(MessageIdent, mpsc::Sender<MessageResponse>)>,
     pub next_ident: u32,
+    pub connection_type: ConnectionType,
+    pub host: String,
+    pub port: u16,
     stream_write: WriteHalfOptions,
     pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
-    pub ready_message: Ready
+    pub ready_message: Ready,
 }
 
 impl QSConnection {
@@ -473,12 +348,15 @@ impl QSConnection {
         Ok(rx)
     }
 
-    pub async fn connect(host: &str, port: u16, connection_type: ConnectionType) -> Result<QSConnection, ConnectionError> {
+    pub async fn connect(
+        host: &str,
+        port: u16,
+        connection_type: ConnectionType,
+    ) -> Result<QSConnection, ConnectionError> {
         match connection_type {
             ConnectionType::SSL => Self::connect_ssl(host, port).await,
             ConnectionType::TCP => Self::connect_tcp(host, port).await,
             ConnectionType::Auto => {
-
                 // If port is 7443, use SSL
                 // If port is 7000, use TCP
                 // Otherwise, try an SSL connection first, then fall back to TCP
@@ -496,10 +374,7 @@ impl QSConnection {
         }
     }
 
-    pub async fn connect_ssl(
-        host: &str,
-        port: u16,
-    ) -> Result<QSConnection, ConnectionError> {
+    pub async fn connect_ssl(host: &str, port: u16) -> Result<QSConnection, ConnectionError> {
         let root_cert_store = RootCertStore::empty();
         let mut config = ClientConfig::builder()
             .with_root_certificates(root_cert_store)
@@ -546,15 +421,15 @@ impl QSConnection {
             logchannels,
             stream_write: w,
             ready_message: msg,
+            connection_type: ConnectionType::SSL,
+            host: host.to_string(),
+            port,
         })
     }
 
-    pub async fn connect_tcp(
-        host: &str,
-        port: u16,
-    ) -> Result<QSConnection, ConnectionError> {
+    pub async fn connect_tcp(host: &str, port: u16) -> Result<QSConnection, ConnectionError> {
         let stream = TcpStream::connect((host, port)).await?;
-        
+
         let (com_tx, com_rx) = mpsc::channel(100);
         let logchannels = Arc::new(DashMap::new());
 
@@ -586,6 +461,9 @@ impl QSConnection {
             logchannels,
             stream_write: w,
             ready_message: msg,
+            connection_type: ConnectionType::TCP,
+            host: host.to_string(),
+            port,
         })
     }
 
@@ -606,13 +484,18 @@ impl QSConnection {
         s
     }
 
+    /// Check if the connection is still active.
+    ///
+    /// This works by checking if the task is still running. If the connection
+    /// is hanging, this might return true.
     pub async fn is_connected(&self) -> bool {
-        self.task.is_finished()
+        !self.task.is_finished()
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionType {
     SSL,
     TCP,
-    Auto
+    Auto,
 }

@@ -94,6 +94,14 @@ impl Value {
                     tag: String::from_utf8_lossy(tag).to_string(),
                 })
                 .context(StrContext::Label("xml")),
+            // Handle quoted strings
+            delimited(
+                literal(b'"'),
+                take_till(0.., |c: u8| c == b'"'),
+                literal(b'"'),
+            )
+            .map(|val| Value::QuotedString(String::from_utf8_lossy(val).to_string()))
+            .context(StrContext::Label("quoted")),
             take_till(0.., |c: u8| c == b' ' || c == b'\n')
                 .map(|val| Value::String(String::from_utf8_lossy(val).to_string()))
                 .context(StrContext::Label("value")),
@@ -454,6 +462,11 @@ fn parse_next(input: &mut &[u8]) -> ModalResult<MessageResponse> {
     .parse_next(input);
 }
 
+/// Example ready message:
+///
+/// ```scpi
+/// READy -session=474800 -product=QuantStudio3_5 -version=1.3.0 -build=001 -capabilities=Index
+/// ```
 #[derive(Debug)]
 pub struct Ready {
     pub args: IndexMap<String, Value>,
