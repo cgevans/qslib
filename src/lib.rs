@@ -3,7 +3,7 @@
 pub mod com;
 pub mod parser;
 pub mod commands;
-
+pub mod plate_setup;
 #[cfg(feature = "python")]
 pub mod python;
 #[cfg(feature = "python")]

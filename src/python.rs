@@ -37,17 +37,21 @@ pub struct PyMessageResponse {
 #[cfg(feature = "python")]
 #[pymethods]
 impl PyMessageResponse {
-    pub fn __next__(&mut self) -> PyResult<String> {
+    pub fn get_response(&mut self) -> PyResult<String> {
         let x = self.rt.block_on(self.rx.recv());
         match x {
             Some(x) => match x {
                 MessageResponse::Ok { ident, message } => Ok(message.to_string()),
                 MessageResponse::Error { ident, error } => Err(PyValueError::new_err(error.to_string())),
                 MessageResponse::Next { ident } => Err(PyValueError::new_err("Next message received")),
-                MessageResponse::Message(message) => panic!("Can't happen"),
+                MessageResponse::Message(message) => panic!("Received log message as response to command"),
             },
             None => Err(PyValueError::new_err("No message received")),
         }
+    }
+
+    pub fn __next__(&mut self) -> PyResult<String> {
+        self.get_response(self)
     }
 
     pub fn get_ack(&mut self) -> PyResult<String> {
@@ -57,7 +61,7 @@ impl PyMessageResponse {
                 MessageResponse::Ok { ident, message } => Err(PyValueError::new_err("OK message received")),
                 MessageResponse::Error { ident, error } => Err(PyValueError::new_err(error.to_string())),
                 MessageResponse::Next { ident } => Ok("".to_string()),
-                MessageResponse::Message(message) => panic!("Can't happen"),
+                MessageResponse::Message(message) => panic!("Received log message as response to command"),
             },
             None => Err(PyValueError::new_err("No message received")),
         }
@@ -77,7 +81,7 @@ impl PyMessageResponse {
                 MessageResponse::Ok { ident, message } => Ok(message.to_string()),
                 MessageResponse::Error { ident, error } => Err(PyValueError::new_err(error.to_string())),
                 MessageResponse::Next { ident } => Err(PyValueError::new_err("Next message received")),
-                MessageResponse::Message(message) => panic!("Can't happen"),
+                MessageResponse::Message(message) => panic!("Received log message as response to command"),
             },
             None => Err(PyValueError::new_err("No message received")),
         }
@@ -100,6 +104,10 @@ impl PyLogReceiver {
             Some(x) => x.1.map_err(|e| PyValueError::new_err(e.to_string())),
             None => Err(PyValueError::new_err("No message received")),
         }
+    }
+
+    fn next(&mut self) -> PyResult<LogMessage> {
+        self.__next__(self)
     }
 }
 

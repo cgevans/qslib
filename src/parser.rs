@@ -23,6 +23,20 @@ pub enum Value {
     XmlBinaryString { value: Vec<u8> },
 }
 
+impl Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::String(s) => write!(f, "{}", s),
+            Value::Int(i) => write!(f, "{}", i),
+            Value::Float(float) => write!(f, "{}", float),
+            Value::Bool(b) => write!(f, "{}", b),
+            Value::QuotedString(s) => write!(f, "{}", s),
+            Value::XmlString { value, tag: _ } => write!(f, "{}", value),
+            Value::XmlBinaryString { value } => write!(f, "{}", value.len()),
+        }
+    }
+}
+
 impl From<&str> for Value {
     fn from(s: &str) -> Self {
         if s.contains('\n') {
@@ -287,7 +301,7 @@ fn parse_options<'s>(input: &mut &'s [u8]) -> ModalResult<IndexMap<String, Value
     Ok(map)
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct OkResponse {
     pub options: IndexMap<String, Value>,
     pub args: Vec<Value>,

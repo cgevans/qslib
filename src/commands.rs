@@ -16,8 +16,8 @@ pub struct CommandReceiver<T: TryFrom<OkResponse>> {
 
 #[derive(Debug, Error)]
 pub enum OkParseError {
-    #[error("Unexpected values: {0:?}")]
-    UnexpectedValues(OkResponse),
+    #[error("Unexpected values: {1} ({0:?})")]
+    UnexpectedValues(OkResponse, String),
 }
 
 #[derive(Debug, Error)]
@@ -92,7 +92,7 @@ impl TryFrom<OkResponse> for () {
         if value.args.is_empty() && value.options.is_empty() {
             Ok(())
         } else {
-            Err(OkParseError::UnexpectedValues(value))
+            Err(OkParseError::UnexpectedValues(value, "response should have been empty".to_string()))
         }
     }
 }
@@ -180,46 +180,144 @@ impl Unsubscribe {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum Power {
+    On,
+    Off,
+}
+
 pub struct PowerQuery;
 
 impl CommandBuilder for PowerQuery {
-    type Response = bool;
+    type Response = Power;
 }
 
 impl From<PowerQuery> for Command {
     fn from(_command: PowerQuery) -> Self {
-        Command::new("PWR?")
+        Command::new("POW?")
     }
 }
 
-impl TryFrom<OkResponse> for bool {
+impl TryFrom<OkResponse> for Power {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         match value.args.get(0) {
-            Some(Value::String(s)) if s == "ON" => Ok(true),
-            Some(Value::String(s)) if s == "OFF" => Ok(false),
-            _ => Err(OkParseError::UnexpectedValues(value)),
+            Some(Value::String(s)) if s == "ON" => Ok(Power::On),
+            Some(Value::String(s)) if s == "OFF" => Ok(Power::Off),
+            _ => Err(OkParseError::UnexpectedValues(value, "response should have been ON or OFF".to_string())),
         }
     }
 }
 
-pub struct PowerSet(pub bool);
+pub struct PowerSet(pub Power);
 
 impl CommandBuilder for PowerSet {
     type Response = ();
 }
 
+impl PowerSet {
+    pub fn on() -> Self {
+        Self(Power::On)
+    }
+
+    pub fn off() -> Self {
+        Self(Power::Off)
+    }
+
+    pub fn set(power: impl Into<Power>) -> Self {
+        Self(power.into())
+    }
+}
+
+impl From<Power> for bool {
+    fn from(power: Power) -> Self {
+        match power {
+            Power::On => true,
+            Power::Off => false,
+        }
+    }
+}
+
+impl From<bool> for Power {
+    fn from(value: bool) -> Self {
+        if value {
+            Power::On
+        } else {
+            Power::Off
+        }
+    }
+}
+
 impl From<PowerSet> for Command {
     fn from(command: PowerSet) -> Self {
-        Command::new("PWR").with_arg(match command.0 {
-            true => "ON",
-            false => "OFF",
+        Command::new("POW").with_arg(match command.0 {
+            Power::On => "ON",
+            Power::Off => "OFF",
         })
     }
 }
 
-
-
 impl CommandBuilder for Command {
     type Response = OkResponse; 
+}
+
+// '-RunMode=- -Step=- -RunTitle=- -Cycle=- -Stage=-'
+#[derive(Debug, Clone)]
+pub struct RunProgress {
+    pub run_mode: String,
+    pub step: String,
+    pub run_title: String,
+    pub cycle: String,
+    pub stage: String,
+}
+
+pub enum PossibleRunProgress {
+    Running(RunProgress),
+    NotRunning,
+}
+
+impl TryFrom<OkResponse> for PossibleRunProgress {
+    type Error = OkParseError;
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        let rp = RunProgress {
+            run_mode: value.options.get("RunMode").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing RunMode".to_string()))?.to_string(),
+            step: value.options.get("Step").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing Step".to_string()))?.to_string(),
+            run_title: value.options.get("RunTitle").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing RunTitle".to_string()))?.to_string(),
+            cycle: value.options.get("Cycle").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing Cycle".to_string()))?.to_string(),
+            stage: value.options.get("Stage").ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing Stage".to_string()))?.to_string(),
+        };
+
+        if rp.run_mode == "-" {
+            if rp.step != "-" || rp.run_title != "-" || rp.cycle != "-" || rp.stage != "-" {
+                return Err(OkParseError::UnexpectedValues(value, "not running but some fields were not empty".to_string()));
+            }
+            return Ok(PossibleRunProgress::NotRunning);
+        }
+
+        if !value.args.is_empty() {
+            return Err(OkParseError::UnexpectedValues(value, "unexpected arguments".to_string()));
+        }
+        if rp.step == "-" || rp.run_title == "-" || rp.cycle == "-" || rp.stage == "-" {
+            return Err(OkParseError::UnexpectedValues(value, "running but some fields were empty".to_string()));
+        }
+        for (key, _) in value.options.iter() {
+            if !["RunMode", "Step", "RunTitle", "Cycle", "Stage"].contains(&key.as_str()) {
+                return Err(OkParseError::UnexpectedValues(value.clone(), format!("unexpected option {}", key)));
+            }
+        }
+
+        Ok(PossibleRunProgress::Running(rp))
+    }
+}
+
+pub struct RunProgressQuery;
+
+impl CommandBuilder for RunProgressQuery {
+    type Response = PossibleRunProgress;
+}
+
+impl From<RunProgressQuery> for Command {
+    fn from(_command: RunProgressQuery) -> Self {
+        Command::new("RunProgress?")
+    }
 }
