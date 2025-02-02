@@ -279,11 +279,15 @@ impl QSConnectionInner {
                     trace!("Received message: {:?}", msg);
                     match msg {
                         Ok(MessageResponse::Message(msg)) => {
-                            match self.logchannel.send(msg) {
-                                Ok(_) => (),
-                                Err(e) => {
-                                    trace!("Error sending log message: {:?}", e);
-                                    // fixme: just ignore
+                            // Send to all matching channels
+                            for (topic, channel) in &self.logchannels {
+                                if topic == "*" || topic == &msg.topic {
+                                    match channel.send(msg.clone()) {
+                                        Ok(_) => (),
+                                        Err(e) => {
+                                            trace!("Error sending log message: {:?}", e);
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -368,7 +372,7 @@ impl QSConnectionInner {
 pub struct QSConnection {
     pub task: JoinHandle<Result<(), QSConnectionError>>,
     pub commandchannel: mpsc::Sender<(MessageIdent, mpsc::Sender<MessageResponse>)>,
-    pub logchannel: broadcast::Sender<LogMessage>,
+    pub logchannels: HashMap<String, broadcast::Sender<LogMessage>>,
     pub next_ident: u32,
     pub stream_write: WriteHalf<TlsStream<TcpStream>>,
 }
@@ -429,8 +433,9 @@ impl QSConnection {
         .await?;
 
         let (com_tx, com_rx) = mpsc::channel(100);
-        let (log_tx, _) = broadcast::channel(100);
-        let log_tx_clone = log_tx.clone();
+        let mut logchannels = HashMap::new();
+        let (all_tx, _) = broadcast::channel(100);
+        logchannels.insert("*".to_string(), all_tx);
 
         // Read ready message
         let mut b = [0; 1024];
@@ -444,7 +449,7 @@ impl QSConnection {
         let mut qsi = QSConnectionInner {
             stream_read: r,
             receiver: MsgRecv::new(),
-            logchannel: log_tx,
+            logchannels,
             messagechannels: HashMap::new(),
             commandchannel: com_rx,
             buf: [0; 1024],
@@ -453,14 +458,20 @@ impl QSConnection {
         Ok(QSConnection {
             task: tokio::spawn(async move { qsi.receive().await }),
             commandchannel: com_tx,
-            logchannel: log_tx_clone,
+            logchannels: HashMap::new(),
             next_ident: 0,
             stream_write: w,
         })
     }
 
-    pub async fn subscribe_log(&self) -> broadcast::Receiver<LogMessage> {
-        self.logchannel.subscribe()
+    pub async fn subscribe_log(&mut self, topic: &str) -> broadcast::Receiver<LogMessage> {
+        if let Some(channel) = self.logchannels.get(topic) {
+            channel.subscribe()
+        } else {
+            let (tx, rx) = broadcast::channel(100);
+            self.logchannels.insert(topic.to_string(), tx);
+            rx
+        }
     }
 
     pub async fn is_connected(&self) -> bool {
