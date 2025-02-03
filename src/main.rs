@@ -50,7 +50,6 @@ struct Config {
     matrix: Option<matrix::MatrixSettings>,
     influxdb: Option<InfluxDBConfig>,
     stdout: Option<()>,
-    sync: SyncConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -72,11 +71,6 @@ struct InfluxDBConfig {
     token: String,
     batch_size: Option<usize>,
     flush_interval_ms: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SyncConfig {
-    in_progress_directory: Option<String>,
 }
 
 #[derive(Debug, Error)]
