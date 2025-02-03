@@ -1,19 +1,26 @@
 use anyhow::Result;
-use qslib_rs::{com::QSConnection, commands::{Access, AccessLevel, CommandBuilder, Subscribe}, parser::LogMessage};
-use serde_derive::Deserialize;
-use std::path::PathBuf;
-use tokio_stream::{Stream, StreamExt};
-use influxdb2::{models::WriteDataPoint, Client, FromDataPoint};
-use influxdb2::models::DataPoint;
-use tokio::sync::mpsc;
-use tokio::time::{interval, Duration};
 use futures::stream;
+use influxdb2::models::DataPoint;
+use influxdb2::{Client, FromDataPoint, models::WriteDataPoint};
+use qslib_rs::com::ConnectionError;
+use qslib_rs::{
+    com::QSConnection,
+    commands::{Access, AccessLevel, CommandBuilder, Subscribe},
+    parser::LogMessage,
+};
+use serde_derive::Deserialize;
+use tokio::task::JoinHandle;
+use std::collections::HashMap;
+use std::path::PathBuf;
+use tokio::sync::mpsc;
+use tokio::time::{Duration, interval};
+use tokio_stream::{Stream, StreamExt, StreamMap, wrappers::BroadcastStream};
 // use crate::influx::InfluxDBConfig;
 
 #[derive(Debug, Deserialize)]
 struct Config {
     global: Option<GlobalConfig>,
-    instruments: Vec<InstrumentConfig>,
+    machines: Vec<MachineConfig>,
     matrix: Option<MatrixConfig>,
     influxdb: Option<InfluxDBConfig>,
     stdout: Option<()>,
@@ -24,8 +31,8 @@ struct GlobalConfig {
     // Add global settings as needed
 }
 
-#[derive(Debug, Deserialize)]
-struct InstrumentConfig {
+#[derive(Debug, Deserialize, Clone)]
+struct MachineConfig {
     name: String,
     host: String,
 }
@@ -42,7 +49,7 @@ struct MatrixConfig {
     allow_control: bool,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 struct InfluxDBConfig {
     url: String,
     org: String,
@@ -56,19 +63,20 @@ fn load_config(path: PathBuf) -> Result<Config> {
     let settings = config::Config::builder()
         .add_source(config::File::from(path))
         .build()?;
-    
+
     Ok(settings.try_deserialize()?)
 }
 
 async fn write_points_to_influx(
-    mut rx: mpsc::Receiver<DataPoint>,
+    mut rx: mpsc::Receiver<(String, DataPoint)>,
     client: Client,
     bucket: String,
     batch_size: usize,
     flush_interval: Duration,
 ) -> Result<()> {
     let mut interval = interval(flush_interval);
-    let mut points = Vec::with_capacity(batch_size);
+    let mut points: Vec<DataPoint> = Vec::new();
+    let mut last_flush = tokio::time::Instant::now();
 
     eprintln!("InfluxDB write task started");
 
@@ -77,23 +85,25 @@ async fn write_points_to_influx(
             // Check for new points
             point = rx.recv() => {
                 match point {
-                    Some(point) => {
+                    Some((machine, mut point)) => {
                         points.push(point);
                         if points.len() >= batch_size {
                             eprintln!("Flushing {} points to InfluxDB (batch size reached)", points.len());
                             let tosend = points.drain(..).collect::<Vec<_>>();
                             client.write(&bucket, stream::iter(tosend)).await?;
+                            last_flush = tokio::time::Instant::now();
                         }
                     }
                     None => break, // Channel closed
                 }
             }
-            // Flush on interval
+            // Flush on interval only if enough time has passed since last flush
             _ = interval.tick() => {
-                if !points.is_empty() {
+                if !points.is_empty() && last_flush.elapsed() >= flush_interval {
                     eprintln!("Flushing {} points to InfluxDB (interval reached)", points.len());
                     let tosend = points.drain(..).collect::<Vec<_>>();
                     client.write(&bucket, stream::iter(tosend)).await?;
+                    last_flush = tokio::time::Instant::now();
                 }
             }
         }
@@ -101,10 +111,10 @@ async fn write_points_to_influx(
 
     // Final flush of any remaining points
     if !points.is_empty() {
+        eprintln!("Flushing {} points to InfluxDB (final flush)", points.len());
         let tosend = points.drain(..).collect::<Vec<_>>();
         client.write(&bucket, stream::iter(tosend)).await?;
     }
-
 
     eprintln!("InfluxDB write task completed");
 
@@ -114,23 +124,20 @@ async fn write_points_to_influx(
 #[tokio::main]
 async fn main() -> Result<()> {
     let config = load_config(PathBuf::from("config.toml"))?;
-    
+
     // Set up InfluxDB if configured
     let (tx, rx) = mpsc::channel(1000);
     let influx_task = if let Some(influx_config) = config.influxdb.as_ref() {
         let client = Client::new(&influx_config.url, &influx_config.org, &influx_config.token);
         let batch_size = influx_config.batch_size.unwrap_or(100);
-        let flush_interval = Duration::from_millis(influx_config.flush_interval_ms.unwrap_or(10000));
+        let flush_interval =
+            Duration::from_millis(influx_config.flush_interval_ms.unwrap_or(10000));
         let bucket = influx_config.bucket.clone();
-        
+
         Some(tokio::spawn(async move {
-            if let Err(e) = write_points_to_influx(
-                rx,
-                client,
-                bucket,
-                batch_size,
-                flush_interval,
-            ).await {
+            if let Err(e) =
+                write_points_to_influx(rx, client, bucket, batch_size, flush_interval).await
+            {
                 eprintln!("Error writing points to InfluxDB: {}", e);
             }
         }))
@@ -138,44 +145,14 @@ async fn main() -> Result<()> {
         None
     };
 
-    let mut con = QSConnection::connect("qpcr1", 7443).await?;
-    let mut log_sub = con.subscribe_log(&["Temperature", "Time", "Run", "LEDStatus"]).await;
+    let mut log_tasks = Vec::new();
+    let mut conns = Vec::new();
 
-    let access = Access::level(AccessLevel::Observer);
-    con.send_command(access).await?;
-
-    Subscribe::topic("*").send(&mut con).await?;
-
-    while let (_, msg) = log_sub.next().await.unwrap() {
-        let timestamp = chrono::Utc::now();
-        let msg = msg.unwrap();
-        let points = match msg.topic.as_str() {
-            "Temperature" => temperature_to_lineprotocol(&msg, timestamp)?,
-            "Time" => time_to_lineprotocol(&msg, timestamp)?,
-            "Run" => run_to_lineprotocol(&msg, timestamp)?,
-            "LEDStatus" => ledstatus_to_lineprotocol(&msg, timestamp)?,
-            _ => continue,
-        };
-
-        for point in points {
-            // If InfluxDB is configured, send points to the channel
-            if let Some(_) = config.influxdb.as_ref() {
-                if let Err(e) = tx.send(point.clone()).await {
-                    eprintln!("Failed to send point to InfluxDB channel: {:?}, error: {}", point, e);
-                }
-            }
-
-            // If stdout is enabled, print the points
-            if config.stdout.is_some() {
-                let mut buf = Vec::new();
-                point.write_data_point_to(&mut buf)?;
-                println!("{}", String::from_utf8(buf)?);
-            }
-        }
+    for config in config.machines.iter() {
+        let (conn, log_task) = log_machine(config, tx.clone()).await?;
+        log_tasks.push(log_task);
+        conns.push(conn);
     }
-
-    // Drop sender to close channel
-    drop(tx);
 
     // Wait for influx task to complete if it exists
     if let Some(task) = influx_task {
@@ -189,7 +166,66 @@ async fn main() -> Result<()> {
 
 // }
 
-fn ledstatus_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chrono::Utc>) -> Result<Vec<DataPoint>> {
+async fn log_machine(
+    config: &MachineConfig,
+    tx: mpsc::Sender<(String, DataPoint)>,
+) -> Result<(QSConnection, JoinHandle<()>)> {
+    let mut con =
+        QSConnection::connect(&config.host, 7443, qslib_rs::com::ConnectionType::SSL).await?;
+
+
+    let access = Access::level(AccessLevel::Observer);
+    access.send(&mut con).await?.recv_response().await?;
+    Subscribe::topic("Temperature").send(&mut con).await?;
+    Subscribe::topic("Time").send(&mut con).await?;
+    Subscribe::topic("Run").send(&mut con).await?;
+    Subscribe::topic("LEDStatus").send(&mut con).await?;
+
+    let mut log_sub = con
+        .subscribe_log(&["Temperature", "Time", "Run", "LEDStatus"])
+        .await;
+
+    let config_clone = config.clone();
+
+    let log_task = tokio::spawn(async move {
+        influx_log_loop(&mut log_sub, tx, &config_clone).await.unwrap();
+    });
+
+    Ok((con, log_task))
+}
+
+async fn influx_log_loop(
+    log_sub: &mut StreamMap<String, BroadcastStream<LogMessage>>,
+    tx: mpsc::Sender<(String, DataPoint)>,
+    config: &MachineConfig,
+) -> Result<()> {
+    let machine_name = config.name.as_ref();
+    loop {
+        let (_, msg) = log_sub.next().await.unwrap();
+        let timestamp = chrono::Utc::now();
+        let msg = msg.unwrap();
+        let points = match msg.topic.as_str() {
+            "Temperature" => temperature_to_lineprotocol(&msg, machine_name, timestamp)?,
+            "Time" => time_to_lineprotocol(&msg, machine_name, timestamp)?,
+            "Run" => run_to_lineprotocol(&msg, machine_name, timestamp)?,
+            "LEDStatus" => ledstatus_to_lineprotocol(&msg, machine_name, timestamp)?,
+            _ => continue,
+        };
+
+        for point in points {
+            // If InfluxDB is configured, send points to the channel
+            if let Err(e) = tx.send((config.name.clone(), point)).await {
+                eprintln!("Failed to send point to InfluxDB: {}", e);
+            }
+        }
+    }
+}
+
+fn ledstatus_to_lineprotocol(
+    msg: &LogMessage,
+    machine_name: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<DataPoint>> {
     debug_assert!(msg.topic == "LEDStatus");
     // Example: "MESSage LEDStatus Temperature:56.1791 Current:9.18727 Voltage:3.41406 JuncTemp:72.8079"
     // Note this doesn't follow standard -key=value format, so each field will be an arg in the message
@@ -198,56 +234,68 @@ fn ledstatus_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chron
     let mut fields = Vec::with_capacity(4);
     let mut args = msg.message.split_ascii_whitespace();
     while let Some(arg) = args.next() {
-        let (key, value) = arg.split_once(':').ok_or(anyhow::anyhow!("Invalid format"))?;
+        let (key, value) = arg
+            .split_once(':')
+            .ok_or(anyhow::anyhow!("Invalid format"))?;
         let val = value.parse::<f64>()?;
         fields.push((key.to_lowercase(), val));
     }
-    Ok(vec![fields.into_iter().fold(
-        DataPoint::builder("lamp"),
-        |builder, (key, value)| builder.field(key, value)
-    )
-    .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64)
-    .build()?])
+    Ok(vec![
+        fields
+            .into_iter()
+            .fold(DataPoint::builder("lamp").tag("machine", machine_name), |builder, (key, value)| {
+                builder.field(key, value)
+            })
+            .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64)
+            .build()?,
+    ])
 }
 
-fn run_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chrono::Utc>) -> Result<Vec<DataPoint>> {
+fn run_to_lineprotocol(
+    msg: &LogMessage,
+    machine_name: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
     let mut args = msg.message.split_ascii_whitespace();
-    
+
     let action = args.next().ok_or(anyhow::anyhow!("Missing action"))?;
-    
+
     // Create base point for run_action
-    let mut point = DataPoint::builder("run_action")
+    let mut point = DataPoint::builder("run_action").tag("machine", machine_name)
         .tag("type", action.to_lowercase())
         .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64);
 
     match action {
         "Stage" | "Cycle" | "Step" => {
-            let value = args.next()
+            let value = args
+                .next()
                 .ok_or(anyhow::anyhow!("Missing value"))?
                 .parse::<i64>()?;
-            
+
             point = point.field(action.to_lowercase(), value);
             points.push(point.build()?);
 
             // Also create run_status point
-            points.push(DataPoint::builder("run_status")
-                .tag("type", action.to_lowercase())
-                .field(action.to_lowercase(), value)
-                .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64)
-                .build()?);
-        },
+            points.push(
+                DataPoint::builder("run_status").tag("machine", machine_name)
+                    .tag("type", action.to_lowercase())
+                    .field(action.to_lowercase(), value)
+                    .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64)
+                    .build()?,
+            );
+        }
         "Holding" => {
             if let Some(time_str) = args.next() {
                 let time = time_str.parse::<f64>()?;
                 point = point.field("holdtime", time);
             }
             points.push(point.build()?);
-        },
+        }
         "Ramping" | "Acquiring" => {
             // These just need the basic point with type tag
             points.push(point.build()?);
-        },
+        }
         "Error" | "Ended" | "Aborted" | "Stopped" | "Starting" => {
             // Collect remaining message
             let remaining = args.collect::<Vec<_>>().join(" ");
@@ -255,16 +303,14 @@ fn run_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chrono::Utc
                 point = point.field("message", remaining);
             }
             points.push(point.build()?);
-        },
+        }
         "Collected" => {
             points.push(point.build()?);
-        },
+        }
         _ => {
             // Handle other cases
             let message = format!("{} {}", action, args.collect::<Vec<_>>().join(" "));
-            point = point
-                .tag("type", "Other")
-                .field("message", message);
+            point = point.tag("type", "Other").field("message", message);
             points.push(point.build()?);
         }
     }
@@ -272,12 +318,18 @@ fn run_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chrono::Utc
     Ok(points)
 }
 
-fn temperature_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chrono::Utc>) -> Result<Vec<DataPoint>> {
+fn temperature_to_lineprotocol(
+    msg: &LogMessage,
+    machine_name: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
     let ts = timestamp.timestamp_nanos_opt().unwrap() as i64;
 
     // Parse the message into key-value pairs
-    let mut args = msg.message.split_ascii_whitespace()
+    let mut args = msg
+        .message
+        .split_ascii_whitespace()
         .filter(|s| s.contains('='))
         .map(|s| {
             let parts: Vec<&str> = s.trim_start_matches('-').split('=').collect();
@@ -287,14 +339,14 @@ fn temperature_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chr
     // Handle sample and block temperatures for each zone
     if let (Some((_, sample_str)), Some((_, block_str))) = (
         args.find(|(key, _)| key == "sample"),
-        args.find(|(key, _)| key == "block")
+        args.find(|(key, _)| key == "block"),
     ) {
         // Parse comma-separated values
         let sample_temps: Vec<f64> = sample_str
             .split(',')
             .filter_map(|s| s.parse().ok())
             .collect();
-        
+
         let block_temps: Vec<f64> = block_str
             .split(',')
             .filter_map(|s| s.parse().ok())
@@ -302,18 +354,23 @@ fn temperature_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chr
 
         // Create points for each zone
         for (i, (sample, block)) in sample_temps.iter().zip(block_temps.iter()).enumerate() {
-            points.push(DataPoint::builder("temperature")
-                .tag("loc", "zones")
-                .tag("zone", i.to_string())
-                .field("sample", *sample)
-                .field("block", *block)
-                .timestamp(ts)
-                .build()?);
+            points.push(
+                DataPoint::builder("temperature")
+                    .tag("machine", machine_name)
+                    .tag("loc", "zones")
+                    .tag("zone", i.to_string())
+                    .field("sample", *sample)
+                    .field("block", *block)
+                    .timestamp(ts)
+                    .build()?,
+            );
         }
     }
 
     // Parse remaining args again since we consumed the iterator
-    let args = msg.message.split_ascii_whitespace()
+    let args = msg
+        .message
+        .split_ascii_whitespace()
         .filter(|s| s.contains('='))
         .map(|s| {
             let parts: Vec<&str> = s.trim_start_matches('-').split('=').collect();
@@ -324,19 +381,25 @@ fn temperature_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chr
     for (key, value) in args {
         match key.as_str() {
             "cover" => {
-                points.push(DataPoint::builder("temperature")
-                    .tag("loc", "cover")
-                    .field("cover", value.parse::<f64>()?)
-                    .timestamp(ts)
-                    .build()?);
-            },
+                points.push(
+                    DataPoint::builder("temperature")
+                        .tag("machine", machine_name)
+                        .tag("loc", "cover")
+                        .field("cover", value.parse::<f64>()?)
+                        .timestamp(ts)
+                        .build()?,
+                );
+            }
             "heatsink" => {
-                points.push(DataPoint::builder("temperature")
-                    .tag("loc", "heatsink")
-                    .field("heatsink", value.parse::<f64>()?)
-                    .timestamp(ts)
-                    .build()?);
-            },
+                points.push(
+                    DataPoint::builder("temperature")
+                        .tag("machine", machine_name)
+                        .tag("loc", "heatsink")
+                        .field("heatsink", value.parse::<f64>()?)
+                        .timestamp(ts)
+                        .build()?,
+                );
+            }
             _ => {} // Ignore other fields
         }
     }
@@ -344,9 +407,13 @@ fn temperature_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chr
     Ok(points)
 }
 
-fn time_to_lineprotocol(msg: &LogMessage, timestamp: chrono::DateTime<chrono::Utc>) -> Result<Vec<DataPoint>> {
+fn time_to_lineprotocol(
+    msg: &LogMessage,
+    machine_name: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<DataPoint>> {
     let ts = timestamp.timestamp_nanos_opt().unwrap() as i64;
-    let mut point = DataPoint::builder("run_time");
+    let mut point = DataPoint::builder("run_time").tag("machine", machine_name);
 
     // Parse the message into key-value pairs
     for pair in msg.message.split_ascii_whitespace() {
@@ -373,17 +440,21 @@ mod tests {
     fn test_ledparse_valid_message() {
         let msg = LogMessage {
             topic: "LEDStatus".to_string(),
-            message: "Temperature:56.1791 Current:9.18727 Voltage:3.41406 JuncTemp:72.8079".to_string(),
+            message: "Temperature:56.1791 Current:9.18727 Voltage:3.41406 JuncTemp:72.8079"
+                .to_string(),
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
-        
-        let points = ledstatus_to_lineprotocol(&msg, timestamp).unwrap();
+
+        let points = ledstatus_to_lineprotocol(&msg, "qpcr1", timestamp).unwrap();
         assert_eq!(points.len(), 1);
 
         let mut buf = Vec::new();
         points[0].write_data_point_to(&mut buf).unwrap();
         let line = String::from_utf8(buf).unwrap();
-        assert_eq!(line, "lamp current=9.18727,junctemp=72.8079,temperature=56.1791,voltage=3.41406 1000000000\n");
+        assert_eq!(
+            line,
+            "lamp current=9.18727,junctemp=72.8079,temperature=56.1791,voltage=3.41406 1000000000\n"
+        );
     }
 
     #[test]
@@ -393,8 +464,8 @@ mod tests {
             message: "Invalid message format".to_string(),
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
-        
-        assert!(ledstatus_to_lineprotocol(&msg, timestamp).is_err());
+
+        assert!(ledstatus_to_lineprotocol(&msg, "qpcr1", timestamp).is_err());
     }
 
     #[test]
@@ -404,8 +475,8 @@ mod tests {
             message: "Temperature:not_a_number".to_string(),
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
-        
-        assert!(ledstatus_to_lineprotocol(&msg, timestamp).is_err());
+
+        assert!(ledstatus_to_lineprotocol(&msg, "qpcr1", timestamp).is_err());
     }
 
     #[test]
@@ -415,8 +486,8 @@ mod tests {
             message: "Stage 2".to_string(),
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
-        
-        let points = run_to_lineprotocol(&msg, timestamp).unwrap();
+
+        let points = run_to_lineprotocol(&msg, "qpcr1", timestamp).unwrap();
         assert_eq!(points.len(), 2);
 
         let mut buf = Vec::new();
@@ -437,8 +508,8 @@ mod tests {
             message: "Error Something went wrong".to_string(),
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
-        
-        let points = run_to_lineprotocol(&msg, timestamp).unwrap();
+
+        let points = run_to_lineprotocol(&msg, "qpcr1", timestamp).unwrap();
         assert_eq!(points.len(), 1);
 
         let mut buf = Vec::new();
@@ -455,9 +526,9 @@ mod tests {
             message: "-sample=22.3,22.3,22.3,22.3,22.3,22.3 -heatsink=23.4 -cover=18.2 -block=22.3,22.3,22.3,22.3,22.3,22.3".to_string(),
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
-        
-        let points = temperature_to_lineprotocol(&msg, timestamp).unwrap();
-        
+
+        let points = temperature_to_lineprotocol(&msg, "qpcr1", timestamp).unwrap();
+
         // Should have 8 points: 6 zones + cover + heatsink
         assert_eq!(points.len(), 8);
 
@@ -482,7 +553,6 @@ mod tests {
         let line = String::from_utf8(buf).unwrap();
         assert!(line.contains("temperature,loc=cover"));
         assert!(line.contains("cover=18.2"));
-
     }
 
     #[test]
@@ -492,19 +562,17 @@ mod tests {
             message: "-elapsed=120.5 -Remaining=600.0 -active=3552".to_string(),
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
-        
-        let point = time_to_lineprotocol(&msg, timestamp).unwrap();
-        
+
+        let point = time_to_lineprotocol(&msg, "qpcr1", timestamp).unwrap();
+
         let mut buf = Vec::new();
         assert_eq!(point.len(), 1);
         point[0].write_data_point_to(&mut buf).unwrap();
         let line = String::from_utf8(buf).unwrap();
-        
+
         assert!(line.contains("run_time"));
         assert!(line.contains("elapsed=120.5"));
         assert!(line.contains("remaining=600"));
         assert!(line.contains("active=3552"));
     }
 }
-
-
