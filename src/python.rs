@@ -1,5 +1,5 @@
 use crate::com::ConnectionError;
-use crate::com::{QSConnection, QSConnectionError};
+use crate::com::{QSConnection, QSConnectionError, ConnectionType};
 use crate::parser;
 use crate::parser::Command;
 use crate::parser::{LogMessage, MessageResponse};
@@ -55,7 +55,7 @@ impl PyMessageResponse {
     }
 
     pub fn __next__(&mut self) -> PyResult<String> {
-        self.get_response(self)
+        self.get_response()
     }
 
     pub fn get_ack(&mut self) -> PyResult<String> {
@@ -123,7 +123,7 @@ impl PyLogReceiver {
     }
 
     fn next(&mut self) -> PyResult<LogMessage> {
-        self.__next__(self)
+        self.__next__()
     }
 }
 
@@ -157,6 +157,12 @@ impl PyQSConnection {
     #[pyo3(signature = (host, port = 7443, connection_type = "Auto")) ]
     fn new(host: &str, port: u16, connection_type: &str) -> PyResult<Self> {
         let rt = Runtime::new()?;
+        let connection_type = match connection_type {
+            "SSL" => ConnectionType::SSL,
+            "TCP" => ConnectionType::TCP,
+            "Auto" => ConnectionType::Auto,
+            _ => return Err(PyValueError::new_err("Invalid connection type")),
+        };
         let conn = rt.block_on(QSConnection::connect(host, port, connection_type))?;
         Ok(Self {
             conn,
