@@ -12,7 +12,7 @@ use winnow::{
     token::{literal, take_till, take_until, take_while},
 };
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 pub enum Value {
     String(String),
     Int(i64),
@@ -21,6 +21,32 @@ pub enum Value {
     QuotedString(String),
     XmlString { value: String, tag: String },
     XmlBinary { value: Vec<u8>, tag: String },
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::String(s) => write!(f, "String({})", s),
+            Value::Int(i) => write!(f, "Int({})", i),
+            Value::Float(float) => write!(f, "Float({})", float),
+            Value::Bool(b) => write!(f, "Bool({})", b),
+            Value::QuotedString(s) => write!(f, "QuotedString({})", s),
+            Value::XmlString { value, tag } => {
+                if value.len() > 20 {
+                    write!(f, "XmlString({}, '{}...' len={})", tag, &value[..20], value.len())
+                } else {
+                    write!(f, "XmlString({}, '{}')", tag, value)
+                }
+            },
+            Value::XmlBinary { value, tag } => {
+                if value.len() > 20 {
+                    write!(f, "XmlBinary({}, {:?}... len={})", tag, &value[..20], value.len())
+                } else {
+                    write!(f, "XmlBinary({}, {:?})", tag, value)
+                }
+            },
+        }
+    }
 }
 
 impl Display for Value {
@@ -177,7 +203,7 @@ impl MessageIdent {
 #[derive(Debug, Clone)]
 pub struct Message {
     pub ident: Option<MessageIdent>,
-    pub command: Command,
+    pub content: Vec<u8>,
 }
 
 impl Message {
@@ -186,7 +212,7 @@ impl Message {
             ident.write_bytes(bytes)?;
             bytes.write_all(b" ")?;
         }
-        self.command.write_bytes(bytes)?;
+        bytes.write_all(&self.content)?;
         bytes.write_all(b"\n")?;
         Ok(())
     }
@@ -194,9 +220,27 @@ impl Message {
 
 #[derive(Debug, Clone)]
 pub struct Command {
-    pub command: String,
+    pub command: Vec<u8>,
     pub options: IndexMap<String, Value>,
     pub args: Vec<Value>,
+}
+
+impl CommandBuilder for Command {
+    const COMMAND: &'static [u8] = b"";
+    type Response = OkResponse;
+
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(self.args.clone())
+    }
+
+    fn options(&self) -> Option<IndexMap<String, Value>> {
+        Some(self.options.clone())
+    }
+
+    fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
+        self.write_bytes(bytes).map_err(|e| QSConnectionError::IOError(e))
+    }
+    
 }
 
 impl TryFrom<&str> for Command {
@@ -239,7 +283,15 @@ pub fn parse_option<'s>(input: &mut &'s [u8]) -> ModalResult<(String, Value)> {
 impl Command {
     pub fn new(command: &str) -> Self {
         Command {
-            command: command.to_string(),
+            command: command.as_bytes().to_vec(),
+            options: IndexMap::new(),
+            args: Vec::new(),
+        }
+    }
+
+    pub fn bytes(s: &[u8]) -> Self {
+        Command {
+            command: s.to_vec(),
             options: IndexMap::new(),
             args: Vec::new(),
         }
@@ -278,14 +330,14 @@ impl Command {
             .parse_next(input)?;
         // newline.context(StrContext::Label("newline")).parse_next(input)?;
         Ok(Command {
-            command: String::from_utf8_lossy(comm).to_string(),
+            command: comm.to_vec(),
             options: kv,
             args: args,
         })
     }
 
     pub fn write_bytes(&self, bytes: &mut impl Write) -> Result<(), std::io::Error> {
-        bytes.write_all(self.command.as_bytes())?;
+        bytes.write_all(&self.command)?;
         for (key, value) in &self.options {
             bytes.write_all(b" ")?;
             bytes.write_all(format!("-{}=", key).as_bytes())?;
@@ -398,7 +450,7 @@ pub enum MessageResponse {
     Message(LogMessage),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Error)]
 pub struct ErrorResponse {
     pub error: String,
     pub args: IndexMap<String, Value>,
@@ -498,6 +550,9 @@ impl Ready {
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
+
+use crate::com::QSConnectionError;
+use crate::commands::CommandBuilder;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyclass)]

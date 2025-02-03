@@ -19,7 +19,11 @@ use tokio_rustls::{
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
 
+use crate::commands::CommandBuilder;
+use crate::data::{PlateData, PlatePointData};
 use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
+
+use lazy_static::lazy_static;
 
 #[cfg(feature = "python")]
 use pyo3::exceptions::PyValueError;
@@ -27,6 +31,22 @@ use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use pyo3::ToPyErr;
+
+lazy_static! {
+    static ref BASE64: data_encoding::Encoding = {
+        let mut dec = data_encoding::BASE64.specification();
+        dec.ignore.push('\n');
+        dec.encoding().unwrap()
+    };
+
+    static ref FILTER_DATA_FILENAME_RE: regex::Regex = regex::Regex::new(
+        r"S(\d+)_C(\d+)_T(\d+)_P(\d+)_M(\d)_X(\d)_filterdata\.xml$"
+    ).expect("Invalid regex");
+
+    static ref FILTER_SET_RE: regex::Regex = regex::Regex::new(
+        r"x(\d)-m(\d)"
+    ).expect("Invalid regex");
+}
 
 #[derive(Debug)]
 pub(crate) struct NoVerifier;
@@ -95,7 +115,7 @@ pub enum ConnectionError {
     InvalidDnsNameError(#[from] rustls_pki_types::InvalidDnsNameError),
 }
 
-use crate::parser::{self, Command, LogMessage, Message, MessageIdent, MessageResponse, Ready};
+use crate::parser::{self, ErrorResponse, LogMessage, Message, MessageIdent, MessageResponse, OkResponse, Ready, Value};
 use std::collections::HashMap;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -124,10 +144,12 @@ impl AsyncRead for ReadHalfOptions {
 
 pub struct QSConnectionInner {
     stream_read: ReadHalfOptions,
+    stream_write: WriteHalfOptions,
     pub receiver: MsgRecv,
     pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
     pub messagechannels: HashMap<MessageIdent, mpsc::Sender<MessageResponse>>,
-    pub commandchannel: mpsc::Receiver<(MessageIdent, mpsc::Sender<MessageResponse>)>,
+    pub commandchannel: mpsc::Receiver<(Message, mpsc::Sender<MessageResponse>)>,
+    next_ident: u32,
     buf: [u8; 1024],
 }
 
@@ -141,16 +163,30 @@ pub enum QSConnectionError {
     IOError(#[from] std::io::Error),
     #[error("Message push error: {0}")]
     MessagePushError(MsgPushError),
+    #[error("QS error: {0}")]
+    QS(String),
+    #[error("Command error: {0}")]
+    CommandError(#[from] ErrorResponse),
+}
+
+#[derive(Error, Debug)]
+pub enum QSCommError {
+    #[error("Command error: {0}")]
+    CommandError(#[from] ErrorResponse),
+    #[error("Connection error: {0}")]
+    ConnectionError(#[from] QSConnectionError),
+    #[error("QS error: {0}")]
+    QS(String),
 }
 
 impl QSConnectionInner {
-    async fn handle_receive(&mut self, n: usize) -> Result<(), QSConnectionError> {
+    async fn handle_receive(&mut self, n: usize) -> () {
         trace!(
             "Received data: {:?}",
             String::from_utf8_lossy(&self.buf[..n])
         );
         if n == 0 {
-            return Ok(());
+            return;
         }
         self.receiver.push_data(&self.buf[..n]).unwrap();
         'inner: loop {
@@ -226,25 +262,33 @@ impl QSConnectionInner {
                 Err(e) => {
                     error!("Error receiving message: {:?}", e);
                 }
-                Ok(None) => break 'inner Ok(()),
+                Ok(None) => break 'inner,
             }
         }
     }
 
-    pub async fn receive(&mut self) -> Result<(), QSConnectionError> {
+    async fn receive(&mut self) -> Result<(), QSConnectionError> {
         loop {
             let f_msg_to_send = self.commandchannel.recv();
             let f_data_to_receive = self.stream_read.read(&mut self.buf);
 
             select! {
                 msg = f_msg_to_send => {
-                    let (msg, tx) = msg.unwrap();
-                    self.messagechannels.insert(msg, tx);
+                    let Some((mut msg, tx)) = msg else {
+                        trace!("Outer channel is closed.");
+                        break Ok(());
+                    };
+                    msg.ident = Some(MessageIdent::Number(self.next_ident));
+                    let mut bytes = Vec::new();
+                    msg.write_bytes(&mut bytes).unwrap();
+                    self.stream_write.write_all(&bytes).await?;
+                    self.messagechannels.insert(msg.ident.unwrap(), tx);
+                    self.next_ident += 1;
                 }
                 n = f_data_to_receive => {
                     let n = n?;
                     trace!("Receiving data");
-                    self.handle_receive(n).await?;
+                    self.handle_receive(n).await;
                 }
             }
         }
@@ -295,57 +339,114 @@ impl AsyncWrite for WriteHalfOptions {
 
 pub struct QSConnection {
     pub task: JoinHandle<Result<(), QSConnectionError>>,
-    pub commandchannel: mpsc::Sender<(MessageIdent, mpsc::Sender<MessageResponse>)>,
-    pub next_ident: u32,
+    pub commandchannel: mpsc::Sender<(Message, mpsc::Sender<MessageResponse>)>,
     pub connection_type: ConnectionType,
     pub host: String,
     pub port: u16,
-    stream_write: WriteHalfOptions,
     pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
     pub ready_message: Ready,
 }
 
+pub struct ResponseReceiver(mpsc::Receiver<MessageResponse>);
+
+impl ResponseReceiver {
+    pub async fn recv(&mut self) -> Option<MessageResponse> {
+        self.0.recv().await
+    }
+    
+    /// Get the OK or error response from the machine, ignoring NEXT messages.
+    pub async fn get_response(&mut self) -> Result<Result<OkResponse, ErrorResponse>, QSConnectionError> {
+        loop {
+            let msg = self.recv().await.ok_or(QSConnectionError::ConnectionClosed)?;
+            match msg {
+                MessageResponse::Ok { ident: _, message } => {
+                    return Ok(Ok(message));
+                }
+                MessageResponse::Error { ident: _, error } => {
+                    return Ok(Err(error));
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
+impl CommandBuilder for String {
+    const COMMAND: &'static [u8] = b"";
+    type Response = String;
+    fn to_bytes(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+
+    fn write_command(&self, bytes: &mut impl std::io::Write) -> Result<(), QSConnectionError> {
+        bytes.write_all(self.as_bytes())?;
+        Ok(())
+    }
+}
+
+impl CommandBuilder for &str {
+    const COMMAND: &'static [u8] = b"";
+    type Response = String;
+    fn to_bytes(&self) -> Vec<u8> {
+        self.as_bytes().to_vec()
+    }
+}
+
+impl CommandBuilder for &[u8] {
+    const COMMAND: &'static [u8] = b"";
+    type Response = String;
+    fn to_bytes(&self) -> Vec<u8> {
+        self.to_vec()
+    }
+}
+
 impl QSConnection {
     pub async fn send_command(
-        &mut self,
-        command: impl Into<Command>,
-    ) -> Result<mpsc::Receiver<MessageResponse>, QSConnectionError> {
+        &self,
+        command: impl CommandBuilder,
+    ) -> Result<ResponseReceiver, QSConnectionError> {
         let msg = Message {
-            ident: Some(MessageIdent::Number(self.next_ident)),
-            command: command.into(),
+            ident: None,
+            content: command.to_bytes(),
         };
-        let (tx, rx) = mpsc::channel(5);
-        self.commandchannel
-            .send((msg.ident.clone().unwrap(), tx))
-            .await
-            .unwrap();
-
         // Convert message to bytes for logging
         let mut bytes = Vec::new();
         msg.write_bytes(&mut bytes)?;
         trace!("Sending: {}", String::from_utf8_lossy(&bytes));
 
-        self.stream_write.write_all(&bytes).await?;
-        self.next_ident += 1;
-        Ok(rx)
+        let (tx, rx) = mpsc::channel(5);
+        self.commandchannel
+            .send((msg, tx))
+            .await
+            .map_err(|_| QSConnectionError::ConnectionClosed)?;
+        Ok(ResponseReceiver(rx))
     }
 
     pub async fn send_command_bytes(
-        &mut self,
+        &self,
         bytes: &[u8],
-    ) -> Result<mpsc::Receiver<MessageResponse>, QSConnectionError> {
-        let ident = MessageIdent::Number(self.next_ident);
+    ) -> Result<ResponseReceiver, QSConnectionError> {
+        let msg = Message {
+            ident: None,
+            content: bytes.to_vec(),
+        };
         let (tx, rx) = mpsc::channel(5);
-        self.commandchannel.send((ident.clone(), tx)).await.unwrap();
-        let mut buf = Vec::new();
-        ident.write_bytes(&mut buf)?;
-        buf.push(b' ');
-        buf.extend_from_slice(bytes);
-        buf.push(b'\n');
-        trace!("Sending: {}", String::from_utf8_lossy(&buf));
-        self.stream_write.write_all(&buf).await?;
-        self.next_ident += 1;
-        Ok(rx)
+        self.commandchannel.send((msg, tx)).await.map_err(|_| QSConnectionError::ConnectionClosed)?;
+        Ok(ResponseReceiver(rx))
+    }
+
+
+    pub async fn send_command_bytes_owned(
+        &self,
+        bytes: Vec<u8>,
+    ) -> Result<ResponseReceiver, QSConnectionError> {
+        let msg = Message {
+            ident: None,
+            content: bytes,
+        };
+        let (tx, rx) = mpsc::channel(5);
+        self.commandchannel.send((msg, tx)).await.map_err(|_| QSConnectionError::ConnectionClosed)?;
+        Ok(ResponseReceiver(rx))
     }
 
     pub async fn connect(
@@ -407,6 +508,8 @@ impl QSConnection {
 
         let mut qsi = QSConnectionInner {
             stream_read: r,
+            stream_write: w,
+            next_ident: 0,
             receiver: MsgRecv::new(),
             logchannels: logchannels.clone(),
             messagechannels: HashMap::new(),
@@ -417,9 +520,7 @@ impl QSConnection {
         Ok(QSConnection {
             task: tokio::spawn(async move { qsi.receive().await }),
             commandchannel: com_tx,
-            next_ident: 0,
             logchannels,
-            stream_write: w,
             ready_message: msg,
             connection_type: ConnectionType::SSL,
             host: host.to_string(),
@@ -447,6 +548,8 @@ impl QSConnection {
 
         let mut qsi = QSConnectionInner {
             stream_read: r,
+            stream_write: w,
+            next_ident: 0,
             receiver: MsgRecv::new(),
             logchannels: logchannels.clone(),
             messagechannels: HashMap::new(),
@@ -457,9 +560,7 @@ impl QSConnection {
         Ok(QSConnection {
             task: tokio::spawn(async move { qsi.receive().await }),
             commandchannel: com_tx,
-            next_ident: 0,
             logchannels,
-            stream_write: w,
             ready_message: msg,
             connection_type: ConnectionType::TCP,
             host: host.to_string(),
@@ -468,7 +569,7 @@ impl QSConnection {
     }
 
     pub async fn subscribe_log(
-        &mut self,
+        &self,
         topics: &[&str],
     ) -> StreamMap<String, BroadcastStream<LogMessage>> {
         let mut s = StreamMap::new();
@@ -491,11 +592,162 @@ impl QSConnection {
     pub async fn is_connected(&self) -> bool {
         !self.task.is_finished()
     }
+
+    pub async fn get_exp_file(
+        &self, path: &str
+    ) -> Result<Vec<u8>, QSCommError> {
+        let cmd = format!("EXP:READ? -encoding=base64 {}", path);
+        let mut reply = self.send_command_bytes(cmd.as_bytes()).await?;
+        let mut reply = reply.get_response().await??;
+
+        let x = match reply.args.pop().ok_or(QSCommError::QS("Invalid response".to_string()))? {
+            Value::XmlString { value, .. } => value,
+            _ => return Err(QSCommError::QS("Invalid response".to_string())),
+        };
+        BASE64.decode(x.as_bytes()).map_err(|e| QSCommError::QS(format!("Invalid response: {}", e)))
+    }
+
+    pub async fn get_sds_file(
+        &self,
+        path: &str,
+        runtitle: Option<String>,
+    ) -> Result<Vec<u8>, QSCommError> {
+        let runtitle = match runtitle {
+            Some(rt) => rt,
+            None => self.get_run_title().await?,
+        };
+        self.get_exp_file(&format!("{}/apldbio/sds/{}", runtitle, path)).await
+    }
+
+    pub async fn get_expfile_list(&self, glob: &str) -> Result<Vec<String>, QSConnectionError> {
+        let cmd = format!("EXP:LIST? {}", glob);
+        let mut reply = self.send_command_bytes(cmd.as_bytes()).await?;
+        let mut reply = reply.get_response().await??;
+        
+        let x = match reply.args.pop().ok_or(QSConnectionError::QS("Invalid response".to_string()))? {
+            Value::XmlString { value, .. } => value,
+            _ => return Err(QSConnectionError::QS("Invalid response".to_string())),
+        };
+        let x = x.split("\n").collect::<Vec<&str>>();
+        Ok(x.iter().map(|s| s.to_string()).collect())
+    }
+
+    /// Get the current run title from the machine
+    pub async fn get_run_title(&self) -> Result<String, QSConnectionError> {
+        let mut response = self.send_command_bytes(b"RUNTitle?").await?;
+        let response = response.get_response().await??;
+        
+        // Get the first argument which should be the run title
+        let title = response.args.first()
+            .ok_or_else(|| QSConnectionError::QS("No run title returned".to_string()))?;
+
+        // Convert to string and trim any quotes
+        let title_str = title.to_string().trim_matches('"').to_string();
+        
+        Ok(title_str)
+    }
+
+    pub async fn get_filterdata_one(&self, fref:  FilterDataFilename, run: Option<String>) -> Result<PlateData, QSConnectionError> {
+        let run = match run {
+            Some(r) => r,
+            None => self.get_run_title().await?,
+        };
+        let path = format!("{}/apldbio/sds/filter/{}", run, fref.to_string());
+        let mut reply = self.send_command_bytes(path.as_bytes()).await?;
+        let mut reply = reply.get_response().await??;
+        
+        let x = match reply.args.pop().ok_or(QSConnectionError::QS("Invalid response".to_string()))? {
+            Value::XmlString { value, .. } => value,
+            _ => return Err(QSConnectionError::QS("Invalid response".to_string())),
+        };
+        let plate_data: PlatePointData = quick_xml::de::from_str(&x).map_err(|e| QSConnectionError::QS(format!("Invalid response: {}", e)))?;
+        
+        // transform into first plate data
+        let plate_data = plate_data.plate_data.into_iter().next().ok_or(QSConnectionError::QS("No plate data returned".to_string()))?;
+
+        Ok(plate_data)
+    }
+
 }
+
+
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectionType {
     SSL,
     TCP,
     Auto,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FilterDataFilename {
+    pub filterset: FilterSet,
+    pub stage: u32,
+    pub cycle: u32,
+    pub step: u32,
+    pub point: u32,
+}
+
+impl FilterDataFilename {
+    pub fn from_string(s: &str) -> Result<Self, QSConnectionError> {
+        let caps = FILTER_DATA_FILENAME_RE.captures(s)
+            .ok_or_else(|| QSConnectionError::QS("Invalid filter data filename format".to_string()))?;
+
+        Ok(Self {
+            stage: caps[1].parse().map_err(|_| QSConnectionError::QS("Invalid stage number".to_string()))?,
+            cycle: caps[2].parse().map_err(|_| QSConnectionError::QS("Invalid cycle number".to_string()))?,
+            step: caps[3].parse().map_err(|_| QSConnectionError::QS("Invalid step number".to_string()))?,
+            point: caps[4].parse().map_err(|_| QSConnectionError::QS("Invalid point number".to_string()))?,
+            filterset: FilterSet::from_string(&format!("x{}-m{}", &caps[6], &caps[5]))?,
+        })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!(
+            "S{:02}_C{:03}_T{:02}_P{:04}_M{}_X{}_filterdata.xml",
+            self.stage,
+            self.cycle,
+            self.step,
+            self.point,
+            self.filterset.em,
+            self.filterset.ex
+        )
+    }
+
+    pub fn is_same_point(&self, other: &FilterDataFilename) -> bool {
+        self.stage == other.stage
+            && self.cycle == other.cycle
+            && self.step == other.step
+            && self.point == other.point
+    }
+}
+
+impl TryFrom<FilterDataFilename> for String {
+    type Error = QSConnectionError;
+
+    fn try_from(value: FilterDataFilename) -> Result<Self, Self::Error> {
+        Ok(value.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FilterSet {
+    pub em: u8,
+    pub ex: u8,
+}
+
+impl FilterSet {
+    pub fn from_string(s: &str) -> Result<Self, QSConnectionError> {
+        let caps = FILTER_SET_RE.captures(s)
+            .ok_or_else(|| QSConnectionError::QS("Invalid filter set format".to_string()))?;
+
+        Ok(Self {
+            ex: caps[1].parse().map_err(|_| QSConnectionError::QS("Invalid excitation filter number".to_string()))?,
+            em: caps[2].parse().map_err(|_| QSConnectionError::QS("Invalid emission filter number".to_string()))?,
+        })
+    }
+
+    pub fn to_string(&self) -> String {
+        format!("x{}-m{}", self.ex, self.em)
+    }
 }

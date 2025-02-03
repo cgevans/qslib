@@ -1,16 +1,17 @@
-use std::{future::Future, marker::PhantomData};
+use std::{future::Future, io::Write, marker::PhantomData};
 
+use indexmap::IndexMap;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::{
-    com::{QSConnection, QSConnectionError},
+    com::{QSConnection, QSConnectionError, ResponseReceiver},
     parser::{Command, ErrorResponse, MessageResponse, OkResponse, Value},
 };
 
 pub struct CommandReceiver<T: TryFrom<OkResponse>> {
-    pub command: Command,
-    pub response: mpsc::Receiver<MessageResponse>,
+    pub message_content: Vec<u8>,
+    pub response: ResponseReceiver,
     pub response_type: PhantomData<T>,
 }
 
@@ -70,7 +71,54 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>> CommandReceiver<T> {
     }
 }
 
-pub trait CommandBuilder: Into<Command> {
+pub trait CommandBuilder: Clone + Send + Sync {
+    const COMMAND: &'static [u8];
+    fn args(&self) -> Option<Vec<Value>> {
+        None
+    }
+    fn options(&self) -> Option<IndexMap<String, Value>> {
+        None
+    }
+    fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
+        bytes.write_all(Self::COMMAND)?;
+        if let Some(options) = self.options() {
+            for (key, value) in options {
+                bytes.write_all(b" -")?;
+                bytes.write_all(key.as_bytes())?;
+                bytes.write_all(b"=")?;
+                value.write_bytes(bytes)?;
+            }
+        }
+        if let Some(args) = self.args() {
+            for arg in args {
+                bytes.write_all(b" ")?;
+                arg.write_bytes(bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn to_bytes(&self) -> Vec<u8> {
+        let mut v = Vec::new();
+        self.write_command(&mut v).unwrap();
+        v
+    }
+
+    // fn command(&self) -> Command {
+    //     let mut c = Command::raw(Self::COMMAND);
+    //     if let Some(args) = self.args() {
+    //         for arg in args {
+    //             c = c.with_arg(arg);
+    //         }
+    //     }
+    //     if let Some(options) = self.options() {
+    //         for (key, value) in options {
+    //             c = c.with_option(&key, value);
+    //         }
+    //     }
+    //     c
+    // }
+
     type Response: TryFrom<OkResponse>;
     // fn send(&self) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send;
     fn send(
@@ -78,19 +126,19 @@ pub trait CommandBuilder: Into<Command> {
         connection: &mut QSConnection,
     ) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send
     {
-        let command: Command = self.into();
-        let command_clone = command.clone();
-        let r = connection.send_command(command);
+        let content = self.to_bytes();
+        let r = connection.send_command(self);
         async move {
             let r = r.await?;
             Ok(CommandReceiver {
-                command: command_clone,
+                message_content: content,
                 response: r,
                 response_type: PhantomData,
             })
         }
     }
 }
+
 
 impl TryFrom<OkResponse> for () {
     type Error = OkParseError;
@@ -107,16 +155,14 @@ impl TryFrom<OkResponse> for () {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Subscribe(pub String);
 
 impl CommandBuilder for Subscribe {
+    const COMMAND: &'static [u8] = b"SUBS";
     type Response = ();
-}
-
-impl From<Subscribe> for Command {
-    fn from(command: Subscribe) -> Self {
-        Command::new("SUBS").with_arg(command.0)
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![self.0.clone().into()])
     }
 }
 
@@ -126,7 +172,7 @@ impl Subscribe {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AccessLevel {
     Guest,
     Observer,
@@ -153,35 +199,36 @@ impl From<AccessLevel> for Value {
     }
 }
 
-pub struct Access(pub AccessLevel);
+#[derive(Debug, Clone)]
+pub struct AccessSet(pub AccessLevel);
 
-impl Access {
+
+impl AccessSet {
     pub fn level(level: AccessLevel) -> Self {
         Self(level)
     }
 }
 
-impl CommandBuilder for Access {
+impl CommandBuilder for AccessSet {
     type Response = ();
-}
-
-impl From<Access> for Command {
-    fn from(command: Access) -> Self {
-        Command::new("ACC").with_arg(command.0)
+    const COMMAND: &'static [u8] = b"ACC";
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![self.0.clone().into()])
     }
 }
+
+#[derive(Debug, Clone)]
 
 pub struct Unsubscribe(pub String);
 
 impl CommandBuilder for Unsubscribe {
     type Response = ();
-}
-
-impl From<Unsubscribe> for Command {
-    fn from(command: Unsubscribe) -> Self {
-        Command::new("UNS").with_arg(command.0)
+    const COMMAND: &'static [u8] = b"UNS";
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![self.0.clone().into()])
     }
 }
+
 
 impl Unsubscribe {
     pub fn topic(topic: &str) -> Self {
@@ -195,16 +242,12 @@ pub enum Power {
     Off,
 }
 
+#[derive(Debug, Clone)]
 pub struct PowerQuery;
 
 impl CommandBuilder for PowerQuery {
     type Response = Power;
-}
-
-impl From<PowerQuery> for Command {
-    fn from(_command: PowerQuery) -> Self {
-        Command::new("POW?")
-    }
+    const COMMAND: &'static [u8] = b"POW?";
 }
 
 impl TryFrom<OkResponse> for Power {
@@ -221,10 +264,15 @@ impl TryFrom<OkResponse> for Power {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct PowerSet(pub Power);
 
 impl CommandBuilder for PowerSet {
     type Response = ();
+    const COMMAND: &'static [u8] = b"POW";
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![self.0.into()])
+    }
 }
 
 impl PowerSet {
@@ -238,6 +286,15 @@ impl PowerSet {
 
     pub fn set(power: impl Into<Power>) -> Self {
         Self(power.into())
+    }
+}
+
+impl From<Power> for Value {
+    fn from(power: Power) -> Self {
+        match power {
+            Power::On => Value::String("ON".to_string()),
+            Power::Off => Value::String("OFF".to_string()),
+        }
     }
 }
 
@@ -269,9 +326,6 @@ impl From<PowerSet> for Command {
     }
 }
 
-impl CommandBuilder for Command {
-    type Response = OkResponse;
-}
 
 // '-RunMode=- -Step=- -RunTitle=- -Cycle=- -Stage=-'
 #[derive(Debug, Clone)]
@@ -364,10 +418,12 @@ impl TryFrom<OkResponse> for PossibleRunProgress {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct RunProgressQuery;
 
 impl CommandBuilder for RunProgressQuery {
     type Response = PossibleRunProgress;
+    const COMMAND: &'static [u8] = b"RUN?";
 }
 
 impl From<RunProgressQuery> for Command {

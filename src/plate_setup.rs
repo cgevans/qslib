@@ -243,7 +243,7 @@ impl PlateSetup {
     /// # Arguments
     /// * `timestamp` - Unix timestamp in nanoseconds
     /// * `run_name` - Optional run name to include in the tags
-    pub fn to_lineprotocol(&self, timestamp: i64, run_name: Option<&str>) -> Vec<String> {
+    pub fn to_lineprotocol(&self, timestamp: i64, run_name: Option<&str>, machine_name: Option<&str>) -> Vec<String> {
         let well_sample = self
             .get_sample_wells()
             .into_iter()
@@ -256,9 +256,11 @@ impl PlateSetup {
         };
 
         let run_tag = run_name.map_or(String::new(), |name| format!(",run_name=\"{}\"", name));
-
+        let machine_tag = machine_name.map_or(String::new(), |name| format!(",machine_name=\"{}\"", name));
         let well_sample_ref = &well_sample;
+
         let run_tag_ref = &run_tag;
+        let machine_tag_ref = &machine_tag;
 
         rows.chars()
             .flat_map(|row| {
@@ -269,8 +271,8 @@ impl PlateSetup {
                         .map_or("", |s| s.as_str())
                         .to_string();
                     format!(
-                        "platesetup,row={},col={}{} sample=\"{}\" {}",
-                        row, col, run_tag_ref, sample, timestamp
+                        "platesetup,row={},col={}{}{} sample=\"{}\" {}",
+                        row, col, run_tag_ref, machine_tag_ref, sample, timestamp
                     )
                 })
             })
@@ -701,7 +703,7 @@ mod tests {
         "#;
 
         let plate = PlateSetup::from_xml(xml).unwrap();
-        let lines = plate.to_lineprotocol(1234567890, None);
+        let lines = plate.to_lineprotocol(1234567890, None, None);
 
         // Check total number of lines (96-well plate)
         assert_eq!(lines.len(), 96);
@@ -716,7 +718,7 @@ mod tests {
         assert_eq!(lines[95], "platesetup,row=H,col=12 sample=\"\" 1234567890");
 
         // Test with run name
-        let lines_with_run = plate.to_lineprotocol(1234567890, Some("Test Run"));
+        let lines_with_run = plate.to_lineprotocol(1234567890, Some("Test Run"), None);
         assert_eq!(
             lines_with_run[0],
             "platesetup,row=A,col=1,run_name=\"Test Run\" sample=\"Sample1\" 1234567890"
@@ -761,7 +763,7 @@ mod tests {
         "#;
 
         let plate = PlateSetup::from_xml(xml).unwrap();
-        let lines = plate.to_lineprotocol(1234567890, None);
+        let lines = plate.to_lineprotocol(1234567890, None, None);
 
         // Check total number of lines (384-well plate)
         assert_eq!(lines.len(), 384);
