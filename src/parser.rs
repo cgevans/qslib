@@ -165,6 +165,29 @@ impl Value {
             }
         }
     }
+
+    pub fn try_into_bool(self) -> Result<bool, ParseError> {
+        match self {
+            Value::Bool(b) => Ok(b),
+            _ => Err(ParseError::ParseError("bool".to_string())),
+        }
+    }
+
+    pub fn try_into_string(self) -> Result<String, ParseError> {
+        match self {
+            Value::String(s) => Ok(s),
+            Value::QuotedString(s) => Ok(s),
+            Value::XmlString { value, .. } => Ok(value),
+            _ => Err(ParseError::ParseError("string".to_string())),
+        }
+    }
+
+    pub fn try_into_f64(self) -> Result<f64, ParseError> {
+        match self {
+            Value::Float(f) => Ok(f),
+            _ => Err(ParseError::ParseError("float".to_string())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -552,7 +575,7 @@ impl Ready {
 use pyo3::prelude::*;
 
 use crate::com::QSConnectionError;
-use crate::commands::CommandBuilder;
+use crate::commands::{CommandBuilder, OkParseError};
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyclass)]

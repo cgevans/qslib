@@ -1,4 +1,4 @@
-use std::{future::Future, io::Write, marker::PhantomData};
+use std::{collections::VecDeque, future::Future, io::Write, marker::PhantomData};
 
 use indexmap::IndexMap;
 use thiserror::Error;
@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     com::{QSConnection, QSConnectionError, ResponseReceiver},
-    parser::{Command, ErrorResponse, MessageResponse, OkResponse, Value},
+    parser::{Command, ErrorResponse, MessageResponse, OkResponse, ParseError, Value},
 };
 
 pub struct CommandReceiver<T: TryFrom<OkResponse>> {
@@ -19,6 +19,8 @@ pub struct CommandReceiver<T: TryFrom<OkResponse>> {
 pub enum OkParseError {
     #[error("Unexpected values: {1} ({0:?})")]
     UnexpectedValues(OkResponse, String),
+    #[error("Parse error: {0:?}")]
+    ParseError(#[from] ParseError),
 }
 
 #[derive(Debug, Error)]
@@ -431,3 +433,61 @@ impl From<RunProgressQuery> for Command {
         Command::new("RunProgress?")
     }
 }
+
+pub struct QuickStatus {
+    pub power: Power,
+    // pub drawer: Drawer,
+    // pub cover: Cover,
+    pub sample_temperatures: Vec<f64>,
+    pub block_temperatures: Vec<f64>,
+    pub set_temperatures: Vec<f64>,
+    // pub run_title: String,
+    // pub run_mode: String,
+    // pub step: String,
+    // pub cycle: String,
+    // pub stage: String,
+}
+
+impl TryFrom<OkResponse> for QuickStatus {
+    type Error = OkParseError;
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        let args = value.args.into_iter();
+        let mut args_deque = args.into_iter().collect::<VecDeque<_>>();
+        Ok(QuickStatus {
+            power: args_deque.pop_front().unwrap().try_into_bool().unwrap().into(),
+            // drawer: value.args[1].try_into_string()?,
+            // cover: value.args[2].try_into_string()?,
+            set_temperatures: OkResponse::parse(&mut args_deque.pop_front().unwrap().try_into_string()?.into_bytes().as_slice()).unwrap().options.iter().map(|(k, v)| v.clone().try_into_f64().unwrap()).collect(),
+            sample_temperatures: args_deque.pop_front().unwrap().try_into_string()?.split_whitespace().map(|s| s.parse::<f64>().unwrap()).collect(),
+            block_temperatures: args_deque.pop_front().unwrap().try_into_string()?.split_whitespace().map(|s| s.parse::<f64>().unwrap()).collect(),
+            // run_title: value.args[6].try_into_string()?,
+        })
+    }
+}
+
+impl QuickStatus {
+    pub fn to_string(&self) -> String {
+        format!(
+            "Power: {:?}\nSample Temperatures: {:?}\nBlock Temperatures: {:?}\nSet Temperatures: {:?}",
+            self.power,
+            self.sample_temperatures,
+            self.block_temperatures,
+            self.set_temperatures
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct QuickStatusQuery;
+
+impl CommandBuilder for QuickStatusQuery {
+    type Response = QuickStatus;
+    const COMMAND: &'static [u8] = b"RET $(POW?) $(TBC:SETT?) $(TBC:CONT?) $(RunProgress?)";
+
+    fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
+        bytes.write_all(Self::COMMAND)?;
+        Ok(())
+    }
+}
+
+
