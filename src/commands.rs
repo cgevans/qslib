@@ -454,7 +454,11 @@ impl TryFrom<OkResponse> for QuickStatus {
         let args = value.args.into_iter();
         let mut args_deque = args.into_iter().collect::<VecDeque<_>>();
         Ok(QuickStatus {
-            power: args_deque.pop_front().unwrap().try_into_bool().unwrap().into(),
+            power: match args_deque.pop_front().unwrap().try_into_string()?.as_str() {
+                "ON" => Power::On,
+                "OFF" => Power::Off,
+                other => todo!(),
+            },
             // drawer: value.args[1].try_into_string()?,
             // cover: value.args[2].try_into_string()?,
             set_temperatures: OkResponse::parse(&mut args_deque.pop_front().unwrap().try_into_string()?.into_bytes().as_slice()).unwrap().options.iter().map(|(k, v)| v.clone().try_into_f64().unwrap()).collect(),
