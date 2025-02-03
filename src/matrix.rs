@@ -66,7 +66,7 @@ struct FullSession {
 pub struct MatrixSettings {
     pub password: String,
     pub user: String,
-    pub room: String,
+    pub rooms: Vec<String>,
     pub host: String,
     pub session_file: PathBuf,
     pub allow_verification: bool,
@@ -413,14 +413,14 @@ pub async fn setup_matrix(
     debug!("Persisting sync token");
     persist_sync_token(&settings.session_file, response.next_batch.clone()).await;
 
-    info!("Joining room {}", settings.room);
-    let room_id = matrix_sdk::ruma::RoomId::parse(&settings.room)?;
-    let joined_rooms = client.joined_rooms();
-    debug!("Currently joined rooms: {:?}", joined_rooms);
-    client.join_room_by_id(&room_id).await?;
-
-    let room = client
-        .get_room(&room_id)
+    for room in settings.rooms.iter() {
+        info!("Joining room {}", room);
+        let room_id = matrix_sdk::ruma::RoomId::parse(&room)?;
+        client.join_room_by_id(&room_id).await?;
+    }
+    
+    let log_room = client
+        .get_room(&matrix_sdk::ruma::RoomId::parse(&settings.rooms[0])?)
         .expect("Room should exist after joining");
     info!("Successfully joined room");
 
@@ -479,7 +479,7 @@ pub async fn setup_matrix(
 
     loop {
         let msg = sm.next().await.unwrap();
-        handle_run_message(msg.0, msg.1.1.unwrap(), &room).await;
+        handle_run_message(msg.0, msg.1.1.unwrap(), &log_room).await;
     }
 
     Ok(())
