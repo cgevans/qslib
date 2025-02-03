@@ -274,14 +274,11 @@ async fn log_machine(
     let config_clone = config.clone();
 
     let aborthandle = log_tasks
-        .build_task()
-        .name(&config.name)
         .spawn(async move {
             influx_log_loop(&mut log_sub, tx, &config_clone, None)
                 .await
                 .unwrap();
-        })
-        .unwrap();
+        });
     let id = aborthandle.id();
 
     info!("Logging task started for {}", config.name);
