@@ -638,7 +638,7 @@ mod tests {
 
     #[test]
     fn test_parse_xml_string() {
-        let mut input = b"<quote>Hello\nWorld</quote>";
+        let input = b"<quote>Hello\nWorld</quote>";
         let result = Value::parse(&mut &input[..]).unwrap();
         
         match result {

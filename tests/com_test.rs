@@ -1,10 +1,8 @@
 use env_logger::Builder;
 use log::{debug, error, info, warn};
 use qslib_rs::parser::{MessageResponse, Value};
-use rcgen::{Certificate, PublicKeyData};
 use rustls::ServerConfig;
 use rustls_pki_types::pem::PemObject;
-use rustls_pki_types::CertificateDer;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
