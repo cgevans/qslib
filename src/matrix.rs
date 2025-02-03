@@ -20,7 +20,7 @@ use matrix_sdk::{
         },
     },
 };
-use qslib_rs::{com::{QSConnection, QSConnectionError}, parser::LogMessage};
+use qslib_rs::{com::{QSConnection, QSConnectionError}, commands::{QuickStatusQuery, CommandBuilder}, parser::LogMessage};
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamMap;
 use std::{
@@ -93,8 +93,8 @@ async fn handle_message(
             match qs.get(machine) {
                 Some(x) => {
                     let (conn, _) = x.value();
-                    let status = conn.send_command("ISTAT?").await?.get_response().await?.unwrap();
-                    send_matrix_message(&room, &status.to_string(), false).await?;
+                    let v = QuickStatusQuery.send(conn).await?.recv_response().await.unwrap();
+                    send_matrix_message(&room, &v.to_string(), false).await?;
                 }
                 None => error!("Machine {} not found", machine),
             }
@@ -121,6 +121,41 @@ async fn handle_message(
                 None => error!("Machine {} not found", machine),
             }
 
+            Ok(())
+        }
+        "!close" => {
+            if !settings.allow_control {
+                error!("Control commands not allowed");
+                return Ok(());
+            }
+            let machine = parts.next().unwrap_or("");
+            match qs.get(machine) {
+                Some(x) => {
+                    let (conn, _) = x.value();
+                    // Close drawer
+                    conn.send_command("CLOSE").await?.get_response().await?;
+                    // Lower cover
+                    conn.send_command("COVerDOWN").await?.get_response().await?;
+                    send_matrix_message(&room, "Drawer closed and cover lowered", false).await?;
+                }
+                None => error!("Machine {} not found", machine),
+            }
+            Ok(())
+        }
+        "!open" => {
+            if !settings.allow_control {
+                error!("Control commands not allowed");
+                return Ok(());
+            }
+            let machine = parts.next().unwrap_or("");
+            match qs.get(machine) {
+                Some(x) => {
+                    let (conn, _) = x.value();
+                    conn.send_command("OPEN").await?.get_response().await?;
+                    send_matrix_message(&room, "Drawer opened", false).await?;
+                }
+                None => error!("Machine {} not found", machine),
+            }
             Ok(())
         }
         m if m.starts_with("!") => {
