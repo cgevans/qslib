@@ -599,40 +599,40 @@ async fn docollect(
         .filter(|x| x.is_same_point(&filter_files[filter_files.len() - 1]))
         .collect();
 
-    let mut line_protocols = Vec::new();
+    // let mut line_protocols = Vec::new();
 
-    // Process filter data 
-    if let Some(ipdir) = &config.sync.in_progress_directory {
-        let filter_path = Path::new(ipdir).join(&run).join("apldbio/sds/filter");
-        if filter_path.exists() {
-            for fdf in latest_files {
-                let filter_data = connection
-                    .get_filterdata_one(*fdf, Some(run.clone()))
-                    .await?;
-                line_protocols.extend(filter_data.to_lineprotocol(
-                    Some(&run),
-                    None, // FIXME  sample_array,
-                    None,
-                )?);
-            }
-        } else {
-            for fdf in latest_files {
-                let filter_data = connection
-                    .get_filterdata_one(*fdf, Some(run.clone()))
-                    .await?;
-                line_protocols.extend(filter_data.to_lineprotocol(
-                    Some(&run),
-                    None, // FIXME  sample_array,
-                    None,
-                )?);
-            }
-        }
-    }
+    // // Process filter data 
+    // if let Some(ipdir) = &config.sync.in_progress_directory {
+    //     let filter_path = Path::new(ipdir).join(&run).join("apldbio/sds/filter");
+    //     if filter_path.exists() {
+    //         for fdf in latest_files {
+    //             let filter_data = connection
+    //                 .get_filterdata_one(*fdf, Some(run.clone()))
+    //                 .await?;
+    //             line_protocols.extend(filter_data.to_lineprotocol(
+    //                 Some(&run),
+    //                 None, // FIXME  sample_array,
+    //                 None,
+    //             )?);
+    //         }
+    //     } else {
+    //         for fdf in latest_files {
+    //             let filter_data = connection
+    //                 .get_filterdata_one(*fdf, Some(run.clone()))
+    //                 .await?;
+    //             line_protocols.extend(filter_data.to_lineprotocol(
+    //                 Some(&run),
+    //                 None, // FIXME  sample_array,
+    //                 None,
+    //             )?);
+    //         }
+    //     }
+    // }
 
-    for lp in line_protocols {
-        // Just print to stdout for now
-        println!("{}", lp);
-    }
+    // for lp in line_protocols {
+    //     // Just print to stdout for now
+    //     println!("{}", lp);
+    // }
 
     // Write to InfluxDB
     // if let Some(influx) = &config.influxdb {
