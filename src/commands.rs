@@ -125,7 +125,7 @@ pub trait CommandBuilder: Clone + Send + Sync {
     // fn send(&self) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send;
     fn send(
         self,
-        connection: &mut QSConnection,
+        connection: &QSConnection,
     ) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send
     {
         let content = self.to_bytes();
