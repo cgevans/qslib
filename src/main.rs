@@ -1,29 +1,56 @@
 use anyhow::Result;
+use clap::Parser;
+use dashmap::DashMap;
+use env_logger::Env;
 use futures::stream;
 use influxdb2::models::DataPoint;
 use influxdb2::{Client, FromDataPoint, models::WriteDataPoint};
+use log::{debug, error, info, warn};
 use qslib_rs::com::ConnectionError;
+use qslib_rs::plate_setup::PlateSetup;
 use qslib_rs::{
     com::QSConnection,
-    commands::{Access, AccessLevel, CommandBuilder, Subscribe},
+    commands::{AccessLevel, AccessSet, CommandBuilder, Subscribe},
+    data::{FilterDataCollection, PlateData},
+    com::FilterDataFilename,
     parser::LogMessage,
 };
 use serde_derive::Deserialize;
-use tokio::task::JoinHandle;
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::Write;
+use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use thiserror::Error;
+use tokio::select;
 use tokio::sync::mpsc;
+use tokio::task::{Id, JoinHandle, JoinSet};
 use tokio::time::{Duration, interval};
 use tokio_stream::{Stream, StreamExt, StreamMap, wrappers::BroadcastStream};
-// use crate::influx::InfluxDBConfig;
+use walkdir;
+
+mod matrix;
+
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = "config.toml")]
+    config: PathBuf,
+
+    #[arg(short, long, default_value = "info")]
+    #[arg(value_enum)]
+    log_level: log::LevelFilter,
+}
 
 #[derive(Debug, Deserialize)]
 struct Config {
     global: Option<GlobalConfig>,
     machines: Vec<MachineConfig>,
-    matrix: Option<MatrixConfig>,
+    matrix: Option<matrix::MatrixSettings>,
     influxdb: Option<InfluxDBConfig>,
     stdout: Option<()>,
+    sync: SyncConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,18 +64,6 @@ struct MachineConfig {
     host: String,
 }
 
-#[derive(Debug, Deserialize)]
-struct MatrixConfig {
-    host: String,
-    user: String,
-    password: String,
-    room: String,
-    session_file: String,
-    allow_verification: bool,
-    allow_commands: bool,
-    allow_control: bool,
-}
-
 #[derive(Debug, Deserialize, Clone)]
 struct InfluxDBConfig {
     url: String,
@@ -57,6 +72,35 @@ struct InfluxDBConfig {
     token: String,
     batch_size: Option<usize>,
     flush_interval_ms: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SyncConfig {
+    in_progress_directory: Option<String>,
+}
+
+#[derive(Debug, Error)]
+pub enum QSConnectionError {
+    #[error("Missing required argument: {0}")]
+    MissingArgument(String),
+
+    #[error("Invalid argument {0}: {1}")]
+    InvalidArgument(String, String),
+
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
+    #[error("InfluxDB error: {0}")]
+    InfluxError(#[from] influxdb2::RequestError),
+
+    #[error("QS connection error: {0}")]
+    QSError(#[from] qslib_rs::com::QSConnectionError),
+
+    #[error("Data error: {0}")]
+    DataError(#[from] qslib_rs::data::DataError),
+
+    #[error("Path strip prefix error: {0}")]
+    StripPrefixError(#[from] std::path::StripPrefixError),
 }
 
 fn load_config(path: PathBuf) -> Result<Config> {
@@ -77,8 +121,9 @@ async fn write_points_to_influx(
     let mut interval = interval(flush_interval);
     let mut points: Vec<DataPoint> = Vec::new();
     let mut last_flush = tokio::time::Instant::now();
+    let mut batched = 0;
 
-    eprintln!("InfluxDB write task started");
+    info!("InfluxDB write task started.");
 
     loop {
         tokio::select! {
@@ -87,11 +132,20 @@ async fn write_points_to_influx(
                 match point {
                     Some((machine, mut point)) => {
                         points.push(point);
-                        if points.len() >= batch_size {
-                            eprintln!("Flushing {} points to InfluxDB (batch size reached)", points.len());
-                            let tosend = points.drain(..).collect::<Vec<_>>();
-                            client.write(&bucket, stream::iter(tosend)).await?;
-                            last_flush = tokio::time::Instant::now();
+                        batched += 1;
+                        if batched >= batch_size {
+                            debug!("Flushing {} points to InfluxDB (batch size reached)", points.len());
+                            match client.write(&bucket, stream::iter(points.clone())).await { // FIXME
+                                Ok(_) => {
+                                    points.clear();
+                                    last_flush = tokio::time::Instant::now();
+                                    batched = 0;
+                                }
+                                Err(e) => {
+                                    warn!("Error writing points to InfluxDB, will retry: {}", e);
+                                    batched = 0;
+                                }
+                            }
                         }
                     }
                     None => break, // Channel closed
@@ -100,10 +154,16 @@ async fn write_points_to_influx(
             // Flush on interval only if enough time has passed since last flush
             _ = interval.tick() => {
                 if !points.is_empty() && last_flush.elapsed() >= flush_interval {
-                    eprintln!("Flushing {} points to InfluxDB (interval reached)", points.len());
-                    let tosend = points.drain(..).collect::<Vec<_>>();
-                    client.write(&bucket, stream::iter(tosend)).await?;
-                    last_flush = tokio::time::Instant::now();
+                    debug!("Flushing {} points to InfluxDB (interval reached)", points.len());
+                    match client.write(&bucket, stream::iter(points.clone())).await { // FIXME
+                        Ok(_) => {
+                            points.clear();
+                            last_flush = tokio::time::Instant::now();
+                        }
+                        Err(e) => {
+                            warn!("Error writing points to InfluxDB, will retry: {}", e);
+                        }
+                    }
                 }
             }
         }
@@ -111,19 +171,24 @@ async fn write_points_to_influx(
 
     // Final flush of any remaining points
     if !points.is_empty() {
-        eprintln!("Flushing {} points to InfluxDB (final flush)", points.len());
+        debug!("Flushing {} points to InfluxDB (final flush)", points.len());
         let tosend = points.drain(..).collect::<Vec<_>>();
         client.write(&bucket, stream::iter(tosend)).await?;
     }
 
-    eprintln!("InfluxDB write task completed");
+    info!("InfluxDB write task completed.");
 
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let config = load_config(PathBuf::from("config.toml"))?;
+    let args = Args::parse();
+
+    // Initialize logging
+    env_logger::Builder::from_env(Env::default().default_filter_or(args.log_level.as_str())).init();
+
+    let config = load_config(args.config)?;
 
     // Set up InfluxDB if configured
     let (tx, rx) = mpsc::channel(1000);
@@ -138,20 +203,41 @@ async fn main() -> Result<()> {
             if let Err(e) =
                 write_points_to_influx(rx, client, bucket, batch_size, flush_interval).await
             {
-                eprintln!("Error writing points to InfluxDB: {}", e);
+                error!("Error writing points to InfluxDB: {}", e);
             }
         }))
     } else {
         None
     };
 
-    let mut log_tasks = Vec::new();
-    let mut conns = Vec::new();
+    let mut log_tasks = JoinSet::new();
+    let mut conns = Arc::new(DashMap::new());
+    let mut ids = HashMap::new();
 
     for config in config.machines.iter() {
-        let (conn, log_task) = log_machine(config, tx.clone()).await?;
-        log_tasks.push(log_task);
-        conns.push(conn);
+        let (conn, id) = log_machine(config, tx.clone(), &mut log_tasks).await?;
+        conns.insert(config.name.clone(), (Arc::new(conn), config.clone()));
+        ids.insert(id, config.clone());
+    }
+
+    let conns_clone = conns.clone();
+    let matrix_task = config.matrix.clone().map(|x| {
+        tokio::spawn(async move {
+            if let Err(e) = matrix::setup_matrix(&x, conns_clone).await {
+                error!("Error setting up Matrix: {}", e);
+            }
+        })
+    });
+
+    while let Some((x)) = log_tasks.join_next_with_id().await {
+        let (id, _) = x.unwrap();
+        let config = ids.remove(&id).unwrap();
+        warn!("Reconnecting to {}", config.name);
+        conns.remove(&config.name);
+        ids.remove(&id);
+        let (conn, id) = log_machine(&config, tx.clone(), &mut log_tasks).await?;
+        conns.insert(config.name.clone(), (Arc::new(conn), config.clone()));
+        ids.insert(id, config.clone());
     }
 
     // Wait for influx task to complete if it exists
@@ -169,12 +255,12 @@ async fn main() -> Result<()> {
 async fn log_machine(
     config: &MachineConfig,
     tx: mpsc::Sender<(String, DataPoint)>,
-) -> Result<(QSConnection, JoinHandle<()>)> {
+    log_tasks: &mut JoinSet<()>,
+) -> Result<(QSConnection, Id)> {
     let mut con =
         QSConnection::connect(&config.host, 7443, qslib_rs::com::ConnectionType::SSL).await?;
 
-
-    let access = Access::level(AccessLevel::Observer);
+    let access = AccessSet::level(AccessLevel::Observer);
     access.send(&mut con).await?.recv_response().await?;
     Subscribe::topic("Temperature").send(&mut con).await?;
     Subscribe::topic("Time").send(&mut con).await?;
@@ -187,35 +273,61 @@ async fn log_machine(
 
     let config_clone = config.clone();
 
-    let log_task = tokio::spawn(async move {
-        influx_log_loop(&mut log_sub, tx, &config_clone).await.unwrap();
-    });
+    let aborthandle = log_tasks
+        .build_task()
+        .name(&config.name)
+        .spawn(async move {
+            influx_log_loop(&mut log_sub, tx, &config_clone, None)
+                .await
+                .unwrap();
+        })
+        .unwrap();
+    let id = aborthandle.id();
 
-    Ok((con, log_task))
+    info!("Logging task started for {}", config.name);
+
+    Ok((con, id))
 }
 
 async fn influx_log_loop(
     log_sub: &mut StreamMap<String, BroadcastStream<LogMessage>>,
     tx: mpsc::Sender<(String, DataPoint)>,
     config: &MachineConfig,
+    timeout_secs: Option<u64>,
 ) -> Result<()> {
     let machine_name = config.name.as_ref();
-    loop {
-        let (_, msg) = log_sub.next().await.unwrap();
-        let timestamp = chrono::Utc::now();
-        let msg = msg.unwrap();
-        let points = match msg.topic.as_str() {
-            "Temperature" => temperature_to_lineprotocol(&msg, machine_name, timestamp)?,
-            "Time" => time_to_lineprotocol(&msg, machine_name, timestamp)?,
-            "Run" => run_to_lineprotocol(&msg, machine_name, timestamp)?,
-            "LEDStatus" => ledstatus_to_lineprotocol(&msg, machine_name, timestamp)?,
-            _ => continue,
-        };
+    let mut last_message = tokio::time::Instant::now();
+    let timeout = Duration::from_secs(timeout_secs.unwrap_or(60));
+    let mut check_interval = tokio::time::interval(Duration::from_secs(5));
 
-        for point in points {
-            // If InfluxDB is configured, send points to the channel
-            if let Err(e) = tx.send((config.name.clone(), point)).await {
-                eprintln!("Failed to send point to InfluxDB: {}", e);
+    loop {
+        select! {
+            msg = log_sub.next() => {
+                let (_, msg) = log_sub.next().await.unwrap();
+                let timestamp = chrono::Utc::now();
+                let msg = msg.unwrap();
+                let points = match msg.topic.as_str() {
+                    "Temperature" => temperature_to_lineprotocol(&msg, machine_name, timestamp)?,
+                    "Time" => time_to_lineprotocol(&msg, machine_name, timestamp)?,
+                    "Run" => run_to_lineprotocol(&msg, machine_name, timestamp)?,
+                    "LEDStatus" => ledstatus_to_lineprotocol(&msg, machine_name, timestamp)?,
+                    _ => continue,
+                };
+
+                for point in points {
+                    // If InfluxDB is configured, send points to the channel
+                    if let Err(e) = tx.send((config.name.clone(), point)).await {
+                        error!("Failed to send point to InfluxDB: {}", e);
+                    }
+                }
+
+                last_message = tokio::time::Instant::now();
+            }
+            _ = check_interval.tick() => {
+                if last_message.elapsed() > timeout {
+                    warn!("No messages received from {} in {} seconds, disconnecting", config.name, timeout.as_secs_f32());
+                    return Ok(());
+                }
             }
         }
     }
@@ -243,9 +355,10 @@ fn ledstatus_to_lineprotocol(
     Ok(vec![
         fields
             .into_iter()
-            .fold(DataPoint::builder("lamp").tag("machine", machine_name), |builder, (key, value)| {
-                builder.field(key, value)
-            })
+            .fold(
+                DataPoint::builder("lamp").tag("machine", machine_name),
+                |builder, (key, value)| builder.field(key, value),
+            )
             .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64)
             .build()?,
     ])
@@ -262,7 +375,8 @@ fn run_to_lineprotocol(
     let action = args.next().ok_or(anyhow::anyhow!("Missing action"))?;
 
     // Create base point for run_action
-    let mut point = DataPoint::builder("run_action").tag("machine", machine_name)
+    let mut point = DataPoint::builder("run_action")
+        .tag("machine", machine_name)
         .tag("type", action.to_lowercase())
         .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64);
 
@@ -278,7 +392,8 @@ fn run_to_lineprotocol(
 
             // Also create run_status point
             points.push(
-                DataPoint::builder("run_status").tag("machine", machine_name)
+                DataPoint::builder("run_status")
+                    .tag("machine", machine_name)
                     .tag("type", action.to_lowercase())
                     .field(action.to_lowercase(), value)
                     .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64)
@@ -428,6 +543,117 @@ fn time_to_lineprotocol(
     }
 
     Ok(vec![point.timestamp(ts).build()?])
+}
+
+async fn docollect(
+    args: &HashMap<String, String>,
+    machine_name: &str,
+    plate_setup: Option<&PlateSetup>,
+    connection: &QSConnection,
+    config: &Config,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    tx: mpsc::Sender<(String, DataPoint)>,
+) -> Result<(), QSConnectionError> {
+    let run = args
+        .get("run")
+        .ok_or_else(|| QSConnectionError::MissingArgument("run".to_string()))?
+        .trim_matches('"')
+        .to_string();
+
+    // Convert args to proper format for filter data filename
+    let stage = args
+        .get("stage")
+        .and_then(|s| s.parse::<i32>().ok())
+        .ok_or_else(|| {
+            QSConnectionError::InvalidArgument("stage".to_string(), "not a valid integer".to_string())
+        })?;
+    let cycle = args
+        .get("cycle")
+        .and_then(|s| s.parse::<i32>().ok())
+        .ok_or_else(|| {
+            QSConnectionError::InvalidArgument("cycle".to_string(), "not a valid integer".to_string())
+        })?;
+    let step = args
+        .get("step")
+        .and_then(|s| s.parse::<i32>().ok())
+        .ok_or_else(|| {
+            QSConnectionError::InvalidArgument("step".to_string(), "not a valid integer".to_string())
+        })?;
+    let point = args
+        .get("point")
+        .and_then(|s| s.parse::<i32>().ok())
+        .ok_or_else(|| {
+            QSConnectionError::InvalidArgument("point".to_string(), "not a valid integer".to_string())
+        })?;
+
+    // Get plate setup samples if available
+    // let sample_array = plate_setup.map(|ps| ps.well_samples_as_array());
+
+    // Get list of filter data files
+    let pattern = format!(
+        "{}/apldbio/sds/filter/S{:02}_C{:03}_T{:02}_P{:04}_*_filterdata.xml",
+        run, stage, cycle, step, point
+    );
+    let files = connection.get_expfile_list(&pattern).await?;
+
+    let mut filter_files: Vec<FilterDataFilename> = files
+        .iter()
+        .filter_map(|f| FilterDataFilename::from_string(f).ok())
+        .collect();
+    // filter_files.sort(); FIXME
+
+    // Get latest point's files
+    let latest_files: Vec<_> = filter_files
+        .iter()
+        .filter(|x| x.is_same_point(&filter_files[filter_files.len() - 1]))
+        .collect();
+
+    let mut line_protocols = Vec::new();
+
+    // Process filter data 
+    if let Some(ipdir) = &config.sync.in_progress_directory {
+        let filter_path = Path::new(ipdir).join(&run).join("apldbio/sds/filter");
+        if filter_path.exists() {
+            for fdf in latest_files {
+                let filter_data = connection
+                    .get_filterdata_one(*fdf, Some(run.clone()))
+                    .await?;
+                line_protocols.extend(filter_data.to_lineprotocol(
+                    Some(&run),
+                    None, // FIXME  sample_array,
+                    None,
+                )?);
+            }
+        } else {
+            for fdf in latest_files {
+                let filter_data = connection
+                    .get_filterdata_one(*fdf, Some(run.clone()))
+                    .await?;
+                line_protocols.extend(filter_data.to_lineprotocol(
+                    Some(&run),
+                    None, // FIXME  sample_array,
+                    None,
+                )?);
+            }
+        }
+    }
+
+    for lp in line_protocols {
+        // Just print to stdout for now
+        println!("{}", lp);
+    }
+
+    // Write to InfluxDB
+    // if let Some(influx) = &config.influxdb {
+    //     let client = Client::new(&influx.url, &influx.org, &influx.token);
+
+    //     for lp in line_protocols {
+    //         write_api.write(&influx.bucket, None, lp.as_bytes()).await?;
+    //     }
+    //     write_api.flush().await?;
+    // }
+
+    Ok(())
 }
 
 #[cfg(test)]
