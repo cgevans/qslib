@@ -515,9 +515,9 @@ impl TryFrom<OkResponse> for CoverPosition {
 }
 
 #[derive(Debug, Clone)]
-struct CoverHeatStatus {
-    on: bool,
-    temperature: f64,
+pub struct CoverHeatStatus {
+    pub on: bool,
+    pub temperature: f64,
 }
 
 // drawer?
