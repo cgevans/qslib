@@ -453,6 +453,7 @@ impl TryFrom<OkResponse> for QuickStatus {
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         let args = value.args.into_iter();
         let mut args_deque = args.into_iter().collect::<VecDeque<_>>();
+        info!("args_deque: {:?}", args_deque);
         Ok(QuickStatus {
             power: match args_deque.pop_front().unwrap().try_into_string()?.as_str() {
                 "ON" => Power::On,
@@ -461,7 +462,7 @@ impl TryFrom<OkResponse> for QuickStatus {
             },
             // drawer: value.args[1].try_into_string()?,
             // cover: value.args[2].try_into_string()?,
-            set_temperatures: OkResponse::parse(&mut args_deque.pop_front().unwrap().try_into_string()?.into_bytes().as_slice()).unwrap().options.iter().map(|(k, v)| v.clone().try_into_f64().unwrap()).collect(),
+            // set_temperatures: OkResponse::parse(&mut args_deque.pop_front().unwrap().try_into_string()?.into_bytes().as_slice()).unwrap().options.iter().map(|(k, v)| v.clone().try_into_f64().unwrap()).collect(),
             sample_temperatures: args_deque.pop_front().unwrap().try_into_string()?.split_whitespace().map(|s| s.parse::<f64>().unwrap()).collect(),
             block_temperatures: args_deque.pop_front().unwrap().try_into_string()?.split_whitespace().map(|s| s.parse::<f64>().unwrap()).collect(),
             // run_title: value.args[6].try_into_string()?,
@@ -486,7 +487,7 @@ pub struct QuickStatusQuery;
 
 impl CommandBuilder for QuickStatusQuery {
     type Response = QuickStatus;
-    const COMMAND: &'static [u8] = b"RET $(POW?) $(TBC:SETT?) $(TBC:SampleTemperatures?) $(TBC:BlockTemperatures?) $(RunProgress?)";
+    const COMMAND: &'static [u8] = b"RET $(POW?) $(TBC:SampleTemperatures?) $(TBC:BlockTemperatures?) $(RunProgress?)";
 
     fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
         bytes.write_all(Self::COMMAND)?;
