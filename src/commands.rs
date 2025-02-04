@@ -473,11 +473,10 @@ impl TryFrom<OkResponse> for QuickStatus {
 impl QuickStatus {
     pub fn to_string(&self) -> String {
         format!(
-            "Power: {:?}\nSample Temperatures: {:?}\nBlock Temperatures: {:?}\nSet Temperatures: {:?}",
+            "Power: {:?}\nSample Temperatures: {:?}\nBlock Temperatures: {:?}",
             self.power,
             self.sample_temperatures,
             self.block_temperatures,
-            self.set_temperatures
         )
     }
 }
