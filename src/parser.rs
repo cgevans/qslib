@@ -264,6 +264,7 @@ pub struct Command {
 impl CommandBuilder for Command {
     const COMMAND: &'static [u8] = b"";
     type Response = OkResponse;
+    type Error = ErrorResponse;
 
     fn args(&self) -> Option<Vec<Value>> {
         Some(self.args.clone())

@@ -358,17 +358,17 @@ async fn test_power_query_and_set() {
         .send(&mut connection)
         .await
         .unwrap()
-        .recv_response()
+        .receive_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), PowerStatus::On);
+    assert_eq!(response.unwrap().unwrap(), PowerStatus::On);
 
     // Set power OFF
     let response = PowerSet(PowerStatus::Off)
         .send(&mut connection)
         .await
         .unwrap()
-        .recv_response()
+        .receive_response()
         .await;
     assert!(response.is_ok());
 
@@ -377,17 +377,17 @@ async fn test_power_query_and_set() {
         .send(&mut connection)
         .await
         .unwrap()
-        .recv_response()
+        .receive_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), PowerStatus::Off);
+    assert_eq!(response.unwrap().unwrap(), PowerStatus::Off);
 
     // Set power ON
     let response = PowerSet(PowerStatus::On)
         .send(&mut connection)
         .await
         .unwrap()
-        .recv_response()
+        .receive_response()
         .await;
     assert!(response.is_ok());
 
@@ -396,10 +396,10 @@ async fn test_power_query_and_set() {
         .send(&mut connection)
         .await
         .unwrap()
-        .recv_response()
+        .receive_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), PowerStatus::On);
+    assert_eq!(response.unwrap().unwrap(), PowerStatus::On);
 
     _server.abort();
 }
@@ -407,7 +407,7 @@ async fn test_power_query_and_set() {
 #[tokio::test]
 async fn test_log_messages() {
     let (addr, _server) = setup_mock_server(None, true).await;
-    let mut connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
         .await
         .unwrap();
 
@@ -431,7 +431,7 @@ async fn test_log_messages() {
 #[tokio::test]
 async fn test_send_command_bytes() {
     let (addr, _server) = setup_mock_server(None, true).await;
-    let mut connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
         .await
         .unwrap();
 
@@ -750,17 +750,17 @@ async fn test_ssl_power_query_and_set() {
         .send(&mut connection)
         .await
         .unwrap()
-        .recv_response()
+        .receive_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), PowerStatus::On);
+    assert_eq!(response.unwrap().unwrap(), PowerStatus::On);
 
     // Set power OFF
     let response = PowerSet(PowerStatus::Off)
         .send(&mut connection)
         .await
         .unwrap()
-        .recv_response()
+        .receive_response()
         .await;
     assert!(response.is_ok());
 
@@ -769,10 +769,10 @@ async fn test_ssl_power_query_and_set() {
         .send(&mut connection)
         .await
         .unwrap()
-        .recv_response()
+        .receive_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), PowerStatus::Off);
+    assert_eq!(response.unwrap().unwrap(), PowerStatus::Off);
 
     _server.abort();
 }
@@ -780,7 +780,7 @@ async fn test_ssl_power_query_and_set() {
 #[tokio::test]
 async fn test_multiline_response() {
     let (addr, _server) = setup_mock_server(None, true).await;
-    let mut connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
         .await
         .unwrap();
 
@@ -816,7 +816,7 @@ async fn test_mismatched_xml_tags() {
     let (addr, _server) = setup_mock_server(None, true).await;
 
     info!("Testing mismatched XML tags handling");
-    let mut connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
         .await
         .unwrap();
 
@@ -851,7 +851,7 @@ async fn test_mismatched_xml_tags() {
 async fn test_unexpected_close_tag() {
     setup_logging();
     let (addr, _server) = setup_mock_server(None, true).await;
-    let mut connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
         .await
         .unwrap();
 
@@ -884,7 +884,7 @@ async fn test_unexpected_close_tag() {
 async fn test_angle_brackets_in_response() {
     setup_logging();
     let (addr, _server) = setup_mock_server(None, true).await;
-    let mut connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
         .await
         .unwrap();
 

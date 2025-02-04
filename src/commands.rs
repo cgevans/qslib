@@ -1,19 +1,20 @@
 use std::{collections::VecDeque, future::Future, io::Write, marker::PhantomData};
 
 use indexmap::IndexMap;
-use log::info;
+use log::{info, warn};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::{
-    com::{QSConnection, QSConnectionError, ResponseReceiver},
+    com::{QSConnection, QSConnectionError, ResponseReceiver, SendCommandError},
     parser::{Command, ErrorResponse, MessageResponse, OkResponse, ParseError, Value},
 };
 
-pub struct CommandReceiver<T: TryFrom<OkResponse>> {
+pub struct CommandReceiver<T: TryFrom<OkResponse>, E: From<ErrorResponse>> {
     pub message_content: Vec<u8>,
     pub response: ResponseReceiver,
     pub response_type: PhantomData<T>,
+    pub error_type: PhantomData<E>,
 }
 
 #[derive(Debug, Error)]
@@ -25,25 +26,31 @@ pub enum OkParseError {
 }
 
 #[derive(Debug, Error)]
-pub enum CommandResponseError {
+pub enum ReceiveOkResponseError {
     #[error("Connection closed.")]
     ConnectionClosed,
-    #[error("Command response error: {0:?}")]
-    CommandResponseError(ErrorResponse),
-    #[error("Response parsing error: {0:?}")]
+    #[error("OK response parsing error: {0:?}")]
     ResponseParsingError(#[from] OkParseError),
-    #[error("Received OK when expecting NEXT")]
-    UnexpectedOk(OkResponse),
 }
 
-impl<T: TryFrom<OkResponse, Error = OkParseError>> CommandReceiver<T> {
-    pub async fn recv_response(&mut self) -> Result<T, CommandResponseError> {
+#[derive(Debug, Error)]
+pub enum ReceiveNextResponseError {
+    #[error("Connection closed.")]
+    ConnectionClosed,
+    #[error("Unexpected OK response.")]
+    UnexpectedOk(OkResponse),
+    #[error("Unexpected error response.")]
+    UnexpectedError(ErrorResponse),
+}
+
+impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> CommandReceiver<T, E> {
+    pub async fn receive_response(&mut self) -> Result<Result<T, E>, ReceiveOkResponseError> {
         loop {
             match self.response.recv().await {
-                None => return Err(CommandResponseError::ConnectionClosed),
-                Some(MessageResponse::Ok { message, .. }) => return Ok(message.try_into()?),
+                None => return Err(ReceiveOkResponseError::ConnectionClosed),
+                Some(MessageResponse::Ok { message, .. }) => return Ok(Ok(message.try_into()?)),
                 Some(MessageResponse::Error { error, .. }) => {
-                    return Err(CommandResponseError::CommandResponseError(error))
+                    return Ok(Err(error.into()))
                 }
                 Some(MessageResponse::Next { .. }) => (),
                 Some(MessageResponse::Message(message)) => panic!(
@@ -54,15 +61,15 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>> CommandReceiver<T> {
         }
     }
 
-    pub async fn recv_next(&mut self) -> Result<(), CommandResponseError> {
+    pub async fn receive_next(&mut self) -> Result<Result<(), E>, ReceiveNextResponseError> {
         match self.response.recv().await {
-            None => return Err(CommandResponseError::ConnectionClosed),
+            None => return Err(ReceiveNextResponseError::ConnectionClosed),
             Some(MessageResponse::Error { error, .. }) => {
-                return Err(CommandResponseError::CommandResponseError(error))
+                return Ok(Err(error.into()))
             }
-            Some(MessageResponse::Next { .. }) => Ok(()),
+            Some(MessageResponse::Next { .. }) => Ok(Ok(())),
             Some(MessageResponse::Ok { message, .. }) => {
-                return Err(CommandResponseError::UnexpectedOk(message))
+                return Err(ReceiveNextResponseError::UnexpectedOk(message))
             }
             Some(MessageResponse::Message(message)) => {
                 panic!(
@@ -123,11 +130,12 @@ pub trait CommandBuilder: Clone + Send + Sync {
     // }
 
     type Response: TryFrom<OkResponse>;
+    type Error: From<ErrorResponse>;
     // fn send(&self) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send;
     fn send(
         self,
         connection: &QSConnection,
-    ) -> impl Future<Output = Result<CommandReceiver<Self::Response>, QSConnectionError>> + Send
+    ) -> impl Future<Output = Result<CommandReceiver<Self::Response, Self::Error>, SendCommandError>> + Send
     {
         let content = self.to_bytes();
         let r = connection.send_command(self);
@@ -137,6 +145,7 @@ pub trait CommandBuilder: Clone + Send + Sync {
                 message_content: content,
                 response: r,
                 response_type: PhantomData,
+                error_type: PhantomData,
             })
         }
     }
@@ -164,6 +173,7 @@ pub struct Subscribe(pub String);
 impl CommandBuilder for Subscribe {
     const COMMAND: &'static [u8] = b"SUBS";
     type Response = ();
+    type Error = ErrorResponse;
     fn args(&self) -> Option<Vec<Value>> {
         Some(vec![self.0.clone().into()])
     }
@@ -196,6 +206,28 @@ impl From<AccessLevel> for String {
     }
 }
 
+impl TryFrom<String> for AccessLevel {
+    type Error = ();
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.to_lowercase().as_str() {
+            "guest" => Ok(AccessLevel::Guest),
+            "observer" => Ok(AccessLevel::Observer), 
+            "controller" => Ok(AccessLevel::Controller),
+            "administrator" => Ok(AccessLevel::Administrator),
+            "full" => Ok(AccessLevel::Full),
+            _ => Err(()),
+        }
+    }
+}
+
+impl TryFrom<OkResponse> for AccessLevel {
+    type Error = OkParseError;
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        let level = value.args.get(0).unwrap().clone().try_into_string()?;
+        AccessLevel::try_from(level).map_err(|_| OkParseError::UnexpectedValues(value, "unexpected access level".to_string()))
+    }
+}
+
 impl From<AccessLevel> for Value {
     fn from(level: AccessLevel) -> Self {
         Value::String(level.into())
@@ -203,21 +235,31 @@ impl From<AccessLevel> for Value {
 }
 
 #[derive(Debug, Clone)]
-pub struct AccessSet(pub AccessLevel);
+pub struct AccessLevelSet(pub AccessLevel);
 
 
-impl AccessSet {
+impl AccessLevelSet {
     pub fn level(level: AccessLevel) -> Self {
         Self(level)
     }
 }
 
-impl CommandBuilder for AccessSet {
+impl CommandBuilder for AccessLevelSet {
     type Response = ();
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"ACC";
     fn args(&self) -> Option<Vec<Value>> {
         Some(vec![self.0.clone().into()])
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct AccessLevelQuery;
+
+impl CommandBuilder for AccessLevelQuery {
+    type Response = AccessLevel;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"ACC?";
 }
 
 #[derive(Debug, Clone)]
@@ -226,6 +268,7 @@ pub struct Unsubscribe(pub String);
 
 impl CommandBuilder for Unsubscribe {
     type Response = ();
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"UNS";
     fn args(&self) -> Option<Vec<Value>> {
         Some(vec![self.0.clone().into()])
@@ -250,6 +293,7 @@ pub struct PowerQuery;
 
 impl CommandBuilder for PowerQuery {
     type Response = PowerStatus;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"POW?";
 }
 
@@ -272,6 +316,7 @@ pub struct PowerSet(pub PowerStatus);
 
 impl CommandBuilder for PowerSet {
     type Response = ();
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"POW";
     fn args(&self) -> Option<Vec<Value>> {
         Some(vec![self.0.into()])
@@ -426,6 +471,7 @@ pub struct RunProgressQuery;
 
 impl CommandBuilder for RunProgressQuery {
     type Response = PossibleRunProgress;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"RUN?";
 }
 
@@ -442,15 +488,38 @@ enum DrawerStatus {
 }
 
 #[derive(Debug, Clone)]
-enum CoverPosition {
+pub enum CoverPosition {
     Up,
     Down,
     Unknown,
 }
 
 #[derive(Debug, Clone)]
-struct CoverStatus {
-    position: CoverPosition,
+pub struct CoverPositionQuery;
+
+impl CommandBuilder for CoverPositionQuery {
+    type Response = CoverPosition;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"eng?";
+}
+
+impl TryFrom<OkResponse> for CoverPosition {
+    type Error = OkParseError;
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        match value.args.get(0).unwrap().clone().try_into_string()?.to_lowercase().as_str() {
+            "up" => Ok(CoverPosition::Up),
+            "down" => Ok(CoverPosition::Down),
+            _ => {
+                warn!("Unexpected cover position: {}", value.args.get(0).unwrap().clone().try_into_string()?);
+                Ok(CoverPosition::Unknown)
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CoverHeatStatus {
+    on: bool,
     temperature: f64,
 }
 
@@ -474,31 +543,33 @@ struct DrawerStatusQuery;
 
 impl CommandBuilder for DrawerStatusQuery {
     type Response = DrawerStatus;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"drawer?";
 }
 
 // cover?
 // OK cover? UP 105.0
 
-impl TryFrom<OkResponse> for CoverStatus {
+impl TryFrom<OkResponse> for CoverHeatStatus {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         let position = value.args.get(0).unwrap().clone().try_into_string()?;
-        let position = match position.as_str() {
-            "UP" => CoverPosition::Up,
-            "DOWN" => CoverPosition::Down,
+        let on = match position.to_lowercase().as_str() {
+            "up" | "on" | "true" => true, // FIXME
+            "down" | "off" | "false" => false,
             _ => return Err(OkParseError::UnexpectedValues(value.clone(), "unexpected cover position".to_string())),
         };
         let temperature = value.args.get(1).unwrap().clone().try_into_f64()?;
-        Ok(CoverStatus { position, temperature })
+        Ok(CoverHeatStatus { on, temperature })
     }
 }
 
 #[derive(Debug, Clone)]
-struct CoverStatusQuery;
+struct CoverHeatStatusQuery;
 
-impl CommandBuilder for CoverStatusQuery {
-    type Response = CoverStatus;
+impl CommandBuilder for CoverHeatStatusQuery {
+    type Response = CoverHeatStatus;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"cover?";
 }
 
@@ -506,7 +577,7 @@ impl CommandBuilder for CoverStatusQuery {
 pub struct QuickStatus {
     pub power: PowerStatus,
     pub drawer: DrawerStatus,
-    pub cover: CoverStatus,
+    pub cover: CoverHeatStatus,
     pub temperature_control: TemperatureControlStatus,
     pub sample_temperatures: Vec<f64>,
     pub block_temperatures: Vec<f64>,
@@ -570,8 +641,8 @@ impl QuickStatus {
 </ul>",
             self.power,
             self.drawer,
-            self.cover.position,
-            self.cover.temperature,
+            {if self.cover.on {"<span style=\"color: red\">on</span>"} else {"<span style=\"color: blue\">off</span>"}},
+            if self.cover.on {format!("<span style=\"color: red\">{:.1}</span>", self.cover.temperature)} else {format!("<span style=\"color: gray\">{:.1}</span>", self.cover.temperature)},
             self.set_temperatures.zones.iter().zip(self.temperature_control.zones.iter())
                 .enumerate()
                 .map(|(i, (temp, enabled))| format!("Zone{}: {}{:.1}°C{}", i + 1, if *enabled {"<b>"} else {"<i>"}, temp, if *enabled {"</b>"} else {"</i>"}))
@@ -604,6 +675,7 @@ pub struct QuickStatusQuery;
 
 impl CommandBuilder for QuickStatusQuery {
     type Response = QuickStatus;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"RET $(POW?) $(drawer?) $(cover?) $(TBC:SETT?) $(TBC:CONT?) $(TBC:SampleTemperatures?) $(TBC:BlockTemperatures?) $(RunProgress?)";
 
     fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
@@ -662,6 +734,7 @@ impl TryFrom<OkResponse> for SetTemperatures {
 
 impl CommandBuilder for SetTemperaturesQuery {
     type Response = SetTemperatures;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"TBC:SETT?";
 }
 // TBC:SampleTemperatures?
@@ -672,6 +745,7 @@ pub struct SampleTemperaturesQuery;
 
 impl CommandBuilder for SampleTemperaturesQuery {
     type Response = Vec<f64>;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"TBC:SampleTemperatures?";
 }
 
@@ -725,6 +799,7 @@ struct TemperatureControlStatusQuery;
 
 impl CommandBuilder for TemperatureControlStatusQuery {
     type Response = TemperatureControlStatus;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"TBC:CONT?";
 }
 
@@ -733,6 +808,7 @@ pub struct BlockTemperaturesQuery;
 
 impl CommandBuilder for BlockTemperaturesQuery {
     type Response = Vec<f64>;
+    type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"TBC:BlockTemperatures?";
 }
 

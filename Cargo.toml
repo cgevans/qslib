@@ -31,6 +31,7 @@ zip = "2.2.2"
 memchr = { version = "2.7", optional = true }
 lazy_static = "1.5.0"
 data-encoding = "2.7.0"
+anyhow = "1.0.95"
 
 [features]
 debug = ["winnow/debug"]
