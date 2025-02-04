@@ -361,10 +361,10 @@ async fn test_power_query_and_set() {
         .recv_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), Power::On);
+    assert_eq!(response.unwrap(), PowerStatus::On);
 
     // Set power OFF
-    let response = PowerSet(Power::Off)
+    let response = PowerSet(PowerStatus::Off)
         .send(&mut connection)
         .await
         .unwrap()
@@ -380,10 +380,10 @@ async fn test_power_query_and_set() {
         .recv_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), Power::Off);
+    assert_eq!(response.unwrap(), PowerStatus::Off);
 
     // Set power ON
-    let response = PowerSet(Power::On)
+    let response = PowerSet(PowerStatus::On)
         .send(&mut connection)
         .await
         .unwrap()
@@ -399,7 +399,7 @@ async fn test_power_query_and_set() {
         .recv_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), Power::On);
+    assert_eq!(response.unwrap(), PowerStatus::On);
 
     _server.abort();
 }
@@ -753,10 +753,10 @@ async fn test_ssl_power_query_and_set() {
         .recv_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), Power::On);
+    assert_eq!(response.unwrap(), PowerStatus::On);
 
     // Set power OFF
-    let response = PowerSet(Power::Off)
+    let response = PowerSet(PowerStatus::Off)
         .send(&mut connection)
         .await
         .unwrap()
@@ -772,7 +772,7 @@ async fn test_ssl_power_query_and_set() {
         .recv_response()
         .await;
     assert!(response.is_ok());
-    assert_eq!(response.unwrap(), Power::Off);
+    assert_eq!(response.unwrap(), PowerStatus::Off);
 
     _server.abort();
 }

@@ -145,6 +145,19 @@ impl Value {
         if v == Value::String(String::from("")) {
             return Err(ErrMode::from_input(input));
         };
+        if let Value::String(s) = &v {
+            match s.to_lowercase().as_str() {
+                "true" | "True" => return Ok(Value::Bool(true)),
+                "false" | "False" => return Ok(Value::Bool(false)),
+                _ => {}
+            }
+            if let Ok(i) = s.parse::<i64>() {
+                return Ok(Value::Int(i)); 
+            }
+            if let Ok(f) = s.parse::<f64>() {
+                return Ok(Value::Float(f));
+            }
+        }
         Ok(v)
     }
 
@@ -410,6 +423,34 @@ pub struct OkResponse {
     pub options: IndexMap<String, Value>,
     pub args: Vec<Value>,
 }
+
+impl TryFrom<&str> for OkResponse {
+    type Error = ParseError;
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        let mut input = s.as_bytes();
+        let c = OkResponse::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
+        Ok(c)
+    }
+}
+
+impl TryFrom<Vec<u8>> for OkResponse {
+    type Error = ParseError;
+    fn try_from(s: Vec<u8>) -> Result<Self, Self::Error> {
+        let mut input = &s[..];
+        let c = OkResponse::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
+        Ok(c)
+    }
+}
+
+impl TryFrom<String> for OkResponse {
+    type Error = ParseError;
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        let mut input = s.as_bytes();
+        let c = OkResponse::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
+        Ok(c)
+    }
+}
+
 
 impl OkResponse {
     pub fn parse(input: &mut &[u8]) -> ModalResult<OkResponse> {
@@ -748,3 +789,5 @@ mod tests {
         assert_eq!(result, value);   
     }
 }
+
+
