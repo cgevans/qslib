@@ -146,7 +146,7 @@ async fn handle_message(
                             Ok(v) => {
                                 let runmsg = match v.runprogress {
                                     PossibleRunProgress::Running(p) => format!("running {} (stage {}, cycle {}, step {}).", p.run_title, p.stage, p.cycle, p.step),
-                                    PossibleRunProgress::NotRunning => "idle.".to_string(),
+                                    PossibleRunProgress::NotRunning(_) => "idle.".to_string(),
                                 };
                                 statuses.push_str(&format!("power "));
                                 match v.power {
