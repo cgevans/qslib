@@ -20,7 +20,7 @@ use matrix_sdk::{
         },
     },
 };
-use qslib_rs::{com::{QSConnection, QSConnectionError}, commands::{QuickStatusQuery, CommandBuilder}, parser::LogMessage};
+use qslib_rs::{com::{CommandError, QSConnection, QSConnectionError, SendCommandError}, commands::{CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery, ReceiveOkResponseError}, parser::{ErrorResponse, LogMessage}};
 use serde::{Deserialize, Serialize};
 use tokio_stream::StreamMap;
 use std::{
@@ -89,17 +89,62 @@ async fn handle_message(
 
     match command {
         "!status" => {
-            let machine = parts.next().unwrap_or("");
-            match qs.get(machine) {
-                Some(x) => {
-                    let (conn, _) = x.value();
-                    let v = QuickStatusQuery.send(conn).await?.recv_response().await;
-                    match v {
-                        Ok(v) => send_matrix_message(&room, &v.to_html(), false).await?,
-                        Err(e) => error!("Error getting status: {}", e),
+            let machine = parts.next();
+            match machine {
+                Some(m) => {
+                    match qs.get(m) {
+                        Some(x) => {
+                            let (conn, _) = x.value();
+                            let v = QuickStatusQuery.send(conn).await?.receive_response().await?;
+                            match v {
+                                Ok(v) => send_matrix_message(&room, &v.to_html(), false).await?,
+                                Err(e) => error!("Error getting status: {}", e),
+                            }
+                        }
+                        None => error!("Machine {} not found", m),
                     }
                 }
-                None => error!("Machine {} not found", machine),
+                None => {
+                    let mut statuses = "<ul>".to_string();
+                    for item in qs.iter() {
+                        let (conn, n) = item.value();
+                        statuses.push_str(&format!("<li><span>{}</span>:", n.name));
+                        let v = QuickStatusQuery.send(conn).await?.receive_response().await?;
+                        match v {
+                            Ok(v) => {
+                                let runmsg = match v.runprogress {
+                                    PossibleRunProgress::Running(p) => format!("running {} (stage {}, cycle {}, step {}).", p.run_title, p.stage, p.cycle, p.step),
+                                    PossibleRunProgress::NotRunning => "idle.".to_string(),
+                                };
+                                statuses.push_str(&format!("power "));
+                                match v.power {
+                                    PowerStatus::On => statuses.push_str("on"),
+                                    PowerStatus::Off => statuses.push_str("off"),
+                                }
+                                // statuses.push_str(&format!("lamp "));
+                                // match v.lamp {
+                                //     LampStatus::On => statuses.push_str("on"),
+                                //     LampStatus::Off => statuses.push_str("off"),
+                                // }
+                                // statuses.push_str(&format!("cover "));
+                                // match v.cover {
+                                //     CoverStatus::Open => statuses.push_str("open"),
+                                //     CoverStatus::Closed => statuses.push_str("closed"),
+                                // }
+                                statuses.push_str(", ");
+                                statuses.push_str(&format!("{}", runmsg));
+                            }
+                            Err(e) => {
+                                error!("error getting status: {}", e);
+                                statuses.push_str(&format!("<span style='color: red;'>error getting status: {}.</span>", e));
+                            }
+                        
+                        }
+                        statuses.push_str("</li>");
+                    }
+                    statuses.push_str("</ul>");
+                    send_matrix_message(&room, &statuses, false).await?;
+                }
             }
             Ok(())
         }
@@ -321,7 +366,11 @@ pub enum MatrixError {
     #[error("Matrix error: {0}")]
     MatrixErr(#[from] matrix_sdk::Error),
     #[error("Matrix error: {0}")]
-    EchoErr(#[from] QSConnectionError),
+    EchoErr(#[from] CommandError<ErrorResponse>),
+    #[error("Sending error: {0}")]
+    SendErr(#[from] SendCommandError),
+    #[error("Receiving error: {0}")]
+    ReceiveErr(#[from] ReceiveOkResponseError),
     #[error("Client build error: {0}")]
     ClientBuildError(#[from] matrix_sdk::ClientBuildError),
     #[error("Room ID parse error: {0}")]

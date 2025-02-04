@@ -2913,8 +2913,9 @@ dependencies = [
 [[package]]
 name = "qslib-rs"
 version = "0.1.0"
-source = "git+https://github.com/cgevans/qslib-rs#c7f816f08cdb143afbda949072397c79279f1c10"
+source = "git+https://github.com/cgevans/qslib-rs#0e63174eb9405f6536f4b40dc8bde9c9448b5823"
 dependencies = [
+ "anyhow",
  "dashmap",
  "data-encoding",
  "enum_dispatch",

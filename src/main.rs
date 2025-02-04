@@ -6,11 +6,12 @@ use futures::stream;
 use influxdb2::models::DataPoint;
 use influxdb2::{Client, FromDataPoint, models::WriteDataPoint};
 use log::{debug, error, info, warn};
-use qslib_rs::com::ConnectionError;
+use qslib_rs::com::{CommandError, ConnectionError};
+use qslib_rs::parser::ErrorResponse;
 use qslib_rs::plate_setup::PlateSetup;
 use qslib_rs::{
     com::QSConnection,
-    commands::{AccessLevel, AccessSet, CommandBuilder, Subscribe},
+    commands::{AccessLevel, AccessLevelSet, CommandBuilder, Subscribe},
     data::{FilterDataCollection, PlateData},
     com::FilterDataFilename,
     parser::LogMessage,
@@ -254,8 +255,8 @@ async fn log_machine(
     let mut con =
         QSConnection::connect(&config.host, 7443, qslib_rs::com::ConnectionType::SSL).await?;
 
-    let access = AccessSet::level(AccessLevel::Observer);
-    access.send(&mut con).await?.recv_response().await?;
+    let access = AccessLevelSet::level(AccessLevel::Observer);
+    access.send(&mut con).await?.receive_response().await?;
     Subscribe::topic("Temperature").send(&mut con).await?;
     Subscribe::topic("Time").send(&mut con).await?;
     Subscribe::topic("Run").send(&mut con).await?;
@@ -544,38 +545,29 @@ async fn docollect(
     config: &Config,
     timestamp: chrono::DateTime<chrono::Utc>,
     tx: mpsc::Sender<(String, DataPoint)>,
-) -> Result<(), QSConnectionError> {
+) -> Result<(), CommandError<ErrorResponse>> {
     let run = args
         .get("run")
-        .ok_or_else(|| QSConnectionError::MissingArgument("run".to_string()))?
-        .trim_matches('"')
-        .to_string();
+        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Missing run argument")))
+        .and_then(|s| s.trim_matches('"').to_string().parse::<u32>().map_err(|e| CommandError::InternalError(anyhow::anyhow!("Invalid run argument: {}", e))))?;
 
     // Convert args to proper format for filter data filename
     let stage = args
         .get("stage")
         .and_then(|s| s.parse::<i32>().ok())
-        .ok_or_else(|| {
-            QSConnectionError::InvalidArgument("stage".to_string(), "not a valid integer".to_string())
-        })?;
+        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Invalid stage argument")))?;
     let cycle = args
         .get("cycle")
         .and_then(|s| s.parse::<i32>().ok())
-        .ok_or_else(|| {
-            QSConnectionError::InvalidArgument("cycle".to_string(), "not a valid integer".to_string())
-        })?;
+        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Invalid cycle argument")))?;
     let step = args
         .get("step")
         .and_then(|s| s.parse::<i32>().ok())
-        .ok_or_else(|| {
-            QSConnectionError::InvalidArgument("step".to_string(), "not a valid integer".to_string())
-        })?;
+        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Invalid step argument")))?;
     let point = args
         .get("point")
         .and_then(|s| s.parse::<i32>().ok())
-        .ok_or_else(|| {
-            QSConnectionError::InvalidArgument("point".to_string(), "not a valid integer".to_string())
-        })?;
+        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Invalid point argument")))?;
 
     // Get plate setup samples if available
     // let sample_array = plate_setup.map(|ps| ps.well_samples_as_array());
