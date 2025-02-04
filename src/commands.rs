@@ -440,7 +440,7 @@ pub struct QuickStatus {
     // pub cover: Cover,
     pub sample_temperatures: Vec<f64>,
     pub block_temperatures: Vec<f64>,
-    pub set_temperatures: Vec<f64>,
+    // pub set_temperatures: Vec<f64>,
     // pub run_title: String,
     // pub run_mode: String,
     // pub step: String,
