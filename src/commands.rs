@@ -387,7 +387,7 @@ pub struct RunProgress {
 
 pub enum PossibleRunProgress {
     Running(RunProgress),
-    NotRunning,
+    NotRunning(RunProgress),
 }
 
 impl TryFrom<OkResponse> for PossibleRunProgress {
@@ -433,12 +433,9 @@ impl TryFrom<OkResponse> for PossibleRunProgress {
 
         if rp.run_mode == "-" {
             if rp.step != "-" || rp.run_title != "-" || rp.cycle != "-" || rp.stage != "-" {
-                return Err(OkParseError::UnexpectedValues(
-                    value,
-                    "not running but some fields were not empty".to_string(),
-                ));
+                warn!("Not running but some fields were not empty: {:?}", value);
             }
-            return Ok(PossibleRunProgress::NotRunning);
+            return Ok(PossibleRunProgress::NotRunning(rp));
         }
 
         if !value.args.is_empty() {
