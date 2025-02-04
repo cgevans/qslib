@@ -661,7 +661,7 @@ impl QuickStatus {
                     progress.cycle,
                     progress.step
                 ),
-                PossibleRunProgress::NotRunning => "Not Running".to_string(),
+                PossibleRunProgress::NotRunning(_) => "Not Running".to_string(),
             }
         )
     }
