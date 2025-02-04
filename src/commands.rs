@@ -486,7 +486,7 @@ pub struct QuickStatusQuery;
 
 impl CommandBuilder for QuickStatusQuery {
     type Response = QuickStatus;
-    const COMMAND: &'static [u8] = b"RET $(POW?) $(TBC:SETT?) $(TBC:CONT?) $(RunProgress?)";
+    const COMMAND: &'static [u8] = b"RET $(POW?) $(TBC:SETT?) $(TBC:SampleTemperatures?) $(TBC:BlockTemperatures?) $(RunProgress?)";
 
     fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
         bytes.write_all(Self::COMMAND)?;
