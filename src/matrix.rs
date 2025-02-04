@@ -126,7 +126,7 @@ async fn handle_message(
                     let mut statuses = "<ul>".to_string();
                     for item in qs.iter() {
                         let (conn, n) = item.value();
-                        statuses.push_str(&format!("<li><span>{}</span>:", n.name));
+                        statuses.push_str(&format!("<li><span>{}</span>: ", n.name));
                         let mut v = match QuickStatusQuery.send(conn).await {
                             Ok(v) => v,
                             Err(e) => {
@@ -152,7 +152,11 @@ async fn handle_message(
                                 match v.power {
                                     PowerStatus::On => statuses.push_str("on"),
                                     PowerStatus::Off => statuses.push_str("off"),
-                                }
+                                };
+                                match v.cover.on {
+                                    true => statuses.push_str(&format!(", cover heat on at {:.1}°C", v.cover.temperature)),
+                                    false => statuses.push_str(", cover heat off"),
+                                };
                                 // statuses.push_str(&format!("lamp "));
                                 // match v.lamp {
                                 //     LampStatus::On => statuses.push_str("on"),
@@ -163,8 +167,7 @@ async fn handle_message(
                                 //     CoverStatus::Open => statuses.push_str("open"),
                                 //     CoverStatus::Closed => statuses.push_str("closed"),
                                 // }
-                                statuses.push_str(", ");
-                                statuses.push_str(&format!("{}", runmsg));
+                                statuses.push_str(&format!(", {}", runmsg));
                             }
                             Err(e) => {
                                 error!("error getting status: {}", e);
