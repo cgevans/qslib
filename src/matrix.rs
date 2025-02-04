@@ -153,7 +153,7 @@ async fn handle_message(
                                     PowerStatus::On => statuses.push_str("on"),
                                     PowerStatus::Off => statuses.push_str("off"),
                                 };
-                                match v.cover.on {
+                                match v.cover.on && v.power == PowerStatus::On {
                                     true => statuses.push_str(&format!(", cover heat on at {:.1}°C", v.cover.temperature)),
                                     false => statuses.push_str(", cover heat off"),
                                 };
