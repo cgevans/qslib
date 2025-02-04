@@ -2913,7 +2913,7 @@ dependencies = [
 [[package]]
 name = "qslib-rs"
 version = "0.1.0"
-source = "git+https://github.com/cgevans/qslib-rs#ea893546545b7d5358217e39b6b414c47c9b142f"
+source = "git+https://github.com/cgevans/qslib-rs#c7f816f08cdb143afbda949072397c79279f1c10"
 dependencies = [
  "dashmap",
  "data-encoding",

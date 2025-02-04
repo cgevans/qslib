@@ -93,8 +93,11 @@ async fn handle_message(
             match qs.get(machine) {
                 Some(x) => {
                     let (conn, _) = x.value();
-                    let v = QuickStatusQuery.send(conn).await?.recv_response().await.unwrap();
-                    send_matrix_message(&room, &v.to_string(), false).await?;
+                    let v = QuickStatusQuery.send(conn).await?.recv_response().await;
+                    match v {
+                        Ok(v) => send_matrix_message(&room, &v.to_html(), false).await?,
+                        Err(e) => error!("Error getting status: {}", e),
+                    }
                 }
                 None => error!("Machine {} not found", machine),
             }
@@ -115,8 +118,11 @@ async fn handle_message(
             match qs.get(machine) {
                 Some(x) => {
                     let (conn, _) = x.value();
-                    let response = conn.send_command(command).await?.get_response().await?.unwrap();
-                    send_matrix_message(&room, &response.to_string(), false).await?;
+                    let response = conn.send_command(command).await?.get_response().await?;
+                    match response {
+                        Ok(response) => send_matrix_message(&room, &response.to_string(), false).await?,
+                        Err(e) => send_matrix_message(&room, &format!("Error: {}", e), true).await?,
+                    }
                 }
                 None => error!("Machine {} not found", machine),
             }
