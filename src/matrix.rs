@@ -95,13 +95,31 @@ async fn handle_message(
                     match qs.get(m) {
                         Some(x) => {
                             let (conn, _) = x.value();
-                            let v = QuickStatusQuery.send(conn).await?.receive_response().await?;
+                            let mut v = match QuickStatusQuery.send(conn).await {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    error!("error getting status: {}", e);
+                                    send_matrix_message(&room, &format!("error getting status: {}", e), true).await?;
+                                    return Ok(());
+                                }
+                            };
+                            let v = match v.receive_response().await {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    error!("error getting status: {}", e);
+                                    send_matrix_message(&room, &format!("error getting status: {}", e), true).await?;
+                                    return Ok(());
+                                }
+                            };
                             match v {
                                 Ok(v) => send_matrix_message(&room, &v.to_html(), false).await?,
                                 Err(e) => error!("Error getting status: {}", e),
                             }
                         }
-                        None => error!("Machine {} not found", m),
+                        None => {
+                            error!("Machine {} not found", m);
+                            send_matrix_message(&room, &format!("Machine {} not found", m), true).await?;
+                        }
                     }
                 }
                 None => {
@@ -109,7 +127,21 @@ async fn handle_message(
                     for item in qs.iter() {
                         let (conn, n) = item.value();
                         statuses.push_str(&format!("<li><span>{}</span>:", n.name));
-                        let v = QuickStatusQuery.send(conn).await?.receive_response().await?;
+                        let mut v = match QuickStatusQuery.send(conn).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("error getting status: {}", e);
+                                continue;
+                            }
+                        };
+                        
+                        let v = match v.receive_response().await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("error getting status: {}", e);
+                                continue;
+                            }
+                        };
                         match v {
                             Ok(v) => {
                                 let runmsg = match v.runprogress {
