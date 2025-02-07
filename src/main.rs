@@ -17,6 +17,7 @@ use qslib_rs::{
     parser::LogMessage,
 };
 use serde_derive::Deserialize;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -206,7 +207,7 @@ async fn main() -> Result<()> {
     };
 
     let mut log_tasks = JoinSet::new();
-    let mut conns = Arc::new(DashMap::new());
+    let conns = Arc::new(DashMap::new());
     let mut ids = HashMap::new();
 
     for config in config.machines.iter() {
@@ -295,9 +296,21 @@ async fn influx_log_loop(
     loop {
         select! {
             msg = log_sub.next() => {
-                let (_, msg) = log_sub.next().await.unwrap();
+                let (_, msg) = match msg {
+                    Some(msg) => msg,
+                    None => {
+                        warn!("Machine {} disconnected", config.name);
+                        return Ok(());
+                    }
+                };
                 let timestamp = chrono::Utc::now();
-                let msg = msg.unwrap();
+                let msg = match msg {
+                    Ok(msg) => msg,
+                    Err(BroadcastStreamRecvError::Lagged(n)) => {
+                        warn!("Machine {} connection lagged by {} messages", config.name, n);
+                        continue;
+                    }
+                };
                 let points = match msg.topic.as_str() {
                     "Temperature" => temperature_to_lineprotocol(&msg, machine_name, timestamp)?,
                     "Time" => time_to_lineprotocol(&msg, machine_name, timestamp)?,

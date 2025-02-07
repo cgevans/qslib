@@ -427,13 +427,13 @@ pub async fn setup_matrix(
     settings: &MatrixSettings,
     qs_connections: Arc<DashMap<String,(Arc<QSConnection>, MachineConfig)>>,
 ) -> Result<(), MatrixError> {
-    info!(
+    debug!(
         "Setting up Matrix client with homeserver: {}",
         settings.host
     );
 
     let (client, sync_token) = if settings.session_file.exists() {
-        info!("Found existing session file at {:?}", settings.session_file);
+        debug!("Found existing session file at {:?}", settings.session_file);
         let session: FullSession =
             serde_json::from_slice(&std::fs::read(settings.session_file.clone()).unwrap()).unwrap();
         debug!(
@@ -450,10 +450,10 @@ pub async fn setup_matrix(
             .await?;
         debug!("Restoring user session");
         client.restore_session(session.user_session).await?;
-        info!("Successfully restored existing session");
+        debug!("Successfully restored existing session");
         (client, session.sync_token)
     } else {
-        info!("No existing session found, creating new session");
+        debug!("No existing session found, creating new session");
         let db_path = PathBuf::from(format!("{}.db", settings.session_file.to_string_lossy()));
         debug!("Creating new database at {:?}", db_path);
         let client = Client::builder()
@@ -462,7 +462,7 @@ pub async fn setup_matrix(
             .build()
             .await?;
 
-        info!("Logging in as user {}", settings.user);
+        debug!("Logging in as user {}", settings.user);
         client
             .matrix_auth()
             .login_username(&settings.user, &settings.password)
@@ -483,7 +483,7 @@ pub async fn setup_matrix(
         })
         .unwrap();
         std::fs::write(&settings.session_file, serialized_session).unwrap();
-        info!("Successfully created new session");
+        debug!("Successfully created new session");
         (client, None)
     };
 
@@ -496,7 +496,7 @@ pub async fn setup_matrix(
         sync_settings = sync_settings.token(sync_token);
     }
 
-    info!("Performing initial sync");
+    debug!("Performing initial sync");
     let response = client.sync_once(sync_settings.clone()).await?;
     // sync_settings = sync_settings.token(response.next_batch.clone());
 
@@ -504,7 +504,7 @@ pub async fn setup_matrix(
     persist_sync_token(&settings.session_file, response.next_batch.clone()).await;
 
     for room in settings.rooms.iter() {
-        info!("Joining room {}", room);
+        debug!("Joining room {}", room);
         let room_id = matrix_sdk::ruma::RoomId::parse(&room)?;
         client.join_room_by_id(&room_id).await?;
     }
@@ -512,7 +512,7 @@ pub async fn setup_matrix(
     let log_room = client
         .get_room(&matrix_sdk::ruma::RoomId::parse(&settings.rooms[0])?)
         .expect("Room should exist after joining");
-    info!("Successfully joined room");
+    debug!("Successfully joined room");
 
     let client_clone = client.clone();
 
@@ -546,7 +546,7 @@ pub async fn setup_matrix(
         );
     }
 
-    info!("Starting sync loop");
+    debug!("Starting sync loop");
     let matrix_client = client.clone();
     tokio::spawn(async move {
         if let Err(e) = matrix_client
@@ -557,8 +557,6 @@ pub async fn setup_matrix(
         }
     });
 
-    info!("Entering main event loop");
-
     let mut sm = StreamMap::new();
 
     for x in qs_connections.iter() {
@@ -566,6 +564,8 @@ pub async fn setup_matrix(
         let conn = x.value().0.clone();
         sm.insert(name.clone(), conn.subscribe_log(&["Run", "Error"]).await);
     }
+
+    info!("Matrix connected");
 
     loop {
         let msg = sm.next().await.unwrap();
