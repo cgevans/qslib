@@ -123,8 +123,11 @@ async fn handle_message(
                     }
                 }
                 None => {
+                    let mut machines: Vec<_> = qs.iter().collect();
+                    machines.sort_by(|a, b| a.value().1.name.cmp(&b.value().1.name));
+                    
                     let mut statuses = "<ul>".to_string();
-                    for item in qs.iter() {
+                    for item in machines {
                         let (conn, n) = item.value();
                         statuses.push_str(&format!("<li><span>{}</span>: ", n.name));
                         let mut v = match QuickStatusQuery.send(conn).await {

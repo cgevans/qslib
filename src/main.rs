@@ -232,7 +232,10 @@ async fn main() -> Result<()> {
         conns.remove(&config.name);
         ids.remove(&id);
         let (conn, id) = log_machine(&config, tx.clone(), &mut log_tasks).await?;
-        conns.insert(config.name.clone(), (Arc::new(conn), config.clone()));
+        let old = conns.insert(config.name.clone(), (Arc::new(conn), config.clone()));
+        if let Some(_) = old {
+            debug!("Replacing existing connection for {}", config.name);
+        }
         ids.insert(id, config.clone());
     }
 
@@ -311,18 +314,43 @@ async fn influx_log_loop(
                         continue;
                     }
                 };
+                
+                // Safely convert points, logging errors instead of propagating
                 let points = match msg.topic.as_str() {
-                    "Temperature" => temperature_to_lineprotocol(&msg, machine_name, timestamp)?,
-                    "Time" => time_to_lineprotocol(&msg, machine_name, timestamp)?,
-                    "Run" => run_to_lineprotocol(&msg, machine_name, timestamp)?,
-                    "LEDStatus" => ledstatus_to_lineprotocol(&msg, machine_name, timestamp)?,
+                    "Temperature" => match temperature_to_lineprotocol(&msg, machine_name, timestamp) {
+                        Ok(points) => points,
+                        Err(e) => {
+                            error!("Error converting temperature data for {}: {}", config.name, e);
+                            continue;
+                        }
+                    },
+                    "Time" => match time_to_lineprotocol(&msg, machine_name, timestamp) {
+                        Ok(points) => points,
+                        Err(e) => {
+                            error!("Error converting time data for {}: {}", config.name, e);
+                            continue;
+                        }
+                    },
+                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp) {
+                        Ok(points) => points,
+                        Err(e) => {
+                            error!("Error converting run data for {}: {}", config.name, e);
+                            continue;
+                        }
+                    },
+                    "LEDStatus" => match ledstatus_to_lineprotocol(&msg, machine_name, timestamp) {
+                        Ok(points) => points,
+                        Err(e) => {
+                            error!("Error converting LED status data for {}: {}", config.name, e);
+                            continue;
+                        }
+                    },
                     _ => continue,
                 };
 
                 for point in points {
-                    // If InfluxDB is configured, send points to the channel
                     if let Err(e) = tx.send((config.name.clone(), point)).await {
-                        error!("Failed to send point to InfluxDB: {}", e);
+                        error!("Failed to send point to InfluxDB for {}: {}", config.name, e);
                     }
                 }
 
