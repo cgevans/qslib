@@ -301,8 +301,8 @@ impl TryFrom<OkResponse> for PowerStatus {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         match value.args.get(0) {
-            Some(Value::String(s)) if s == "ON" => Ok(PowerStatus::On),
-            Some(Value::String(s)) if s == "OFF" => Ok(PowerStatus::Off),
+            Some(Value::String(s)) if s.to_uppercase() == "ON" => Ok(PowerStatus::On),
+            Some(Value::String(s)) if s.to_uppercase() == "OFF" => Ok(PowerStatus::Off),
             _ => Err(OkParseError::UnexpectedValues(
                 value,
                 "response should have been ON or OFF".to_string(),
