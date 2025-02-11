@@ -247,8 +247,12 @@ async fn handle_message(
             }
             Ok(())
         }
+        "!help" => {
+            send_matrix_message(&room, "Available commands: !status, !command, !close, !open", false).await?;
+            Ok(())
+        }
         m if m.starts_with("!") => {
-            error!("Unknown command: {}", m);
+            error!("Unknown command: {} from {}", m, event.sender);
             send_matrix_message(&room, &format!("Unknown command: {}", m), true).await?;
             Ok(())
         }
@@ -579,6 +583,12 @@ pub async fn setup_matrix(
 }
 
 async fn handle_run_message(name: String, msg: LogMessage, room: &Room) {
-    let msg = format!("{}: {}", name, msg.message);
-    send_matrix_message(&room, &msg, true).await;
+    // We only want to notify if the message contains: "Error", "Ended", "Aborted", "Stopped", "Starting"
+    if msg.message.contains("Error") || msg.message.contains("Ended") || msg.message.contains("Aborted") || msg.message.contains("Stopped") || msg.message.contains("Starting") {
+        let mm = format!("{}: {}", name, msg.message);
+        match send_matrix_message(&room, &mm, true).await {
+            Ok(_) => (),
+            Err(e) => error!("Error sending message: {}", e),
+        }
+    }
 }
