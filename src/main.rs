@@ -10,14 +10,13 @@ use qslib_rs::com::{CommandError, ConnectionError};
 use qslib_rs::parser::{ErrorResponse, MessageResponse, OkResponse, Value};
 use qslib_rs::plate_setup::PlateSetup;
 use qslib_rs::{
+    com::FilterDataFilename,
     com::QSConnection,
     commands::{AccessLevel, AccessLevelSet, CommandBuilder, Subscribe},
     data::{FilterDataCollection, PlateData},
-    com::FilterDataFilename,
     parser::LogMessage,
 };
 use serde_derive::Deserialize;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
@@ -29,6 +28,7 @@ use tokio::select;
 use tokio::sync::mpsc;
 use tokio::task::{Id, JoinHandle, JoinSet};
 use tokio::time::{Duration, interval};
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::{Stream, StreamExt, StreamMap, wrappers::BroadcastStream};
 use walkdir;
 
@@ -115,7 +115,9 @@ fn value_to_influxvalue(value: Value) -> FieldValue {
         Value::Bool(b) => FieldValue::Bool(b),
         Value::QuotedString(s) => FieldValue::String(s),
         Value::XmlString { value, tag: _ } => FieldValue::String(value),
-        Value::XmlBinary { value, tag: _ } => FieldValue::String(String::from_utf8_lossy(&value).to_string()), // FIXME : should use better escapes
+        Value::XmlBinary { value, tag: _ } => {
+            FieldValue::String(String::from_utf8_lossy(&value).to_string())
+        } // FIXME : should use better escapes
     }
 }
 
@@ -284,12 +286,11 @@ async fn log_machine(
 
     let config_clone = config.clone();
 
-    let aborthandle = log_tasks
-        .spawn(async move {
-            influx_log_loop(&mut log_sub, tx, &config_clone, None)
-                .await
-                .unwrap();
-        });
+    let aborthandle = log_tasks.spawn(async move {
+        influx_log_loop(&mut log_sub, tx, &config_clone, None)
+            .await
+            .unwrap();
+    });
     let id = aborthandle.id();
 
     info!("Logging task started for {}", config.name);
@@ -326,7 +327,7 @@ async fn influx_log_loop(
                         continue;
                     }
                 };
-                
+
                 // Safely convert points, logging errors instead of propagating
                 let points = match msg.topic.as_str() {
                     "Temperature" => match temperature_to_lineprotocol(&msg, machine_name, timestamp) {
@@ -416,10 +417,11 @@ fn run_to_lineprotocol(
 ) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
     let mut parts = msg.message.splitn(2, ' ');
-    
+
     let action = parts.next().ok_or(anyhow::anyhow!("Missing action"))?;
     let remaining = parts.next().unwrap_or(""); // Get rest as single string
-    let content = OkResponse::parse(&mut remaining.as_bytes()).map_err(|e| anyhow::anyhow!("Invalid message: {}", e))?;
+    let content = OkResponse::parse(&mut remaining.as_bytes())
+        .map_err(|e| anyhow::anyhow!("Invalid message: {}", e))?;
 
     // Create base point for run_action
     let mut point = DataPoint::builder("run_action")
@@ -429,7 +431,11 @@ fn run_to_lineprotocol(
 
     match action {
         "Stage" | "Cycle" | "Step" => {
-            let value = content.args.get(0).ok_or(anyhow::anyhow!("Missing value"))?.clone()
+            let value = content
+                .args
+                .get(0)
+                .ok_or(anyhow::anyhow!("Missing value"))?
+                .clone()
                 .try_into_i64()
                 .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
 
@@ -447,13 +453,17 @@ fn run_to_lineprotocol(
             );
         }
         "Holding" => {
-            let time = content.args.get(0).ok_or(anyhow::anyhow!("Missing value"))?.clone()
+            let time = content
+                .args
+                .get(0)
+                .ok_or(anyhow::anyhow!("Missing value"))?
+                .clone()
                 .try_into_f64()
                 .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
             point = point.field("holdtime", time);
             points.push(point.build()?);
         }
-        "Ramping" | "Acquiring" | "Collected"=> {
+        "Ramping" | "Acquiring" | "Collected" => {
             for (key, value) in content.options {
                 point = point.field(key, value_to_influxvalue(value));
             }
@@ -602,7 +612,11 @@ async fn docollect(
     let run = args
         .get("run")
         .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Missing run argument")))
-        .and_then(|s| s.trim_matches('"').to_string().parse::<u32>().map_err(|e| CommandError::InternalError(anyhow::anyhow!("Invalid run argument: {}", e))))?;
+        .and_then(|s| {
+            s.trim_matches('"').to_string().parse::<u32>().map_err(|e| {
+                CommandError::InternalError(anyhow::anyhow!("Invalid run argument: {}", e))
+            })
+        })?;
 
     // Convert args to proper format for filter data filename
     let stage = args
@@ -646,7 +660,7 @@ async fn docollect(
 
     // let mut line_protocols = Vec::new();
 
-    // // Process filter data 
+    // // Process filter data
     // if let Some(ipdir) = &config.sync.in_progress_directory {
     //     let filter_path = Path::new(ipdir).join(&run).join("apldbio/sds/filter");
     //     if filter_path.exists() {

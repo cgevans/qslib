@@ -1,0 +1,14 @@
+- The machine this a monitoring system for the "QuantStudio" qPCR machine.
+- The code is licensed under the EUPL-1.2 license.
+- The author is Constantine Evans.
+- Do not be overly boastful in commit messages or docstrings, or say that code is improved or enhanced.
+- The code uses:
+  - criterion for benchmarking
+  - maturin and pyo3 for python bindings
+  - tokio for async io
+  - serde for serialization and deserialization in some places, but manual implementation in others
+  - thiserror for error handling
+  - clap for cli parsing
+  - log for logging
+- This monitor is used for long-term machine monitoring, and should be robust and reliable, including when there are errors or connections break.  It should not panic.  When possible, errors should be logged instead of causing tasks to stop.  
+- Broken connections need to be brought back up.

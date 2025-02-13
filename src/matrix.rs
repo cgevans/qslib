@@ -20,14 +20,23 @@ use matrix_sdk::{
         },
     },
 };
-use qslib_rs::{com::{CommandError, QSConnection, QSConnectionError, SendCommandError}, commands::{CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery, ReceiveOkResponseError}, parser::{ErrorResponse, LogMessage}};
+use qslib_rs::{
+    com::{CommandError, QSConnection, QSConnectionError, SendCommandError},
+    commands::{
+        CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery, ReceiveOkResponseError,
+    },
+    parser::{ErrorResponse, LogMessage},
+};
 use serde::{Deserialize, Serialize};
-use tokio_stream::StreamMap;
 use std::{
-    io::Write, path::PathBuf, sync::Arc, time::{Duration, Instant}
+    io::Write,
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
 };
 use thiserror::Error;
 use tokio::sync::broadcast::{self, Receiver};
+use tokio_stream::StreamMap;
 
 use crate::MachineConfig;
 
@@ -74,11 +83,10 @@ pub struct MatrixSettings {
     pub allow_control: bool,
 }
 
-
 async fn handle_message(
     event: OriginalSyncRoomMessageEvent,
     room: Room,
-    qs: &Arc<DashMap<String,(Arc<QSConnection>, MachineConfig)>>,
+    qs: &Arc<DashMap<String, (Arc<QSConnection>, MachineConfig)>>,
     settings: &MatrixSettings,
 ) -> Result<(), MatrixError> {
     let msg = event.content.body().to_lowercase();
@@ -91,41 +99,50 @@ async fn handle_message(
         "!status" => {
             let machine = parts.next();
             match machine {
-                Some(m) => {
-                    match qs.get(m) {
-                        Some(x) => {
-                            let (conn, _) = x.value();
-                            let mut v = match QuickStatusQuery.send(conn).await {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    error!("error getting status: {}", e);
-                                    send_matrix_message(&room, &format!("error getting status: {}", e), true).await?;
-                                    return Ok(());
-                                }
-                            };
-                            let v = match v.receive_response().await {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    error!("error getting status: {}", e);
-                                    send_matrix_message(&room, &format!("error getting status: {}", e), true).await?;
-                                    return Ok(());
-                                }
-                            };
-                            match v {
-                                Ok(v) => send_matrix_message(&room, &v.to_html(), false).await?,
-                                Err(e) => error!("Error getting status: {}", e),
+                Some(m) => match qs.get(m) {
+                    Some(x) => {
+                        let (conn, _) = x.value();
+                        let mut v = match QuickStatusQuery.send(conn).await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("error getting status: {}", e);
+                                send_matrix_message(
+                                    &room,
+                                    &format!("error getting status: {}", e),
+                                    true,
+                                )
+                                .await?;
+                                return Ok(());
                             }
-                        }
-                        None => {
-                            error!("Machine {} not found", m);
-                            send_matrix_message(&room, &format!("Machine {} not found", m), true).await?;
+                        };
+                        let v = match v.receive_response().await {
+                            Ok(v) => v,
+                            Err(e) => {
+                                error!("error getting status: {}", e);
+                                send_matrix_message(
+                                    &room,
+                                    &format!("error getting status: {}", e),
+                                    true,
+                                )
+                                .await?;
+                                return Ok(());
+                            }
+                        };
+                        match v {
+                            Ok(v) => send_matrix_message(&room, &v.to_html(), false).await?,
+                            Err(e) => error!("Error getting status: {}", e),
                         }
                     }
-                }
+                    None => {
+                        error!("Machine {} not found", m);
+                        send_matrix_message(&room, &format!("Machine {} not found", m), true)
+                            .await?;
+                    }
+                },
                 None => {
                     let mut machines: Vec<_> = qs.iter().collect();
                     machines.sort_by(|a, b| a.value().1.name.cmp(&b.value().1.name));
-                    
+
                     let mut statuses = "<ul>".to_string();
                     for item in machines {
                         let (conn, n) = item.value();
@@ -137,7 +154,7 @@ async fn handle_message(
                                 continue;
                             }
                         };
-                        
+
                         let v = match v.receive_response().await {
                             Ok(v) => v,
                             Err(e) => {
@@ -148,7 +165,10 @@ async fn handle_message(
                         match v {
                             Ok(v) => {
                                 let runmsg = match v.runprogress {
-                                    PossibleRunProgress::Running(p) => format!("running {} (stage {}, cycle {}, step {}).", p.run_title, p.stage, p.cycle, p.step),
+                                    PossibleRunProgress::Running(p) => format!(
+                                        "running {} (stage {}, cycle {}, step {}).",
+                                        p.run_title, p.stage, p.cycle, p.step
+                                    ),
                                     PossibleRunProgress::NotRunning(_) => "idle.".to_string(),
                                 };
                                 statuses.push_str(&format!("power "));
@@ -157,7 +177,10 @@ async fn handle_message(
                                     PowerStatus::Off => statuses.push_str("off"),
                                 };
                                 match v.cover.on && v.power == PowerStatus::On {
-                                    true => statuses.push_str(&format!(", cover heat on at {:.1}°C", v.cover.temperature)),
+                                    true => statuses.push_str(&format!(
+                                        ", cover heat on at {:.1}°C",
+                                        v.cover.temperature
+                                    )),
                                     false => statuses.push_str(", cover heat off"),
                                 };
                                 // statuses.push_str(&format!("lamp "));
@@ -174,9 +197,11 @@ async fn handle_message(
                             }
                             Err(e) => {
                                 error!("error getting status: {}", e);
-                                statuses.push_str(&format!("<span style='color: red;'>error getting status: {}.</span>", e));
+                                statuses.push_str(&format!(
+                                    "<span style='color: red;'>error getting status: {}.</span>",
+                                    e
+                                ));
                             }
-                        
                         }
                         statuses.push_str("</li>");
                     }
@@ -203,8 +228,12 @@ async fn handle_message(
                     let (conn, _) = x.value();
                     let response = conn.send_command(command).await?.get_response().await?;
                     match response {
-                        Ok(response) => send_matrix_message(&room, &response.to_string(), false).await?,
-                        Err(e) => send_matrix_message(&room, &format!("Error: {}", e), true).await?,
+                        Ok(response) => {
+                            send_matrix_message(&room, &response.to_string(), false).await?
+                        }
+                        Err(e) => {
+                            send_matrix_message(&room, &format!("Error: {}", e), true).await?
+                        }
                     }
                 }
                 None => error!("Machine {} not found", machine),
@@ -248,7 +277,12 @@ async fn handle_message(
             Ok(())
         }
         "!help" => {
-            send_matrix_message(&room, "Available commands: !status, !command, !close, !open", false).await?;
+            send_matrix_message(
+                &room,
+                "Available commands: !status, !command, !close, !open",
+                false,
+            )
+            .await?;
             Ok(())
         }
         m if m.starts_with("!") => {
@@ -256,9 +290,7 @@ async fn handle_message(
             send_matrix_message(&room, &format!("Unknown command: {}", m), true).await?;
             Ok(())
         }
-        _ => {
-            Ok(())
-        }
+        _ => Ok(()),
     }
 }
 
@@ -419,7 +451,10 @@ pub enum MatrixError {
     RoomIdParseError(#[from] matrix_sdk::IdParseError),
 }
 
-async fn persist_sync_token(session_file: &PathBuf, sync_token: String) -> Result<(), matrix_sdk::Error> {
+async fn persist_sync_token(
+    session_file: &PathBuf,
+    sync_token: String,
+) -> Result<(), matrix_sdk::Error> {
     let serialized_session = std::fs::read_to_string(session_file)?;
     let mut full_session: FullSession = serde_json::from_str(&serialized_session)?;
 
@@ -432,7 +467,7 @@ async fn persist_sync_token(session_file: &PathBuf, sync_token: String) -> Resul
 
 pub async fn setup_matrix(
     settings: &MatrixSettings,
-    qs_connections: Arc<DashMap<String,(Arc<QSConnection>, MachineConfig)>>,
+    qs_connections: Arc<DashMap<String, (Arc<QSConnection>, MachineConfig)>>,
 ) -> Result<(), MatrixError> {
     debug!(
         "Setting up Matrix client with homeserver: {}",
@@ -515,7 +550,7 @@ pub async fn setup_matrix(
         let room_id = matrix_sdk::ruma::RoomId::parse(&room)?;
         client.join_room_by_id(&room_id).await?;
     }
-    
+
     let log_room = client
         .get_room(&matrix_sdk::ruma::RoomId::parse(&settings.rooms[0])?)
         .expect("Room should exist after joining");
@@ -530,8 +565,13 @@ pub async fn setup_matrix(
         let settings_clone = settings.clone();
         client.add_event_handler(
             move |event: OriginalSyncRoomMessageEvent, room: Room| async move {
-                if let Err(e) =
-                    handle_message(event, room, &qs_connections_message_handler, &settings_clone).await
+                if let Err(e) = handle_message(
+                    event,
+                    room,
+                    &qs_connections_message_handler,
+                    &settings_clone,
+                )
+                .await
                 {
                     error!("Error handling message: {:#}", e);
                 }
@@ -584,7 +624,12 @@ pub async fn setup_matrix(
 
 async fn handle_run_message(name: String, msg: LogMessage, room: &Room) {
     // We only want to notify if the message contains: "Error", "Ended", "Aborted", "Stopped", "Starting"
-    if msg.message.contains("Error") || msg.message.contains("Ended") || msg.message.contains("Aborted") || msg.message.contains("Stopped") || msg.message.contains("Starting") {
+    if msg.message.contains("Error")
+        || msg.message.contains("Ended")
+        || msg.message.contains("Aborted")
+        || msg.message.contains("Stopped")
+        || msg.message.contains("Starting")
+    {
         let mm = format!("{}: {}", name, msg.message);
         match send_matrix_message(&room, &mm, true).await {
             Ok(_) => (),
