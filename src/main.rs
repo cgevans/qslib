@@ -114,8 +114,8 @@ fn value_to_influxvalue(value: Value) -> FieldValue {
         Value::Float(f) => FieldValue::F64(f),
         Value::Bool(b) => FieldValue::Bool(b),
         Value::QuotedString(s) => FieldValue::String(s),
-        Value::XmlString { value, tag } => FieldValue::String(value),
-        Value::XmlBinary { value, tag } => FieldValue::String(value),
+        Value::XmlString { value, tag: _ } => FieldValue::String(value),
+        Value::XmlBinary { value, tag: _ } => FieldValue::String(String::from_utf8_lossy(&value).to_string()), // FIXME : should use better escapes
     }
 }
 
@@ -138,7 +138,7 @@ async fn write_points_to_influx(
             // Check for new points
             point = rx.recv() => {
                 match point {
-                    Some((machine, mut point)) => {
+                    Some((machine, point)) => {
                         points.push(point);
                         batched += 1;
                         if batched >= batch_size {
