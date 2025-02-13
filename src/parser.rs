@@ -198,7 +198,15 @@ impl Value {
     pub fn try_into_f64(self) -> Result<f64, ParseError> {
         match self {
             Value::Float(f) => Ok(f),
+            Value::Int(i) => Ok(i as f64),
             _ => Err(ParseError::ParseError("float".to_string())),
+        }
+    }
+
+    pub fn try_into_i64(self) -> Result<i64, ParseError> {
+        match self {
+            Value::Int(i) => Ok(i),
+            _ => Err(ParseError::ParseError("int".to_string())),
         }
     }
 }
