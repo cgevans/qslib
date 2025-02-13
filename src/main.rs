@@ -429,7 +429,7 @@ fn run_to_lineprotocol(
 
     match action {
         "Stage" | "Cycle" | "Step" => {
-            let value = content.args[0]
+            let value = content.args.get(0).ok_or(anyhow::anyhow!("Missing value"))?.clone()
                 .try_into_i64()
                 .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
 
@@ -447,7 +447,7 @@ fn run_to_lineprotocol(
             );
         }
         "Holding" => {
-            let time = content.args[0]
+            let time = content.args.get(0).ok_or(anyhow::anyhow!("Missing value"))?.clone()
                 .try_into_f64()
                 .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
             point = point.field("holdtime", time);
