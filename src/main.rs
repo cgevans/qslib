@@ -3,11 +3,11 @@ use clap::Parser;
 use dashmap::DashMap;
 use env_logger::Env;
 use futures::stream;
-use influxdb2::models::DataPoint;
+use influxdb2::models::{DataPoint, FieldValue};
 use influxdb2::{Client, FromDataPoint, models::WriteDataPoint};
 use log::{debug, error, info, warn};
 use qslib_rs::com::{CommandError, ConnectionError};
-use qslib_rs::parser::ErrorResponse;
+use qslib_rs::parser::{ErrorResponse, MessageResponse, OkResponse, Value};
 use qslib_rs::plate_setup::PlateSetup;
 use qslib_rs::{
     com::QSConnection,
@@ -105,6 +105,18 @@ fn load_config(path: PathBuf) -> Result<Config> {
         .build()?;
 
     Ok(settings.try_deserialize()?)
+}
+
+fn value_to_influxvalue(value: Value) -> FieldValue {
+    match value {
+        Value::String(s) => FieldValue::String(s),
+        Value::Int(i) => FieldValue::I64(i),
+        Value::Float(f) => FieldValue::F64(f),
+        Value::Bool(b) => FieldValue::Bool(b),
+        Value::QuotedString(s) => FieldValue::String(s),
+        Value::XmlString { value, tag } => FieldValue::String(value),
+        Value::XmlBinary { value, tag } => FieldValue::String(value),
+    }
 }
 
 async fn write_points_to_influx(
@@ -403,9 +415,11 @@ fn run_to_lineprotocol(
     timestamp: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
-    let mut args = msg.message.split_ascii_whitespace();
-
-    let action = args.next().ok_or(anyhow::anyhow!("Missing action"))?;
+    let mut parts = msg.message.splitn(2, ' ');
+    
+    let action = parts.next().ok_or(anyhow::anyhow!("Missing action"))?;
+    let remaining = parts.next().unwrap_or(""); // Get rest as single string
+    let content = OkResponse::parse(&mut remaining.as_bytes()).map_err(|e| anyhow::anyhow!("Invalid message: {}", e))?;
 
     // Create base point for run_action
     let mut point = DataPoint::builder("run_action")
@@ -415,10 +429,9 @@ fn run_to_lineprotocol(
 
     match action {
         "Stage" | "Cycle" | "Step" => {
-            let value = args
-                .next()
-                .ok_or(anyhow::anyhow!("Missing value"))?
-                .parse::<i64>()?;
+            let value = content.args[0]
+                .try_into_i64()
+                .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
 
             point = point.field(action.to_lowercase(), value);
             points.push(point.build()?);
@@ -434,30 +447,29 @@ fn run_to_lineprotocol(
             );
         }
         "Holding" => {
-            if let Some(time_str) = args.next() {
-                let time = time_str.parse::<f64>()?;
-                point = point.field("holdtime", time);
-            }
+            let time = content.args[0]
+                .try_into_f64()
+                .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
+            point = point.field("holdtime", time);
             points.push(point.build()?);
         }
-        "Ramping" | "Acquiring" => {
-            // These just need the basic point with type tag
+        "Ramping" | "Acquiring" | "Collected"=> {
+            for (key, value) in content.options {
+                point = point.field(key, value_to_influxvalue(value));
+            }
             points.push(point.build()?);
         }
         "Error" | "Ended" | "Aborted" | "Stopped" | "Starting" => {
             // Collect remaining message
-            let remaining = args.collect::<Vec<_>>().join(" ");
+            let remaining = content.to_string();
             if !remaining.is_empty() {
                 point = point.field("message", remaining);
             }
             points.push(point.build()?);
         }
-        "Collected" => {
-            points.push(point.build()?);
-        }
         _ => {
             // Handle other cases
-            let message = format!("{} {}", action, args.collect::<Vec<_>>().join(" "));
+            let message = format!("{} {}", action, content.to_string());
             point = point.tag("type", "Other").field("message", message);
             points.push(point.build()?);
         }
