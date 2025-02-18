@@ -132,6 +132,7 @@ async fn write_points_to_influx(
     let mut points: Vec<DataPoint> = Vec::new();
     let mut last_flush = tokio::time::Instant::now();
     let mut batched = 0;
+    let mut to_retry = Vec::new();
 
     info!("InfluxDB write task started.");
 
@@ -153,6 +154,7 @@ async fn write_points_to_influx(
                                 }
                                 Err(e) => {
                                     warn!("Error writing points to InfluxDB, will retry: {}", e);
+                                    to_retry.extend(points.drain(..));
                                     batched = 0;
                                 }
                             }
@@ -172,6 +174,19 @@ async fn write_points_to_influx(
                         }
                         Err(e) => {
                             warn!("Error writing points to InfluxDB, will retry: {}", e);
+                            to_retry.extend(points.drain(..));
+                        }
+                    }
+                }
+                if !to_retry.is_empty() {
+                    debug!("Retrying {} points to InfluxDB", to_retry.len());
+                    match client.write(&bucket, stream::iter(to_retry.clone())).await {
+                        Ok(_) => {
+                            to_retry.clear();
+                        }
+                        Err(e) => {
+                            warn!("Error writing points to InfluxDB ({}), lost {} points", e, to_retry.len());
+                            to_retry.clear();
                         }
                     }
                 }
