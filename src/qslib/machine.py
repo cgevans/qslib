@@ -8,6 +8,7 @@ import asyncio
 import base64
 import logging
 import re
+import shlex
 import zipfile
 from asyncio.futures import Future
 from contextlib import contextmanager
@@ -19,6 +20,11 @@ from typing import TypedDict
 from qslib_rs import QSConnection
 import io
 from .data import FilterSet, FilterDataReading, df_from_readings
+import xml.etree.ElementTree as ET
+
+if TYPE_CHECKING:
+    import pandas as pd
+
 
 
 from qslib.qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
