@@ -58,7 +58,6 @@ from .data import (
 from .machine import Machine
 from .processors import NormRaw, Processor
 from .protocol import Protocol, Stage, Step
-from .qs_is_protocol import QS_IOError
 from .version import __version__
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -1321,10 +1320,10 @@ table, th, td {{
 
             try:
                 z = machine.read_dir_as_zip(_safe_exp_name(name), leaf="EXP")
-            except QS_IOError:
+            except IOError: # FIXME
                 try:
                     z = machine.read_dir_as_zip(name, leaf="EXP")
-                except QS_IOError:
+                except IOError:
                     raise ValueError(
                         f"Could not find experiment {name} in uncollect runs on {machine}."
                     )
@@ -1334,6 +1333,16 @@ table, th, td {{
             exp._update_from_files()
 
         return exp
+
+    @classmethod
+    def latest_from_machine(cls, machine: MachineReference) -> Experiment:
+        machine = cls._ensure_machine(machine)
+        try:
+            return Experiment.from_running(machine)
+        except:
+            m = machine.list_runs_in_storage(verbose=True)
+            m.sort(key = lambda k: k['mtime'])
+            return Experiment.from_machine_storage(machine, m[-1]['path'])
 
     @classmethod
     def from_machine_storage(cls, machine: MachineReference, name: str) -> Experiment:
@@ -1367,7 +1376,7 @@ table, th, td {{
                 try:
                     o = machine.read_file(possible_name, context="public_run_complete")
                     break
-                except QS_IOError:
+                except IOError:
                     continue
             if o is None:
                 raise FileNotFoundError(f"Could not find {name} on {machine.host}.")

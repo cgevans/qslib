@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -11,13 +12,16 @@ from dataclasses import dataclass
 from glob import glob
 from os import PathLike
 from pathlib import Path
-from typing import Any, List, Literal, Optional, Sequence, TypeVar, Union, cast
+from typing import Any, List, Literal, Optional, Sequence, TypeVar, Union, cast, TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 import pandas as pd
 
 from .plate_setup import _WELLNAMES_96, _WELLNAMES_384
+
+if TYPE_CHECKING:
+    import polars as pl
 
 _UPPERS = "ABCDEFGHIJKLMNOP"
 
@@ -348,6 +352,25 @@ def df_from_readings(
         axis="columns",  # type: ignore
     )
 
+def polars_from_filterdata(dr: FilterDataReading) -> 'pl.DataFrame':
+    import polars as pl
+    return pl.DataFrame(
+        {
+        'filter_set': dr.filter_set.lowerform,
+        'stage': dr.stage,
+        'cycle': dr.cycle,
+        'step': dr.step,
+        'point': dr.point,
+        'well': [f'{r}{c}' for r in "ABCDEFGH" for c in range(1, 13)],
+        'row': [i for i in range(8) for j in range(12)],
+        'column': [j for i in range(8) for j in range(12)],
+        'timestamp': datetime.fromtimestamp(dr.timestamp),
+        'fluorescence': dr.well_fluorescence,
+        'sample_temperature': dr.well_temperatures,
+        'set_temperature': np.tile(np.repeat(dr.set_temperatures, 2), 8),
+        'exposure': dr.exposure
+        }
+    )
 
 def _filterdata_df_v2(
     jsdata: dict,
