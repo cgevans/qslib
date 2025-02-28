@@ -27,7 +27,6 @@ if TYPE_CHECKING:
 
 
 
-from qslib.qs_is_protocol import CommandError, Error, NoMatch, QS_IS_Protocol
 from qslib.scpi_commands import AccessLevel, SCPICommand, ArgList
 
 from ._util import _unwrap_tags
@@ -300,12 +299,26 @@ class Machine:
         """
         match command:
             case str():
-                return str(next(self.connection.run_command_bytes(command.encode())))
+                return str(self.connection.run_command(command).get_response())
             case SCPICommand():
-                return str(next(self.connection.run_command_bytes(command.to_string().encode())))
+                return str(self.connection.run_command(command.to_string()).get_response())
             case _:
                 raise ValueError(f"Invalid command: {command}")
         
+
+    @_ensure_connection(AccessLevel.Guest)
+    def run_command_to_bytes(self, command: str | SCPICommand) -> bytes:
+        """Run an SCPI command, and return the response as bytes (undecoded).
+        Waits for NEXT.
+        """
+        match command:
+            case str():
+                return self.connection.run_command(command).get_response_bytes()
+            case SCPICommand():
+                return self.connection.run_command(command.to_string()).get_response_bytes()
+            case _:
+                raise ValueError(f"Invalid command: {command}")
+
     @_ensure_connection(AccessLevel.Guest)
     def run_command_to_ack(self, command: str | SCPICommand) -> str:
         """Run an SCPI command, and return the response as a string.
@@ -329,10 +342,9 @@ class Machine:
         """
         if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}")
-        loop = asyncio.get_event_loop()
         try:
             return self.connection.run_command(command).get_ack()
-        except CommandError as e:
+        except ValueError as e: # FIXME
             e.__traceback__ = None
             raise e
 
@@ -361,7 +373,7 @@ class Machine:
             raise ConnectionError(f"Not connected to {self.host}.")
         if isinstance(command, str):
             command = command.encode()
-        return str(next(self.connection.run_command_bytes(command))).encode()
+        return self.connection.run_command_bytes(command).get_response_bytes()
 
     @_ensure_connection(AccessLevel.Controller)
     def define_protocol(self, protocol: Protocol) -> None:
@@ -1057,7 +1069,7 @@ class Machine:
     ) -> list[str]:
         try:
             fl = self.run_command(SCPICommand("EXP:LIST?", glob))
-        except NoMatch as ce:
+        except ValueError as ce: # FIXME
             if allow_nomatch:
                 return []
             else:
