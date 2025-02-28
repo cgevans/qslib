@@ -247,7 +247,7 @@ async fn test_tcp_connection() {
             .get("build")
             .unwrap()
             .to_string(),
-        "001"
+        "1"
     );
     assert_eq!(
         connection
@@ -313,7 +313,7 @@ async fn test_auto_connection() {
             .get("build")
             .unwrap()
             .to_string(),
-        "001"
+        "1"
     );
     assert_eq!(
         connection
@@ -799,7 +799,7 @@ async fn test_multiline_response() {
             assert_eq!(
                 message.args[0],
                 Value::XmlString {
-                    value: "Line 1\nLine 2\nLine 3".to_string(),
+                    value: "Line 1\nLine 2\nLine 3".into(),
                     tag: "quote".to_string()
                 }
             );
@@ -904,11 +904,11 @@ async fn test_angle_brackets_in_response() {
             // The angle brackets should be treated as plain text, not XML
             assert_eq!(message.args[0], Value::String("Temperature".into()));
             assert_eq!(message.args[1], Value::String("<".into()));
-            assert_eq!(message.args[2], Value::String("37.5".into()));
+            assert_eq!(message.args[2], Value::Float(37.5));
             assert_eq!(message.args[3], Value::String("and".into()));
             assert_eq!(message.args[4], Value::String("pH".into()));
             assert_eq!(message.args[5], Value::String(">".into()));
-            assert_eq!(message.args[6], Value::String("7.0".into()));
+            assert_eq!(message.args[6], Value::Float(7.0));
         }
         _ => panic!("Expected OK response with angle brackets"),
     }

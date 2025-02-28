@@ -15,7 +15,6 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pymodule]
 mod qslib_rs {
-    use super::*;
 
     #[pymodule_export]
     use crate::python::PyQSConnection;
@@ -25,4 +24,25 @@ mod qslib_rs {
 
     #[pymodule_export]
     use crate::python::PyLogReceiver;
+
+    #[pymodule_export]
+    use crate::parser::OkResponse;
+
+    #[pymodule_export]
+    use crate::python::UnexpectedMessageResponse;
+
+    #[pymodule_export]
+    use crate::python::DisconnectedBeforeResponse;
+
+    #[pymodule_export]
+    use crate::python::CommandError;
+
+    #[pymodule_export]
+    use crate::python::QslibException;
+
+    #[pymodule_export]
+    use crate::python::CommandResponseError;
+
+    
+    
 }

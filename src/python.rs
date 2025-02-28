@@ -1,9 +1,9 @@
-use crate::com::ConnectionError;
-use crate::com::{QSConnection, QSConnectionError, ConnectionType};
-use crate::parser;
+use crate::com::{QSConnection, QSConnectionError, ConnectionType, ResponseReceiver, SendCommandError, ConnectionError};
+use crate::parser::{self, Message};
 use crate::parser::Command;
 use crate::parser::{LogMessage, MessageResponse};
-use pyo3::exceptions::{PyTimeoutError, PyValueError};
+use pyo3::exceptions::{PyTimeoutError, PyValueError, PyException};
+use pyo3::{impl_exception_boilerplate, create_exception, create_exception_type_object};
 use pyo3::prelude::*;
 use pyo3::ToPyErr;
 use std::sync::Arc;
@@ -18,6 +18,12 @@ use tokio_stream::{StreamExt, StreamMap};
 #[cfg(feature = "python")]
 use pyo3_async_runtimes::tokio::future_into_py;
 
+pyo3::create_exception!(qslib, QslibException, PyException);
+pyo3::create_exception!(qslib, CommandResponseError, QslibException);
+pyo3::create_exception!(qslib, CommandError, CommandResponseError);
+pyo3::create_exception!(qslib, UnexpectedMessageResponse, CommandResponseError);
+pyo3::create_exception!(qslib, DisconnectedBeforeResponse, CommandResponseError);
+
 #[pyclass]
 #[pyo3(name = "QSConnection")]
 pub struct PyQSConnection {
@@ -28,7 +34,7 @@ pub struct PyQSConnection {
 #[cfg(feature = "python")]
 #[pyclass]
 pub struct PyMessageResponse {
-    rx: mpsc::Receiver<MessageResponse>,
+    rx: ResponseReceiver,
     rt: Arc<Runtime>,
 }
 
@@ -42,27 +48,24 @@ impl PyMessageResponse {
     ///
     /// Raises:
     ///     ValueError: If response is an error or invalid
-    pub fn get_response(&mut self) -> PyResult<String> {
-        let x = self.rt.block_on(self.rx.recv());
-        match x {
-            Some(x) => match x {
-                MessageResponse::Ok { ident, message } => Ok(message.to_string()),
-                MessageResponse::Error { ident, error } => {
-                    Err(PyValueError::new_err(error.to_string()))
-                }
-                MessageResponse::Next { ident } => {
-                    Err(PyValueError::new_err("Next message received"))
-                }
-                MessageResponse::Message(message) => {
-                    panic!("Received log message as response to command")
+    pub fn get_response_bytes(&mut self) -> PyResult<Vec<u8>> {
+        let ret = self.rt.block_on(self.rx.recv());
+        match ret {
+            Some(x) => {
+                match x {
+                    MessageResponse::Ok { ident: _, message } => Ok(message.to_bytes()),
+                    MessageResponse::CommandError { ident: _, error } => Err(CommandError::new_err(error)),
+                    MessageResponse::Next { ident: _ } => return self.get_response_bytes(),
+                    MessageResponse::Message(message) => Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message))),
                 }
             },
-            None => Err(PyValueError::new_err("No message received")),
+            None => Err(DisconnectedBeforeResponse::new_err("Disconnected before response")),
         }
     }
 
-    pub fn __next__(&mut self) -> PyResult<String> {
-        self.get_response()
+    pub fn get_response(&mut self) -> PyResult<String> {
+        let bytes = self.get_response_bytes()?;
+        String::from_utf8(bytes).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
     /// Get acknowledgment from server
@@ -72,22 +75,22 @@ impl PyMessageResponse {
     ///
     /// Raises:
     ///     ValueError: If response is not an acknowledgment
-    pub fn get_ack(&mut self) -> PyResult<String> {
+    pub fn get_ack(&mut self) -> PyResult<()> {
         let x = self.rt.block_on(self.rx.recv());
         match x {
             Some(x) => match x {
-                MessageResponse::Ok { ident, message } => {
-                    Err(PyValueError::new_err("OK message received"))
+                MessageResponse::Ok { ident: _, message } => {
+                    Err(UnexpectedMessageResponse::new_err(format!("OK message received as acknowledgment: {:?}", message)))
                 }
-                MessageResponse::Error { ident, error } => {
-                    Err(PyValueError::new_err(error.to_string()))
+                MessageResponse::CommandError { ident: _, error } => {
+                    Err(CommandError::new_err(error.to_string()))
                 }
-                MessageResponse::Next { ident } => Ok("".to_string()),
+                MessageResponse::Next { ident: _ } => Ok(()),
                 MessageResponse::Message(message) => {
-                    panic!("Received log message as response to command")
+                    Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message)))
                 }
             },
-            None => Err(PyValueError::new_err("No message received")),
+            None => Err(DisconnectedBeforeResponse::new_err("Disconnected before response")),
         }
     }
 
@@ -113,18 +116,18 @@ impl PyMessageResponse {
         })?;
         match x {
             Some(x) => match x {
-                MessageResponse::Ok { ident, message } => Ok(message.to_string()),
-                MessageResponse::Error { ident, error } => {
-                    Err(PyValueError::new_err(error.to_string()))
+                MessageResponse::Ok { ident: _, message } => Ok(message.to_string()),
+                MessageResponse::CommandError { ident: _, error } => {
+                    Err(CommandError::new_err(error.to_string()))
                 }
-                MessageResponse::Next { ident } => {
-                    Err(PyValueError::new_err("Next message received"))
+                MessageResponse::Next { ident: _ } => {
+                    Err(UnexpectedMessageResponse::new_err("Next message received"))
                 }
                 MessageResponse::Message(message) => {
-                    panic!("Received log message as response to command")
+                    Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message)))
                 }
             },
-            None => Err(PyValueError::new_err("No message received")),
+            None => Err(DisconnectedBeforeResponse::new_err("Disconnected before response")),
         }
     }
 }
@@ -170,6 +173,12 @@ impl From<QSConnectionError> for PyErr {
     }
 }
 
+impl From<SendCommandError> for PyErr {
+    fn from(e: SendCommandError) -> Self {
+        PyValueError::new_err(e.to_string())
+    }
+}
+
 #[derive(Debug, Clone, FromPyObject)]
 enum CommandInput {
     String(String),
@@ -191,8 +200,8 @@ impl PyQSConnection {
     /// Raises:
     ///     ValueError: If connection_type is invalid or connection fails
     #[new]
-    #[pyo3(signature = (host, port = 7443, connection_type = "Auto")) ]
-    fn new(host: &str, port: u16, connection_type: &str) -> PyResult<Self> {
+    #[pyo3(signature = (host, port = 7443, connection_type = "Auto", timeout = 10))]
+    fn new(host: &str, port: u16, connection_type: &str, timeout: Option<u64>) -> PyResult<Self> {
         let rt = Runtime::new()?;
         let connection_type = match connection_type {
             "SSL" => ConnectionType::SSL,
@@ -200,7 +209,10 @@ impl PyQSConnection {
             "Auto" => ConnectionType::Auto,
             _ => return Err(PyValueError::new_err("Invalid connection type")),
         };
-        let conn = rt.block_on(QSConnection::connect(host, port, connection_type))?;
+        let conn = match timeout {
+            Some(timeout) => rt.block_on(QSConnection::connect_with_timeout(host, port, connection_type, Duration::from_secs(timeout)))?,
+            None => rt.block_on(QSConnection::connect(host, port, connection_type))?,
+        };
         Ok(Self {
             conn,
             rt: Arc::new(rt),

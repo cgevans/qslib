@@ -1,4 +1,5 @@
 use anyhow::Context;
+use bstr::{ByteSlice, ByteVec};
 use dashmap::DashMap;
 use log::{error, trace};
 use rustls::{
@@ -8,6 +9,7 @@ use rustls::{
 use rustls_pki_types::{ServerName, UnixTime};
 use std::pin::Pin;
 use std::sync::Arc;
+use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::task::JoinHandle;
@@ -114,6 +116,8 @@ pub enum ConnectionError {
     IOError(#[from] std::io::Error),
     #[error("Invalid DNS name: {0}")]
     InvalidDnsNameError(#[from] rustls_pki_types::InvalidDnsNameError),
+    #[error("Timeout")]
+    Timeout,
 }
 
 use crate::parser::{self, ErrorResponse, LogMessage, Message, MessageIdent, MessageResponse, OkResponse, Ready, Value};
@@ -227,9 +231,9 @@ impl QSConnectionInner {
                                 trace!("No channel for message ident: {:?}", ident);
                             }
                         }
-                        Ok(MessageResponse::Error { ident, error }) => {
+                        Ok(MessageResponse::CommandError { ident, error }) => {
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                match channel.send(MessageResponse::Error { ident, error }).await {
+                                match channel.send(MessageResponse::CommandError { ident, error }).await {
                                     Ok(_) => (),
                                     Err(e) => {
                                         trace!("Error sending message: {:?}", e);
@@ -363,7 +367,7 @@ impl ResponseReceiver {
                 MessageResponse::Ok { ident: _, message } => {
                     return Ok(Ok(message));
                 }
-                MessageResponse::Error { ident: _, error } => {
+                MessageResponse::CommandError { ident: _, error } => {
                     return Ok(Err(error));
                 }
                 _ => {}
@@ -484,6 +488,18 @@ impl QSConnection {
                     }
                 }
             }
+        }
+    }
+
+    pub async fn connect_with_timeout(
+        host: &str,
+        port: u16,
+        connection_type: ConnectionType,
+        timeout: Duration,
+    ) -> Result<QSConnection, ConnectionError> {
+        select! {
+            conn = Self::connect(host, port, connection_type) => conn,
+            _ = tokio::time::sleep(timeout) => return Err(ConnectionError::Timeout),
         }
     }
 
@@ -616,7 +632,7 @@ impl QSConnection {
             Value::XmlString { value, .. } => value,
             _ => return Err(CommandError::InternalError(anyhow::anyhow!("Invalid response"))),
         };
-        BASE64.decode(x.as_bytes()).map_err(|e| CommandError::InternalError(anyhow::anyhow!("Invalid response: {}", e)))
+        BASE64.decode(&x).map_err(|e| CommandError::InternalError(anyhow::anyhow!("Invalid response: {}", e)))
     }
 
     pub async fn get_sds_file(
@@ -640,6 +656,7 @@ impl QSConnection {
             Value::XmlString { value, .. } => value,
             _ => return Err(CommandError::InternalError(anyhow::anyhow!("Invalid response"))),
         };
+        let x = x.to_string();
         let x = x.split("\n").collect::<Vec<&str>>();
         Ok(x.iter().map(|s| s.to_string()).collect())
     }
@@ -672,7 +689,7 @@ impl QSConnection {
             Value::XmlString { value, .. } => value,
             _ => return Err(CommandError::InternalError(anyhow::anyhow!("Invalid response"))),
         };
-        let plate_data: PlatePointData = quick_xml::de::from_str(&x).with_context(|| "PlatePointData deserialization error").map_err(|e| CommandError::InternalError(e.into()))?;
+        let plate_data: PlatePointData = quick_xml::de::from_str(&x.to_str_lossy()).with_context(|| "PlatePointData deserialization error").map_err(|e| CommandError::InternalError(e.into()))?;
         
         // transform into first plate data
         let plate_data = plate_data.plate_data.into_iter().next().ok_or(CommandError::InternalError(anyhow::anyhow!("No plate data returned")))?;

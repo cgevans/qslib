@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 
 use crate::{
     com::{QSConnection, QSConnectionError, ResponseReceiver, SendCommandError},
-    parser::{Command, ErrorResponse, MessageResponse, OkResponse, ParseError, Value},
+    parser::{ArgMap, Command, ErrorResponse, MessageResponse, OkResponse, ParseError, Value},
 };
 
 pub struct CommandReceiver<T: TryFrom<OkResponse>, E: From<ErrorResponse>> {
@@ -49,9 +49,7 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> Comma
             match self.response.recv().await {
                 None => return Err(ReceiveOkResponseError::ConnectionClosed),
                 Some(MessageResponse::Ok { message, .. }) => return Ok(Ok(message.try_into()?)),
-                Some(MessageResponse::Error { error, .. }) => {
-                    return Ok(Err(error.into()))
-                }
+                Some(MessageResponse::CommandError { error, .. }) => return Ok(Err(error.into())),
                 Some(MessageResponse::Next { .. }) => (),
                 Some(MessageResponse::Message(message)) => panic!(
                     "Message response to command should not be possible: {:?}",
@@ -64,9 +62,7 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> Comma
     pub async fn receive_next(&mut self) -> Result<Result<(), E>, ReceiveNextResponseError> {
         match self.response.recv().await {
             None => return Err(ReceiveNextResponseError::ConnectionClosed),
-            Some(MessageResponse::Error { error, .. }) => {
-                return Ok(Err(error.into()))
-            }
+            Some(MessageResponse::CommandError { error, .. }) => return Ok(Err(error.into())),
             Some(MessageResponse::Next { .. }) => Ok(Ok(())),
             Some(MessageResponse::Ok { message, .. }) => {
                 return Err(ReceiveNextResponseError::UnexpectedOk(message))
@@ -86,7 +82,7 @@ pub trait CommandBuilder: Clone + Send + Sync {
     fn args(&self) -> Option<Vec<Value>> {
         None
     }
-    fn options(&self) -> Option<IndexMap<String, Value>> {
+    fn options(&self) -> Option<ArgMap> {
         None
     }
     fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
@@ -135,8 +131,8 @@ pub trait CommandBuilder: Clone + Send + Sync {
     fn send(
         self,
         connection: &QSConnection,
-    ) -> impl Future<Output = Result<CommandReceiver<Self::Response, Self::Error>, SendCommandError>> + Send
-    {
+    ) -> impl Future<Output = Result<CommandReceiver<Self::Response, Self::Error>, SendCommandError>>
+           + Send {
         let content = self.to_bytes();
         let r = connection.send_command(self);
         async move {
@@ -150,7 +146,6 @@ pub trait CommandBuilder: Clone + Send + Sync {
         }
     }
 }
-
 
 impl TryFrom<OkResponse> for () {
     type Error = OkParseError;
@@ -211,7 +206,7 @@ impl TryFrom<String> for AccessLevel {
     fn try_from(value: String) -> Result<Self, Self::Error> {
         match value.to_lowercase().as_str() {
             "guest" => Ok(AccessLevel::Guest),
-            "observer" => Ok(AccessLevel::Observer), 
+            "observer" => Ok(AccessLevel::Observer),
             "controller" => Ok(AccessLevel::Controller),
             "administrator" => Ok(AccessLevel::Administrator),
             "full" => Ok(AccessLevel::Full),
@@ -224,7 +219,9 @@ impl TryFrom<OkResponse> for AccessLevel {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         let level = value.args.get(0).unwrap().clone().try_into_string()?;
-        AccessLevel::try_from(level).map_err(|_| OkParseError::UnexpectedValues(value, "unexpected access level".to_string()))
+        AccessLevel::try_from(level).map_err(|_| {
+            OkParseError::UnexpectedValues(value, "unexpected access level".to_string())
+        })
     }
 }
 
@@ -236,7 +233,6 @@ impl From<AccessLevel> for Value {
 
 #[derive(Debug, Clone)]
 pub struct AccessLevelSet(pub AccessLevel);
-
 
 impl AccessLevelSet {
     pub fn level(level: AccessLevel) -> Self {
@@ -274,7 +270,6 @@ impl CommandBuilder for Unsubscribe {
         Some(vec![self.0.clone().into()])
     }
 }
-
 
 impl Unsubscribe {
     pub fn topic(topic: &str) -> Self {
@@ -373,7 +368,6 @@ impl From<PowerSet> for Command {
         })
     }
 }
-
 
 // '-RunMode=- -Step=- -RunTitle=- -Cycle=- -Stage=-'
 #[derive(Debug, Clone)]
@@ -503,13 +497,24 @@ impl CommandBuilder for CoverPositionQuery {
 impl TryFrom<OkResponse> for CoverPosition {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        match value.args.get(0).unwrap().clone().try_into_string()?.to_lowercase().as_str() {
+        match value
+            .args
+            .get(0)
+            .unwrap()
+            .clone()
+            .try_into_string()?
+            .to_lowercase()
+            .as_str()
+        {
             "up" => Ok(CoverPosition::Up),
             "down" => Ok(CoverPosition::Down),
             _ => {
-                warn!("Unexpected cover position: {}", value.args.get(0).unwrap().clone().try_into_string()?);
+                warn!(
+                    "Unexpected cover position: {}",
+                    value.args.get(0).unwrap().clone().try_into_string()?
+                );
                 Ok(CoverPosition::Unknown)
-            },
+            }
         }
     }
 }
@@ -529,11 +534,13 @@ impl TryFrom<OkResponse> for DrawerStatus {
         match value.args.get(0) {
             Some(Value::String(s)) if s == "Closed" => Ok(DrawerStatus::Closed),
             Some(Value::String(s)) if s == "Open" => Ok(DrawerStatus::Open),
-            _ => Err(OkParseError::UnexpectedValues(value.clone(), "unexpected drawer status".to_string())),
+            _ => Err(OkParseError::UnexpectedValues(
+                value.clone(),
+                "unexpected drawer status".to_string(),
+            )),
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 struct DrawerStatusQuery;
@@ -554,7 +561,12 @@ impl TryFrom<OkResponse> for CoverHeatStatus {
         let on = match position.to_lowercase().as_str() {
             "up" | "on" | "true" => true, // FIXME
             "down" | "off" | "false" => false,
-            _ => return Err(OkParseError::UnexpectedValues(value.clone(), "unexpected cover position".to_string())),
+            _ => {
+                return Err(OkParseError::UnexpectedValues(
+                    value.clone(),
+                    "unexpected cover position".to_string(),
+                ))
+            }
         };
         let temperature = value.args.get(1).unwrap().clone().try_into_f64()?;
         Ok(CoverHeatStatus { on, temperature })
@@ -569,7 +581,6 @@ impl CommandBuilder for CoverHeatStatusQuery {
     type Error = ErrorResponse;
     const COMMAND: &'static [u8] = b"cover?";
 }
-
 
 pub struct QuickStatus {
     pub power: PowerStatus,
@@ -638,28 +649,71 @@ impl QuickStatus {
 </ul>",
             self.power,
             self.drawer,
-            {if self.cover.on {"<span style=\"color: red\">on</span>"} else {"<span style=\"color: blue\">off</span>"}},
-            if self.cover.on {format!("<span style=\"color: red\">{:.1}</span>", self.cover.temperature)} else {format!("<span style=\"color: gray\">{:.1}</span>", self.cover.temperature)},
-            self.set_temperatures.zones.iter().zip(self.temperature_control.zones.iter())
+            {
+                if self.cover.on {
+                    "<span style=\"color: red\">on</span>"
+                } else {
+                    "<span style=\"color: blue\">off</span>"
+                }
+            },
+            if self.cover.on {
+                format!(
+                    "<span style=\"color: red\">{:.1}</span>",
+                    self.cover.temperature
+                )
+            } else {
+                format!(
+                    "<span style=\"color: gray\">{:.1}</span>",
+                    self.cover.temperature
+                )
+            },
+            self.set_temperatures
+                .zones
+                .iter()
+                .zip(self.temperature_control.zones.iter())
                 .enumerate()
-                .map(|(i, (temp, enabled))| format!("Zone{}: {}{:.1}°C{}", i + 1, if *enabled {"<b>"} else {"<i>"}, temp, if *enabled {"</b>"} else {"</i>"}))
+                .map(|(i, (temp, enabled))| format!(
+                    "Zone{}: {}{:.1}°C{}",
+                    i + 1,
+                    if *enabled { "<b>" } else { "<i>" },
+                    temp,
+                    if *enabled { "</b>" } else { "</i>" }
+                ))
                 .collect::<Vec<_>>()
                 .join(" "),
-            self.set_temperatures.fans.iter().zip(self.temperature_control.fans.iter())
+            self.set_temperatures
+                .fans
+                .iter()
+                .zip(self.temperature_control.fans.iter())
                 .enumerate()
-                .map(|(i, (temp, enabled))| format!("Fan{}: {}{:.1}°C{}", i + 1, if *enabled {"<b>"} else {"<i>"}, temp, if *enabled {"</b>"} else {"</i>"}))
+                .map(|(i, (temp, enabled))| format!(
+                    "Fan{}: {}{:.1}°C{}",
+                    i + 1,
+                    if *enabled { "<b>" } else { "<i>" },
+                    temp,
+                    if *enabled { "</b>" } else { "</i>" }
+                ))
                 .collect::<Vec<_>>()
                 .join(" "),
-            if self.temperature_control.cover {format!("<b>{:.1}°C</b>", self.set_temperatures.cover)} else {format!("<i>{:.1}°C</i>", self.set_temperatures.cover)},
-            self.sample_temperatures.iter().map(|t| format!("{:.1}°C", t)).collect::<Vec<_>>().join(", "),
-            self.block_temperatures.iter().map(|t| format!("{:.1}°C", t)).collect::<Vec<_>>().join(", "),
+            if self.temperature_control.cover {
+                format!("<b>{:.1}°C</b>", self.set_temperatures.cover)
+            } else {
+                format!("<i>{:.1}°C</i>", self.set_temperatures.cover)
+            },
+            self.sample_temperatures
+                .iter()
+                .map(|t| format!("{:.1}°C", t))
+                .collect::<Vec<_>>()
+                .join(", "),
+            self.block_temperatures
+                .iter()
+                .map(|t| format!("{:.1}°C", t))
+                .collect::<Vec<_>>()
+                .join(", "),
             match &self.runprogress {
                 PossibleRunProgress::Running(progress) => format!(
                     "Running {}: Stage {}, Cycle {}, Step {}",
-                    progress.run_title,
-                    progress.stage,
-                    progress.cycle,
-                    progress.step
+                    progress.run_title, progress.stage, progress.cycle, progress.step
                 ),
                 PossibleRunProgress::NotRunning(_) => "Not Running".to_string(),
             }
@@ -680,7 +734,6 @@ impl CommandBuilder for QuickStatusQuery {
         Ok(())
     }
 }
-
 
 // TBC:SETT?
 // OK TBC:SETT? -Zone1=25.0 -Zone2=25.0 -Zone3=25.0 -Zone4=25.0 -Zone5=25.0 -Zone6=25.0 -Fan1=44.0 -Cover=30.0
@@ -816,7 +869,12 @@ impl TryFrom<OkResponse> for Vec<f64> {
         for v in &value.args {
             match v.clone().try_into_f64() {
                 Ok(f) => result.push(f),
-                Err(_) => return Err(OkParseError::UnexpectedValues(value.clone(), "not a float".to_string()))
+                Err(_) => {
+                    return Err(OkParseError::UnexpectedValues(
+                        value.clone(),
+                        "not a float".to_string(),
+                    ))
+                }
             }
         }
         Ok(result)
@@ -829,33 +887,32 @@ mod tests {
     use crate::parser::{OkResponse, Value};
     use indexmap::indexmap;
 
-
     #[test]
     fn test_sample_temperatures_response() {
         let ok_response = OkResponse {
             args: vec![
                 Value::Float(21.1804),
-                Value::Float(21.1467), 
+                Value::Float(21.1467),
                 Value::Float(21.1609),
                 Value::Float(21.1917),
                 Value::Float(21.1596),
                 Value::Float(21.1843),
             ],
-            options: indexmap::IndexMap::new(),
+            options: ArgMap::new(),
         };
 
         let temps = Vec::<f64>::try_from(ok_response).unwrap();
-        assert_eq!(temps, vec![21.1804, 21.1467, 21.1609, 21.1917, 21.1596, 21.1843]);
+        assert_eq!(
+            temps,
+            vec![21.1804, 21.1467, 21.1609, 21.1917, 21.1596, 21.1843]
+        );
     }
 
     #[test]
     fn test_sample_temperatures_invalid_response() {
         let ok_response = OkResponse {
-            args: vec![
-                Value::Float(21.1804),
-                Value::String("invalid".to_string()),
-            ],
-            options: indexmap::IndexMap::new(),
+            args: vec![Value::Float(21.1804), Value::String("invalid".to_string())],
+            options: ArgMap::new(),
         };
 
         let result = Vec::<f64>::try_from(ok_response);
@@ -866,13 +923,12 @@ mod tests {
     fn test_set_temperatures_valid() {
         let ok_response = OkResponse {
             args: vec![],
-            options: indexmap! {
-                "Zone1".to_string() => Value::Float(25.0),
-                "Zone2".to_string() => Value::Float(26.0),
-                "Zone3".to_string() => Value::Float(27.0),
-                "Fan1".to_string() => Value::Float(44.0),
-                "Cover".to_string() => Value::Float(30.0),
-            },
+            options: ArgMap::new()
+                .with("Zone1", Value::Float(25.0))
+                .with("Zone2", Value::Float(26.0))
+                .with("Zone3", Value::Float(27.0))
+                .with("Fan1", Value::Float(44.0))
+                .with("Cover", Value::Float(30.0)),
         };
 
         let set_temps = SetTemperatures::try_from(ok_response).unwrap();
@@ -883,40 +939,46 @@ mod tests {
 
     #[test]
     fn test_set_temperatures_out_of_order_zones() {
+        let mut options = ArgMap::new();
+        options.insert("Zone2", Value::Float(26.0));
+        options.insert("Zone1", Value::Float(25.0));
+        options.insert("Cover", Value::Float(30.0));
+
         let ok_response = OkResponse {
             args: vec![],
-            options: indexmap! {
-                "Zone2".to_string() => Value::Float(26.0),
-                "Zone1".to_string() => Value::Float(25.0),
-                "Cover".to_string() => Value::Float(30.0),
-            },
+            options: options,
         };
 
         let result = SetTemperatures::try_from(ok_response);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Zone 2 is out of range"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Zone 2 is out of range"));
     }
 
     #[test]
     fn test_set_temperatures_out_of_order_fans() {
         let ok_response = OkResponse {
             args: vec![],
-            options: indexmap! {
-                "Fan2".to_string() => Value::Float(45.0),
-                "Cover".to_string() => Value::Float(30.0),
-            },
+            options: ArgMap::new()
+                .with("Fan2", Value::Float(45.0))
+                .with("Cover", Value::Float(30.0)),
         };
 
         let result = SetTemperatures::try_from(ok_response);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Fan 2 is out of range"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Fan 2 is out of range"));
     }
 
     #[test]
     fn test_set_temperatures_empty() {
         let ok_response = OkResponse {
             args: vec![],
-            options: indexmap! {},
+            options: ArgMap::new(),
         };
 
         let set_temps = SetTemperatures::try_from(ok_response).unwrap();
@@ -925,4 +987,3 @@ mod tests {
         assert_eq!(set_temps.cover, 0.0);
     }
 }
-

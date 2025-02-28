@@ -1,5 +1,7 @@
 use core::fmt;
 use indexmap::IndexMap;
+#[cfg(feature = "python")]
+use pyo3::IntoPyObjectExt;
 use std::fmt::Display;
 use std::io::Write;
 use thiserror::Error;
@@ -11,6 +13,80 @@ use winnow::{
     prelude::*,
     token::{literal, take_till, take_until, take_while},
 };
+use bstr::{ByteSlice, ByteVec, BString};
+
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
+
+#[cfg(feature = "python")]
+use pyo3::IntoPyObject;
+
+#[derive(Debug, Clone)]
+pub struct ArgMap(IndexMap<String, Value>);
+
+impl ArgMap {
+    pub fn new() -> Self {
+        Self(IndexMap::new())
+    }
+
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value>  {
+        self.0.insert(key.into(), value.into())
+    }
+
+
+    pub fn get(&self, key: &str) -> Option<&Value> {
+        self.0.get(key)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&String, &Value)> {
+        self.0.iter()
+    }
+
+    pub fn with(mut self, key: impl Into<String>, value: impl Into<Value>) -> Self {
+        self.insert(key, value);
+        self
+    }
+}
+
+impl IntoIterator for ArgMap {
+    type Item = (String, Value);
+    type IntoIter = <IndexMap<String, Value> as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.into_iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a ArgMap {
+    type Item = (&'a String, &'a Value);
+    type IntoIter = <&'a IndexMap<String, Value> as IntoIterator>::IntoIter;
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+
+
+#[cfg(feature = "python")]
+impl<'py> IntoPyObject<'py> for ArgMap {
+    type Target = pyo3::types::PyDict;
+    type Output = Bound<'py, Self::Target>;
+    type Error = std::convert::Infallible;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        let dict = pyo3::types::PyDict::new(py);
+        for (key, value) in self.0 {
+            dict.set_item(key, value.into_pyobject(py).unwrap()).unwrap();
+        }
+        Ok(dict)
+    }
+}
 
 #[derive(PartialEq, Clone)]
 pub enum Value {
@@ -19,8 +95,29 @@ pub enum Value {
     Float(f64),
     Bool(bool),
     QuotedString(String),
-    XmlString { value: String, tag: String },
-    XmlBinary { value: Vec<u8>, tag: String },
+    XmlString { value: BString, tag: String },
+}
+
+#[cfg(feature = "python")]
+impl<'py> IntoPyObject<'py> for Value {
+    type Target = pyo3::types::PyAny;
+    type Output = Bound<'py, Self::Target>;
+    type Error = std::convert::Infallible;
+    fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
+        match self {
+            Value::String(s) => Ok(s.into_pyobject(py).unwrap().into_any()),
+            Value::Int(i) => Ok(i.into_pyobject(py).unwrap().into_any()),
+            Value::Float(f) => Ok(f.into_pyobject(py).unwrap().into_any()),
+            Value::Bool(b) => Ok(b.into_py_any(py).unwrap().into_bound(py)),
+            Value::QuotedString(s) => Ok(s.into_pyobject(py).unwrap().into_any()),
+            Value::XmlString { value, tag: _ } => {
+                match String::from_utf8(value.to_vec()) {
+                    Ok(s) => Ok(s.into_pyobject(py).unwrap().into_any()),
+                    Err(_) => Ok(value.to_vec().into_pyobject(py).unwrap().into_any()),
+                }
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for Value {
@@ -33,16 +130,9 @@ impl std::fmt::Debug for Value {
             Value::QuotedString(s) => write!(f, "QuotedString({})", s),
             Value::XmlString { value, tag } => {
                 if value.len() > 20 {
-                    write!(f, "XmlString({}, '{}...' len={})", tag, &value[..20], value.len())
+                    write!(f, "XmlString({}, '{:?}...' len={})", tag, &value[..20], value.len())
                 } else {
                     write!(f, "XmlString({}, '{}')", tag, value)
-                }
-            },
-            Value::XmlBinary { value, tag } => {
-                if value.len() > 20 {
-                    write!(f, "XmlBinary({}, {:?}... len={})", tag, &value[..20], value.len())
-                } else {
-                    write!(f, "XmlBinary({}, {:?})", tag, value)
                 }
             },
         }
@@ -58,7 +148,6 @@ impl Display for Value {
             Value::Bool(b) => write!(f, "{}", b),
             Value::QuotedString(s) => write!(f, "{}", s),
             Value::XmlString { value, tag: _ } => write!(f, "{}", value),
-            Value::XmlBinary { value, tag: _ } => write!(f, "{:?}", value),
         }
     }
 }
@@ -67,7 +156,7 @@ impl From<&str> for Value {
     fn from(s: &str) -> Self {
         if s.contains('\n') {
             Value::XmlString {
-                value: s.to_string(),
+                value: s.into(),
                 tag: "quote".to_string(),
             }
         } else if s.contains(' ') {
@@ -100,7 +189,7 @@ impl From<String> for Value {
     fn from(s: String) -> Self {
         if s.contains('\n') {
             Value::XmlString {
-                value: s,
+                value: s.into(),
                 tag: "quote".to_string(),
             }
         } else if s.contains(' ') {
@@ -117,15 +206,9 @@ impl Value {
             xml_delimited
                 .map(|(tag, val)| {
                     let tag_str = String::from_utf8_lossy(tag).to_string();
-                    match String::from_utf8(val.to_vec()) {
-                        Ok(str_val) => Value::XmlString {
-                            value: str_val,
-                            tag: tag_str
-                        },
-                        Err(_) => Value::XmlBinary {
-                            value: val.to_vec(),
-                            tag: tag_str
-                        }
+                    Value::XmlString {
+                        value: val.into(),
+                        tag: tag_str
                     }
                 })
                 .context(StrContext::Label("xml")),
@@ -169,11 +252,8 @@ impl Value {
             Value::Bool(b) => bytes.write_all(b.to_string().as_bytes()),
             Value::QuotedString(str) => bytes.write_all(format!("\"{}\"", str).as_bytes()),
             Value::XmlString { value, tag } => {
-                bytes.write_all(format!("<{}>{}</{}>", tag, value, tag).as_bytes())
-            }
-            Value::XmlBinary { value, tag } => {
                 bytes.write_all(format!("<{}>", tag).as_bytes())?;
-                bytes.write_all(&value)?;
+                bytes.write_all(value)?;
                 bytes.write_all(format!("</{}>", tag).as_bytes())
             }
         }
@@ -190,7 +270,12 @@ impl Value {
         match self {
             Value::String(s) => Ok(s),
             Value::QuotedString(s) => Ok(s),
-            Value::XmlString { value, .. } => Ok(value),
+            Value::XmlString { value, .. } => {
+                match String::from_utf8(value.to_vec()) {
+                    Ok(s) => Ok(s),
+                    Err(_) => Err(ParseError::ParseError("string".to_string())),
+                }
+            },
             _ => Err(ParseError::ParseError("string".to_string())),
         }
     }
@@ -212,6 +297,7 @@ impl Value {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "python", derive(IntoPyObject, FromPyObject))]
 pub enum MessageIdent {
     Number(u32),
     String(String),
@@ -265,7 +351,7 @@ impl Message {
 #[derive(Debug, Clone)]
 pub struct Command {
     pub command: Vec<u8>,
-    pub options: IndexMap<String, Value>,
+    pub options: ArgMap,
     pub args: Vec<Value>,
 }
 
@@ -278,7 +364,7 @@ impl CommandBuilder for Command {
         Some(self.args.clone())
     }
 
-    fn options(&self) -> Option<IndexMap<String, Value>> {
+    fn options(&self) -> Option<ArgMap> {
         Some(self.options.clone())
     }
 
@@ -329,7 +415,7 @@ impl Command {
     pub fn new(command: &str) -> Self {
         Command {
             command: command.as_bytes().to_vec(),
-            options: IndexMap::new(),
+            options: ArgMap::new(),
             args: Vec::new(),
         }
     }
@@ -337,7 +423,7 @@ impl Command {
     pub fn bytes(s: &[u8]) -> Self {
         Command {
             command: s.to_vec(),
-            options: IndexMap::new(),
+            options: ArgMap::new(),
             args: Vec::new(),
         }
     }
@@ -413,14 +499,14 @@ fn parse_args<'s>(input: &mut &'s [u8]) -> ModalResult<Vec<Value>> {
     .parse_next(input)
 }
 
-fn parse_options<'s>(input: &mut &'s [u8]) -> ModalResult<IndexMap<String, Value>> {
+fn parse_options<'s>(input: &mut &'s [u8]) -> ModalResult<ArgMap> {
     let x: Vec<(String, Value)> = winnow::combinator::separated(
         0..,
         parse_option.context(StrContext::Label("option")),
         space1,
     )
     .parse_next(input)?;
-    let mut map = IndexMap::new();
+    let mut map = ArgMap::new();
     for (key, value) in x {
         map.insert(key, value);
     }
@@ -428,8 +514,9 @@ fn parse_options<'s>(input: &mut &'s [u8]) -> ModalResult<IndexMap<String, Value
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyclass)]
 pub struct OkResponse {
-    pub options: IndexMap<String, Value>,
+    pub options: ArgMap,
     pub args: Vec<Value>,
 }
 
@@ -497,6 +584,12 @@ impl OkResponse {
         self.write_bytes(&mut bytes).unwrap();
         String::from_utf8_lossy(&bytes).to_string()
     }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        self.write_bytes(&mut bytes).unwrap();
+        bytes
+    }
 }
 
 impl From<OkResponse> for String {
@@ -508,12 +601,13 @@ impl From<OkResponse> for String {
 }
 
 #[derive(Debug)]
+#[cfg_attr(feature = "python", derive(IntoPyObject))]
 pub enum MessageResponse {
     Ok {
         ident: MessageIdent,
         message: OkResponse,
     },
-    Error {
+    CommandError {
         ident: MessageIdent,
         error: ErrorResponse,
     },
@@ -524,11 +618,13 @@ pub enum MessageResponse {
 }
 
 #[derive(Debug, Clone, Error)]
+#[cfg_attr(feature = "python", derive(IntoPyObject))]
 pub struct ErrorResponse {
     pub error: String,
-    pub args: IndexMap<String, Value>,
+    pub args: ArgMap,
     pub message: String,
 }
+
 
 impl Display for ErrorResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -545,7 +641,7 @@ impl ErrorResponse {
     pub fn parse(input: &mut &[u8]) -> ModalResult<ErrorResponse> {
         return (seq!{
             ErrorResponse {
-                error: take_till(0.., |c: u8| c == b' ' || c == b'\n').map(|val| String::from_utf8_lossy(val).to_string()),
+                error: delimited("[", take_till(0.., |c: u8| c == b']'), "]").map(|val| String::from_utf8_lossy(val).to_string()), // FIXME: don't fail if no []
                 _: space0,
                 args: parse_options,
                 _: space0,
@@ -572,7 +668,7 @@ fn parse_ok(input: &mut &[u8]) -> ModalResult<MessageResponse> {
 
 fn parse_error(input: &mut &[u8]) -> ModalResult<MessageResponse> {
     return (seq! {
-        MessageResponse::Error {
+        MessageResponse::CommandError {
             _: literal(b"ERRor"),
             _: space1,
             ident: MessageIdent::parse,
@@ -603,7 +699,7 @@ fn parse_next(input: &mut &[u8]) -> ModalResult<MessageResponse> {
 /// ```
 #[derive(Debug)]
 pub struct Ready {
-    pub args: IndexMap<String, Value>,
+    pub args: ArgMap,
 }
 
 impl Ready {
@@ -756,7 +852,7 @@ mod tests {
         let result = Value::parse(&mut &input[..]).unwrap();
         
         match result {
-            Value::XmlBinary { value, tag } => {
+            Value::XmlString { value, tag } => {
                 assert_eq!(tag, "binary.data");
                 assert_eq!(value, binary_data);
             },
@@ -780,8 +876,8 @@ mod tests {
 
     #[test]
     fn test_write_binary_xml() {
-        let binary_data = vec![0x00, 0x01, 0x02, 0xFF];
-        let value = Value::XmlBinary {
+        let binary_data: BString = b"\x00\x01\x02\xFF".into();
+        let value = Value::XmlString {
             value: binary_data.clone(),
             tag: "quote".to_string(),
         };
@@ -789,10 +885,10 @@ mod tests {
         let mut output = Vec::new();
         value.write_bytes(&mut output).unwrap();
         
-        let mut expected = b"<quote>".to_vec();
+        let mut expected: BString = b"<quote>".into();
         expected.extend_from_slice(&binary_data);
         expected.extend_from_slice(b"</quote>");
-        assert_eq!(output, expected);
+        assert_eq!(output.as_bstr(), expected);
 
         let result = Value::parse(&mut &output[..]).unwrap();
         assert_eq!(result, value);   
