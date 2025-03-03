@@ -63,6 +63,7 @@ from .version import __version__
 if TYPE_CHECKING:  # pragma: no cover
     from matplotlib.axes import Axes
     from matplotlib.lines import Line2D
+    import polars as pl
 
 # Let's just assume all of these are problematic, for now.
 INVALID_NAME_RE = re.compile(r"[\[\]{}!/:;@&=+$,?#|\\]")
@@ -1574,31 +1575,50 @@ table, th, td {{
         x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml")).getroot()
         self.plate_setup = PlateSetup.from_platesetup_xml(x)
 
-    def _update_from_data(self) -> None:
-        if self.spec_major_version == 1:
-            fdp = os.path.join(self._dir_eds, "filterdata.xml")
-            if os.path.isfile(fdp):
-                fdx = ET.parse(fdp)
-                fdrs = [
-                    FilterDataReading(x, sds_dir=self._dir_eds)
-                    for x in fdx.findall(".//PlateData")
-                ]
-                self._filter_data = df_from_readings(
-                    fdrs,
-                    self.activestarttime.timestamp() if self.activestarttime else None,
-                )
-            elif fdfs := glob(
+    def _get_filterdatareadings(self) -> list[FilterDataReading]:
+        if self.spec_major_version != 1:
+            raise ValueError("Filterdata is only supported for spec version 1")
+        fdp = os.path.join(self._dir_eds, "filterdata.xml")
+        if os.path.isfile(fdp):
+            fdx = ET.parse(fdp)
+            fdrs = [
+                FilterDataReading(x, sds_dir=self._dir_eds)
+                for x in fdx.findall(".//PlateData")
+            ]
+            return fdrs
+        elif fdfs := glob(
                 os.path.join(self._dir_eds, "filter", "*_filterdata.xml")
             ):
-                fdrs = [
-                    FilterDataReading.from_file(fdf, sds_dir=self._dir_eds)
-                    for fdf in fdfs
-                ]
+            fdrs = [
+                FilterDataReading.from_file(fdf, sds_dir=self._dir_eds)
+                for fdf in fdfs
+            ]
+            return fdrs
+        else:
+            raise ValueError("No filterdata found")
+
+
+    def welldata_polars_lazy(self) -> 'pl.LazyFrame':
+        import polars as pl
+        from .polars_data import polars_from_filterdata
+        start_time = self.activestarttime.timestamp() if self.activestarttime else None
+        d = pl.concat(polars_from_filterdata(x, start_time=start_time) for x in self._get_filterdatareadings()).sort("timestamp")
+    
+        if self.plate_setup:
+            d = d.join(
+                pl.from_pandas(self.plate_setup.well_sample, include_index=True).lazy().rename({"0": "sample", "index": "well"}), 
+                on="well", how="left")
+        return d
+    
+
+    def _update_from_data(self) -> None:
+        if self.spec_major_version == 1:
+            try:
                 self._filter_data = df_from_readings(
-                    fdrs,
+                    self._get_filterdatareadings(),
                     self.activestarttime.timestamp() if self.activestarttime else None,
                 )
-            else:
+            except ValueError:
                 self._filter_data = None
 
             mdp = os.path.join(self._dir_eds, "multicomponentdata.xml")

@@ -352,26 +352,6 @@ def df_from_readings(
         axis="columns",  # type: ignore
     )
 
-def polars_from_filterdata(dr: FilterDataReading) -> 'pl.DataFrame':
-    import polars as pl
-    return pl.DataFrame(
-        {
-        'filter_set': dr.filter_set.lowerform,
-        'stage': dr.stage,
-        'cycle': dr.cycle,
-        'step': dr.step,
-        'point': dr.point,
-        'well': [f'{r}{c}' for r in "ABCDEFGH" for c in range(1, 13)],
-        'row': [i for i in range(8) for j in range(12)],
-        'column': [j for i in range(8) for j in range(12)],
-        'timestamp': datetime.fromtimestamp(dr.timestamp),
-        'fluorescence': dr.well_fluorescence,
-        'sample_temperature': dr.well_temperatures,
-        'set_temperature': np.tile(np.repeat(dr.set_temperatures, 2), 8),
-        'exposure': dr.exposure
-        }
-    )
-
 def _filterdata_df_v2(
     jsdata: dict,
     plate_type: int,
