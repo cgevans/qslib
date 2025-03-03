@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import random
 import re
 import shlex
 import zipfile
@@ -613,30 +614,29 @@ class Machine:
 
     @_ensure_connection(AccessLevel.Observer)
     def _get_log_from_byte(self, name: str | bytes, byte: int) -> bytes:
-        logfuture: Future[
-            tuple[bytes, bytes, Future[tuple[bytes, bytes, None]] | None]
-        ] = asyncio.Future()
         if self.connection is None:
             raise Exception
         if isinstance(name, bytes):
             name = name.decode()
-        self.connection._protocol.waiting_commands.append((b"logtransfer", logfuture))
 
-        logcommand = self.connection._protocol.run_command(
-            f"eval? session.writeQueue.put(('OK logtransfer \\<quote.base64\\>\\\\n'"
+        # Generate a random u32 for the log transfer command
+        log_ident = random.randint(0, 2**32 - 1)
+
+        log_responder = self.connection.expect_ident(log_ident)
+
+        logcommand = self.connection.run_command(
+            f"eval? session.writeQueue.put(('OK {log_ident} \\<quote.base64\\>\\\\n'"
             f" + (lambda x: [x.seek({byte}), __import__('base64').encodestring(x.read())][1])"
             f"(open('/data/vendor/IS/experiments/{name}/apldbio/sds/messages.log')) +"
             " '\\</quote.base64\\>\\\\n', None))",
-            ack_timeout=200,
         )
 
-        loop = asyncio.get_event_loop()
 
-        loop.run_until_complete(logcommand)
+        logcommand.get_response()
 
-        loop.run_until_complete(logfuture)
+        logres = log_responder.get_response()
 
-        return base64.decodebytes(logfuture.result()[1][15:-17])
+        return base64.decodebytes(logres[15:-16].encode()) # FIXME: don't encode/decode, and make this more robust
 
     @_ensure_connection(AccessLevel.Observer)
     def run_status(self) -> RunStatus:
