@@ -278,9 +278,7 @@ async fn test_auto_connection() {
     let connection = match connection {
         Ok(c) => c,
         Err(e) => {
-            println!("connection error: {:?}", e);
-            assert!(false);
-            return;
+            panic!("connection error: {:?}", e);
         }
     };
 
@@ -353,13 +351,13 @@ async fn test_connection_refused() {
 #[tokio::test]
 async fn test_power_query_and_set() {
     let (addr, _server) = setup_mock_server(None, true).await;
-    let mut connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
         .await
         .unwrap();
 
     // Test initial power status (should be ON)
     let response = PowerQuery
-        .send(&mut connection)
+        .send(&connection)
         .await
         .unwrap()
         .receive_response()
@@ -369,7 +367,7 @@ async fn test_power_query_and_set() {
 
     // Set power OFF
     let response = PowerSet(PowerStatus::Off)
-        .send(&mut connection)
+        .send(&connection)
         .await
         .unwrap()
         .receive_response()
@@ -378,7 +376,7 @@ async fn test_power_query_and_set() {
 
     // Verify power is OFF
     let response = PowerQuery
-        .send(&mut connection)
+        .send(&connection)
         .await
         .unwrap()
         .receive_response()
@@ -388,7 +386,7 @@ async fn test_power_query_and_set() {
 
     // Set power ON
     let response = PowerSet(PowerStatus::On)
-        .send(&mut connection)
+        .send(&connection)
         .await
         .unwrap()
         .receive_response()
@@ -397,7 +395,7 @@ async fn test_power_query_and_set() {
 
     // Verify power is ON
     let response = PowerQuery
-        .send(&mut connection)
+        .send(&connection)
         .await
         .unwrap()
         .receive_response()
@@ -752,13 +750,13 @@ async fn test_choose_tcp_by_port_7000() {
 #[tokio::test]
 async fn test_ssl_power_query_and_set() {
     let (addr, _server) = setup_mock_ssl_server(None, true).await;
-    let mut connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::SSL)
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::SSL)
         .await
         .unwrap();
 
     // Test initial power status (should be ON)
     let response = PowerQuery
-        .send(&mut connection)
+        .send(&connection)
         .await
         .unwrap()
         .receive_response()
@@ -768,7 +766,7 @@ async fn test_ssl_power_query_and_set() {
 
     // Set power OFF
     let response = PowerSet(PowerStatus::Off)
-        .send(&mut connection)
+        .send(&connection)
         .await
         .unwrap()
         .receive_response()
@@ -777,7 +775,7 @@ async fn test_ssl_power_query_and_set() {
 
     // Verify power is OFF
     let response = PowerQuery
-        .send(&mut connection)
+        .send(&connection)
         .await
         .unwrap()
         .receive_response()

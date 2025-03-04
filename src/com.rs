@@ -1,5 +1,5 @@
 use anyhow::Context;
-use bstr::{BString, ByteSlice, ByteVec};
+use bstr::{BString, ByteSlice};
 use dashmap::DashMap;
 use log::{error, trace};
 use rustls::{
@@ -548,7 +548,10 @@ impl QSConnection {
 
         // Read ready message
         let mut b = [0; 1024];
-        c.read(&mut b).await?;
+        let m = c.read(&mut b).await?;
+        if m == 0 {
+            return Err(ConnectionError::Timeout); // FIXME: handle error
+        }
         trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..]));
         let msg = parser::Ready::parse(&mut &b[..]).unwrap(); // FIXME: handle error
         trace!("Ready message: {:?}", msg);
@@ -736,7 +739,7 @@ impl QSConnection {
             Some(r) => r,
             None => self.get_run_title().await?,
         };
-        let path = format!("{}/apldbio/sds/filter/{}", run, fref.to_string());
+        let path = format!("{}/apldbio/sds/filter/{}", run, fref);
         let mut reply = self.send_command_bytes(path.as_bytes().as_bstr()).await?;
         let mut reply = reply.get_response().await??;
 
@@ -834,6 +837,16 @@ pub struct FilterDataFilename {
     pub point: u32,
 }
 
+impl std::fmt::Display for FilterDataFilename {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "S{:02}_C{:03}_T{:02}_P{:04}_M{}_X{}_filterdata.xml",
+            self.stage, self.cycle, self.step, self.point, self.filterset.em, self.filterset.ex
+        )
+    }
+}
+
 impl FilterDataFilename {
     pub fn from_string(s: &str) -> Result<Self, QSConnectionError> {
         let caps = FILTER_DATA_FILENAME_RE.captures(s).ok_or_else(|| {
@@ -857,12 +870,7 @@ impl FilterDataFilename {
         })
     }
 
-    pub fn to_string(&self) -> String {
-        format!(
-            "S{:02}_C{:03}_T{:02}_P{:04}_M{}_X{}_filterdata.xml",
-            self.stage, self.cycle, self.step, self.point, self.filterset.em, self.filterset.ex
-        )
-    }
+
 
     pub fn is_same_point(&self, other: &FilterDataFilename) -> bool {
         self.stage == other.stage
@@ -902,7 +910,10 @@ impl FilterSet {
         })
     }
 
-    pub fn to_string(&self) -> String {
-        format!("x{}-m{}", self.ex, self.em)
+
+}
+impl std::fmt::Display for FilterSet {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "x{}-m{}", self.ex, self.em)
     }
 }

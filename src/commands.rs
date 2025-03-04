@@ -471,7 +471,7 @@ impl From<RunProgressQuery> for Command {
 }
 
 #[derive(Debug, Clone)]
-enum DrawerStatus {
+pub enum DrawerStatus {
     Closed,
     Open,
 }
@@ -625,10 +625,10 @@ impl TryFrom<OkResponse> for QuickStatus {
     }
 }
 
-impl QuickStatus {
-    pub fn to_string(&self) -> String {
-        format!(
-            "Power: {:?}\nDrawer: {:?}\nCover: {:?}\nSample Temperatures: {:?}\nBlock Temperatures: {:?}",
+
+impl std::fmt::Display for QuickStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Power: {:?}\nDrawer: {:?}\nCover: {:?}\nSample Temperatures: {:?}\nBlock Temperatures: {:?}",
             self.power,
             self.drawer,
             self.cover,
@@ -636,7 +636,9 @@ impl QuickStatus {
             self.block_temperatures,
         )
     }
+}
 
+impl QuickStatus {
     pub fn to_html(&self) -> String {
         format!(
             "<ul>
@@ -753,8 +755,8 @@ impl TryFrom<OkResponse> for SetTemperatures {
         let mut cover = 0.0;
 
         for (key, value) in resp.options.iter() {
-            if key.starts_with("Zone") {
-                let zone_num = key[4..].parse::<usize>().unwrap();
+            if let Some(zone_num) = key.strip_prefix("Zone") {
+                let zone_num = zone_num.parse::<usize>().unwrap();
                 if zone_num != zones.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
@@ -762,8 +764,8 @@ impl TryFrom<OkResponse> for SetTemperatures {
                     ));
                 }
                 zones.push(value.clone().try_into_f64().unwrap());
-            } else if key.starts_with("Fan") {
-                let fan_num = key[3..].parse::<usize>().unwrap();
+            } else if let Some(fan_num) = key.strip_prefix("Fan") {
+                let fan_num = fan_num.parse::<usize>().unwrap();
                 if fan_num != fans.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
@@ -815,8 +817,8 @@ impl TryFrom<OkResponse> for TemperatureControlStatus {
         let mut cover = false;
 
         for (key, value) in resp.options.iter() {
-            if key.starts_with("Zone") {
-                let zone_num = key[4..].parse::<usize>().unwrap();
+            if let Some(zone_num) = key.strip_prefix("Zone") {
+                let zone_num = zone_num.parse::<usize>().unwrap();
                 if zone_num != zones.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
@@ -824,8 +826,8 @@ impl TryFrom<OkResponse> for TemperatureControlStatus {
                     ));
                 }
                 zones.push(value.clone().try_into_bool().unwrap());
-            } else if key.starts_with("Fan") {
-                let fan_num = key[3..].parse::<usize>().unwrap();
+            } else if let Some(fan_num) = key.strip_prefix("Fan") {
+                let fan_num = fan_num.parse::<usize>().unwrap();
                 if fan_num != fans.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),

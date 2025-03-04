@@ -1,8 +1,6 @@
-use bstr::{BString, ByteSlice};
+use bstr::BString;
 use core::fmt;
 use indexmap::IndexMap;
-#[cfg(feature = "python")]
-use pyo3::IntoPyObjectExt;
 use std::fmt::Display;
 use std::io::Write;
 use thiserror::Error;
@@ -14,6 +12,9 @@ use winnow::{
     prelude::*,
     token::{literal, take_till, take_until, take_while},
 };
+
+#[cfg(feature = "python")]
+use pyo3::IntoPyObjectExt;
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
@@ -553,6 +554,15 @@ impl TryFrom<String> for OkResponse {
     }
 }
 
+impl Display for OkResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut bytes = Vec::new();
+        self.write_bytes(&mut bytes).unwrap();
+        write!(f, "{}", String::from_utf8_lossy(&bytes))
+    }
+}
+
+
 impl OkResponse {
     pub fn parse(input: &mut &[u8]) -> ModalResult<OkResponse> {
         let kv = parse_options(input)?;
@@ -579,12 +589,6 @@ impl OkResponse {
             arg.write_bytes(bytes)?;
         }
         Ok(())
-    }
-
-    pub fn to_string(&self) -> String {
-        let mut bytes = Vec::new();
-        self.write_bytes(&mut bytes).unwrap();
-        String::from_utf8_lossy(&bytes).to_string()
     }
 
     pub fn to_bytes(&self) -> Vec<u8> {
@@ -802,6 +806,7 @@ pub fn xml_delimited<'a>(input: &mut &'a [u8]) -> ModalResult<(&'a [u8], &'a [u8
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bstr::ByteSlice;
 
     #[test]
     fn test_parse_led_status_message() {
