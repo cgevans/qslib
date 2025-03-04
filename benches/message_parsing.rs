@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use qslib_rs::parser::MessageResponse;
+use qslib::parser::MessageResponse;
 use base64::{Engine as _, engine::general_purpose::STANDARD as b64};
 
 fn create_base64_message() -> Vec<u8> {

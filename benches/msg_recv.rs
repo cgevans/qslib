@@ -1,5 +1,5 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use qslib_rs::message_receiver::MsgRecv;
+use qslib::message_receiver::MsgRecv;
 
 fn bench_msg_recv(c: &mut Criterion) {
     let mut group = c.benchmark_group("message_receiving");

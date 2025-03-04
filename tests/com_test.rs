@@ -1,6 +1,6 @@
 use env_logger::Builder;
 use log::{debug, error, info, warn};
-use qslib_rs::parser::{MessageResponse, Value};
+use qslib::parser::{MessageResponse, Value};
 use rustls::ServerConfig;
 use rustls_pki_types::pem::PemObject;
 use std::net::SocketAddr;
@@ -11,7 +11,8 @@ use tokio::time::{interval, Duration};
 use tokio_rustls::TlsAcceptor;
 use tokio_stream::StreamExt;
 
-use qslib_rs::com::*;
+use qslib::com::*;
+use qslib::commands::*;
 
 fn setup_logging() {
     let _ = Builder::from_env("RUST_LOG")
@@ -344,7 +345,6 @@ async fn test_connection_refused() {
     println!("connection done");
 }
 
-use qslib_rs::commands::*;
 
 #[tokio::test]
 async fn test_power_query_and_set() {

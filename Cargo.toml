@@ -1,12 +1,16 @@
 [package]
-name = "qslib-rs"
-version = "0.1.0"
+name = "qslib"
+version = "0.14.0-pre1"
 edition = "2021"
+description = "QSlib QuantStudio qPCR machine library"
+license = "EUPL-1.2"
+authors = ["Constantine Evans <qslib@mb.costi.net>"]
+homepage = "https://github.com/cgevans/qslib-rs"
+repository = "https://github.com/cgevans/qslib-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
-name = "qslib_rs"
-crate-type = ["cdylib", "rlib"]
+name = "qslib"
 
 [dependencies]
 dashmap = "6.1"
