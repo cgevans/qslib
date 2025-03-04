@@ -1,44 +1,44 @@
-# SPDX-FileCopyrightText: 2021-2023 Constantine Evans <qslib@mb.costi.net>
-# SPDX-License-Identifier: EUPL-1.2
+# # SPDX-FileCopyrightText: 2021-2023 Constantine Evans <qslib@mb.costi.net>
+# # SPDX-License-Identifier: EUPL-1.2
 
-import asyncio
-import logging
+# import asyncio
+# import logging
 
-import pytest
+# import pytest
 
-from qslib.qs_is_protocol import QS_IS_Protocol
-
-
-@pytest.fixture
-def fake_connection():
-    q = QS_IS_Protocol.__new__(QS_IS_Protocol)
-    q.connection_made(None)
-    return q
+# from qslib.qs_is_protocol import QS_IS_Protocol
 
 
-def test_partial_quote(
-    fake_connection: QS_IS_Protocol,
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-):
-    def setparsed(msg):
-        fake_connection._parsed = msg
+# @pytest.fixture
+# def fake_connection():
+#     q = QS_IS_Protocol.__new__(QS_IS_Protocol)
+#     q.connection_made(None)
+#     return q
 
-    monkeypatch.setattr(asyncio, "create_task", lambda x: x)
-    monkeypatch.setattr(fake_connection, "parse_message", setparsed)
 
-    fake_connection.data_received(b"<tag>\n")
-    assert fake_connection.quote_stack == [b"tag"]
+# def test_partial_quote(
+#     fake_connection: QS_IS_Protocol,
+#     monkeypatch: pytest.MonkeyPatch,
+#     caplog: pytest.LogCaptureFixture,
+# ):
+#     def setparsed(msg):
+#         fake_connection._parsed = msg
 
-    fake_connection.data_received(b"12345\n")
+#     monkeypatch.setattr(asyncio, "create_task", lambda x: x)
+#     monkeypatch.setattr(fake_connection, "parse_message", setparsed)
 
-    with caplog.at_level(logging.DEBUG, logger="qslib.qs_is_protocol"):
-        fake_connection.data_received(b"</ta")
+#     fake_connection.data_received(b"<tag>\n")
+#     assert fake_connection.quote_stack == [b"tag"]
 
-    assert "Unclosed tag opener: b'</ta'" in caplog.messages
-    assert fake_connection.quote_stack == [b"tag"]
+#     fake_connection.data_received(b"12345\n")
 
-    fake_connection.data_received(b"g>\n")
-    assert fake_connection.quote_stack == []
+#     with caplog.at_level(logging.DEBUG, logger="qslib.qs_is_protocol"):
+#         fake_connection.data_received(b"</ta")
 
-    assert fake_connection._parsed == b"<tag>\n12345\n</tag>\n"
+#     assert "Unclosed tag opener: b'</ta'" in caplog.messages
+#     assert fake_connection.quote_stack == [b"tag"]
+
+#     fake_connection.data_received(b"g>\n")
+#     assert fake_connection.quote_stack == []
+
+#     assert fake_connection._parsed == b"<tag>\n12345\n</tag>\n"

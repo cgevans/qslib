@@ -8,7 +8,7 @@ import pytest  # noqa
 from hypothesis import given
 
 from qslib._util import _pp_seqsliceint
-from qslib.qsconnection_async import FilterDataFilename
+from qslib.machine import FilterDataFilename
 
 
 @given(
