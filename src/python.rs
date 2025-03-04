@@ -1,21 +1,14 @@
-use qslib::com::{QSConnection, QSConnectionError, ConnectionType, ResponseReceiver, SendCommandError, ConnectionError};
-use qslib::parser::{self, Message};
+use qslib::com::{QSConnection, ConnectionType, ResponseReceiver};
 use qslib::parser::Command;
 use qslib::parser::{LogMessage, MessageResponse, MessageIdent};
 use pyo3::exceptions::{PyTimeoutError, PyValueError, PyException};
-use pyo3::{impl_exception_boilerplate, create_exception, create_exception_type_object};
 use pyo3::prelude::*;
-use pyo3::ToPyErr;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::select;
-use tokio::sync::broadcast;
-use tokio::sync::mpsc;
 use tokio::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{StreamExt, StreamMap};
-
-use pyo3_async_runtimes::tokio::future_into_py;
 
 pyo3::create_exception!(qslib, QslibException, PyException);
 pyo3::create_exception!(qslib, CommandResponseError, QslibException);
@@ -52,7 +45,7 @@ impl PyMessageResponse {
                 match x {
                     MessageResponse::Ok { ident: _, message } => Ok(message.to_bytes()),
                     MessageResponse::CommandError { ident: _, error } => Err(CommandError::new_err(error)),
-                    MessageResponse::Next { ident: _ } => return self.get_response_bytes(),
+                    MessageResponse::Next { ident: _ } => self.get_response_bytes(),
                     MessageResponse::Message(message) => Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message))),
                 }
             },
@@ -107,7 +100,7 @@ impl PyMessageResponse {
             select! {
                 rx = self.rx.recv() => Ok(rx),
                 _ = tokio::time::sleep(Duration::from_secs(timeout)) => {
-                    return Err(PyTimeoutError::new_err("Timeout"))
+                    Err(PyTimeoutError::new_err("Timeout"))
                 }
             }
         })?;

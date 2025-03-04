@@ -10,42 +10,16 @@ crate-type = ["cdylib"]
 
 [dependencies]
 qslib = { version = "0.14.0-pre1", features = ["python"] }
-dashmap = "6.1"
-enum_dispatch = "0.3.13"
-futures = "0.3.31"
-indexmap = "2.7.1"
-log = "0.4.25"
 pyo3 = { version = "0.23.3", features = ["extension-module"] }
-pyo3-async-runtimes = { version = "0.23.0", features = ["tokio-runtime"] }
-quick-xml = { version = "0.37.2", features = ["overlapped-lists", "serialize"] }
-regex = "1.11.1"
-rustls = "0.23.20"
-rustls-pki-types = "1.10.1"
-serde = { version = "1.0.217", features = ["derive"] }
-thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "rt", "io-util", "macros"] }
-tokio-rustls = "0.26.1"
 tokio-stream = { version = "0.1.17", features = ["sync"] }
-uuid = { version = "1.12.1", features = ["v4"] }
-winnow = "0.6.22"
-zip = "2.2.2"
-memchr = { version = "2.7", optional = true }
-lazy_static = "1.5.0"
-data-encoding = "2.7.0"
-anyhow = "1.0.95"
-bstr = "1.11.3"
 
 [features]
-debug = ["winnow/debug"]
-simd = ["dep:memchr", "winnow/simd"]
+simd = ["qslib/simd"]
 
 [dev-dependencies]
 env_logger = "0.11.6"
-rcgen = "0.13.2"
-rustls-pemfile = "2.2.0"
 criterion = { version = "0.5", features = ["html_reports"] }
-base64 = "0.21"
-# default = ["python"]
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
