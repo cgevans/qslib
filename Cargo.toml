@@ -1,6 +1,6 @@
 [package]
 name = "qslib-python"
-version = "0.14.0-pre1"
+version = "0.14.0-pre2"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -9,7 +9,7 @@ name = "qslib_python"
 crate-type = ["cdylib"]
 
 [dependencies]
-qslib = { version = "0.14.0-pre1", features = ["python"] }
+qslib = { version = "0.14.0-pre2", features = ["python"] }
 pyo3 = { version = "0.23.3", features = ["extension-module", "abi3-py310"] }
 tokio = { version = "1.42.0", features = ["net", "sync", "rt", "io-util", "macros"] }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
