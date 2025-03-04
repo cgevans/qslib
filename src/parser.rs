@@ -333,16 +333,17 @@ impl MessageIdent {
 #[derive(Debug, Clone)]
 pub struct Message {
     pub ident: Option<MessageIdent>,
-    pub content: Vec<u8>,
+    pub content: Option<BString>, // If None, then we're just expecting a particular ident response
 }
 
 impl Message {
     pub fn write_bytes(&self, bytes: &mut impl Write) -> Result<(), std::io::Error> {
+        let content = self.content.as_ref().unwrap();
         if let Some(ident) = &self.ident {
             ident.write_bytes(bytes)?;
             bytes.write_all(b" ")?;
         }
-        bytes.write_all(&self.content)?;
+        bytes.write_all(content)?;
         bytes.write_all(b"\n")?;
         Ok(())
     }

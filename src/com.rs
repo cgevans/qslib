@@ -1,5 +1,5 @@
 use anyhow::Context;
-use bstr::{ByteSlice, ByteVec};
+use bstr::{BStr, BString, ByteSlice, ByteVec};
 use dashmap::DashMap;
 use log::{error, trace};
 use rustls::{
@@ -283,12 +283,22 @@ impl QSConnectionInner {
                         trace!("Outer channel is closed.");
                         break Ok(());
                     };
-                    msg.ident = Some(MessageIdent::Number(self.next_ident));
+                    // FIXME: check for collisions
+                    msg.ident = match msg.ident {
+                        Some(MessageIdent::Number(n)) => Some(MessageIdent::Number(n)),
+                        Some(MessageIdent::String(s)) => Some(MessageIdent::String(s)),
+                        None => {
+                            let i = Some(MessageIdent::Number(self.next_ident));
+                            self.next_ident += 1;
+                            i
+                        }
+                    };
                     let mut bytes = Vec::new();
-                    msg.write_bytes(&mut bytes).unwrap();
-                    self.stream_write.write_all(&bytes).await?;
+                    if msg.content.is_some() {
+                        msg.write_bytes(&mut bytes).unwrap();
+                        self.stream_write.write_all(&bytes).await?;
+                    }
                     self.messagechannels.insert(msg.ident.unwrap(), tx);
-                    self.next_ident += 1;
                 }
                 n = f_data_to_receive => {
                     let n = n?;
@@ -423,7 +433,7 @@ impl QSConnection {
     ) -> Result<ResponseReceiver, SendCommandError> {
         let msg = Message {
             ident: None,
-            content: command.to_bytes(),
+            content: Some(command.to_bytes().into()),
         };
         // Convert message to bytes for logging
         let mut bytes = Vec::new();
@@ -438,27 +448,26 @@ impl QSConnection {
         Ok(ResponseReceiver(rx))
     }
 
-    pub async fn send_command_bytes(
+    pub async fn expect_ident(
         &self,
-        bytes: &[u8],
+        ident: MessageIdent,
     ) -> Result<ResponseReceiver, SendCommandError> {
         let msg = Message {
-            ident: None,
-            content: bytes.to_vec(),
+            ident: Some(ident),
+            content: None,
         };
         let (tx, rx) = mpsc::channel(5);
         self.commandchannel.send((msg, tx)).await.map_err(|e| SendCommandError::ConnectionClosed(format!("{:?}", e)))?;
         Ok(ResponseReceiver(rx))
     }
 
-
-    pub async fn send_command_bytes_owned(
+    pub async fn send_command_bytes(
         &self,
-        bytes: Vec<u8>,
+        bytes: impl Into<BString>,
     ) -> Result<ResponseReceiver, SendCommandError> {
         let msg = Message {
             ident: None,
-            content: bytes,
+            content: Some(bytes.into()),
         };
         let (tx, rx) = mpsc::channel(5);
         self.commandchannel.send((msg, tx)).await.map_err(|e| SendCommandError::ConnectionClosed(format!("{:?}", e)))?;
@@ -625,7 +634,7 @@ impl QSConnection {
         &self, path: &str
     ) -> Result<Vec<u8>, CommandError<ErrorResponse>> {
         let cmd = format!("EXP:READ? -encoding=base64 {}", path);
-        let mut reply = self.send_command_bytes(cmd.as_bytes()).await?;
+        let mut reply = self.send_command_bytes(cmd.as_bytes().as_bstr()).await?;
         let mut reply = reply.get_response().await??;
 
         let x = match reply.args.pop().ok_or(CommandError::InternalError(anyhow::anyhow!("Invalid response")))? {
@@ -649,7 +658,7 @@ impl QSConnection {
 
     pub async fn get_expfile_list(&self, glob: &str) -> Result<Vec<String>, CommandError<ErrorResponse>> {
         let cmd = format!("EXP:LIST? {}", glob);
-        let mut reply = self.send_command_bytes(cmd.as_bytes()).await?;
+        let mut reply = self.send_command_bytes(cmd.as_bytes().as_bstr()).await?;
         let mut reply = reply.get_response().await??;
         
         let x = match reply.args.pop().ok_or(CommandError::InternalError(anyhow::anyhow!("Invalid response")))? {
@@ -663,7 +672,7 @@ impl QSConnection {
 
     /// Get the current run title from the machine
     pub async fn get_run_title(&self) -> Result<String, CommandError<ErrorResponse>> {
-        let mut response = self.send_command_bytes(b"RUNTitle?").await?;
+        let mut response = self.send_command_bytes(b"RUNTitle?".as_bstr()).await?;
         let response = response.get_response().await??;
         
         // Get the first argument which should be the run title
@@ -682,7 +691,7 @@ impl QSConnection {
             None => self.get_run_title().await?,
         };
         let path = format!("{}/apldbio/sds/filter/{}", run, fref.to_string());
-        let mut reply = self.send_command_bytes(path.as_bytes()).await?;
+        let mut reply = self.send_command_bytes(path.as_bytes().as_bstr()).await?;
         let mut reply = reply.get_response().await??;
         
         let x = match reply.args.pop().ok_or(CommandError::InternalError(anyhow::anyhow!("Not enough arguments")))? {

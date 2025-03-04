@@ -1,7 +1,7 @@
 use crate::com::{QSConnection, QSConnectionError, ConnectionType, ResponseReceiver, SendCommandError, ConnectionError};
 use crate::parser::{self, Message};
 use crate::parser::Command;
-use crate::parser::{LogMessage, MessageResponse};
+use crate::parser::{LogMessage, MessageResponse, MessageIdent};
 use pyo3::exceptions::{PyTimeoutError, PyValueError, PyException};
 use pyo3::{impl_exception_boilerplate, create_exception, create_exception_type_object};
 use pyo3::prelude::*;
@@ -235,6 +235,14 @@ impl PyQSConnection {
             CommandInput::Bytes(b) => Command::try_from(b)?,
         };
         let rx = self.rt.block_on(self.conn.send_command(command))?;
+        Ok(PyMessageResponse {
+            rx,
+            rt: self.rt.clone(),
+        })
+    }
+
+    fn expect_ident(&mut self, ident: MessageIdent) -> PyResult<PyMessageResponse> {
+        let rx = self.rt.block_on(self.conn.expect_ident(ident))?;
         Ok(PyMessageResponse {
             rx,
             rt: self.rt.clone(),
