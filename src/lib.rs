@@ -1,5 +1,3 @@
-#![feature(coverage_attribute)]
-
 pub mod com;
 pub mod commands;
 pub mod data;

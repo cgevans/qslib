@@ -1,6 +1,6 @@
 [package]
 name = "qslib"
-version = "0.14.0-pre1"
+version = "0.14.0-pre2"
 edition = "2021"
 description = "QSlib QuantStudio qPCR machine library"
 license = "EUPL-1.2"
@@ -18,7 +18,7 @@ enum_dispatch = "0.3.13"
 futures = "0.3.31"
 indexmap = "2.7.1"
 log = "0.4.25"
-pyo3 = { version = "0.23.3", optional = true, features = ["extension-module"] }
+pyo3 = { version = "0.23.3", optional = true, features = ["extension-module", "abi3-py310"] }
 pyo3-async-runtimes = { version = "0.23.0", optional = true, features = ["tokio-runtime"] }
 quick-xml = { version = "0.37.2", features = ["overlapped-lists", "serialize"] }
 regex = "1.11.1"
