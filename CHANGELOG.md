@@ -8,6 +8,7 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Version 0.14.0
 
+- Reimplement core communication and parsing code in Rust.
 - Improve cli commands, in particular, `list-stored` and `get-eds`.
 - Add more parsing and typing to `Machine.list_runs_in_storage` and `Machine.list_files` (breaking change if relying on atime/mtime/ctime being floats instead of datetime objects).
 - Use setuptools_scm to write version number.
