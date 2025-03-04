@@ -1,8 +1,8 @@
 pub mod python;
 use pyo3::prelude::*;
 
-#[pymodule]
-mod qslib_rs {
+#[pymodule(name = "_qslib")]
+mod qslib {
     #[pymodule_export]
     use crate::python::PyQSConnection;
 

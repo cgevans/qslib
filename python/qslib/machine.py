@@ -18,7 +18,7 @@ from functools import wraps
 from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload
 from datetime import datetime
 from typing import TypedDict
-from qslib_rs import QSConnection
+from ._qslib import QSConnection
 import io
 from .data import FilterSet, FilterDataReading, df_from_readings
 import xml.etree.ElementTree as ET
