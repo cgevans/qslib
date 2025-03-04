@@ -82,7 +82,7 @@ impl MsgRecv {
         }
         self.parttag = None;
         let mut pos = start_pos;
-        
+
         #[cfg(feature = "simd")]
         while let Some(offset) = memchr3(b'<', b'\n', b'>', &self.buf[pos..]) {
             let c = self.buf[pos + offset];
@@ -103,13 +103,12 @@ impl MsgRecv {
                             (_, b"/") => match self.tagstack.pop() {
                                 Some(old_tag) => {
                                     if old_tag.0 != tag {
-                                        self.msg_error =
-                                            Some(MsgReceiveError::MismatchedCloseTag(
-                                                old_tag.1,
-                                                pos + offset,
-                                                String::from_utf8_lossy(&old_tag.0).to_string(),
-                                                String::from_utf8_lossy(&tag).to_string(),
-                                            ));
+                                        self.msg_error = Some(MsgReceiveError::MismatchedCloseTag(
+                                            old_tag.1,
+                                            pos + offset,
+                                            String::from_utf8_lossy(&old_tag.0).to_string(),
+                                            String::from_utf8_lossy(&tag).to_string(),
+                                        ));
                                         self.tagstack.clear();
                                     }
                                 }
@@ -123,7 +122,7 @@ impl MsgRecv {
                             },
                             (_, _) => {
                                 // if self.msg_error.is_none() {
-                                    self.tagstack.push((tag.to_vec(), pos + offset));
+                                self.tagstack.push((tag.to_vec(), pos + offset));
                                 // }
                             }
                         }
@@ -156,13 +155,12 @@ impl MsgRecv {
                         (_, b"/") => match self.tagstack.pop() {
                             Some(old_tag) => {
                                 if old_tag.0 != tag {
-                                    self.msg_error =
-                                        Some(MsgReceiveError::MismatchedCloseTag(
-                                            old_tag.1,
-                                            pos + offset,
-                                            String::from_utf8_lossy(&old_tag.0).to_string(),
-                                            String::from_utf8_lossy(tag).to_string(),
-                                        ));
+                                    self.msg_error = Some(MsgReceiveError::MismatchedCloseTag(
+                                        old_tag.1,
+                                        pos + offset,
+                                        String::from_utf8_lossy(&old_tag.0).to_string(),
+                                        String::from_utf8_lossy(tag).to_string(),
+                                    ));
                                     self.tagstack.clear();
                                 }
                             }
@@ -176,7 +174,7 @@ impl MsgRecv {
                         },
                         (_, _) => {
                             // if self.msg_error.is_none() {
-                                self.tagstack.push((tag.to_vec(), pos + offset));
+                            self.tagstack.push((tag.to_vec(), pos + offset));
                             // }
                         }
                     }
@@ -194,7 +192,6 @@ impl MsgRecv {
         self.check_from_pos(last_pos)
     }
 }
-
 
 #[cfg(test)]
 mod tests {

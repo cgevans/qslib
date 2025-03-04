@@ -19,7 +19,11 @@ fn serialize_well_data<S>(data: &[f64], serializer: S) -> Result<S::Ok, S::Error
 where
     S: serde::Serializer,
 {
-    let s = data.iter().map(|f| f.to_string()).collect::<Vec<String>>().join(" ");
+    let s = data
+        .iter()
+        .map(|f| f.to_string())
+        .collect::<Vec<String>>()
+        .join(" ");
     serializer.serialize_str(&s)
 }
 
@@ -51,7 +55,11 @@ pub struct PlateData {
     pub rows: i32,
     #[serde(rename = "Cols")]
     pub cols: i32,
-    #[serde(rename = "WellData", deserialize_with = "parse_well_data", serialize_with = "serialize_well_data")]
+    #[serde(
+        rename = "WellData",
+        deserialize_with = "parse_well_data",
+        serialize_with = "serialize_well_data"
+    )]
     pub well_data: Vec<f64>,
     #[serde(rename = "Attribute")]
     pub attributes: Vec<Attribute>,
@@ -99,11 +107,7 @@ impl PlateData {
 
         // Generate well names (A01, A02, etc.)
         let well_names: Vec<(char, i32)> = (0..self.rows)
-            .flat_map(|row| {
-                (1..=self.cols).map(move |col| {
-                    ((b'A' + row as u8) as char, col)
-                })
-            })
+            .flat_map(|row| (1..=self.cols).map(move |col| ((b'A' + row as u8) as char, col)))
             .collect();
 
         // Get temperatures if available
@@ -117,30 +121,44 @@ impl PlateData {
             );
 
             // Add stage, cycle, step, point if available
-            if let Some(stage) = self.get_attribute("STAGE").and_then(|s| s.parse::<i32>().ok()) {
+            if let Some(stage) = self
+                .get_attribute("STAGE")
+                .and_then(|s| s.parse::<i32>().ok())
+            {
                 line.push_str(&format!(",stage={:02}i", stage));
             }
-            if let Some(cycle) = self.get_attribute("CYCLE").and_then(|s| s.parse::<i32>().ok()) {
+            if let Some(cycle) = self
+                .get_attribute("CYCLE")
+                .and_then(|s| s.parse::<i32>().ok())
+            {
                 line.push_str(&format!(",cycle={:03}i", cycle));
             }
-            if let Some(step) = self.get_attribute("STEP").and_then(|s| s.parse::<i32>().ok()) {
+            if let Some(step) = self
+                .get_attribute("STEP")
+                .and_then(|s| s.parse::<i32>().ok())
+            {
                 line.push_str(&format!(",step={:02}i", step));
             }
-            if let Some(point) = self.get_attribute("POINT").and_then(|s| s.parse::<i32>().ok()) {
+            if let Some(point) = self
+                .get_attribute("POINT")
+                .and_then(|s| s.parse::<i32>().ok())
+            {
                 line.push_str(&format!(",point={:04}i", point));
             }
 
             // Add temperature if available
-            if let Some(temp) = self.get_attribute("TEMPERATURE")
+            if let Some(temp) = self
+                .get_attribute("TEMPERATURE")
                 .and_then(|t| t.split(',').nth(((col - 1) / (self.cols / 6)) as usize))
-                .and_then(|t| t.parse::<f64>().ok()) 
+                .and_then(|t| t.parse::<f64>().ok())
             {
                 line.push_str(&format!(",temperature_read={}", temp));
             }
 
             // Add sample if provided
             if let Some(samples) = sample_array {
-                let idx = ((*row_letter as u8 - b'A') as usize) * self.cols as usize + (col - 1) as usize;
+                let idx =
+                    ((*row_letter as u8 - b'A') as usize) * self.cols as usize + (col - 1) as usize;
                 if idx < samples.len() {
                     line.push_str(&format!(",sample=\"{}\"", samples[idx]));
                 }
@@ -185,7 +203,9 @@ impl PlateData {
 
 impl FilterDataCollection {
     /// Load and parse filter data from XML file
-    pub fn from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
+    pub fn from_file<P: AsRef<std::path::Path>>(
+        path: P,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let xml_str = std::fs::read_to_string(path)?;
         let data: FilterDataCollection = quick_xml::de::from_str(&xml_str)?;
         Ok(data)
@@ -221,7 +241,7 @@ mod tests {
         let data: FilterDataCollection = quick_xml::de::from_str(xml).unwrap();
         assert_eq!(data.name, "FilterData");
         assert_eq!(data.plate_point_data.len(), 1);
-        
+
         let plate_data = &data.plate_point_data[0].plate_data[0];
         assert_eq!(plate_data.rows, 8);
         assert_eq!(plate_data.cols, 12);
@@ -236,37 +256,39 @@ mod tests {
             cols: 12,
             well_data: vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
             attributes: vec![
-                Attribute { 
-                    key: "FILTER_SET".to_string(), 
-                    value: "x1-m1".to_string() 
+                Attribute {
+                    key: "FILTER_SET".to_string(),
+                    value: "x1-m1".to_string(),
                 },
                 Attribute {
                     key: "STAGE".to_string(),
-                    value: "2".to_string()
+                    value: "2".to_string(),
                 },
                 Attribute {
                     key: "CYCLE".to_string(),
-                    value: "1".to_string()
+                    value: "1".to_string(),
                 },
                 Attribute {
                     key: "STEP".to_string(),
-                    value: "1".to_string()
+                    value: "1".to_string(),
                 },
                 Attribute {
                     key: "POINT".to_string(),
-                    value: "1".to_string()
+                    value: "1".to_string(),
                 },
                 Attribute {
                     key: "TEMPERATURE".to_string(),
-                    value: "25.0,26.0,27.0".to_string()
-                }
+                    value: "25.0,26.0,27.0".to_string(),
+                },
             ],
             timestamp: Some(1234567890.123),
             set_temperatures: Some(vec![25.0, 26.0, 27.0]),
         };
 
-        let lines = plate_data.to_lineprotocol(Some("test_run"), None, None).unwrap();
-        
+        let lines = plate_data
+            .to_lineprotocol(Some("test_run"), None, None)
+            .unwrap();
+
         assert_eq!(lines.len(), 6);
         assert!(lines[0].starts_with("filterdata,filter_set=x1-m1,row=A,col=01"));
         assert!(lines[0].contains("fluorescence=1"));

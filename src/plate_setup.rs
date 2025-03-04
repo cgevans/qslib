@@ -243,7 +243,12 @@ impl PlateSetup {
     /// # Arguments
     /// * `timestamp` - Unix timestamp in nanoseconds
     /// * `run_name` - Optional run name to include in the tags
-    pub fn to_lineprotocol(&self, timestamp: i64, run_name: Option<&str>, machine_name: Option<&str>) -> Vec<String> {
+    pub fn to_lineprotocol(
+        &self,
+        timestamp: i64,
+        run_name: Option<&str>,
+        machine_name: Option<&str>,
+    ) -> Vec<String> {
         let well_sample = self
             .get_sample_wells()
             .into_iter()
@@ -256,7 +261,8 @@ impl PlateSetup {
         };
 
         let run_tag = run_name.map_or(String::new(), |name| format!(",run_name=\"{}\"", name));
-        let machine_tag = machine_name.map_or(String::new(), |name| format!(",machine_name=\"{}\"", name));
+        let machine_tag =
+            machine_name.map_or(String::new(), |name| format!(",machine_name=\"{}\"", name));
         let well_sample_ref = &well_sample;
 
         let run_tag_ref = &run_tag;

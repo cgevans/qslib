@@ -21,9 +21,14 @@ fn setup_logging() {
         .try_init();
 }
 
-async fn setup_mock_server(port: Option<u16>, stay_open: bool) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+async fn setup_mock_server(
+    port: Option<u16>,
+    stay_open: bool,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     // Bind to a random available port
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", port.unwrap_or(0))).await.unwrap();
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port.unwrap_or(0)))
+        .await
+        .unwrap();
     let addr = listener.local_addr().unwrap();
     info!("Mock server listening on {}", addr);
 
@@ -345,7 +350,6 @@ async fn test_connection_refused() {
     println!("connection done");
 }
 
-
 #[tokio::test]
 async fn test_power_query_and_set() {
     let (addr, _server) = setup_mock_server(None, true).await;
@@ -463,13 +467,15 @@ async fn test_send_command_bytes() {
 
 fn generate_test_certificate() -> rcgen::CertifiedKey {
     // Generate a self-signed certificate for testing
-    
 
     // Create Certificate and PrivateKey
     rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap()
 }
 
-async fn setup_mock_ssl_server(port: Option<u16>, stay_open: bool) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+async fn setup_mock_ssl_server(
+    port: Option<u16>,
+    stay_open: bool,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     // Generate certificate and create TLS config
     let cert = generate_test_certificate();
 
@@ -488,7 +494,9 @@ async fn setup_mock_ssl_server(port: Option<u16>, stay_open: bool) -> (SocketAdd
     let acceptor = TlsAcceptor::from(Arc::new(config));
 
     // Bind to a random available port
-    let listener = TcpListener::bind(format!("127.0.0.1:{}", port.unwrap_or(0))).await.unwrap();
+    let listener = TcpListener::bind(format!("127.0.0.1:{}", port.unwrap_or(0)))
+        .await
+        .unwrap();
     let addr = listener.local_addr().unwrap();
 
     // Spawn server task
@@ -718,7 +726,10 @@ async fn test_choose_ssl_by_port_7443() {
     assert!(connection.is_ok(), "Should have chosen SSL for port 7443");
     let connection = connection.unwrap();
     assert_eq!(connection.connection_type, ConnectionType::SSL);
-    assert!(connection.is_connected().await, "Connection should be connected");
+    assert!(
+        connection.is_connected().await,
+        "Connection should be connected"
+    );
     server.abort();
     assert!(server.await.is_err(), "Mock server didn't abort.");
 

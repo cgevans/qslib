@@ -37,11 +37,13 @@ fn bench_msg_recv(c: &mut Criterion) {
     });
 
     // Benchmark chunked XML message
-    let xml_chunks = [b"<quote> ",
+    let xml_chunks = [
+        b"<quote> ",
         b"This is ",
         b"a\nmulti-",
         b"line quo",
-        b"te text\n"];
+        b"te text\n",
+    ];
     group.bench_function("chunked_xml_message", |b| {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
@@ -79,12 +81,10 @@ fn bench_msg_recv(c: &mut Criterion) {
     let large_content = "x".repeat(1_000_000);
     let large_msg = format!("OK 1000 {}\n", large_content);
     let large_bytes = large_msg.as_bytes();
-    
+
     // Split into ~64KB chunks
     const CHUNK_SIZE: usize = 65536;
-    let large_chunks: Vec<&[u8]> = large_bytes
-        .chunks(CHUNK_SIZE)
-        .collect();
+    let large_chunks: Vec<&[u8]> = large_bytes.chunks(CHUNK_SIZE).collect();
 
     group.bench_function("large_chunked_message", |b| {
         b.iter(|| {
@@ -100,4 +100,4 @@ fn bench_msg_recv(c: &mut Criterion) {
 }
 
 criterion_group!(benches, bench_msg_recv);
-criterion_main!(benches); 
+criterion_main!(benches);

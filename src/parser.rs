@@ -1,3 +1,4 @@
+use bstr::{BString, ByteSlice};
 use core::fmt;
 use indexmap::IndexMap;
 #[cfg(feature = "python")]
@@ -13,7 +14,6 @@ use winnow::{
     prelude::*,
     token::{literal, take_till, take_until, take_while},
 };
-use bstr::{ByteSlice, BString};
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
@@ -35,10 +35,9 @@ impl ArgMap {
         Self(IndexMap::new())
     }
 
-    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value>  {
+    pub fn insert(&mut self, key: impl Into<String>, value: impl Into<Value>) -> Option<Value> {
         self.0.insert(key.into(), value.into())
     }
-
 
     pub fn get(&self, key: &str) -> Option<&Value> {
         self.0.get(key)
@@ -78,8 +77,6 @@ impl<'a> IntoIterator for &'a ArgMap {
     }
 }
 
-
-
 #[cfg(feature = "python")]
 impl<'py> IntoPyObject<'py> for ArgMap {
     type Target = pyo3::types::PyDict;
@@ -88,7 +85,8 @@ impl<'py> IntoPyObject<'py> for ArgMap {
     fn into_pyobject(self, py: Python<'py>) -> Result<Self::Output, Self::Error> {
         let dict = pyo3::types::PyDict::new(py);
         for (key, value) in self.0 {
-            dict.set_item(key, value.into_pyobject(py).unwrap()).unwrap();
+            dict.set_item(key, value.into_pyobject(py).unwrap())
+                .unwrap();
         }
         Ok(dict)
     }
@@ -116,12 +114,10 @@ impl<'py> IntoPyObject<'py> for Value {
             Value::Float(f) => Ok(f.into_pyobject(py).unwrap().into_any()),
             Value::Bool(b) => Ok(b.into_py_any(py).unwrap().into_bound(py)),
             Value::QuotedString(s) => Ok(s.into_pyobject(py).unwrap().into_any()),
-            Value::XmlString { value, tag: _ } => {
-                match String::from_utf8(value.to_vec()) {
-                    Ok(s) => Ok(s.into_pyobject(py).unwrap().into_any()),
-                    Err(_) => Ok(value.to_vec().into_pyobject(py).unwrap().into_any()),
-                }
-            }
+            Value::XmlString { value, tag: _ } => match String::from_utf8(value.to_vec()) {
+                Ok(s) => Ok(s.into_pyobject(py).unwrap().into_any()),
+                Err(_) => Ok(value.to_vec().into_pyobject(py).unwrap().into_any()),
+            },
         }
     }
 }
@@ -136,11 +132,17 @@ impl std::fmt::Debug for Value {
             Value::QuotedString(s) => write!(f, "QuotedString({})", s),
             Value::XmlString { value, tag } => {
                 if value.len() > 20 {
-                    write!(f, "XmlString({}, '{:?}...' len={})", tag, &value[..20], value.len())
+                    write!(
+                        f,
+                        "XmlString({}, '{:?}...' len={})",
+                        tag,
+                        &value[..20],
+                        value.len()
+                    )
                 } else {
                     write!(f, "XmlString({}, '{}')", tag, value)
                 }
-            },
+            }
         }
     }
 }
@@ -214,7 +216,7 @@ impl Value {
                     let tag_str = String::from_utf8_lossy(tag).to_string();
                     Value::XmlString {
                         value: val.into(),
-                        tag: tag_str
+                        tag: tag_str,
                     }
                 })
                 .context(StrContext::Label("xml")),
@@ -241,7 +243,7 @@ impl Value {
                 _ => {}
             }
             if let Ok(i) = s.parse::<i64>() {
-                return Ok(Value::Int(i)); 
+                return Ok(Value::Int(i));
             }
             if let Ok(f) = s.parse::<f64>() {
                 return Ok(Value::Float(f));
@@ -276,11 +278,9 @@ impl Value {
         match self {
             Value::String(s) => Ok(s),
             Value::QuotedString(s) => Ok(s),
-            Value::XmlString { value, .. } => {
-                match String::from_utf8(value.to_vec()) {
-                    Ok(s) => Ok(s),
-                    Err(_) => Err(ParseError::ParseError("string".to_string())),
-                }
+            Value::XmlString { value, .. } => match String::from_utf8(value.to_vec()) {
+                Ok(s) => Ok(s),
+                Err(_) => Err(ParseError::ParseError("string".to_string())),
             },
             _ => Err(ParseError::ParseError("string".to_string())),
         }
@@ -378,7 +378,6 @@ impl CommandBuilder for Command {
     fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
         self.write_bytes(bytes).map_err(QSConnectionError::IOError)
     }
-    
 }
 
 impl TryFrom<&str> for Command {
@@ -554,16 +553,12 @@ impl TryFrom<String> for OkResponse {
     }
 }
 
-
 impl OkResponse {
     pub fn parse(input: &mut &[u8]) -> ModalResult<OkResponse> {
         let kv = parse_options(input)?;
         let _ = space0(input)?;
         let args = parse_args(input)?;
-        Ok(OkResponse {
-            options: kv,
-            args,
-        })
+        Ok(OkResponse { options: kv, args })
     }
 
     pub fn write_bytes(&self, bytes: &mut impl Write) -> Result<(), std::io::Error> {
@@ -631,7 +626,6 @@ pub struct ErrorResponse {
     pub args: ArgMap,
     pub message: String,
 }
-
 
 impl Display for ErrorResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -857,12 +851,12 @@ mod tests {
         input.extend_from_slice(&binary_data);
         input.extend_from_slice(b"</binary.data>");
         let result = Value::parse(&mut &input[..]).unwrap();
-        
+
         match result {
             Value::XmlString { value, tag } => {
                 assert_eq!(tag, "binary.data");
                 assert_eq!(value, binary_data);
-            },
+            }
             _ => panic!("Expected XmlBinary, got {:?}", result),
         }
     }
@@ -871,12 +865,12 @@ mod tests {
     fn test_parse_xml_string() {
         let input = b"<quote>Hello\nWorld</quote>";
         let result = Value::parse(&mut &input[..]).unwrap();
-        
+
         match result {
             Value::XmlString { value, tag } => {
                 assert_eq!(tag, "quote");
                 assert_eq!(value, "Hello\nWorld");
-            },
+            }
             _ => panic!("Expected XmlString, got {:?}", result),
         }
     }
@@ -888,18 +882,16 @@ mod tests {
             value: binary_data.clone(),
             tag: "quote".to_string(),
         };
-        
+
         let mut output = Vec::new();
         value.write_bytes(&mut output).unwrap();
-        
+
         let mut expected: BString = b"<quote>".into();
         expected.extend_from_slice(&binary_data);
         expected.extend_from_slice(b"</quote>");
         assert_eq!(output.as_bstr(), expected);
 
         let result = Value::parse(&mut &output[..]).unwrap();
-        assert_eq!(result, value);   
+        assert_eq!(result, value);
     }
 }
-
-

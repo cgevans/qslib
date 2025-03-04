@@ -496,7 +496,8 @@ impl TryFrom<OkResponse> for CoverPosition {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         match value
-            .args.first()
+            .args
+            .first()
             .unwrap()
             .clone()
             .try_into_string()?
@@ -882,7 +883,6 @@ impl TryFrom<OkResponse> for Vec<f64> {
 mod tests {
     use super::*;
     use crate::parser::{OkResponse, Value};
-    
 
     #[test]
     fn test_sample_temperatures_response() {
