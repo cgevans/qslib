@@ -66,3 +66,6 @@ MANIFEST
 .venv*/
 .conda*/
 .pdm.toml
+
+target/
+Cargo.lock
