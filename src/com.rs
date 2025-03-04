@@ -1,5 +1,5 @@
 use anyhow::Context;
-use bstr::{BStr, BString, ByteSlice, ByteVec};
+use bstr::{BString, ByteSlice, ByteVec};
 use dashmap::DashMap;
 use log::{error, trace};
 use rustls::{
@@ -22,7 +22,7 @@ use tokio_rustls::{
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
 
-use crate::commands::{self, AccessLevel, AccessLevelQuery, CommandBuilder, OkParseError, ReceiveOkResponseError};
+use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError};
 use crate::data::{PlateData, PlatePointData};
 use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
 
@@ -185,7 +185,7 @@ pub enum QSCommError {
 }
 
 impl QSConnectionInner {
-    async fn handle_receive(&mut self, n: usize) -> () {
+    async fn handle_receive(&mut self, n: usize) {
         trace!(
             "Received data: {:?}",
             String::from_utf8_lossy(&self.buf[..n])
@@ -508,7 +508,7 @@ impl QSConnection {
     ) -> Result<QSConnection, ConnectionError> {
         select! {
             conn = Self::connect(host, port, connection_type) => conn,
-            _ = tokio::time::sleep(timeout) => return Err(ConnectionError::Timeout),
+            _ = tokio::time::sleep(timeout) => Err(ConnectionError::Timeout),
         }
     }
 
@@ -555,7 +555,7 @@ impl QSConnection {
         };
 
         Ok(QSConnection {
-            task: tokio::spawn(async move { qsi.inner_loop().await.map_err(|e| QSConnectionError::IOError(e)) }),
+            task: tokio::spawn(async move { qsi.inner_loop().await.map_err(QSConnectionError::IOError) }),
             commandchannel: com_tx,
             logchannels,
             ready_message: msg,
@@ -595,7 +595,7 @@ impl QSConnection {
         };
 
         Ok(QSConnection {
-            task: tokio::spawn(async move { qsi.inner_loop().await.map_err(|e| QSConnectionError::IOError(e)) }),
+            task: tokio::spawn(async move { qsi.inner_loop().await.map_err(QSConnectionError::IOError) }),
             commandchannel: com_tx,
             logchannels,
             ready_message: msg,
@@ -698,7 +698,7 @@ impl QSConnection {
             Value::XmlString { value, .. } => value,
             _ => return Err(CommandError::InternalError(anyhow::anyhow!("Invalid response"))),
         };
-        let plate_data: PlatePointData = quick_xml::de::from_str(&x.to_str_lossy()).with_context(|| "PlatePointData deserialization error").map_err(|e| CommandError::InternalError(e.into()))?;
+        let plate_data: PlatePointData = quick_xml::de::from_str(&x.to_str_lossy()).with_context(|| "PlatePointData deserialization error").map_err(CommandError::InternalError)?;
         
         // transform into first plate data
         let plate_data = plate_data.plate_data.into_iter().next().ok_or(CommandError::InternalError(anyhow::anyhow!("No plate data returned")))?;
@@ -707,7 +707,7 @@ impl QSConnection {
     }
 
     pub async fn set_access_level(&self, level: AccessLevel) -> Result<(), CommandError<ErrorResponse>> {
-        let _ = commands::AccessLevelSet::level(level).send(self).await?.receive_response().await??;
+        commands::AccessLevelSet::level(level).send(self).await?.receive_response().await??;
         Ok(())
     }
 

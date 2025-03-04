@@ -119,7 +119,7 @@ async fn setup_mock_server(port: Option<u16>, stay_open: bool) -> (SocketAddr, t
                                         let response = if let Some(ident) = line.split_whitespace().next() {
                                             if ident.parse::<u32>().is_ok() {
                                                 // Get the command part without the identifier
-                                                let command = line.splitn(2, ' ').nth(1).unwrap_or("");
+                                                let command = line.split_once(' ').map(|x| x.1).unwrap_or("");
                                                 format!("OK {} -received=\"{}\" success", ident, command)
                                             } else {
                                                 format!("OK CUSTOM -received=\"{}\" success", line)
@@ -463,10 +463,10 @@ async fn test_send_command_bytes() {
 
 fn generate_test_certificate() -> rcgen::CertifiedKey {
     // Generate a self-signed certificate for testing
-    let cert_pem = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    
 
     // Create Certificate and PrivateKey
-    cert_pem
+    rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap()
 }
 
 async fn setup_mock_ssl_server(port: Option<u16>, stay_open: bool) -> (SocketAddr, tokio::task::JoinHandle<()>) {
@@ -587,7 +587,7 @@ async fn setup_mock_ssl_server(port: Option<u16>, stay_open: bool) -> (SocketAdd
                                         let response = if let Some(ident) = line.split_whitespace().next() {
                                             if ident.parse::<u32>().is_ok() {
                                                 // Get the command part without the identifier
-                                                let command = line.splitn(2, ' ').nth(1).unwrap_or("");
+                                                let command = line.split_once(' ').map(|x| x.1).unwrap_or("");
                                                 format!("OK {} -received=\"{}\" success", ident, command)
                                             } else {
                                                 format!("OK CUSTOM -received=\"{}\" success", line)
@@ -724,7 +724,7 @@ async fn test_choose_ssl_by_port_7443() {
 
     let (_, server) = setup_mock_server(Some(7443), false).await;
     let connection = QSConnection::connect("127.0.0.1", 7443, ConnectionType::Auto).await;
-    assert!(!connection.is_ok(), "Should have chosen SSL for port 7443");
+    assert!(connection.is_err(), "Should have chosen SSL for port 7443");
     server.abort();
 }
 

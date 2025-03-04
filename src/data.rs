@@ -101,7 +101,7 @@ impl PlateData {
         let well_names: Vec<(char, i32)> = (0..self.rows)
             .flat_map(|row| {
                 (1..=self.cols).map(move |col| {
-                    (('A' as u8 + row as u8) as char, col)
+                    ((b'A' + row as u8) as char, col)
                 })
             })
             .collect();

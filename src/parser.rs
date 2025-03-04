@@ -13,7 +13,7 @@ use winnow::{
     prelude::*,
     token::{literal, take_till, take_until, take_while},
 };
-use bstr::{ByteSlice, ByteVec, BString};
+use bstr::{ByteSlice, BString};
 
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
@@ -23,6 +23,12 @@ use pyo3::IntoPyObject;
 
 #[derive(Debug, Clone)]
 pub struct ArgMap(IndexMap<String, Value>);
+
+impl Default for ArgMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ArgMap {
     pub fn new() -> Self {
@@ -370,7 +376,7 @@ impl CommandBuilder for Command {
     }
 
     fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
-        self.write_bytes(bytes).map_err(|e| QSConnectionError::IOError(e))
+        self.write_bytes(bytes).map_err(QSConnectionError::IOError)
     }
     
 }
@@ -402,7 +408,7 @@ impl TryFrom<String> for Command {
         Ok(c)
     }
 }
-pub fn parse_option<'s>(input: &mut &'s [u8]) -> ModalResult<(String, Value)> {
+pub fn parse_option(input: &mut &[u8]) -> ModalResult<(String, Value)> {
     seq!(
         _: literal(b'-'),
         alphanumeric1.map(|val| String::from_utf8_lossy(val).to_string()),
@@ -464,7 +470,7 @@ impl Command {
         Ok(Command {
             command: comm.to_vec(),
             options: kv,
-            args: args,
+            args,
         })
     }
 
@@ -491,7 +497,7 @@ impl From<Command> for String {
     }
 }
 
-fn parse_args<'s>(input: &mut &'s [u8]) -> ModalResult<Vec<Value>> {
+fn parse_args(input: &mut &[u8]) -> ModalResult<Vec<Value>> {
     winnow::combinator::separated(
         0..,
         Value::parse.context(StrContext::Label("argument")),
@@ -500,7 +506,7 @@ fn parse_args<'s>(input: &mut &'s [u8]) -> ModalResult<Vec<Value>> {
     .parse_next(input)
 }
 
-fn parse_options<'s>(input: &mut &'s [u8]) -> ModalResult<ArgMap> {
+fn parse_options(input: &mut &[u8]) -> ModalResult<ArgMap> {
     let x: Vec<(String, Value)> = winnow::combinator::separated(
         0..,
         parse_option.context(StrContext::Label("option")),
@@ -556,7 +562,7 @@ impl OkResponse {
         let args = parse_args(input)?;
         Ok(OkResponse {
             options: kv,
-            args: args,
+            args,
         })
     }
 
@@ -722,7 +728,7 @@ impl Ready {
 use pyo3::prelude::*;
 
 use crate::com::QSConnectionError;
-use crate::commands::{CommandBuilder, OkParseError};
+use crate::commands::CommandBuilder;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "python", pyclass)]

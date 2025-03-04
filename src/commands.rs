@@ -1,9 +1,7 @@
 use std::{collections::VecDeque, future::Future, io::Write, marker::PhantomData};
 
-use indexmap::IndexMap;
 use log::{info, warn};
 use thiserror::Error;
-use tokio::sync::mpsc;
 
 use crate::{
     com::{QSConnection, QSConnectionError, ResponseReceiver, SendCommandError},
@@ -61,11 +59,11 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> Comma
 
     pub async fn receive_next(&mut self) -> Result<Result<(), E>, ReceiveNextResponseError> {
         match self.response.recv().await {
-            None => return Err(ReceiveNextResponseError::ConnectionClosed),
-            Some(MessageResponse::CommandError { error, .. }) => return Ok(Err(error.into())),
+            None => Err(ReceiveNextResponseError::ConnectionClosed),
+            Some(MessageResponse::CommandError { error, .. }) => Ok(Err(error.into())),
             Some(MessageResponse::Next { .. }) => Ok(Ok(())),
             Some(MessageResponse::Ok { message, .. }) => {
-                return Err(ReceiveNextResponseError::UnexpectedOk(message))
+                Err(ReceiveNextResponseError::UnexpectedOk(message))
             }
             Some(MessageResponse::Message(message)) => {
                 panic!(
@@ -218,7 +216,7 @@ impl TryFrom<String> for AccessLevel {
 impl TryFrom<OkResponse> for AccessLevel {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        let level = value.args.get(0).unwrap().clone().try_into_string()?;
+        let level = value.args.first().unwrap().clone().try_into_string()?;
         AccessLevel::try_from(level).map_err(|_| {
             OkParseError::UnexpectedValues(value, "unexpected access level".to_string())
         })
@@ -295,7 +293,7 @@ impl CommandBuilder for PowerQuery {
 impl TryFrom<OkResponse> for PowerStatus {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        match value.args.get(0) {
+        match value.args.first() {
             Some(Value::String(s)) if s.to_uppercase() == "ON" => Ok(PowerStatus::On),
             Some(Value::String(s)) if s.to_uppercase() == "OFF" => Ok(PowerStatus::Off),
             _ => Err(OkParseError::UnexpectedValues(
@@ -498,8 +496,7 @@ impl TryFrom<OkResponse> for CoverPosition {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         match value
-            .args
-            .get(0)
+            .args.first()
             .unwrap()
             .clone()
             .try_into_string()?
@@ -511,7 +508,7 @@ impl TryFrom<OkResponse> for CoverPosition {
             _ => {
                 warn!(
                     "Unexpected cover position: {}",
-                    value.args.get(0).unwrap().clone().try_into_string()?
+                    value.args.first().unwrap().clone().try_into_string()?
                 );
                 Ok(CoverPosition::Unknown)
             }
@@ -531,7 +528,7 @@ pub struct CoverHeatStatus {
 impl TryFrom<OkResponse> for DrawerStatus {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        match value.args.get(0) {
+        match value.args.first() {
             Some(Value::String(s)) if s == "Closed" => Ok(DrawerStatus::Closed),
             Some(Value::String(s)) if s == "Open" => Ok(DrawerStatus::Open),
             _ => Err(OkParseError::UnexpectedValues(
@@ -557,7 +554,7 @@ impl CommandBuilder for DrawerStatusQuery {
 impl TryFrom<OkResponse> for CoverHeatStatus {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        let position = value.args.get(0).unwrap().clone().try_into_string()?;
+        let position = value.args.first().unwrap().clone().try_into_string()?;
         let on = match position.to_lowercase().as_str() {
             "up" | "on" | "true" => true, // FIXME
             "down" | "off" | "false" => false,
@@ -885,7 +882,7 @@ impl TryFrom<OkResponse> for Vec<f64> {
 mod tests {
     use super::*;
     use crate::parser::{OkResponse, Value};
-    use indexmap::indexmap;
+    
 
     #[test]
     fn test_sample_temperatures_response() {
@@ -946,7 +943,7 @@ mod tests {
 
         let ok_response = OkResponse {
             args: vec![],
-            options: options,
+            options,
         };
 
         let result = SetTemperatures::try_from(ok_response);

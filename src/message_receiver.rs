@@ -41,6 +41,12 @@ impl std::fmt::Debug for MsgRecv {
     }
 }
 
+impl Default for MsgRecv {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MsgRecv {
     pub fn new() -> Self {
         Self {
@@ -135,48 +141,45 @@ impl MsgRecv {
         {
             let c = self.buf[pos + offset];
             if c == b'\n' {
-                if self.tagstack.len() == 0 {
+                if self.tagstack.is_empty() {
                     self.msg_end = Some(pos + offset + 1);
                     return Ok(true);
                 }
             } else if c == b'<' {
-                match TAG_REGEX.captures(&self.buf[pos + offset..]) {
-                    Some(captures) => {
-                        let (_a, [close, tag, end]) = captures.extract();
-                        match (end, close) {
-                            (b"", _) => {
-                                self.parttag = Some(pos + offset);
-                                return Ok(false);
-                            }
-                            (_, b"/") => match self.tagstack.pop() {
-                                Some(old_tag) => {
-                                    if old_tag.0 != tag {
-                                        self.msg_error =
-                                            Some(MsgReceiveError::MismatchedCloseTag(
-                                                old_tag.1,
-                                                pos + offset,
-                                                String::from_utf8_lossy(&old_tag.0).to_string(),
-                                                String::from_utf8_lossy(&tag).to_string(),
-                                            ));
-                                        self.tagstack.clear();
-                                    }
-                                }
-                                None => {
-                                    self.msg_error = Some(MsgReceiveError::UnexpectedCloseTag(
-                                        pos + offset,
-                                        String::from_utf8_lossy(&tag).to_string(),
-                                    ));
+                if let Some(captures) = TAG_REGEX.captures(&self.buf[pos + offset..]) {
+                    let (_a, [close, tag, end]) = captures.extract();
+                    match (end, close) {
+                        (b"", _) => {
+                            self.parttag = Some(pos + offset);
+                            return Ok(false);
+                        }
+                        (_, b"/") => match self.tagstack.pop() {
+                            Some(old_tag) => {
+                                if old_tag.0 != tag {
+                                    self.msg_error =
+                                        Some(MsgReceiveError::MismatchedCloseTag(
+                                            old_tag.1,
+                                            pos + offset,
+                                            String::from_utf8_lossy(&old_tag.0).to_string(),
+                                            String::from_utf8_lossy(tag).to_string(),
+                                        ));
                                     self.tagstack.clear();
                                 }
-                            },
-                            (_, _) => {
-                                // if self.msg_error.is_none() {
-                                    self.tagstack.push((tag.to_vec(), pos + offset));
-                                // }
                             }
+                            None => {
+                                self.msg_error = Some(MsgReceiveError::UnexpectedCloseTag(
+                                    pos + offset,
+                                    String::from_utf8_lossy(tag).to_string(),
+                                ));
+                                self.tagstack.clear();
+                            }
+                        },
+                        (_, _) => {
+                            // if self.msg_error.is_none() {
+                                self.tagstack.push((tag.to_vec(), pos + offset));
+                            // }
                         }
                     }
-                    None => {}
                 }
             }
             pos += offset + 1;
@@ -185,9 +188,9 @@ impl MsgRecv {
         Ok(false)
     }
 
-    pub fn push_data<'a>(&mut self, data: &'a [u8]) -> Result<bool, MsgPushError> {
+    pub fn push_data(&mut self, data: &[u8]) -> Result<bool, MsgPushError> {
         let last_pos = self.parttag.unwrap_or(self.buf.len());
-        self.buf.extend_from_slice(&data);
+        self.buf.extend_from_slice(data);
         self.check_from_pos(last_pos)
     }
 }

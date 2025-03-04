@@ -18,9 +18,7 @@ fn create_binary_message() -> Vec<u8> {
     let payload = vec![42u8; 5 * 1024 * 1024];
     
     // Format binary message with length prefix and payload
-    let mut message = format!(
-        "MESSage DataUpload -type=image/jpeg <reply.binary>",
-    ).into_bytes();
+    let mut message = "MESSage DataUpload -type=image/jpeg <reply.binary>".to_string().into_bytes();
     message.extend(payload);
     message.extend(b"</reply.binary>\n");
     message

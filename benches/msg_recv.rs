@@ -37,13 +37,11 @@ fn bench_msg_recv(c: &mut Criterion) {
     });
 
     // Benchmark chunked XML message
-    let xml_chunks = vec![
-        b"<quote> ",
+    let xml_chunks = [b"<quote> ",
         b"This is ",
         b"a\nmulti-",
         b"line quo",
-        b"te text\n",
-    ];
+        b"te text\n"];
     group.bench_function("chunked_xml_message", |b| {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
