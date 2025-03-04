@@ -3,23 +3,26 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 [build-system]
-requires = ["setuptools>=68", "setuptools_scm[toml]>=5", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["maturin>=1.0,<2.0"]
+build-backend = "maturin"
 
 [tool.setuptools_scm]
 version_scheme = "no-guess-dev"
 version_file = "src/qslib/version.py"
 
-
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "qslib._qslib"
 
 [tool.isort]
 profile = "black"
 
 [project]
 name = "qslib"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 description = "Library for communicating with and using the QuantStudio qPCR machine, intended for non-qPCR uses."
 license = { text = "EUPL-1.2" }
 readme = "README.md"
