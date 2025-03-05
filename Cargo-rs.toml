@@ -1,12 +1,16 @@
 [package]
-name = "qslib-python"
-version = "0.14.0-rc3"
+name = "qslib"
+version = "0.14.0-pre3"
 edition = "2021"
+description = "QSlib QuantStudio qPCR machine library"
+license = "EUPL-1.2"
+authors = ["Constantine Evans <qslib@mb.costi.net>"]
+homepage = "https://github.com/cgevans/qslib-rs"
+repository = "https://github.com/cgevans/qslib-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
 name = "qslib"
-crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 dashmap = "6.1"
@@ -57,14 +61,3 @@ harness = false
 [[bench]]
 name = "message_parsing"
 harness = false
-
-# [lints.rust]
-# unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
-
-# [[bench]]
-# name = "msg_recv"
-# harness = false
-
-# [[bench]]
-# name = "message_parsing"
-# harness = false

@@ -1,8 +1,18 @@
-pub mod python;
-use pyo3::prelude::*;
+pub mod com;
+pub mod commands;
+pub mod data;
+pub mod message_receiver;
+pub mod parser;
+pub mod plate_setup;
 
+#[cfg(feature = "python")]
+pub mod python;
+
+#[cfg(feature = "python")]
 #[pymodule(name = "_qslib")]
 mod qslib {
+    use pyo3::prelude::*;
+
     #[pymodule_export]
     use crate::python::PyQSConnection;
 

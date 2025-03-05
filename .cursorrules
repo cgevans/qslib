@@ -1,0 +1,14 @@
+- The machine this library is for is a "QuantStudio" qPCR machine.
+- The code is licensed under the EUPL-1.2 license.
+- The author is Constantine Evans.
+- Do not be overly boastful in commit messages or docstrings, or say that code is improved.
+- The code uses:
+  - criterion for benchmarking
+  - maturin and pyo3 for python bindings
+  - tokio for async io
+  - serde for serialization and deserialization in some places, but manual implementation in others
+  - thiserror for error handling
+  - clap for cli parsing
+  - log for logging
+- The core communications sections of this code will be used for long-term communications with the machine, and must be extremely robust and reliable.
+- Core communications should be able to accept malformed messages and not fail.

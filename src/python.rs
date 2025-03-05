@@ -1,6 +1,6 @@
-use qslib::com::{QSConnection, ConnectionType, ResponseReceiver};
-use qslib::parser::Command;
-use qslib::parser::{LogMessage, MessageResponse, MessageIdent};
+use crate::com::{QSConnection, ConnectionType, ResponseReceiver};
+use crate::parser::Command;
+use crate::parser::{LogMessage, MessageResponse, MessageIdent};
 use pyo3::exceptions::{PyTimeoutError, PyValueError, PyException};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -9,6 +9,10 @@ use tokio::select;
 use tokio::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{StreamExt, StreamMap};
+use crate::com::{ConnectionError, QSConnectionError, SendCommandError};
+use crate::parser::ParseError;
+use pyo3::exceptions::PyValueError;
+use pyo3::PyErr;
 
 pyo3::create_exception!(qslib, QslibException, PyException);
 pyo3::create_exception!(qslib, CommandResponseError, QslibException);
@@ -271,5 +275,30 @@ impl PyQSConnection {
     ///     bool: True if connected, False otherwise
     fn connected(&self) -> bool {
         self.rt.block_on(self.conn.is_connected())
+    }
+}
+
+
+impl From<ConnectionError> for PyErr {
+    fn from(e: ConnectionError) -> Self {
+        PyValueError::new_err(e.to_string())
+    }
+}
+
+impl From<ParseError> for PyErr {
+    fn from(e: ParseError) -> Self {
+        PyValueError::new_err(e.to_string())
+    }
+}
+
+impl From<QSConnectionError> for PyErr {
+    fn from(e: QSConnectionError) -> Self {
+        PyValueError::new_err(e.to_string())
+    }
+}
+
+impl From<SendCommandError> for PyErr {
+    fn from(e: SendCommandError) -> Self {
+        PyValueError::new_err(e.to_string())
     }
 }
