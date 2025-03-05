@@ -1,7 +1,12 @@
 [package]
-name = "qslib-python"
+name = "qslib"
 version = "0.14.0-rc3"
 edition = "2021"
+description = "QSlib QuantStudio qPCR machine library"
+license = "EUPL-1.2"
+authors = ["Constantine Evans <qslib@mb.costi.net>"]
+homepage = "https://github.com/cgevans/qslib-rs"
+repository = "https://github.com/cgevans/qslib-rs"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
