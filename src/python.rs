@@ -11,7 +11,6 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{StreamExt, StreamMap};
 use crate::com::{ConnectionError, QSConnectionError, SendCommandError};
 use crate::parser::ParseError;
-use pyo3::exceptions::PyValueError;
 use pyo3::PyErr;
 
 pyo3::create_exception!(qslib, QslibException, PyException);

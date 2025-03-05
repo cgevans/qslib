@@ -16,6 +16,8 @@ where = ["src"]
 [tool.maturin]
 python-source = "python"
 module-name = "qslib._qslib"
+bindings = "pyo3"
+features = ["python"]
 
 [tool.isort]
 profile = "black"

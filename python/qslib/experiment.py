@@ -1579,10 +1579,20 @@ table, th, td {{
         if self.spec_major_version != 1:
             raise ValueError("Filterdata is only supported for spec version 1")
         fdp = os.path.join(self._dir_eds, "filterdata.xml")
+        all_quant_files = [tuple(int(y[1:]) for y in x.stem.split("_")) for x in (Path(self._dir_eds) / "quant").glob("*_E*.quant")]
+        all_quant_files.sort(key = lambda x: x[-1]) # use longest exposure (it is last, which will mean it remains in the dict)
+        all_quant_dict = {}
+        for x in all_quant_files:
+            qstring = open(Path(self._dir_eds) / "quant" / f"S{x[0]:02}_C{x[1]:03}_T{x[2]:02}_P{x[3]:04}_M{x[4]:01}_X{x[5]:01}_E{x[6]:01}.quant", "r").read()
+            qss = qstring.split("\n\n")[3].split("\n")
+            assert len(qss) == 3
+            assert qss[0] == "[conditions]"
+            qd = {k: v for k, v in zip(qss[1].split("\t"), qss[2].split("\t"))}
+            all_quant_dict[(x[0], x[1], x[2], x[3], x[4], x[5])] = float(qd["Time"])
         if os.path.isfile(fdp):
             fdx = ET.parse(fdp)
-            fdrs = [
-                FilterDataReading(x, sds_dir=self._dir_eds)
+            fdrs = [ 
+                FilterDataReading(x, timestamp_dict=all_quant_dict)
                 for x in fdx.findall(".//PlateData")
             ]
             return fdrs
@@ -1590,7 +1600,7 @@ table, th, td {{
                 os.path.join(self._dir_eds, "filter", "*_filterdata.xml")
             ):
             fdrs = [
-                FilterDataReading.from_file(fdf, sds_dir=self._dir_eds)
+                FilterDataReading.from_file(fdf, timestamp_dict=all_quant_dict)
                 for fdf in fdfs
             ]
             return fdrs
@@ -1687,16 +1697,19 @@ table, th, td {{
         ]
         x = self.welldata.loc[:, wells]
         return x
+    
+    def _msglog_path(self) -> Path:
+        if self.spec_major_version == 1:
+            return Path(self._dir_eds) / "messages.log"
+        else:
+            return Path(self._dir_base) / "run" / "messages.log"
 
     def _update_from_log(self) -> None:
-        if self.spec_major_version == 1:
-            logpath = os.path.join(self._dir_eds, "messages.log")
-        else:
-            logpath = os.path.join(self._dir_base, "run/messages.log")
-        if not os.path.isfile(logpath):
+        logpath = self._msglog_path()
+        if not logpath.is_file():
             return
         try:
-            msglog = open(logpath, "r").read()
+            msglog = logpath.read_text()
         except UnicodeDecodeError as error:
             log.debug(
                 "Decoding log failed. If <binary.reply> is present in log this may be the cause:"
@@ -1770,8 +1783,6 @@ table, th, td {{
                 self.stages["end_time"] - self.activestarttime
             ).astype("timedelta64[ms]").astype("int64") / 1000
 
-        tt = []
-
         try:
             # In normal runs, the protocol is there without the PROT command at the
             # beginning of the log as an info command, with quote.message.  Let's
@@ -1833,6 +1844,46 @@ table, th, td {{
             )
             self.events["hours"] = self.events["seconds"] / 3600.0
 
+        self._update_from_temperature_log_polars()
+
+    def _update_from_temperature_log_polars(self) -> None:
+        from ._qslib import TemperatureLog, get_n_zones
+        b = self._msglog_path().read_bytes()
+        try:
+            n_zones = get_n_zones(b)
+        except Exception as e:
+            self.temperatures = None
+            self.num_zones = -1
+            return
+        tl = TemperatureLog.parse_to_polars(b)
+        self.temperatures = tl.to_pandas()
+        self.num_zones = n_zones
+
+        ix = pd.MultiIndex.from_tuples(
+            [(cast(str, "time"), cast(Union[str, int], "timestamp"))]
+            + [("sample", n) for n in range(1, self.num_zones + 1)]
+            + [("other", "heatsink"), ("other", "cover")]
+            + [("block", n) for n in range(1, self.num_zones + 1)]
+        )
+        self.temperatures.columns = ix
+
+        if self.activestarttime:
+            self.temperatures[("time", "seconds")] = (
+                self.temperatures[("time", "timestamp")]
+                - self.activestarttime.timestamp()
+            )
+            self.temperatures[("time", "hours")] = (
+                self.temperatures[("time", "seconds")] / 3600.0
+            )
+        self.temperatures[("sample", "avg")] = self.temperatures["sample"].mean(
+            axis=1
+        )
+        self.temperatures[("block", "avg")] = self.temperatures["block"].mean(
+            axis=1
+        )
+
+    def _update_from_temperature_log_python(self, msglog: str) -> None:
+        tt = []
         for m in re.finditer(
             r"^Temperature ([\d.]+) -sample=([\d.,]+) -heatsink=([\d.,]+) "
             r"-cover=([\d.,]+) -block=([\d.,]+)$",

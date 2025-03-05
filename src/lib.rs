@@ -4,14 +4,16 @@ pub mod data;
 pub mod message_receiver;
 pub mod parser;
 pub mod plate_setup;
+pub mod message_log;
 
 #[cfg(feature = "python")]
 pub mod python;
 
 #[cfg(feature = "python")]
+use pyo3::prelude::*;
+#[cfg(feature = "python")]
 #[pymodule(name = "_qslib")]
 mod qslib {
-    use pyo3::prelude::*;
 
     #[pymodule_export]
     use crate::python::PyQSConnection;
@@ -23,7 +25,7 @@ mod qslib {
     use crate::python::PyLogReceiver;
 
     #[pymodule_export]
-    use qslib::parser::OkResponse;
+    use crate::parser::OkResponse;
 
     #[pymodule_export]
     use crate::python::UnexpectedMessageResponse;
@@ -40,6 +42,10 @@ mod qslib {
     #[pymodule_export]
     use crate::python::CommandResponseError;
 
-    
+    #[pymodule_export]
+    use crate::message_log::TemperatureLog;
+
+    #[pymodule_export]
+    use crate::message_log::get_n_zones;
     
 }

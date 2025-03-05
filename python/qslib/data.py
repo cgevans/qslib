@@ -132,6 +132,7 @@ class FilterDataReading:
         timestamp: Optional[float] = None,
         sds_dir: Optional[str | PathLike[str]] = None,
         set_temperatures: Union[Literal["auto"], None, List[float]] = "auto",
+        timestamp_dict: Optional[dict[tuple[int, int, int, int, int], float]] = None,
     ):
         attribs = {
             cast(str, k.text).lower(): cast(str, v.text)
@@ -190,6 +191,11 @@ class FilterDataReading:
             )
             qs.sort()
             self.set_timestamp_by_quantdata(open(qs[-1]).read())
+
+        if timestamp_dict is not None:
+            self.timestamp = timestamp_dict[
+                (self.stage, self.cycle, self.step, self.point, self.filter_set.em, self.filter_set.ex)
+            ]
 
     def set_timestamp_by_quantdata(self, qstring: str) -> float:
         qss = qstring.split("\n\n")[3].split("\n")
