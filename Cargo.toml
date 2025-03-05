@@ -1,6 +1,6 @@
 [package]
 name = "qslib-python"
-version = "0.14.0-pre3"
+version = "0.14.0-rc3"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
