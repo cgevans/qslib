@@ -786,7 +786,7 @@ mod tests {
 
     #[test]
     fn test_parse_example_eds_files() {
-        let example_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("example-eds");
+        let example_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
 
         // Get all .eds files in the directory
         let eds_files: Vec<PathBuf> = std::fs::read_dir(example_dir)
