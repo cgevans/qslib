@@ -66,6 +66,7 @@ dependencies = [
     "markdown",
     "dacite",
     "polars ~= 1.20",
+    "pyarrow"
 ]
 
 [project.optional-dependencies]
