@@ -727,8 +727,7 @@ table, th, td {{
     ) -> "Experiment":
         exp = cls(_create_xml=False)
 
-        p = Path(exp._dir_eds)
-        p.mkdir(parents=True)
+        exp.root_dir.mkdir(parents=True)
 
         machine = exp._ensure_machine(machine)
 
@@ -1514,7 +1513,7 @@ table, th, td {{
             tcxml, qstcxml = self.protocol.to_xml()
             ET.indent(tcxml)
             ET.indent(qstcxml)
-            tcxml.write(os.path.join(self._dir_eds, "tcprotocol.xml"))
+            tcxml.write(self.root_dir / "tcprotocol.xml")
 
             # Make new machine with stripped password:
             if self.machine:
@@ -1523,12 +1522,12 @@ table, th, td {{
                     m2d
                 )
 
-            qstcxml.write(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
+            qstcxml.write(self.root_dir / "qsl-tcprotocol.xml")
 
     def _update_from_tcprotocol_xml(self) -> None:
-        exml = ET.parse(os.path.join(self._dir_eds, "tcprotocol.xml"))
-        if os.path.isfile(os.path.join(self._dir_eds, "qsl-tcprotocol.xml")):
-            qstcxml = ET.parse(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"))
+        exml = ET.parse(self.root_dir / "tcprotocol.xml")
+        if (self.root_dir / "qsl-tcprotocol.xml").is_file():
+            qstcxml = ET.parse(self.root_dir / "qsl-tcprotocol.xml")
 
             if ((x := qstcxml.find("QSLibProtocolCommand")) is not None) and (
                 x.text is not None
