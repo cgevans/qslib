@@ -92,6 +92,11 @@ testing = [
     "hypothesis",
     "qslib[monitor]",
 ]
+altair = [
+    "altair",
+    "vegafusion",
+    "vl-convert-python"
+]
 
 [project.urls]
 homepage = "https://github.com/cgevans/qslib/"
