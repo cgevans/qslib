@@ -1,5 +1,5 @@
 from .data import FilterDataReading
-from datetime import datetime
+from datetime import datetime, timezone
 import numpy as np
 from typing import Literal, Sequence
 from typing import TypedDict
@@ -34,10 +34,10 @@ def polars_from_filterdata(dr: FilterDataReading, start_time: float | None = Non
     block_width = dr.plate_cols // len(dr.temperatures)
     d = d.with_columns(
         zone = 1 + (pl.col("column") // block_width),
-        timestamp = (pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms"))
+        timestamp = (pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC"))
     )
     if start_time is not None:
-        start_time = datetime.fromtimestamp(start_time)
+        start_time = datetime.fromtimestamp(start_time, tz=timezone.utc)
         d = d.with_columns(
             (pl.col("timestamp") - pl.lit(start_time)).alias("time_since_start"),
         )
@@ -91,53 +91,18 @@ class FilterDict(TypedDict):
     point: int | Sequence[int] | range | None
 
 
-@pl.api.register_lazyframe_namespace("welldata")
-class WellData:
-    def __init__(self, df: pl.LazyFrame):
-        self._df = df
 
-    def norm_to_mean_per_well(self, **norm_filter: FilterDict):
-        return self._df.with_columns(
-            (
-                pl.col("fluorescence")
-                / pl.col("fluorescence").filter(match_expr(**norm_filter)).mean().over("well", "filter_set")
-            ).alias("normed_fluorescence")
+def norm_to_mean_per_well(**norm_filter: FilterDict):
+    return (
+            pl.col("fluorescence")
+            / pl.col("fluorescence").filter(match_expr(**norm_filter)).mean().over("well", "filter_set")
         )
+    
 
-    def norm_zero_to_one_per_well(self, zero_filter: FilterDict, one_filter: FilterDict):
-        d = self._df.with_columns(
-            (
-                pl.col("fluorescence")
-                - pl.col("fluorescence").filter(match_expr(**zero_filter)).mean().over("well", "filter_set")
-            ).alias("normed_fluorescence")
-        )
-        d = d.with_columns(
-            (
-                pl.col("normed_fluorescence")
-                / pl.col("normed_fluorescence").filter(match_expr(**one_filter)).mean().over("well", "filter_set")
-            )
-        )
-        return d
+def norm_zero_to_one_per_well(zero_filter: FilterDict, one_filter: FilterDict):
+    norm_fl_a =  pl.col("fluorescence") - pl.col("fluorescence").filter(match_expr(**zero_filter)).mean().over("well", "filter_set")
+    return (
+        norm_fl_a / norm_fl_a.filter(match_expr(**one_filter)).mean().over("well", "filter_set")
+    )
 
-    def with_time_since_mark(self, stage: int | None = None, cycle: int | None = None, step: int | None = None, point: int | None = None, units: Literal['seconds','minutes','hours',None] = None):
-        d = self._df.with_columns(
-            (pl.col("timestamp") - pl.col("timestamp").filter(match_expr_single(stage, cycle, step, point)).first()
-             ).alias("time_since_mark"))
-        if units is None:
-            return d
-        d = d.with_columns(
-            pl.col("time_since_mark").dt.total_milliseconds().cast(float) / 1000
-        )
-        match units:
-            case 'seconds':
-                return d
-            case 'minutes':
-                return d.with_columns(
-                    pl.col("time_since_mark") / 60
-                )
-            case 'hours':
-                return d.with_columns(
-                    pl.col("time_since_mark") / 3600
-                )
-            case _:
-                raise ValueError(f"Invalid unit: {units}")
+

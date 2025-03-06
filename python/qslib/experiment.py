@@ -17,7 +17,7 @@ import polars as pl
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import InitVar, dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
 from typing import (
@@ -1024,7 +1024,7 @@ table, th, td {{
             orient="row"
         )
         tbc_events = tbc_events.with_columns(
-            timestamp = (pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms"))
+            timestamp = (pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC"))
         )
         return tbc_events
 
@@ -1045,7 +1045,7 @@ table, th, td {{
 
         sett = pl.concat([sevent, eevent], how="diagonal").sort("timestamp")
         
-        sett = sett.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms")))
+        sett = sett.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")))
         return sett.collect()
 
     @property
@@ -1465,7 +1465,8 @@ table, th, td {{
         self.name = exml.findtext("Name") or "unknown"
         self.user = exml.findtext("Operator") or None
         self.createdtime = datetime.fromtimestamp(
-            float(_find_or_raise(exml, "CreatedTime").text) / 1000.0  # type: ignore
+            float(_find_or_raise(exml, "CreatedTime").text) / 1000.0,  # type: ignore
+            tz=timezone.utc
         )
         self.runstate = exml.findtext("RunState") or "UNKNOWN"  # type: ignore
 
@@ -1484,9 +1485,9 @@ table, th, td {{
             or "UNKNOWN"
         )
         if x := exml.findtext("RunStartTime"):
-            self.runstarttime = datetime.fromtimestamp(float(x) / 1000.0)
+            self.runstarttime = datetime.fromtimestamp(float(x) / 1000.0, tz=timezone.utc)
         if x := exml.findtext("RunEndTime"):
-            self.runendtime = datetime.fromtimestamp(float(x) / 1000.0)
+            self.runendtime = datetime.fromtimestamp(float(x) / 1000.0, tz=timezone.utc)
 
     def _update_from_expdata_v2(self) -> None:
         summary = json.load(open(os.path.join(self._dir_base, "summary.json")))
@@ -1496,7 +1497,7 @@ table, th, td {{
 
         self.runstate = summary.get("runStatus", "UNKNOWN")
         self.createdtime = datetime.fromtimestamp(
-            summary.get("createdTime", 0) / 1000.0
+            summary.get("createdTime", 0) / 1000.0, tz=timezone.utc
         )
 
         self._plate_type_id = summary["blockType"]
@@ -1786,7 +1787,7 @@ table, th, td {{
         stages: list[dict[str, int | str | datetime]] = []
 
         for m in ms:
-            ts = datetime.fromtimestamp(float(m["ts"]))
+            ts = datetime.fromtimestamp(float(m["ts"]), tz=timezone.utc)
             if m["msg"] == "Starting":
                 self.runstarttime = ts
             elif m["msg"] == "Stage":
@@ -1955,7 +1956,7 @@ table, th, td {{
     @cached_method
     def temperatures_polars(self) -> pl.DataFrame:
         tl, n_zones = self._temperatures_polars
-        tl = tl.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms")))
+        tl = tl.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")))
         return tl
 
     def _temperatures_from_log(self) -> tuple[pd.DataFrame, int]:
@@ -2772,6 +2773,103 @@ table, th, td {{
                 alpha=0.5,
                 color="red",
             )
+
+    def plot_over_time_altair(
+            self,
+            samples: str | Sequence[str] | None = None,
+            filters: str | FilterSet | Collection[str | FilterSet] | None = None,
+            stages: slice | int | Sequence[int] | None = None,
+            process = None,
+            start_time: Literal['experiment', 'stage'] = 'experiment',
+            duration_units: Literal["hours", "minutes", "seconds"] = "hours",
+            show_legend: bool = True,
+    ):
+        import altair as alt
+        alt.data_transformers.enable("vegafusion")
+
+        d = self.filter_data_polars.lazy()
+        match process:
+            case tuple():
+                pass
+            case pl.Expr():
+                d = d.with_columns(process.alias("processed_fluorescence"))
+            case None:
+                d = d.with_columns(pl.col("fluorescence").alias("processed_fluorescence"))
+
+        match samples:
+            case None:
+                pass
+            case str():
+                d = d.filter(pl.col("sample").str.count_matches(samples) > 0)
+            case x if isinstance(x, Sequence):
+                d = d.filter(pl.col("sample").is_in(x))
+            case _:
+                raise ValueError(f"Invalid samples: {samples}")
+
+        match filters:
+            case None:
+                pass
+            case str():
+                d = d.filter(pl.col("filter").str.count_matches(filters) > 0)
+            case x if isinstance(x, FilterSet):
+                d = d.filter(pl.col("filter").is_in(x))
+            case x if isinstance(x, Sequence):
+                d = d.filter(pl.col("filter").is_in(x))
+            case _:
+                raise ValueError(f"Invalid filters: {filters}")
+            
+        match stages:
+            case slice():
+                start = 1 if stages.start is None else stages.start
+                stop = self.stages.iloc[-2]["stage"] if stages.stop is None else stages.stop
+                step = 1 if stages.step is None else stages.step
+                stages = slice(start, stop, step)
+                d = d.filter(pl.col("stage").is_in(range(stages.start, stages.stop, stages.step)))
+                first_stage = stages.start  
+            case int():
+                d = d.filter(pl.col("stage") == stages)
+                first_stage = stages
+            case x if isinstance(x, Sequence):
+                d = d.filter(pl.col("stage").is_in(stages))
+                first_stage = min(stages)
+            case None:
+                pass
+            case _:
+                raise ValueError(f"Invalid stages: {stages}")
+
+        match start_time:
+            case 'experiment':
+                d = d.with_columns((pl.col("timestamp") - pl.lit(self.activestarttime)).alias("time_since_mark"))
+                start_time_descr = "experiment start"
+            case 'stage':
+                first_stage_start = self.stages.loc[first_stage, 'start_time']
+                print(first_stage_start, first_stage)
+                d = d.with_columns((pl.col("timestamp") - pl.lit(first_stage_start)).alias("time_since_mark"))
+                start_time_descr = f"stage {first_stage} start"
+            case _:
+                raise ValueError(f"Invalid start_time: {start_time}")
+        
+
+        d = d.with_columns(time_since_mark_float=pl.col("time_since_mark").cast(pl.Float64))
+
+        match duration_units:
+            case "hours":
+                d = d.with_columns(time_since_mark_float=pl.col("time_since_mark_float") / 3600000)
+            case "minutes":
+                d = d.with_columns(time_since_mark_float=pl.col("time_since_mark_float") / 60000)
+            case "seconds":
+                d = d.with_columns(time_since_mark_float=pl.col("time_since_mark_float") / 1000)
+            case _:
+                raise ValueError(f"Invalid duration_units: {duration_units}")
+
+        d = d.collect()
+        
+        return alt.Chart(d).mark_line().encode(
+            alt.X("time_since_mark_float:Q", axis=alt.Axis(title=f"Time since {start_time_descr} ({duration_units})")),
+            alt.Y("processed_fluorescence:Q", axis=alt.Axis(title="Fluorescence")).scale(zero=False),
+            color=alt.Color("sample:N", legend=alt.Legend(title="Sample") if show_legend else None),
+            tooltip=["time_since_mark_float", "fluorescence", "processed_fluorescence", "sample", "filter_set", "sample_temperature", "set_temperature", "stage", "step", "cycle"]
+        )
 
 
 def _normalize_filters(

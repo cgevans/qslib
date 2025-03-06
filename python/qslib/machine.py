@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TypedDict
 from ._qslib import QSConnection
 import io
@@ -477,9 +477,9 @@ class Machine:
                     d["path"] = rm.group(1)
                     d["type"] = rm.group(2)
                     d["size"] = int(rm.group(3))
-                    d["mtime"] = datetime.fromtimestamp(float(rm.group(4)))
-                    d["atime"] = datetime.fromtimestamp(float(rm.group(5)))
-                    d["ctime"] = datetime.fromtimestamp(float(rm.group(6)))
+                    d["mtime"] = datetime.fromtimestamp(float(rm.group(4)), tz=timezone.utc)
+                    d["atime"] = datetime.fromtimestamp(float(rm.group(5)), tz=timezone.utc)
+                    d["ctime"] = datetime.fromtimestamp(float(rm.group(6)), tz=timezone.utc)
                 if d["type"] == "folder" and recursive:
                     ret += self.list_files(
                         cast(str, d["path"]), leaf=leaf, verbose=True, recursive=True
