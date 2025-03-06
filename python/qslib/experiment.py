@@ -2821,7 +2821,7 @@ table, th, td {{
         match stages:
             case slice():
                 start = 1 if stages.start is None else stages.start
-                stop = self.stages.iloc[-2]["stage"] if stages.stop is None else stages.stop
+                stop = self.stages.iloc[-2]["stage"] + 1 if stages.stop is None else stages.stop
                 step = 1 if stages.step is None else stages.step
                 stages = slice(start, stop, step)
                 d = d.filter(pl.col("stage").is_in(range(stages.start, stages.stop, stages.step)))
