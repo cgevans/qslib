@@ -11,6 +11,45 @@ import xml.etree.ElementTree as ElTr
 from datetime import datetime
 from typing import Sequence
 
+from functools import wraps
+from typing import Any, Callable, TypeVar
+
+T = TypeVar('T')
+
+def cached_method(f: Callable[..., T]) -> Callable[..., T]:
+    """Decorator that caches method results on the instance."""
+    cache_name = f'_cache_{f.__name__}'
+    
+    @wraps(f)
+    def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
+        def _clear_cache(self: Any) -> None:
+            """Clear all method caches on this instance."""
+            if hasattr(self, '_cached_methods'):
+                for cache_name in self._cached_methods:
+                    if hasattr(self, cache_name):
+                        delattr(self, cache_name)
+                self._cached_methods.clear()
+        # Add _cached_methods and _clear_cache to instance if needed
+        if not hasattr(self, '_cached_methods'):
+            self._cached_methods = set()
+            setattr(self, '_clear_cache', lambda: _clear_cache(self))
+            
+        if not hasattr(self, cache_name):
+            setattr(self, cache_name, {})
+            self._cached_methods.add(cache_name)
+            
+        cache = getattr(self, cache_name)
+        key = (args, tuple(sorted(kwargs.items())))
+        
+        if key not in cache:
+            cache[key] = f(self, *args, **kwargs)
+        return cache[key]
+    
+    return wrapper
+
+
+
+
 
 def _find_or_create(
     element: ElTr.Element | ElTr.ElementTree, path: str

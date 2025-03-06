@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import tempfile
+import polars as pl
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import InitVar, dataclass, field
@@ -44,7 +45,7 @@ from qslib.plate_setup import PlateSetup, _SampleWellsView
 from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
-from ._util import _nowuuid, _pp_seqsliceint, _set_or_create
+from ._util import _nowuuid, _pp_seqsliceint, _set_or_create, cached_method
 from .base import RunStatus
 from .data import (
     FilterDataReading,
@@ -322,31 +323,6 @@ class Experiment:
     _analysis_result: pd.DataFrame | None = None
     _amplification_data: pd.DataFrame | None = None
 
-    temperatures: pd.DataFrame | None = None
-    """
-    A DataFrame of temperature readings, at one second resolution, during the experiment
-    (and potentially slightly before and after, if included in the message log).
-
-    Columns (as multi-index):
-
-    ("time", ...) : float
-        Time of temperature reading, for choices of "timestamp" (Unix timestamp in seconds),
-        "seconds" (seconds since the *active* start of the run), or "hours". The latter two may
-        be negative, and may not be set if the run never became active.
-
-    ("sample", ...) : float
-        Sample temperature for blocks 1, 2, ..., 6, and average in "avg".
-
-    ("block", ...) : float
-        Block temperature for blocks 1, 2, ..., 6, and average in "avg".
-
-    ("other", "cover") : float
-        Cover temperature
-
-    ("other", "heatsink") : float
-        Heatsink temperature
-
-    """
 
     num_zones: int
     """The number of temperature zones (excluding cover), or -1 if not known."""
@@ -394,12 +370,13 @@ class Experiment:
             Exposure time from filterdata.xml.  Misleading, because it only refers to the
             longest exposure of multiple exposures.
         """
-        if self._filter_data is not None:
-            return self._filter_data
-        elif self.runstate == "INIT":
-            raise ValueError("Run hasn't started yet: no data available.")
-        else:
-            raise ValueError("Experiment data is not available")
+        try:
+            return self.filter_data
+        except Exception as e:
+            if self.runstate == "INIT":
+                raise ValueError("Run hasn't started yet: no data available.")
+            else:
+                raise ValueError("Experiment data is not available")
 
     @property
     def multicomponent_data(self) -> pd.DataFrame:
@@ -551,10 +528,6 @@ table, th, td {{
 
     @property
     def raw_data(self) -> pd.DataFrame:
-        return self.welldata
-
-    @property
-    def filter_data(self) -> pd.DataFrame:
         return self.welldata
 
     def _ensure_machine(
@@ -812,6 +785,7 @@ table, th, td {{
         machine, more efficiently than reloading everything.
         """
         machine = self._ensure_machine(machine)
+        self._clear_cache()
 
         with machine.ensured_connection(AccessLevel.Observer):
             # Get a list of all the files in the experiment folder
@@ -903,6 +877,7 @@ table, th, td {{
         filters explicitly (recommended) for new stages you'd like to be different, or use
         :any:`Experiment.change_protocol` directly.
         """
+        self._clear_cache()
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
@@ -958,6 +933,7 @@ table, th, td {{
             [description], by default None
 
         """
+        self._clear_cache()
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         with machine.ensured_connection(AccessLevel.Controller):
             if not force:
@@ -1059,6 +1035,45 @@ table, th, td {{
     def sample_wells(self, new_sample_wells: dict[str, list[str]]) -> None:
         raise NotImplementedError
         # self.plate_setup.sample_wells = new_sample_wells
+
+    @property
+    @cached_method
+    def temperature_ramps_polars(self) -> pl.DataFrame:
+        m = self._msglog_path().read_bytes()
+        r = re.compile(rb"Info (?P<timestamp>[\d.]+) TBC:SETTing ramping \"Zone(?P<zone>\d+)\" from (?P<from>[\d.]+) to (?P<to>[\d.]+) \(rate=(?P<rate>[\d.]+), timeout=(?P<timeout>[\d.]+), msgid=0x(?P<msgid>\w+)\)")
+
+        tbc_events = pl.from_records(
+            [
+                (float(t), int(z), float(f), float(tt), float(r), float(to), int(mid, 16))
+                for t, z, f, tt, r, to, mid in r.findall(m)
+            ],
+            schema=["timestamp", "zone", "from", "to", "rate", "timeout", "msgid"],
+            orient="row"
+        )
+        tbc_events = tbc_events.with_columns(
+            timestamp = (pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms"))
+        )
+        return tbc_events
+
+    @property
+    @cached_method
+    def temperature_setpoints_polars(self) -> pl.DataFrame:
+        tbc_events = self.temperature_ramps_polars.lazy()
+        sandeevent = tbc_events.select(
+            pl.col("timestamp").alias("start_timestamp"),
+            (pl.col("timestamp") + (pl.col("to") - pl.col("from")).abs() / pl.col("rate")).alias("end_timestamp"),
+            pl.col("zone"),
+            pl.col("from"),
+            pl.col("to"),
+        )
+
+        sevent = sandeevent.select(timestamp=pl.col("start_timestamp"), zone=pl.col("zone"), temperature=pl.col("from"))
+        eevent = sandeevent.select(timestamp=pl.col("end_timestamp"), zone=pl.col("zone"), temperature=pl.col("to"))
+
+        sett = pl.concat([sevent, eevent], how="diagonal").sort("timestamp")
+        
+        sett = sett.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms")))
+        return sett.collect()
 
     @property
     def root_dir(self):
@@ -1575,6 +1590,7 @@ table, th, td {{
         x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml")).getroot()
         self.plate_setup = PlateSetup.from_platesetup_xml(x)
 
+    @cached_method
     def _get_filterdatareadings(self) -> list[FilterDataReading]:
         if self.spec_major_version != 1:
             raise ValueError("Filterdata is only supported for spec version 1")
@@ -1608,28 +1624,59 @@ table, th, td {{
             raise ValueError("No filterdata found")
 
 
-    def welldata_polars_lazy(self) -> 'pl.LazyFrame':
+    def filter_data_polars_lazy(self) -> 'pl.LazyFrame':
         import polars as pl
         from .polars_data import polars_from_filterdata
         start_time = self.activestarttime.timestamp() if self.activestarttime else None
         d = pl.concat(polars_from_filterdata(x, start_time=start_time) for x in self._get_filterdatareadings()).sort("timestamp")
-    
+        duration = (1000 * (pl.col("from") - pl.col("to")).abs() / pl.col("rate")).alias("duration").cast(pl.Duration(time_unit="ms"))
+        time_since_ramp = (pl.col("timestamp") - pl.col("timestamp_ramp")).alias("time_since_ramp")
+
+        d = d.join_asof(self.temperature_ramps_polars.lazy().select("timestamp", "zone", "from", "to", "rate"), on="timestamp", by="zone", suffix="_ramp", coalesce=False).with_columns(
+            pl.when(time_since_ramp > duration).then(pl.col("to")).otherwise(pl.col("from") + (time_since_ramp / duration) * (pl.col("to") - pl.col("from"))).alias("set_temperature")
+             ).drop("timestamp_ramp", "to", "from")
         if self.plate_setup:
             d = d.join(
                 pl.from_pandas(self.plate_setup.well_sample, include_index=True).lazy().rename({"0": "sample", "index": "well"}), 
                 on="well", how="left")
         return d
     
-
-    def _update_from_data(self) -> None:
+    @property
+    @cached_method
+    def filter_data_polars(self) -> pl.DataFrame:
+        return self.filter_data_polars_lazy().collect()
+    
+    @property
+    @cached_method
+    def filter_data(self) -> pd.DataFrame:
         if self.spec_major_version == 1:
             try:
-                self._filter_data = df_from_readings(
+                return df_from_readings(
                     self._get_filterdatareadings(),
                     self.activestarttime.timestamp() if self.activestarttime else None,
                 )
             except ValueError:
-                self._filter_data = None
+                raise ValueError("Could not load filter data")
+        else:
+            fdp = os.path.join(self._dir_base, "run/filter_data.json")
+            if self.plate_type is None:
+                raise ValueError("Plate type must be set before loading analysis.")
+            if os.path.isfile(fdp):
+                with open(fdp, "r") as f:
+                    return _filterdata_df_v2(
+                        json.load(f),
+                        self.plate_type,
+                        quant_files_path=(Path(self.root_dir) / "run/quant"),
+                        start_time=(
+                            self.activestarttime.timestamp()
+                            if self.activestarttime
+                            else None
+                        ),
+                    )
+
+
+    def _update_from_data(self) -> None:
+        if self.spec_major_version == 1:
 
             mdp = os.path.join(self._dir_eds, "multicomponentdata.xml")
             if os.path.isfile(mdp):
@@ -1649,23 +1696,7 @@ table, th, td {{
                     ) = _parse_analysis_result(
                         f.read(), plate_type=self.plate_type
                     )  # FIXME: plate type
-
         else:  # spec version 2
-            fdp = os.path.join(self._dir_base, "run/filter_data.json")
-            if self.plate_type is None:
-                raise ValueError("Plate type must be set before loading analysis.")
-            if os.path.isfile(fdp):
-                with open(fdp, "r") as f:
-                    self._filter_data = _filterdata_df_v2(
-                        json.load(f),
-                        self.plate_type,
-                        quant_files_path=(Path(self.root_dir) / "run/quant"),
-                        start_time=(
-                            self.activestarttime.timestamp()
-                            if self.activestarttime
-                            else None
-                        ),
-                    )
             mdp = os.path.join(self._dir_base, "primary/multicomponent_data.json")
             if os.path.isfile(mdp):
                 with open(mdp, "r") as f:
@@ -1844,91 +1875,101 @@ table, th, td {{
             )
             self.events["hours"] = self.events["seconds"] / 3600.0
 
-        self._update_from_temperature_log_polars()
 
-    def _update_from_temperature_log_polars(self) -> None:
+    @property
+    @cached_method
+    def temperatures(self) -> pd.DataFrame:
+        """
+        A DataFrame of temperature readings, at one second resolution, during the experiment
+        (and potentially slightly before and after, if included in the message log).
+
+        Columns (as multi-index):
+
+        ("time", ...) : float
+            Time of temperature reading, for choices of "timestamp" (Unix timestamp in seconds),
+            "seconds" (seconds since the *active* start of the run), or "hours". The latter two may
+            be negative, and may not be set if the run never became active.
+
+        ("sample", ...) : float
+            Sample temperature for blocks 1, 2, ..., 6, and average in "avg".
+
+        ("block", ...) : float
+            Block temperature for blocks 1, 2, ..., 6, and average in "avg".
+
+        ("other", "cover") : float
+            Cover temperature
+
+        ("other", "heatsink") : float
+            Heatsink temperature
+
+        """
+
+        temps, _ = self._temperatures_from_log()
+        if temps is None:
+            raise ValueError("Could not load temperatures")
+        return temps
+    
+    @property
+    @cached_method
+    def num_zones(self) -> int:
+        temps, num_zones = self._temperatures_from_log()
+        if temps is None:
+            raise ValueError("Could not load temperatures")
+        return num_zones
+    
+
+    @property
+    @cached_method
+    def _temperatures_polars(self) -> tuple[pl.DataFrame, int]:
         from ._qslib import TemperatureLog, get_n_zones
-        b = self._msglog_path().read_bytes()
+        try:
+            b = self._msglog_path().read_bytes()
+        except FileNotFoundError as e:
+            raise ValueError("no temperature data")
         try:
             n_zones = get_n_zones(b)
         except Exception as e:
-            self.temperatures = None
-            self.num_zones = -1
-            return
+            raise ValueError("no temperature data")
         tl = TemperatureLog.parse_to_polars(b)
-        self.temperatures = tl.to_pandas()
-        self.num_zones = n_zones
+        return tl, n_zones
 
+
+    @property
+    @cached_method
+    def temperatures_polars(self) -> pl.DataFrame:
+        tl, n_zones = self._temperatures_polars
+        tl = tl.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms")))
+        return tl
+
+    def _temperatures_from_log(self) -> tuple[pd.DataFrame, int]:
+        temperatures, num_zones = self._temperatures_polars
+
+
+        temperatures = temperatures.to_pandas()
         ix = pd.MultiIndex.from_tuples(
             [(cast(str, "time"), cast(Union[str, int], "timestamp"))]
-            + [("sample", n) for n in range(1, self.num_zones + 1)]
+            + [("sample", n) for n in range(1, num_zones + 1)]
             + [("other", "heatsink"), ("other", "cover")]
-            + [("block", n) for n in range(1, self.num_zones + 1)]
+            + [("block", n) for n in range(1, num_zones + 1)]
         )
-        self.temperatures.columns = ix
+        temperatures.columns = ix
 
         if self.activestarttime:
-            self.temperatures[("time", "seconds")] = (
-                self.temperatures[("time", "timestamp")]
+            temperatures[("time", "seconds")] = (
+                temperatures[("time", "timestamp")]
                 - self.activestarttime.timestamp()
             )
-            self.temperatures[("time", "hours")] = (
-                self.temperatures[("time", "seconds")] / 3600.0
+            temperatures[("time", "hours")] = (
+                temperatures[("time", "seconds")] / 3600.0
             )
-        self.temperatures[("sample", "avg")] = self.temperatures["sample"].mean(
+        temperatures[("sample", "avg")] = temperatures["sample"].mean(
             axis=1
         )
-        self.temperatures[("block", "avg")] = self.temperatures["block"].mean(
+        temperatures[("block", "avg")] = temperatures["block"].mean(
             axis=1
         )
 
-    def _update_from_temperature_log_python(self, msglog: str) -> None:
-        tt = []
-        for m in re.finditer(
-            r"^Temperature ([\d.]+) -sample=([\d.,]+) -heatsink=([\d.,]+) "
-            r"-cover=([\d.,]+) -block=([\d.,]+)$",
-            msglog,
-            re.MULTILINE,
-        ):
-            r = []
-            r.append(float(m[1]))
-            r += [float(x) for x in m[2].split(",")]
-            r.append(float(m[3]))
-            r.append(float(m[4]))
-            r += [float(x) for x in m[5].split(",")]
-            tt.append(r)
-
-        if len(tt) > 0:
-            self.num_zones = int((len(tt[0]) - 3) / 2)
-
-            self.temperatures = pd.DataFrame(
-                tt,
-                columns=pd.MultiIndex.from_tuples(
-                    [(cast(str, "time"), cast(Union[str, int], "timestamp"))]
-                    + [("sample", n) for n in range(1, self.num_zones + 1)]
-                    + [("other", "heatsink"), ("other", "cover")]
-                    + [("block", n) for n in range(1, self.num_zones + 1)]
-                ),
-            )
-
-            if self.activestarttime:
-                self.temperatures[("time", "seconds")] = (
-                    self.temperatures[("time", "timestamp")]
-                    - self.activestarttime.timestamp()
-                )
-                self.temperatures[("time", "hours")] = (
-                    self.temperatures[("time", "seconds")] / 3600.0
-                )
-            self.temperatures[("sample", "avg")] = self.temperatures["sample"].mean(
-                axis=1
-            )
-            self.temperatures[("block", "avg")] = self.temperatures["block"].mean(
-                axis=1
-            )
-
-        else:
-            self.num_zones = -1
-            self.temperatures = None
+        return temperatures, num_zones
 
     def _find_anneal_stages(self) -> list[int]:
         anneal_stages = []

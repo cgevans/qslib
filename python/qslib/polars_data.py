@@ -24,19 +24,18 @@ def polars_from_filterdata(dr: FilterDataReading, start_time: float | None = Non
             "well": [f"{r}{c}" for r in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[:dr.plate_rows] for c in range(1, dr.plate_cols + 1)],
             "row": [i for i in range(dr.plate_rows) for _ in range(dr.plate_cols)],
             "column": [j for _ in range(dr.plate_rows) for j in range(dr.plate_cols)],
-            "timestamp": datetime.fromtimestamp(dr.timestamp),
+            "timestamp": dr.timestamp,
             "fluorescence": dr.well_fluorescence,
             "sample_temperature": dr.well_temperatures,
-            "set_temperature": np.tile(np.repeat(dr.set_temperatures, 2), 8),
             "exposure": dr.exposure,
         }
     ).lazy()
 
     block_width = dr.plate_cols // len(dr.temperatures)
     d = d.with_columns(
-        block = pl.col("column") // block_width
+        zone = 1 + (pl.col("column") // block_width),
+        timestamp = (pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms"))
     )
-
     if start_time is not None:
         start_time = datetime.fromtimestamp(start_time)
         d = d.with_columns(
