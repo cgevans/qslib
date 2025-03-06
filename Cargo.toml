@@ -1,6 +1,6 @@
 [package]
 name = "qslib"
-version = "0.14.0-rc3"
+version = "0.14.0-rc4"
 edition = "2021"
 description = "QSlib QuantStudio qPCR machine library"
 license = "EUPL-1.2"
