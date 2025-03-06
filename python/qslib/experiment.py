@@ -378,32 +378,6 @@ class Experiment:
             else:
                 raise ValueError("Experiment data is not available")
 
-    @property
-    def multicomponent_data(self) -> pd.DataFrame:
-        if self._multicomponent_data is not None:
-            return self._multicomponent_data
-        elif self.runstate == "INIT":
-            raise ValueError("Run hasn't started yet: no data available.")
-        else:
-            raise ValueError("Multicomponent data is not available")
-
-    @property
-    def analysis_result(self) -> pd.DataFrame:
-        if self._analysis_result is not None:
-            return self._analysis_result
-        elif self.runstate == "INIT":
-            raise ValueError("Run hasn't started yet: no data available.")
-        else:
-            raise ValueError("Analysis result is not available")
-
-    @property
-    def amplification_data(self) -> pd.DataFrame:
-        if self._amplification_data is not None:
-            return self._amplification_data
-        elif self.runstate == "INIT":
-            raise ValueError("Run hasn't started yet: no data available.")
-        else:
-            raise ValueError("Amplification data is not available")
 
     def summary(self, format: str = "markdown", plate: str = "list") -> str:
         return self.info(format, plate)
@@ -1076,11 +1050,11 @@ table, th, td {{
         return sett.collect()
 
     @property
-    def root_dir(self):
+    def root_dir(self) -> Path:
         if self.spec_major_version == 1:
-            return self._dir_eds
+            return Path(self._dir_eds)
         else:
-            return self._dir_base
+            return Path(self._dir_base)
 
     def __init__(
         self,
@@ -1090,8 +1064,8 @@ table, th, td {{
         _create_xml: bool = True,
     ):
         self._tmp_dir_obj = tempfile.TemporaryDirectory()
-        self._dir_base = self._tmp_dir_obj.name
-        self._dir_eds = os.path.join(self._dir_base, "apldbio", "sds")
+        self._dir_base = Path(self._tmp_dir_obj.name)
+        self._dir_eds = self._dir_base / "apldbio" / "sds"
 
         self._protocol_from_qslib: Protocol | None = None
         self._protocol_from_log: Protocol | None = None
@@ -1135,8 +1109,8 @@ table, th, td {{
             self._update_files()
 
     def _new_xml_files(self) -> None:
-        os.mkdir(os.path.join(self._dir_base, "apldbio"))
-        os.mkdir(os.path.join(self._dir_base, "apldbio", "sds"))
+        os.mkdir(self._dir_base / "apldbio")
+        os.mkdir(self._dir_base / "apldbio" / "sds")
 
         e = ET.ElementTree(ET.Element("Experiment"))
 
@@ -1186,23 +1160,23 @@ table, th, td {{
         p.write(open(os.path.join(self._dir_eds, "plate_setup.xml"), "wb"))
 
         ET.ElementTree(ET.Element("TCProtocol")).write(
-            open(os.path.join(self._dir_eds, "tcprotocol.xml"), "wb")
+            open(self._dir_eds / "tcprotocol.xml", "wb")
         )
 
         ET.ElementTree(ET.Element("QSLTCProtocol")).write(
-            open(os.path.join(self._dir_eds, "qsl-tcprotocol.xml"), "wb")
+            open(self._dir_eds / "qsl-tcprotocol.xml", "wb")
         )
 
-        with open(os.path.join(self._dir_eds, "Manifest.mf"), "w") as f:
+        with open(self._dir_eds / "Manifest.mf", "w") as f:
             f.write(_MANIFEST_CONTENTS)
 
         # File will not load in AB without this, even though it is
         # useless for our purposes.
-        with open(self._sdspath("analysis_protocol.xml"), "w") as f:
+        with open(self._dir_eds / "analysis_protocol.xml", "w") as f:
             f.write(_ANALYSIS_PROTOCOL_TEXT)
 
-    def _sdspath(self, path: str) -> str:
-        return os.path.join(self._dir_eds, path)
+    def _sdspath(self, path: str | os.PathLike[str]) -> Path:
+        return self._dir_eds / path
 
     def _update_files(self) -> None:
         self._update_experiment_xml()
@@ -1210,8 +1184,8 @@ table, th, td {{
         self._update_platesetup_xml()
 
     def _update_from_files(self) -> None:
+        p = self.root_dir
         if self.spec_major_version == 1:
-            p = Path(self._dir_eds)
             if (p / "experiment.xml").is_file():
                 self._update_from_experiment_xml()
             if (p / "tcprotocol.xml").is_file():
@@ -1221,8 +1195,7 @@ table, th, td {{
             if (p / "messages.log").is_file():
                 self._update_from_log()
         elif self.spec_major_version == 2:
-            p = Path(self._dir_base)
-            manifest = _get_manifest_info(self._dir_base, checkinfo=False)
+            manifest = _get_manifest_info(self.root_dir, checkinfo=False)
             self.spec_version = manifest["Specification-Version"]
             self.writesoftware = (
                 manifest["Implementation-Title"]
@@ -1674,16 +1647,66 @@ table, th, td {{
                         ),
                     )
 
+    @property
+    def multicomponent_data(self) -> pd.DataFrame:
+        try:
+            if self.spec_major_version == 1:
+                mdp = os.path.join(self._dir_eds, "multicomponentdata.xml")
+                fdx = ET.parse(mdp)
+                return _parse_multicomponent_data_v1(fdx)
+            else:
+                mdp = os.path.join(self._dir_base, "primary/multicomponent_data.json")
+                with open(mdp, "r") as f:
+                    return _parse_multicomponent_data_v2(json.load(f), self.plate_type)
+        except Exception as e:
+            if self.runstate == "INIT":
+                raise ValueError("Run hasn't started yet: no data available.")
+            else:
+                raise ValueError("Multicomponent data is not available")
+
+    @property
+    @cached_method
+    def analysis_result(self) -> pd.DataFrame:
+        if self.spec_major_version == 1:
+            adp = os.path.join(self._dir_eds, "analysis_result.txt")
+            if not os.path.isfile(adp):
+                if self.runstate == "INIT":
+                    raise ValueError("Run hasn't started yet: no data available.")
+                else:
+                    raise ValueError("Analysis result is not available")
+            else:
+                with open(adp, "r") as f:
+                    return _parse_analysis_result(f.read(), plate_type=self.plate_type)[0]
+        else:
+            raise NotImplementedError("Analysis result is not available for spec version 2. You might find data in _analysis_dict_v2")
+
+    @property
+    @cached_method
+    def amplification_data(self) -> pd.DataFrame:
+        if self.spec_major_version == 1:
+            adp = os.path.join(self._dir_eds, "analysis_result.txt")
+            if not os.path.isfile(adp):
+                if self.runstate == "INIT":
+                    raise ValueError("Run hasn't started yet: no data available.")
+                raise ValueError("Amplification data is not available")
+            with open(adp, "r") as f:
+                return _parse_analysis_result(f.read(), plate_type=self.plate_type)[1]
+        else:
+            raise NotImplementedError("Amplification data is not available for spec version 2. You might find data in _analysis_dict_v2")
+
+    @property
+    @cached_method
+    def _analysis_dict_v2(self) -> dict:
+        if self.spec_major_version != 2:
+            raise ValueError("Analysis dict is only available for spec version 2")
+        adp = os.path.join(self.root_dir, "primary/analysis_result.json")
+        if not os.path.isfile(adp):
+            raise ValueError("Analysis result is not available")
+        else:
+            return json.load(open(adp, "r"))
 
     def _update_from_data(self) -> None:
         if self.spec_major_version == 1:
-
-            mdp = os.path.join(self._dir_eds, "multicomponentdata.xml")
-            if os.path.isfile(mdp):
-                fdx = ET.parse(mdp)
-                self._multicomponent_data = _parse_multicomponent_data_v1(fdx)
-            else:
-                self._multicomponent_data = None
 
             adp = os.path.join(self._dir_eds, "analysis_result.txt")
             if self.plate_type is None:
@@ -1697,12 +1720,7 @@ table, th, td {{
                         f.read(), plate_type=self.plate_type
                     )  # FIXME: plate type
         else:  # spec version 2
-            mdp = os.path.join(self._dir_base, "primary/multicomponent_data.json")
-            if os.path.isfile(mdp):
-                with open(mdp, "r") as f:
-                    self._multicomponent_data = _parse_multicomponent_data_v2(
-                        json.load(f), self.plate_type
-                    )
+
             ap = Path(self.root_dir) / "primary" / "analysis_result.json"
             if ap.is_file():
                 self._analysis_dict = json.load(ap.open())
