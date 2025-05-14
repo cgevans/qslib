@@ -11,7 +11,6 @@ clap = { version = "4.4", features = ["derive"] }
 config = "0.15.7"
 influxdb2 = "0.5.2"
 log = "0.4.25"
-qslib-rs = { git = "https://github.com/cgevans/qslib-rs" }
 stderrlog = "0.6.0"
 tokio = { version = "1.42", features = ["net", "sync", "rt", "io-util", "macros", "rt-multi-thread", "tracing"] }
 tokio-stream = "0.1.11"
@@ -26,3 +25,4 @@ data-encoding = "2.7.0"
 lazy_static = "1.5.0"
 zip = "2.2.2"
 walkdir = "2.5.0"
+qslib = "0.14.0-rc5"

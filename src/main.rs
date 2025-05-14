@@ -6,10 +6,10 @@ use futures::stream;
 use influxdb2::models::{DataPoint, FieldValue};
 use influxdb2::{Client, FromDataPoint, models::WriteDataPoint};
 use log::{debug, error, info, warn};
-use qslib_rs::com::{CommandError, ConnectionError};
-use qslib_rs::parser::{ErrorResponse, MessageResponse, OkResponse, Value};
-use qslib_rs::plate_setup::PlateSetup;
-use qslib_rs::{
+use qslib::com::{CommandError, ConnectionError};
+use qslib::parser::{ErrorResponse, MessageResponse, OkResponse, Value};
+use qslib::plate_setup::PlateSetup;
+use qslib::{
     com::FilterDataFilename,
     com::QSConnection,
     commands::{AccessLevel, AccessLevelSet, CommandBuilder, Subscribe},
@@ -90,10 +90,10 @@ pub enum QSConnectionError {
     InfluxError(#[from] influxdb2::RequestError),
 
     #[error("QS connection error: {0}")]
-    QSError(#[from] qslib_rs::com::QSConnectionError),
+    QSError(#[from] qslib::com::QSConnectionError),
 
     #[error("Data error: {0}")]
-    DataError(#[from] qslib_rs::data::DataError),
+    DataError(#[from] qslib::data::DataError),
 
     #[error("Path strip prefix error: {0}")]
     StripPrefixError(#[from] std::path::StripPrefixError),
@@ -114,10 +114,7 @@ fn value_to_influxvalue(value: Value) -> FieldValue {
         Value::Float(f) => FieldValue::F64(f),
         Value::Bool(b) => FieldValue::Bool(b),
         Value::QuotedString(s) => FieldValue::String(s),
-        Value::XmlString { value, tag: _ } => FieldValue::String(value),
-        Value::XmlBinary { value, tag: _ } => {
-            FieldValue::String(String::from_utf8_lossy(&value).to_string())
-        } // FIXME : should use better escapes
+        Value::XmlString { value, tag: _ } => FieldValue::String(value.to_string()),
     }
 }
 
@@ -286,7 +283,7 @@ async fn log_machine(
     log_tasks: &mut JoinSet<()>,
 ) -> Result<(QSConnection, Id)> {
     let mut con =
-        QSConnection::connect(&config.host, 7443, qslib_rs::com::ConnectionType::SSL).await?;
+        QSConnection::connect(&config.host, 7443, qslib::com::ConnectionType::SSL).await?;
 
     let access = AccessLevelSet::level(AccessLevel::Observer);
     access.send(&mut con).await?.receive_response().await?;

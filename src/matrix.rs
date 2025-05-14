@@ -20,10 +20,11 @@ use matrix_sdk::{
         },
     },
 };
-use qslib_rs::{
+use qslib::{
     com::{CommandError, QSConnection, QSConnectionError, SendCommandError},
     commands::{
-        CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery, ReceiveOkResponseError,
+        AccessLevel, CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery,
+        ReceiveOkResponseError,
     },
     parser::{ErrorResponse, LogMessage},
 };
@@ -215,7 +216,7 @@ async fn handle_message(
             let machine = parts.next().unwrap_or("");
             let commandstring = parts.collect::<Vec<&str>>().join(" ");
 
-            let command = match qslib_rs::parser::Command::parse(&mut commandstring.as_bytes()) {
+            let command = match qslib::parser::Command::parse(&mut commandstring.as_bytes()) {
                 Ok(c) => c,
                 Err(e) => {
                     error!("Error parsing command: {}", e);
@@ -226,6 +227,7 @@ async fn handle_message(
             match qs.get(machine) {
                 Some(x) => {
                     let (conn, _) = x.value();
+                    conn.set_access_level(AccessLevel::Controller).await?;
                     let response = conn.send_command(command).await?.get_response().await?;
                     match response {
                         Ok(response) => {
@@ -235,6 +237,7 @@ async fn handle_message(
                             send_matrix_message(&room, &format!("Error: {}", e), true).await?
                         }
                     }
+                    conn.set_access_level(AccessLevel::Observer).await?;
                 }
                 None => error!("Machine {} not found", machine),
             }
