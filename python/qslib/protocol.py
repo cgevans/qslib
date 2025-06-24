@@ -1397,7 +1397,7 @@ class Stage(XMLable, ProtoCommand):
             ]
         )
         ramp_rates = [
-            1.6
+            1.6 # FIXME: should this be 1.56?
             for _ in range(1, self.repeat + 1)
             for step in self.steps
             for point in range(1, step.repeat + 1)
