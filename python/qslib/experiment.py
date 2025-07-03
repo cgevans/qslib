@@ -2810,11 +2810,11 @@ table, th, td {{
             case None:
                 pass
             case str():
-                d = d.filter(pl.col("filter").str.count_matches(filters) > 0)
+                d = d.filter(pl.col("filter_set").str.count_matches(filters) > 0)
             case x if isinstance(x, FilterSet):
-                d = d.filter(pl.col("filter").is_in(x))
+                d = d.filter(pl.col("filter_set").is_in(x))
             case x if isinstance(x, Sequence):
-                d = d.filter(pl.col("filter").is_in(x))
+                d = d.filter(pl.col("filter_set").is_in(x))
             case _:
                 raise ValueError(f"Invalid filters: {filters}")
             
