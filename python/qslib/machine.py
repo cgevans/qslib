@@ -4,14 +4,12 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import random
 import re
 import shlex
 import zipfile
-from asyncio.futures import Future
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
@@ -242,7 +240,6 @@ class Machine:
 
     def connect(self) -> None:
         """Open the connection manually."""
-        loop = asyncio.get_event_loop()
 
         self.connection = QSConnection(
             host=self.host,
