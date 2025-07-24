@@ -1077,6 +1077,19 @@ table, th, td {{
         self.machine: Machine | None = None
 
         if name is not None:
+            # Check if name looks like a file path and warn if it's an existing file
+            if isinstance(name, str) and ('/' in name or '\\' in name or name.endswith('.eds')):
+                try:
+                    if Path(name).is_file():
+                        warn(
+                            f"The name '{name}' appears to be a file path to an existing file. "
+                            f"Did you mean to use Experiment.from_file('{name}') instead of Experiment('{name}')?",
+                            UserWarning,
+                            stacklevel=2
+                        )
+                except (OSError, ValueError):
+                    # Path validation failed, continue with normal behavior
+                    pass
             self.name = name
         else:
             self.name = _nowuuid()
