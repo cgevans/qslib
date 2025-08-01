@@ -119,12 +119,16 @@ class FilterDataReading:
 
     @classmethod
     def from_file(
-        cls, path: str | PathLike[str], sds_dir: str | PathLike[str] | None
+        cls,
+        path: str | PathLike[str],
+        sds_dir: str | PathLike[str] | None,
+        set_temperatures: Union[Literal["auto"], None, List[float]] = "auto",
+        timestamp_dict: Optional[dict[tuple[int, int, int, int, int], float]] = None,
     ) -> FilterDataReading:
         p = ET.parse(path).find(".//PlateData")
         if p is None:
             raise ValueError(f"File {path} is not a valid filter data file.")
-        return cls(p, sds_dir=sds_dir)
+        return cls(p, sds_dir=sds_dir, set_temperatures=set_temperatures, timestamp_dict=timestamp_dict)
 
     def __init__(
         self,

@@ -12,13 +12,13 @@ import click
 from click_aliases import ClickAliasedGroup
 
 from qslib.common import Experiment, Machine
-from qslib.qs_is_protocol import (
-    AccessLevelExceeded,
-    AuthError,
-    CommandError,
-    InsufficientAccess,
-    NoMatch,
-)
+# from qslib.scpi_commands import (
+#     AccessLevelExceeded,
+#     AuthError,
+#     CommandError,
+#     InsufficientAccess,
+#     NoMatch,
+# )
 from qslib.scpi_commands import AccessLevel
 from .version import __version__
 

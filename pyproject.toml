@@ -124,3 +124,17 @@ ignore_missing_imports = true
 
 [tool.ruff]
 line-length = 120
+
+[tool.hatch.envs.hatch-test]
+skip-install = false
+features = ["testing"]
+pre-install-commands=["maturin develop --uv"]
+
+[[tool.hatch.envs.hatch-test.matrix]]
+python = ["3.12", "3.13"]
+
+
+#[tool.hatch.envs.default.scripts]
+#test = "pytest {args:tests}"
+#test-cov = "pytest --cov qslib --cov-report term-missing {args:tests}"
+#test-cov-html = "pytest --cov qslib --cov-report html {args:tests}"
