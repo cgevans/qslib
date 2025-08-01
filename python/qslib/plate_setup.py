@@ -310,13 +310,18 @@ class PlateSetup:
         self,
         headers: Sequence[Union[str, int]] = list(range(1, 13)),
         tablefmt: str = "orgtbl",
+        protect_markdown: bool = False,
         showindex: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> str:
         if showindex is None:
             showindex = _ROWALPHAS_96 if self.plate_Type == 96 else _ROWALPHAS
+        ws = self.well_samples_as_array()
+        if protect_markdown:
+            ws = ws.applymap(lambda x: f"`{x}`" if x is not None else None)
+
         return tabulate.tabulate(
-            self.well_samples_as_array(),
+            ws,
             tablefmt=tablefmt,
             headers=[str(x) for x in headers],
             showindex=showindex,
@@ -383,7 +388,7 @@ class PlateSetup:
         if len(self.sample_wells) < 12:
             return str(self)
         else:
-            return self.to_table(tablefmt="pipe")
+            return self.to_table(tablefmt="pipe", protect_markdown=True)
 
     @classmethod
     def from_picklist(cls, picklist: 'PickList' | str, plate_name: str | None = None, labware: 'Labware' | None = None) -> 'Self':
