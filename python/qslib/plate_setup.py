@@ -318,7 +318,7 @@ class PlateSetup:
             showindex = _ROWALPHAS_96 if self.plate_Type == 96 else _ROWALPHAS
         ws = self.well_samples_as_array()
         if protect_markdown:
-            ws = ws.applymap(lambda x: f"`{x}`" if x is not None else None)
+            ws = np.vectorize(lambda x: f"`{x}`" if x is not None else None)(ws)
 
         return tabulate.tabulate(
             ws,
