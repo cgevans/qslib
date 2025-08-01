@@ -121,7 +121,7 @@ class FilterDataReading:
     def from_file(
         cls,
         path: str | PathLike[str],
-        sds_dir: str | PathLike[str] | None,
+        sds_dir: str | PathLike[str] | None = None,
         set_temperatures: Union[Literal["auto"], None, List[float]] = "auto",
         timestamp_dict: Optional[dict[tuple[int, int, int, int, int], float]] = None,
     ) -> FilterDataReading:
