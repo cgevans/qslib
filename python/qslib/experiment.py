@@ -382,7 +382,7 @@ class Experiment:
     def summary(self, format: str = "markdown", plate: str = "list") -> str:
         return self.info(format, plate)
 
-    def info(self, format: str = "markdown", plate: str = "list") -> str:
+    def info(self, fmt: str = "markdown", plate: str = "list") -> str:
         """Generate a summary of the experiment, with some formatting configuation. `str()`
         uses this with default parameters.
 
@@ -406,7 +406,7 @@ class Experiment:
         if plate == "list":
             s += f"{self.plate_setup}\n"
         elif plate == "table":
-            s += f"{self.plate_setup.to_table(tablefmt=_TABLE_FORMAT.get(format, format))}\n\n"
+            s += f"{self.plate_setup.to_table(fmt=fmt)}\n\n"
         s += f"- Created: {self.createdtime}\n"
         if self.runstarttime:
             s += f"- Run Started: {self.runstarttime}\n"

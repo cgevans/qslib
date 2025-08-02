@@ -27,7 +27,7 @@ from uuid import uuid1
 
 import attrs
 import numpy as np
-import pandas as pd
+import polars as pl
 import tabulate
 
 
@@ -50,6 +50,8 @@ _WELLALPHREF_96 = [(x, f"{y}") for x in _ROWALPHAS_96 for y in range(1, 13)]
 _WELLALPHREF_384 = [(x, f"{y}") for x in _ROWALPHAS for y in range(1, 25)]
 
 
+_SORT_WELLS_ROW_OUTER = pl.col("well").str.extract_groups(r"^(?<row>\w)(?<col>\d{1,2})$").struct.with_fields(pl.field("row"), pl.field("col").cast(pl.Int32))
+
 def _process_color_from_str_int(x: str) -> Tuple[int, int, int, int]:
     """From a string that represents a signed int32 (this choice make no sense),
     interpret it as a unsigned 32-bit integer, then unpack the bits to get R,G,B,A."""
@@ -64,12 +66,22 @@ def _process_color_from_str_int(x: str) -> Tuple[int, int, int, int]:
 def _color_to_str_int(x: Tuple[int, int, int, int]) -> str:
     return str(int.from_bytes(bytes(x), "little", signed=True))
 
+def _color_to_str(x: Tuple[int, int, int, int]) -> str:
+    return f"#{x[0]:02x}{x[1]:02x}{x[2]:02x}{x[3]:02x}"
 
 def _str_or_list_to_list(v: str | Sequence[str]) -> list[str]:
     if isinstance(v, str):
         return [v]
     return list(v)
 
+_SAMPLE_SCHEMA = {
+    "name": pl.String,
+    "color": pl.String,
+    "description": pl.String,
+    "wells": pl.List(pl.String),
+    "uuid": pl.String,
+    "properties": pl.Struct,
+}
 
 @attrs.define(init=False)
 class Sample:
@@ -85,7 +97,7 @@ class Sample:
         self,
         name: str,
         uuid: str | None = None,
-        color: Tuple[int, int, int, int] = (255, 0, 0, 255),
+        color: Tuple[int, int, int, int] = (0, 0, 0, 255),
         properties: dict[str, str] | None = None,
         description: str | None = None,
         wells: str | list[str] | None = None,
@@ -143,6 +155,15 @@ class Sample:
         ET.SubElement(u, "Value").text = self.uuid
         return x
 
+    def to_record(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "color": _color_to_str(self.color),
+            "description": self.description,
+            "wells": self.wells,
+            "uuid": self.uuid,
+            "properties": self.properties,
+        }
 
 @attrs.define()
 class _SampleWellsView(Mapping[str, list[str]]):
@@ -170,6 +191,9 @@ class _SampleWellsView(Mapping[str, list[str]]):
 class PlateSetup:
     samples_by_name: Dict[str, Sample]
     plate_type: Literal[96, 384] = 96
+
+    def to_polars(self) -> pl.DataFrame:
+        return pl.from_records([s.to_record() for s in self.samples_by_name.values()], schema=_SAMPLE_SCHEMA)
 
     @property
     def sample_wells(self):
@@ -225,7 +249,7 @@ class PlateSetup:
         plate_type: Literal[96, 384] = 96,
     ) -> None:
         assert plate_type in (96, 384)
-        self.plate_Type = plate_type
+        self.plate_type = plate_type
 
         if isinstance(samples, Mapping):
             self.samples_by_name = dict(samples)
@@ -242,15 +266,21 @@ class PlateSetup:
                     self.samples_by_name[name] = Sample(name, wells=wells)
 
     @property
-    def well_sample(self):
-        well_sample_name = pd.Series(
-            np.full(8 * 12, None, object),
-            index=_WELLNAMES_96 if self.plate_Type == 96 else _WELLNAMES_384,
+    def well_samples(self) -> pl.Series:
+        return self.to_polars_by_well(full=False)["name"]
+
+    def to_polars_by_well(self, full: bool = False) -> pl.DataFrame:
+        well_sample_name = pl.DataFrame({"well": _WELLNAMES_96 if self.plate_type == 96 else _WELLNAMES_384})
+        w = well_sample_name.join(
+            self.to_polars().rename({"wells": "well"}).explode("well"),
+            on="well",
+            how="left",
+            maintain_order="left",
         )
-        for s, ws in self.sample_wells.items():
-            for w in ws:
-                well_sample_name.loc[w] = s
-        return well_sample_name
+        if full:
+            return w
+        else:
+            return w.select("well", "name")
 
     def get_wells(self, samples_or_wells: str | Sequence[str]) -> list[str]:
         """
@@ -264,7 +294,7 @@ class PlateSetup:
 
         for sw in samples_or_wells:
             if sw.upper() in (
-                _WELLNAMESET_96 if self.plate_Type == 96 else _WELLNAMESET_384
+                _WELLNAMESET_96 if self.plate_type == 96 else _WELLNAMESET_384
             ):
                 wells.append(sw.upper())
             else:
@@ -274,14 +304,20 @@ class PlateSetup:
 
     def get_descriptive_string(self, name: str) -> str:
         if (w := name.upper()) in (
-            _WELLNAMESET_96 if self.plate_Type == 96 else _WELLNAMESET_384
+            _WELLNAMESET_96 if self.plate_type == 96 else _WELLNAMESET_384
         ):
             return w
         sample = self.samples_by_name[name]
         return sample.description or sample.name
 
-    def well_samples_as_array(self) -> np.ndarray[Any, Any]:
-        return self.well_sample.to_numpy().reshape((8, 12))
+    def sample_names_as_array(self) -> np.ndarray[Any, Any]:
+        n = self.well_samples.to_numpy()
+        if self.plate_type == 96:
+            return n.reshape((8, 12))
+        elif self.plate_type == 384:
+            return n.reshape((16, 24))
+        else:
+            raise ValueError(f"Plate type {self.plate_type} not supported")
 
     def to_lineprotocol(self, timestamp: int, run_name: str | None = None) -> list[str]:
         if run_name:
@@ -292,40 +328,85 @@ class PlateSetup:
             f'platesetup,row={r},col={c} sample="{s}"{rts} {timestamp}'
             for ((r, c), s) in zip(
                 _WELLALPHREF_96 if self.plate_type == 96 else _WELLALPHREF_384,
-                self.well_sample,
+                self.well_samples,
             )
         ]
 
     @classmethod
     def from_array(
-        cls, array: Union[np.ndarray, pd.DataFrame], *, make_unique: bool = False
+        cls, array: np.ndarray # TODO: tests for this
     ) -> PlateSetup:
-        raise NotImplementedError
+        """Given an (8,12) or (16,24) array of sample names, create a PlateSetup.  
+           Interprets None, "None", and "null" as empty wells."""
+        if array.shape != (8, 12) and array.shape != (16, 24):
+            raise ValueError("Array must be (8,12) or (16,24)")
+        if array.shape == (8, 12):
+            plate_type = 96
+        elif array.shape == (16, 24):
+            plate_type = 384
+        else:
+            raise ValueError(f"Array shape {array.shape} must be (8,12) or (16,24)")
+        
+        wn = _WELLNAMES_96 if plate_type == 96 else _WELLNAMES_384
+        
+        sample_wells = {}
+        for i, s in enumerate(np.unique(array.flatten())):
+            if s is not None and s != "None" and s != "null":
+                sample_wells[s] = [wn[i]]
+        
+        return cls(sample_wells, plate_type=plate_type)
 
-    @classmethod
-    def from_tsv(cls, tsvstr: str) -> PlateSetup:
-        raise NotImplementedError
 
     def to_table(
         self,
-        headers: Sequence[Union[str, int]] = list(range(1, 13)),
-        tablefmt: str = "orgtbl",
-        protect_markdown: bool = False,
+        fmt: Literal["markdown", "orgtbl", "html"] = "markdown",
         showindex: Sequence[str] | None = None,
-        **kwargs: Any,
+        showcolors: bool | Literal["auto"] = "auto",
     ) -> str:
         if showindex is None:
-            showindex = _ROWALPHAS_96 if self.plate_Type == 96 else _ROWALPHAS
-        ws = self.well_samples_as_array()
-        if protect_markdown:
-            ws = np.vectorize(lambda x: f"`{x}`" if x is not None else None)(ws)
+            showindex = _ROWALPHAS_96 if self.plate_type == 96 else _ROWALPHAS
+        print(showindex)
+        ws = self.to_polars_by_well(full=True)
+
+        def fmt_header(x: str) -> str:
+            if not x:
+                return ""
+            if fmt == "markdown":
+                return f"**{x}**"
+            elif fmt == "orgtbl":
+                return f"{x}"
+            elif fmt == "html":
+                return f"<b>{x}</b>"
+        
+        if fmt == "markdown":   
+            ws = ws.with_columns(pl.when(pl.col("name").is_not_null()).then(pl.col("name").str.replace(".*", "`$0`")).otherwise(pl.lit("")).alias("name"))
+            tablefmt = "pipe"
+
+        if fmt == "html" and (showcolors == "auto" or showcolors):
+            def color_style(row):   
+                color = row["color"]
+                return f"color: {color};" if color else ""
+            ws = ws.with_columns(
+                pl.when(pl.col("name").is_not_null()).then(pl.struct(["name", "color"]).map_elements(
+                    lambda r: f'<span style="{color_style(r)}">{r["name"]}</span>',
+                    return_dtype=pl.String
+                ).alias("name"))
+            )
+            tablefmt = "unsafehtml" # FIXME: escape the sample names
+
+        headers = [""] + list(range(1, 13)) if self.plate_type == 96 else list(range(1, 25))
+
+        ws = ws['name'].to_numpy().reshape((8, 12) if self.plate_type == 96 else (16, 24))
+
+        ws_with_rownames = np.insert(ws, 0, [fmt_header(x) for x in showindex], axis=1)
+
+        print(ws)
 
         return tabulate.tabulate(
-            ws,
+            ws_with_rownames,
             tablefmt=tablefmt,
-            headers=[str(x) for x in headers],
+            headers=[fmt_header(x) for x in headers],
             showindex=showindex,
-            **kwargs,
         )
 
     def update_xml(self, root: ET.Element) -> None:
@@ -334,15 +415,15 @@ class PlateSetup:
 
         e = ET.SubElement(root, "PlateKind")
         ET.SubElement(e, "Type").text = (
-            "TYPE_8X12" if self.plate_Type == 96 else "TYPE_16X24"
+            "TYPE_8X12" if self.plate_type == 96 else "TYPE_16X24"
         )
         ET.SubElement(e, "Name").text = (
             "96-Well Plate (8x12)"
-            if self.plate_Type == 96
+            if self.plate_type == 96
             else "384-Well Plate (16x24)"
         )
-        ET.SubElement(e, "RowCount").text = "8" if self.plate_Type == 96 else "16"
-        ET.SubElement(e, "ColumnCount").text = "12" if self.plate_Type == 96 else "24"
+        ET.SubElement(e, "RowCount").text = "8" if self.plate_type == 96 else "16"
+        ET.SubElement(e, "ColumnCount").text = "12" if self.plate_type == 96 else "24"
 
         if not samplemap:
             e = ET.SubElement(root, "FeatureMap")
@@ -350,8 +431,8 @@ class PlateSetup:
             ET.SubElement(v, "Id").text = "sample"
             ET.SubElement(v, "Name").text = "sample"
             samplemap = e
-        ws = np.array(self.well_sample)
-        for welli in range(0, self.plate_Type):
+        ws = np.array(self.well_samples)
+        for welli in range(0, self.plate_type):
             if ws[welli]:
                 e = samplemap.find(f"FeatureValue/Index[.='{welli}']/../FeatureItem")
                 if not e:
@@ -388,7 +469,7 @@ class PlateSetup:
         if len(self.sample_wells) < 12:
             return str(self)
         else:
-            return self.to_table(tablefmt="pipe", protect_markdown=True)
+            return self.to_table(tablefmt="pipe", markdown=True)
 
     @classmethod
     def from_picklist(cls, picklist: 'PickList' | str, plate_name: str | None = None, labware: 'Labware' | None = None) -> 'Self':
