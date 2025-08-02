@@ -4,8 +4,12 @@ use quick_xml::{de::from_str, se::to_string};
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename = "Plate", deny_unknown_fields)]
+#[cfg_attr(feature = "python", pyclass)]
 pub struct PlateSetup {
     #[serde(rename = "Name")]
     pub name: Option<String>,
@@ -317,6 +321,12 @@ impl<'de> Deserialize<'de> for PlateType {
             _ => Err(D::Error::custom("Invalid plate type")),
         }
     }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl PlateSetup {
+
 }
 
 #[cfg(test)]
