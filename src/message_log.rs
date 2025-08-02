@@ -1,14 +1,127 @@
 use anyhow::Context;
 use bstr::ByteSlice;
 use lazy_static::lazy_static;
+use log::debug;
 use polars::prelude::*;
 #[cfg(feature = "python")]
 use pyo3_polars::PyDataFrame;
 use regex::bytes::{Captures, Regex};
 use tracing::error;
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
 
 lazy_static! {
     static ref LOG_TEMP_REGEX: Regex = Regex::new(r"(?m)^Temperature ([\d.]+) -sample=([\d.,]+) -heatsink=([\d.]+) -cover=([\d.]+) -block=([\d.,]+)$").unwrap();
+    static ref LOG_RUN_REGEX: Regex = Regex::new(r"(?m)^Run (?P<ts>[\d.]+) (?P<msg>\w+)(?: (?P<ext>\S+))?").unwrap();
+    static ref LOG_DRAWER_REGEX: Regex = Regex::new(r"(?m)^Debug ([\d.]+) (Drawer|Cover) (.+)$").unwrap();
+}
+
+#[pyclass(eq, eq_int, hash, frozen)]
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub enum RunState {
+    INIT,
+    RUNNING,
+    COMPLETE,
+    ABORTED,
+    STOPPED,
+}
+
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+pub struct RunLogInfo {
+    pub runstarttime: Option<f64>,
+    pub runendtime: Option<f64>,
+    pub prerunstart: Option<f64>,
+    pub activestarttime: Option<f64>,
+    pub activeendtime: Option<f64>,
+    pub runstate: RunState,
+    pub stage_names: Vec<String>,
+    pub stage_start_times: Vec<f64>,
+    pub stage_end_times: Vec<f64>,
+}
+
+impl RunLogInfo {
+    pub fn parse(log: &[u8]) -> anyhow::Result<Self> {
+        let mut info = Self {
+            runstarttime: None,
+            runendtime: None,
+            prerunstart: None,
+            activestarttime: None,
+            activeendtime: None,
+            runstate: RunState::INIT,
+            stage_names: Vec::new(),
+            stage_start_times: Vec::new(),
+            stage_end_times: Vec::new(),
+        };
+        for captures in LOG_RUN_REGEX.captures_iter(log) {
+           let timestamp = captures.name("ts").unwrap().as_bytes().to_str_lossy().parse::<f64>().unwrap();
+           let msg = captures.name("msg").unwrap().as_bytes();
+           let ext = captures.name("ext").map(|m| m.as_bytes());
+                    match msg {
+                        b"Starting" => info.runstarttime = Some(timestamp),
+                        b"Stage" => {
+                            let ext = ext.unwrap_or(b""); // FIXME: handle error here
+                            match ext {
+                                b"PRERUN" => {
+                                    info.prerunstart = Some(timestamp);
+                                    info.runstate = RunState::RUNNING;
+                                }
+                                b"POSTRun" => {
+                                    info.activeendtime = Some(timestamp)
+                                }
+                                _ => {
+                                    if info.prerunstart.is_some() {
+                                        info.activestarttime.get_or_insert(timestamp);
+                                    }
+                                    info.runstate = RunState::RUNNING;
+                                }
+                            }
+                            info.stage_names.push(ext.to_str_lossy().to_string());
+                            info.stage_start_times.push(timestamp);
+                            if info.stage_start_times.len() > 1 {
+                                info.stage_end_times.push(timestamp);
+                            }
+                        }
+                        b"Ended" => {
+                            info.runendtime = Some(timestamp);
+                            info.activeendtime.get_or_insert(timestamp);
+                            info.runstate = RunState::COMPLETE;
+                            if info.stage_start_times.len() > 1 {
+                                info.stage_end_times.push(timestamp);
+                            }
+                        }
+                        b"Aborted" => {
+                            info.runstate = RunState::ABORTED;
+                            info.activeendtime.get_or_insert(timestamp);
+                            info.runendtime = Some(timestamp);
+                            if info.stage_start_times.len() > 1 {
+                                info.stage_end_times.push(timestamp);
+                            }
+                        }
+                        b"Stopped" => {
+                            info.runstate = RunState::STOPPED;
+                            info.activeendtime.get_or_insert(timestamp);
+                            info.runendtime = Some(timestamp);
+                            if info.stage_start_times.len() > 1 {
+                                info.stage_end_times.push(timestamp);
+                            }
+                        }
+                        _ => {
+                            debug!("Unknown message: {}", msg.to_str_lossy());
+                        }
+                    }
+        }
+        Ok(info)
+    }
+}
+
+#[cfg(feature = "python")]  
+#[pyo3::pymethods]
+impl RunLogInfo {
+    #[staticmethod]
+    #[pyo3(name = "parse")]
+    pub fn py_parse(log: &[u8]) -> anyhow::Result<Self> {
+        Self::parse(log)
+    }
 }
 
 #[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))]

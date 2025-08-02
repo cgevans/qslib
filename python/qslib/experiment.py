@@ -1623,7 +1623,7 @@ table, th, td {{
              ).drop("timestamp_ramp", "to", "from")
         if self.plate_setup:
             d = d.join(
-                pl.from_pandas(self.plate_setup.well_sample, include_index=True).lazy().rename({"0": "sample", "index": "well"}), 
+                self.plate_setup.to_polars_by_well().lazy().select("well", pl.col("name").alias("sample")), 
                 on="well", how="left")
         return d
     

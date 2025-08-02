@@ -47,5 +47,23 @@ mod qslib {
 
     #[pymodule_export]
     use crate::message_log::get_n_zones;
-    
+
+    #[pymodule_export]
+    use crate::plate_setup::PlateSetup;
+
+    #[pymodule_export]
+    use crate::plate_setup::Sample;
+
+    #[pymodule_export]
+    use crate::data::FilterDataCollection;
+
+    #[pymodule_export]
+    use crate::data::PlatePointData;
+
+    #[pymodule_export]
+    use crate::message_log::RunLogInfo;
+
+    #[pymodule_export]
+    use crate::message_log::RunState;
+
 }

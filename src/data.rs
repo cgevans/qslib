@@ -1,5 +1,28 @@
+use polars::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
+
+#[cfg(feature = "python")]
+use pyo3::prelude::*;
+
+#[cfg(feature = "python")]
+use pyo3_polars::PyDataFrame;
+
+use once_cell::sync::Lazy;
+
+static WELL_DATA_SCHEMA: Lazy<Schema> = Lazy::new(|| {
+    Schema::from_iter(vec![
+        Field::new("filter_set".into(), DataType::String),
+        Field::new("stage".into(), DataType::UInt32),
+        Field::new("cycle".into(), DataType::UInt32),
+        Field::new("step".into(), DataType::UInt32),
+        Field::new("point".into(), DataType::UInt32),
+        Field::new("well".into(), DataType::String),
+        Field::new("row".into(), DataType::UInt32),
+        Field::new("column".into(), DataType::UInt32),
+        Field::new("fluorescence".into(), DataType::Float64),
+    ])
+});
 
 fn parse_well_data<'de, D>(deserializer: D) -> Result<Vec<f64>, D::Error>
 where
@@ -28,6 +51,7 @@ where
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct FilterDataCollection {
     #[serde(rename = "Name")]
     pub name: String,
@@ -35,7 +59,9 @@ pub struct FilterDataCollection {
     pub plate_point_data: Vec<PlatePointData>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct PlatePointData {
     #[serde(rename = "Stage")]
     pub stage: i32,
@@ -49,12 +75,30 @@ pub struct PlatePointData {
     pub plate_data: Vec<PlateData>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+impl PlatePointData {
+    pub fn to_polars(&self) -> LazyFrame {
+        let lfs = self.plate_data.iter().map(|pd| pd.to_polars().unwrap()).collect::<Vec<_>>();
+        let lf = concat(lfs, UnionArgs::default()).unwrap();
+        lf
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl PlatePointData {
+    #[pyo3(name = "to_polars")]
+    fn py_to_polars(&self) -> PyDataFrame {
+        PyDataFrame(self.to_polars().collect().unwrap())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct PlateData {
     #[serde(rename = "Rows")]
-    pub rows: i32,
+    pub rows: u32,
     #[serde(rename = "Cols")]
-    pub cols: i32,
+    pub cols: u32,
     #[serde(
         rename = "WellData",
         deserialize_with = "parse_well_data",
@@ -79,6 +123,20 @@ impl PlateData {
     pub fn filter_set(&self) -> Result<&str, DataError> {
         self.get_attribute("FILTER_SET")
             .ok_or(DataError::AttributeNotFound("FILTER_SET".to_string()))
+    }
+
+    fn well_names(&self) -> Vec<(char, u32)> {
+        (0..self.rows)
+            .flat_map(|row| (1..=self.cols).map(move |col| ((b'A' + row as u8) as char, col)))
+            .collect()
+    }
+
+    fn col_indices(&self) -> Vec<u32> {
+        (0..self.rows).flat_map(|_row| (0..self.cols)).collect()
+    }
+
+    fn row_indices(&self) -> Vec<u32> {
+        (0..self.rows).flat_map(|row| (0..self.cols).map(move |_col| row)).collect()
     }
 
     /// Convert plate data to InfluxDB line protocol format
@@ -106,9 +164,7 @@ impl PlateData {
         };
 
         // Generate well names (A01, A02, etc.)
-        let well_names: Vec<(char, i32)> = (0..self.rows)
-            .flat_map(|row| (1..=self.cols).map(move |col| ((b'A' + row as u8) as char, col)))
-            .collect();
+        let well_names = self.well_names();
 
         // Get temperatures if available
         let temperatures = self.set_temperatures.as_ref();
@@ -183,15 +239,7 @@ impl PlateData {
 
         Ok(lines)
     }
-}
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct Attribute {
-    pub key: String,
-    pub value: String,
-}
-
-impl PlateData {
     /// Get an attribute value by key
     pub fn get_attribute(&self, key: &str) -> Option<&str> {
         self.attributes
@@ -199,7 +247,72 @@ impl PlateData {
             .find(|attr| attr.key == key)
             .map(|attr| attr.value.as_str())
     }
+
+    pub fn get_temperatures(&self) -> Option<Vec<f64>> {
+        self.get_attribute("TEMPERATURE").map(|t| t.split(',').map(|t| t.parse::<f64>().unwrap()).collect())
+    }
+
+    pub fn get_exposure(&self) -> Option<i32> {
+        self.get_attribute("EXPOSURE").and_then(|e| e.parse::<i32>().ok())
+    }
+
+    pub fn get_stage(&self) -> Option<i32> {
+        self.get_attribute("STAGE").and_then(|s| s.parse::<i32>().ok())
+    }
+
+    pub fn get_cycle(&self) -> Option<i32> {
+        self.get_attribute("CYCLE").and_then(|s| s.parse::<i32>().ok())
+    }
+
+    pub fn get_step(&self) -> Option<i32> {
+        self.get_attribute("STEP").and_then(|s| s.parse::<i32>().ok())
+    }
+
+    pub fn get_point(&self) -> Option<i32> {
+        self.get_attribute("POINT").and_then(|s| s.parse::<i32>().ok())
+    }
+
+    pub fn to_polars(&self) -> Result<LazyFrame, PolarsError> {
+        let well_names = self.well_names();
+        let c = self.col_indices();
+        let templist = self.get_temperatures().unwrap();
+        let zone_size = self.cols / templist.len() as u32;
+        let sts = self.col_indices().iter().map(|c| templist[(c / zone_size) as usize]).collect::<Vec<_>>();
+        let zone = self.col_indices().iter().map(|c| c / zone_size).collect::<Vec<_>>();
+        let mut df = df![
+            "well" => well_names.iter().map(|(row, col)| format!("{row}{col}")).collect::<Vec<String>>(),
+            "row" => self.row_indices(),
+            "column" => c,
+            "fluorescence" => self.well_data.clone(),
+            "sample_temperature" => sts,
+            "zone" => zone,
+        ]?;
+        Ok(df.lazy().with_columns([lit(self.filter_set().unwrap().to_string()).alias("filter_set"),
+            lit(self.get_stage().unwrap()).alias("stage"),
+            lit(self.get_cycle().unwrap()).alias("cycle"),
+            lit(self.get_step().unwrap()).alias("step"),
+            lit(self.get_point().unwrap()).alias("point"),
+            lit(self.get_exposure().unwrap()).alias("exposure"),
+        ]))
+    }
 }
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl PlateData {
+    #[pyo3(name = "to_polars")]
+    fn py_to_polars(&self) -> PyDataFrame {
+        PyDataFrame(self.to_polars().unwrap().collect().unwrap())
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+pub struct Attribute {
+    pub key: String,
+    pub value: String,
+}
+
 
 impl FilterDataCollection {
     /// Load and parse filter data from XML file
@@ -209,6 +322,26 @@ impl FilterDataCollection {
         let xml_str = std::fs::read_to_string(path)?;
         let data: FilterDataCollection = quick_xml::de::from_str(&xml_str)?;
         Ok(data)
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl FilterDataCollection {
+
+    #[staticmethod]
+    #[pyo3(name = "read_file")]
+    pub fn py_read_file(path: &str) -> Self {
+        let xml_str = std::fs::read_to_string(path).unwrap();
+        let data: FilterDataCollection = quick_xml::de::from_str(&xml_str).unwrap();
+        data
+    }
+
+    #[pyo3(name = "to_polars")]
+    pub fn py_to_polars(&self) -> PyDataFrame {
+        let lfs = self.plate_point_data.iter().map(|pd| pd.to_polars()).collect::<Vec<_>>();
+        let lf = concat(lfs, UnionArgs::default()).unwrap();
+        PyDataFrame(lf.collect().unwrap())
     }
 }
 

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use polars::frame::DataFrame;
 use quick_xml::{de::from_str, se::to_string};
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
@@ -9,7 +10,7 @@ use pyo3::prelude::*;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename = "Plate", deny_unknown_fields)]
-#[cfg_attr(feature = "python", pyclass)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct PlateSetup {
     #[serde(rename = "Name")]
     pub name: Option<String>,
@@ -37,13 +38,15 @@ pub struct PlateSetup {
     pub passive_reference_dye: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct OtherTag {
     #[serde(flatten)]
     pub other: HashMap<String, MapOrString>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct PlateKind {
     #[serde(rename = "Name")]
     pub name: String,
@@ -55,7 +58,8 @@ pub struct PlateKind {
     pub column_count: u32,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct FeatureMap {
     #[serde(rename = "Feature")]
     pub feature: Feature,
@@ -63,7 +67,8 @@ pub struct FeatureMap {
     pub feature_values: Vec<FeatureValue>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct Feature {
     #[serde(rename = "Id")]
     pub id: String,
@@ -71,7 +76,8 @@ pub struct Feature {
     pub name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct FeatureValue {
     #[serde(rename = "Index")]
     pub index: u32,
@@ -79,14 +85,17 @@ pub struct FeatureValue {
     pub feature_item: FeatureItem,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+
 #[serde(untagged)]
 pub enum MapOrString {
     Map(HashMap<String, MapOrString>),
     String(String),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct FeatureItem {
     #[serde(rename = "Sample", skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sample>,
@@ -94,14 +103,15 @@ pub struct FeatureItem {
     pub other: HashMap<String, MapOrString>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "python", pyclass)]
 pub struct Sample {
     #[serde(rename = "Name")]
     pub name: String,
     #[serde(rename = "Color")]
     pub color: Color,
     #[serde(rename = "CustomProperty")]
-    pub custom_properties: Vec<CustomProperty>,
+    custom_properties: Vec<CustomProperty>,
 }
 
 impl Sample {
@@ -118,16 +128,36 @@ impl Sample {
         self
     }
 
-    pub fn with_custom_property(mut self, property: CustomProperty) -> Self {
-        self.custom_properties.push(property);
+    pub fn with_property(mut self, key: &str, value: String) -> Self {
+        self.set_property(key, value);
         self
+    }
+
+    pub fn get_property(&self, key: &str) -> Option<String> {
+        self.custom_properties.iter().find(|p| p.property == key).map(|p| p.value.clone())
+    }
+
+    pub fn get_property_ref(&self, key: &str) -> Option<&str> {
+        self.custom_properties.iter().find(|p| p.property == key).map(|p| p.value.as_str())
+    }
+
+    pub fn set_property(&mut self, key: &str, value: String) {
+        if let Some(prop) = self.custom_properties.iter_mut().find(|p| p.property == key) {
+            prop.value = value;
+        } else {
+            self.custom_properties.push(CustomProperty { property: key.to_string(), value });
+        }
+    }
+
+    pub fn clear_property(&mut self, key: &str) {
+        self.custom_properties.retain(|p| p.property != key);
     }
 }
 
 /// A color in RGBA format, but serialized and deserialized as an i32.
 /// This makes little sense, but it is the format used by the QuantStudio
 /// files.
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Color {
     r: u8,
     g: u8,
@@ -182,13 +212,25 @@ impl<'de> Deserialize<'de> for Color {
     }
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CustomProperty {
-    #[serde(rename = "Property")]
-    pub property: Vec<String>,
-    #[serde(rename = "Value")]
-    pub value: Vec<String>,
+impl TryFrom<String> for Color {
+    type Error = String;
+    fn try_from(color: String) -> Result<Self, Self::Error> {
+        if let [r, g, b, a] = color.as_bytes() {
+            Ok(Self { r: r.to_owned(), g: g.to_owned(), b: b.to_owned(), a: a.to_owned() })
+        } else {
+            Err(format!("Invalid color: {}", color))
+        }
+    }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct CustomProperty {
+    #[serde(rename = "Property")]
+    pub property: String,
+    #[serde(rename = "Value")]
+    pub value: String,
+}
+
 
 impl PlateSetup {
     pub fn from_xml(xml: &str) -> Result<Self, quick_xml::DeError> {
@@ -291,6 +333,7 @@ impl PlateSetup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "python", pyclass)]
 pub enum PlateType {
     #[default]
     Well96,
@@ -326,7 +369,168 @@ impl<'de> Deserialize<'de> for PlateType {
 #[cfg(feature = "python")]
 #[pymethods]
 impl PlateSetup {
+    #[new]
+    #[pyo3(signature = (name=None, plate_type=None))]
+    fn new(name: Option<String>, plate_type: Option<String>) -> PyResult<Self> {
 
+        let plate_type = match plate_type.as_deref().unwrap_or("TYPE_8X12") {
+            "TYPE_8X12" => PlateType::Well96,
+            "TYPE_16X24" => PlateType::Well384,
+            _ => return Err(pyo3::exceptions::PyValueError::new_err("Invalid plate type")),
+        };
+
+        let (rows, columns) = match plate_type {
+            PlateType::Well96 => (8, 12),
+            PlateType::Well384 => (16, 24),
+        };
+
+        Ok(PlateSetup {
+            name,
+            barcode: None,
+            description: None,
+            rows,
+            columns,
+            plate_kinds: vec![PlateKind {
+                name: match plate_type {
+                    PlateType::Well96 => "96-Well Plate (8x12)".to_string(),
+                    PlateType::Well384 => "384-Well Plate (16x24)".to_string(),
+                },
+                kind_type: plate_type,
+                row_count: rows,
+                column_count: columns,
+            }],
+            feature_maps: vec![],
+            plate_type,
+            wells: vec![],
+            multi_zone_enabled: None,
+            logical_zones: vec![],
+            passive_reference_dye: None,
+        })
+    }
+
+    fn print_debug(&self) {
+        println!("{:?}", self);
+    }
+
+    #[staticmethod]
+    fn from_xml_string(xml: &str) -> PyResult<Self> {
+        PlateSetup::from_xml(xml).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    fn to_xml_string(&self) -> PyResult<String> {
+        self.to_xml().map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+    }
+
+    #[getter]
+    fn name(&self) -> Option<String> {
+        self.name.clone()
+    }
+
+    #[setter]
+    fn set_name(&mut self, name: Option<String>) {
+        self.name = name;
+    }
+
+    #[getter]
+    fn barcode(&self) -> Option<String> {
+        self.barcode.clone()
+    }
+
+    #[setter]
+    fn set_barcode(&mut self, barcode: Option<String>) {
+        self.barcode = barcode;
+    }
+
+    #[getter]
+    fn description(&self) -> Option<String> {
+        self.description.clone()
+    }
+
+    #[setter]
+    fn set_description(&mut self, description: Option<String>) {
+        self.description = description;
+    }
+
+    #[getter]
+    fn rows(&self) -> u32 {
+        self.rows
+    }
+
+    #[getter]
+    fn columns(&self) -> u32 {
+        self.columns
+    }
+
+    #[getter]
+    fn get_plate_type(&self) -> String {
+        match self.plate_type {
+            PlateType::Well96 => "TYPE_8X12".to_string(),
+            PlateType::Well384 => "TYPE_16X24".to_string(),
+        }
+    }
+
+    fn get_well_names(&self) -> Vec<String> {
+        self.well_names()
+    }
+
+    fn get_sample_wells_dict(&self) -> std::collections::HashMap<String, Vec<String>> {
+        self.get_sample_wells()
+    }
+
+    fn to_line_protocol(&self, timestamp: i64, run_name: Option<&str>, machine_name: Option<&str>) -> Vec<String> {
+        self.to_lineprotocol(timestamp, run_name, machine_name)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("PlateSetup(name={:?}, plate_type={}, rows={}, columns={})", 
+                self.name, self.get_plate_type(), self.rows, self.columns)
+    }
+
+    fn __str__(&self) -> String {
+        let sample_wells = self.get_sample_wells();
+        if sample_wells.is_empty() {
+            format!("Empty PlateSetup ({} wells)", self.rows * self.columns)
+        } else {
+            let mut result = format!("PlateSetup with {} samples:\n", sample_wells.len());
+            for (sample, wells) in sample_wells.iter() {
+                result.push_str(&format!("  {}: {} wells\n", sample, wells.len()));
+            }
+            result
+        }
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl Sample {
+    #[new]
+    fn new_py(name: String) -> Self {
+        Self::new(name)
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    #[setter]
+    fn py_set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    #[getter]
+    fn color(&self) -> String {
+        self.color.to_hex()
+    }
+
+    #[setter]
+    fn set_color(&mut self, color: String) {
+        self.color = Color::try_from(color).unwrap();
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Sample(name='{}', color={:?})", self.name, self.color)
+    }
 }
 
 #[cfg(test)]
@@ -472,17 +676,14 @@ mod tests {
     fn test_sample_serialization() {
         let sample = Sample::new("Test Sample".to_string())
             .with_color(Color::rgb(255, 128, 64))
-            .with_custom_property(CustomProperty {
-                property: vec!["SP_UUID".to_string()],
-                value: vec!["f29793389d7511efbfaeb88584b13f7c".to_string()],
-            });
+            .with_property("SP_UUID", "f29793389d7511efbfaeb88584b13f7c".to_string());
         let serialized = to_string(&sample).unwrap();
         let deserialized: Sample = from_str(&serialized).unwrap();
         assert_eq!(sample.color.to_rgba(), deserialized.color.to_rgba());
         assert_eq!(sample.name, deserialized.name);
         assert_eq!(
-            sample.custom_properties[0].value[0],
-            deserialized.custom_properties[0].value[0]
+            sample.get_property("SP_UUID").unwrap(),
+            deserialized.get_property("SP_UUID").unwrap()
         );
     }
 
