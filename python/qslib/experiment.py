@@ -17,7 +17,7 @@ import polars as pl
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import InitVar, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from glob import glob
 from pathlib import Path
 from typing import (
@@ -47,6 +47,7 @@ from qslib.scpi_commands import AccessLevel, SCPICommand
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
 from ._util import _nowuuid, _pp_seqsliceint, _set_or_create, cached_method
 from ._qslib import RunLogInfo
+from .polars_data import polars_process
 from .base import RunStatus
 from .data import (
     FilterDataReading,
@@ -1781,19 +1782,17 @@ table, th, td {{
         self.activeendtime = datetime.fromtimestamp(ms.activeendtime, tz=timezone.utc) if ms.activeendtime else None
         self.runstate = ms.runstate
 
-        self.stages = pd.DataFrame({
+        self.stages = pl.DataFrame({
             "stage": ms.stage_names,
             "start_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_start_times],
             "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_end_times],
-        })
+        }).with_row_index("stage_index")
 
         if self.activestarttime:
-            self.stages["start_seconds"] = (
-                self.stages["start_time"] - self.activestarttime
-            ).astype("timedelta64[ms]").astype("int64") / 1000
-            self.stages["end_seconds"] = (
-                self.stages["end_time"] - self.activestarttime
-            ).astype("timedelta64[ms]").astype("int64") / 1000
+            self.stages = self.stages.with_columns(
+                start_seconds=(pl.col("start_time") - self.activestarttime).dt.total_milliseconds().cast(pl.Float64) / 1000,
+                end_seconds=(pl.col("end_time") - self.activestarttime).dt.total_milliseconds().cast(pl.Float64) / 1000,
+            )
 
         try:
             # In normal runs, the protocol is there without the PROT command at the
@@ -1852,17 +1851,19 @@ table, th, td {{
         for m in re.finditer(
             rb"^Debug ([\d.]+) (Drawer|Cover) (.+)$", msglog, re.MULTILINE
         ):
-            events.append((float(m[1]), m[2].decode("utf-8"), m[3].decode("utf-8")))
+            events.append((int(float(m[1])*1000), m[2].decode("utf-8"), m[3].decode("utf-8")))
 
         events = pl.DataFrame(
-            events, schema={"timestamp": pl.Float64, "type": pl.Utf8, "message": pl.Utf8}
+            events, schema={"time": pl.Datetime("ms", "UTC"), "type": pl.Categorical, "message": pl.Categorical}, orient="row"
         )
 
         if self.activestarttime:
             events = events.with_columns(
-                (pl.col("timestamp") - self.activestarttime.timestamp()).alias("seconds")).with_columns(
+                (pl.col("time") - self.activestarttime).alias("seconds")).with_columns(
                 (pl.col("seconds") / 3600.0).alias("hours")
             )
+        
+        return events
 
     @property
     @cached_method
@@ -1905,7 +1906,7 @@ table, th, td {{
     @property
     @cached_method
     def num_zones(self) -> int:
-        temps, num_zones = self._temperatures_from_log()
+        temps, num_zones = self._temperatures_polars
         if temps is None:
             raise ValueError("Could not load temperatures")
         return num_zones
@@ -1931,7 +1932,7 @@ table, th, td {{
     @cached_method
     def temperatures_polars(self) -> pl.DataFrame:
         tl, n_zones = self._temperatures_polars
-        tl = tl.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")))
+        tl = tl.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")).alias("time"))
         return tl
 
     def _temperatures_from_log(self) -> tuple[pd.DataFrame, int]:
@@ -2276,7 +2277,7 @@ table, th, td {{
         figure_kw: dict[str, Any] | None = None,
         line_kw: dict[str, Any] | None = None,
         start_time=None,
-        time_units: Literal["hours", "seconds"] = "hours",
+        time_units: Literal["h", "m", "s"] = "h",
     ) -> "Sequence[Axes]":
         """
         Plots fluorescence over time, optionally with temperatures over time.
@@ -2372,9 +2373,6 @@ table, th, td {{
             raise ValueError(
                 "Can't specify both process and normalization (include normalization in process list)."
             )
-        if isinstance(process, Processor):
-            process = [process]
-
         if filters is None:
             filters = self.all_filters
 
@@ -2409,17 +2407,17 @@ table, th, td {{
 
         ax = cast("Sequence[Axes]", ax)
 
-        data = self.welldata
+        data = self.filter_data_polars.lazy()
 
-        for processor in process:
-            data = processor.process_scoped(data, "all")
+        data = data.with_columns(time = self._time_after_activestart_pl("timestamp", time_units))
 
-        all_wells = self.plate_setup.get_wells(samples) + ["time"]
+        all_wells = data.filter(pl.col("sample").is_in(samples) | pl.col("well").is_in(samples))
 
-        reduceddata = data.loc[[f.lowerform for f in filters], all_wells]
+        reduceddata = all_wells.filter(pl.col("filter_set").is_in([f.lowerform for f in filters]))
 
-        for processor in process:
-            reduceddata = processor.process_scoped(reduceddata, "limited")
+        reduceddata, ylabel = polars_process(reduceddata, process, ylabel="fluorescence")
+
+        
 
         if start_time is None:
             start_time_value = 0.0
@@ -2429,39 +2427,31 @@ table, th, td {{
             raise TypeError("start_time invalid type")
 
         lines = []
-        for filter in filters:
-            filterdat: pd.DataFrame = reduceddata.loc[filter.lowerform, :]  # type: ignore
+        reduceddata = reduceddata.collect()
+        for (filter, sample, well), group in reduceddata.group_by(["filter_set", "sample", "well"]):
+            label = _gen_label(
+                sample, #self.plate_setup.get_descriptive_string(sample), # FIXME
+                well,
+                filter,
+                samples,
+                [], # self.plate_setup.get_wells(sample), # FIXME
+                filters,
+            )
 
-            for sample in samples:
-                wells = self.plate_setup.get_wells(sample)
+        
+            lines.append(
+                ax[0].plot(
+                    group["time"],
+                    group["processed_fluorescence"],
+                    label=label,
+                    marker=marker,
+                    **(line_kw if line_kw is not None else {}),
+                )
+            )
 
-                for well in wells:
-                    label = _gen_label(
-                        self.plate_setup.get_descriptive_string(sample),
-                        well,
-                        filter,
-                        samples,
-                        wells,
-                        filters,
-                    )
+        ax[-1].set_xlabel(f"time ({time_units})")
 
-                    lines.append(
-                        ax[0].plot(
-                            filterdat.loc[stages, ("time", time_units)]
-                            - start_time_value,
-                            filterdat.loc[stages, (well, "fl")],
-                            label=label,
-                            marker=marker,
-                            **(line_kw if line_kw is not None else {}),
-                        )
-                    )
-
-        ax[-1].set_xlabel("time (hours)")
-
-        ylabel: str | None = None
-        for processor in process:
-            ylabel = processor.ylabel(ylabel)
-        ax[0].set_ylabel(ylabel or "fluorescence")
+        ax[0].set_ylabel(ylabel)
 
         if legend is True:
             if len(lines) < 6:
@@ -2519,17 +2509,16 @@ table, th, td {{
             xlims = ax[0].get_xlim()
             tmin, tmax = np.inf, 0.0
 
-            for i, fr in reduceddata.groupby("filter_set", as_index=False):
-                d = fr.loc[i, ("time", time_units)].loc[stages]
-                tmin = min(tmin, d.min())
-                tmax = max(tmax, d.max())
+            tmin = reduceddata.select(pl.col("time")).min()
+            tmax = reduceddata.select(pl.col("time")).max()
 
             self.plot_temperatures(
-                hours=(tmin, tmax),
+                times=(tmin, tmax),
                 ax=ax[1],
                 stage_lines=t_sl,
                 annotate_stage_lines=t_asl,
                 annotate_events=annotate_events,
+                time_units=time_units,
             )
 
             ax[0].set_xlim(xlims)
@@ -2553,15 +2542,17 @@ table, th, td {{
     def plot_temperatures(
         self,
         *,
-        sel: slice | Callable[[pd.DataFrame], bool] = slice(None),
-        hours: tuple[float, float] | None = None,
-        ax: Optional[Axes] = None,
+        sel: pl.Expr | None = None,
+        times: tuple[float, float] | None = None,
+        ax: "Axes | None" = None,
         stage_lines: bool = True,
         annotate_stage_lines: bool | float = True,
         annotate_events: bool = True,
         legend: bool = False,
         figure_kw: Mapping[str, Any] | None = None,
         line_kw: Mapping[str, Any] | None = None,
+        time_units: Literal["h", "m", "s"] = "h",
+        method: Literal["matplotlib", "altair"] = "matplotlib",
     ) -> "Axes":
         """Plot sample temperature readings.
 
@@ -2570,12 +2561,15 @@ table, th, td {{
 
         sel
             A selector for the temperature DataFrame.  This is not necessarily
-            easy to use; `hours` is an easier alternative.
+            easy to use; `times` is an easier alternative.
 
-        hours
-            Constructs a selector to show temperatures for a time range.
+        times
+            Constructs a selector to show temperatures for a time range (after activestarttime).
             :param:`sel` should not be set.
 
+        time_units
+            The units of the time range, and units to plot.  "h" for hours, "m" for minutes, "s" for seconds.
+            
         ax
             Optional.  An axes to put the plot on.  If not provided, the function will
             create a new figure, by default with constrained_layout=True, though this
@@ -2601,61 +2595,111 @@ table, th, td {{
 
         line_kw
             Optional.  A dictionary of keywords passed to plot commands.
+
+        method
         """
 
         import matplotlib.pyplot as plt
         from matplotlib.axes import Axes
 
-        if not hasattr(self, "temperatures") or self.temperatures is None:
-            raise ValueError("Experiment has no temperature data.")
-
-        if hours is not None:
-            if sel != slice(None):
-                raise ValueError("sel and hours cannot both be set.")
-            tmin, tmax = hours
-
-            sel = lambda x: (tmin <= x["time", "hours"]) & (x["time", "hours"] <= tmax)
-
-        if ax is None:
-            _, ax = plt.subplots(**(figure_kw or {}))
-
-        ax = cast(Axes, ax)
-
-        reltemps = self.temperatures.loc[sel, :]
-
-        for x in range(1, self.num_zones + 1):
-            ax.plot(
-                reltemps.loc[:, ("time", "hours")],
-                reltemps.loc[:, ("sample", x)],
-                label=f"zone {x}",
-                **(line_kw or {}),
-            )
-
-        v = reltemps.loc[:, ("time", "hours")]
-        totseconds = 3600.0 * (v.iloc[-1] - v.iloc[0])
-
-        self._annotate_stages(
-            ax, stage_lines, annotate_stage_lines, totseconds, stages=False
+        temps = self.temperatures_polars.with_columns(
+            time = self._time_after_activestart_pl("time", time_units),
         )
 
-        if annotate_events:
-            self._annotate_events(ax, stages=False)
+        if sel is None:
+            sel = True
+        if times is None:
+            times = True
+        else:
+            times = pl.col("time").is_between(times[0], times[1])
 
-        ax.set_ylabel("temperature (°C)")
-        ax.set_xlabel("time (hours)")
+        if (sel is not True) or (times is not True):
+            temps = temps.filter(sel, times)
 
-        if legend:
-            ax.legend()
+        if method == "matplotlib":
+            import matplotlib.pyplot as plt
+            if ax is None:
+                _, ax = plt.subplots(**(figure_kw or {}))
 
-        return ax
+            ax = cast(Axes, ax)
+
+            for x in range(1, self.num_zones + 1):
+                t = temps.filter(pl.col("kind") == "sample", pl.col("zone") == x)
+                ax.plot(
+                    t["time"],
+                    t["temperature"],
+                    label=f"zone {x}",
+                    **(line_kw or {}),
+                )
+
+            tot_time = temps["time"].max() - temps["time"].min()
+
+            self._annotate_stages(
+                ax, stage_lines, annotate_stage_lines, tot_time, stages=False
+            )
+
+            if annotate_events:
+                self._annotate_events(ax, stages=False)
+
+            ax.set_ylabel("temperature (°C)")
+            ax.set_xlabel(f"time ({time_units})")
+
+            if legend:
+                ax.legend()
+
+            return ax
+        elif method == "altair":
+            import altair as alt
+            alt.data_transformers.enable("vegafusion")
+
+            temps = temps.filter(pl.col("kind") == "sample")
+
+            c = alt.Chart(temps).encode(
+                x="time",
+            )
+
+            line = c.mark_line().encode(
+                x="time",
+                y="temperature",
+                color="zone:N",
+                tooltip=["time", "zone", "temperature"],
+            )
+
+
+            # # Create a selection that chooses the nearest point & selects based on x-value
+            # nearest = alt.selection_point(nearest=True, on="pointerover",
+            #                             fields=["x"], empty=False)
+
+            # when_near = alt.when(nearest)
+
+            # # Draw points on the line, and highlight based on selection
+            # points = line.mark_point().encode(
+            #     opacity=when_near.then(alt.value(1)).otherwise(alt.value(0))
+            # )
+
+            # source = temps.to_pandas()
+            # # Draw a rule at the location of the selection
+            # rules = alt.Chart(source).transform_pivot(
+            #     "category",
+            #     value="y",
+            #     groupby=["x"]
+            # ).mark_rule(color="gray").encode(
+            #     x="x:Q",
+            #     opacity=when_near.then(alt.value(0.3)).otherwise(alt.value(0)),
+            #     tooltip=[alt.Tooltip(c, type="quantitative") for c in columns],
+            # ).add_params(nearest)
+
+
+            return line
 
     def _annotate_stages(
         self,
         ax: "Axes",
         stage_lines: bool,
         annotate_stage_lines: bool | float,
-        totseconds,
+        tot_time,
         stages: slice | Sequence[int] | bool = slice(None),
+        x_units: Literal["h", "m", "s"] = "h",
     ):
         if stage_lines:
             if isinstance(annotate_stage_lines, float):
@@ -2664,28 +2708,27 @@ table, th, td {{
             else:
                 annotate_frac = 0.05
 
-            for _, s in self.stages.iterrows():
-                if s.stage == "PRERUN" or s.stage == "POSTRUN" or s.stage == "POSTRun":
-                    continue  # FIXME: maybe we should include these
-                    #
+            xlim = ax.get_xlim()
 
-                xlim = ax.get_xlim()
-                if (stages != slice(None)) and (
-                    not (xlim[0] <= s.start_seconds / 3600.0 <= xlim[1])
-                ):
+            stages = self.stages.with_columns(
+                start_time = self._time_after_activestart_pl("start_time", x_units),
+                end_time = self._time_after_activestart_pl("end_time", x_units),
+            )
+
+            for s in stages.iter_rows(named=True):
+                print(s)
+                if s["start_time"] < xlim[0] or s["end_time"] > xlim[1]:
                     continue
-
-                xtrans = ax.get_xaxis_transform()
                 vline = ax.axvline(
-                    s.start_seconds / 3600.0,
+                    s["start_time"],
                     linestyle="dotted",
                     color="black",
-                    linewidth=0.5,
+                    linewidth=0.5, 
                 )
-                durfrac = (s.end_seconds - s.start_seconds) / totseconds
+                durfrac = (s["end_time"] - s["start_time"]) / tot_time
                 if annotate_stage_lines and (durfrac > annotate_frac):
                     ax.annotate(
-                        f"stage {s.stage}",
+                        f"stage {s['stage']}",
                         xy=(1, 0.9),
                         xycoords=vline,
                         xytext=(5, 0),
@@ -2695,66 +2738,88 @@ table, th, td {{
                         horizontalalignment="left",
                     )
 
-    def _annotate_events(self, ax, stages: slice | Sequence[int] | bool = slice(None)):
-        first_time = self.stages.iloc[0, :]["start_seconds"] / 3600.0
-        last_time = self.stages.iloc[-1, :]["end_seconds"] / 3600.0
+    def _open_ranges(self) -> pl.DataFrame:
+        x = self.events.filter(pl.col("type") == "Cover")
 
-        opi = self.events.index[
-            (self.events["type"] == "Cover") & (self.events["message"] == "Raising")
-        ]
-        cl = self.events.index[
-            (self.events["type"] == "Cover") & (self.events["message"] == "Lowered")
-        ]
-        cli = [cl[cl > x][0] if len(cl[cl > x]) > 0 else None for x in opi]
-        for x1, x2 in zip(opi, cli):
-            xlim = ax.get_xlim()
-            if not (
-                xlim[0] <= self.events.loc[x1, "hours"] <= xlim[1]
-                or (
-                    x2 is not None
-                    and xlim[0] <= self.events.loc[x2, "hours"] <= xlim[1]
-                )
-            ):
-                if stages != slice(None):
-                    continue
-            ax.axvspan(
-                self.events.loc[x1, "hours"],
-                self.events.loc[x2, "hours"] if x2 is not None else last_time,
-                alpha=0.5,
-                color="yellow",
+        a = x.filter(pl.col("message") == "Lowered").join_asof(
+            x.filter(pl.col("message") == "Raising"), on="time", coalesce=False).select(
+                pl.col("time_right").alias("open_time"),
+                pl.col("time").alias("close_time"),
             )
 
-        opi = self.events.index[
-            (self.events["type"] == "Drawer") & (self.events["message"] == "Opening")
-        ]
-        cl = self.events.index[
-            (self.events["type"] == "Drawer") & (self.events["message"] == "Closed")
-        ]
-        cli = [cl[cl > x][0] if len(cl[cl > x]) > 0 else None for x in opi]
-        for x1, x2 in zip(opi, cli):
-            xlim = ax.get_xlim()
-            if not (
-                xlim[0] <= self.events.loc[x1, "hours"] <= xlim[1]
-                or (
-                    x2 is not None
-                    and xlim[0] <= self.events.loc[x2, "hours"] <= xlim[1]
-                )
-            ):
-                if stages != slice(None):
-                    continue
-            ax.axvspan(
-                self.events.loc[x1, "hours"],
-                self.events.loc[x2, "hours"] if x2 is not None else last_time,
-                alpha=0.5,
-                color="red",
+        b = x.filter(pl.col("message") == "Raising").join_asof(
+            x.filter(pl.col("message") == "Lowered"), on="time", strategy="forward", coalesce=False).select(
+                pl.col("time").alias("open_time"),
+                pl.col("time_right").alias("close_time"),
             )
+
+        q=  pl.concat([a, b], how="diagonal").unique().with_columns(type=pl.lit("Cover"))
+
+        x = self.events.filter(pl.col("type") == "Drawer")
+
+        a = x.filter(pl.col("message") == "Opening").join_asof(
+            x.filter(pl.col("message") == "Closed"), on="time", coalesce=False).select(
+                pl.col("time_right").alias("open_time"),
+                pl.col("time").alias("close_time"),
+            )
+
+        b = x.filter(pl.col("message") == "Closed").join_asof(
+            x.filter(pl.col("message") == "Opening"), on="time", strategy="forward", coalesce=False).select(
+                pl.col("time").alias("open_time"),
+                pl.col("time_right").alias("close_time"),
+            )
+
+        return q.extend(pl.concat([a, b], how="diagonal").unique().with_columns(type=pl.lit("Drawer"))).sort("open_time")
+
+
+    def _time_after_activestart_pl(self, col: str = "time", units: Literal["h", "m", "s", "ms"] = "h") -> pl.Expr:
+        match units:
+            case "h":
+                return (pl.col(col)-pl.lit(self.activestarttime)).dt.total_microseconds() / 3600000000.0
+            case "m":
+                return (pl.col(col)-pl.lit(self.activestarttime)).dt.total_microseconds() / 60000000.0
+            case "s":
+                return (pl.col(col)-pl.lit(self.activestarttime)).dt.total_microseconds() / 1000000.0
+            case "ms":
+                return (pl.col(col)-pl.lit(self.activestarttime)).dt.total_microseconds() / 1000.0
+            case _:
+                raise ValueError(f"Invalid units: {units}")
+
+    def _annotate_events(self, ax, stages: slice | Sequence[int] | bool = slice(None), x_units: Literal["h", "m", "s"] = "h"):
+        open_ranges = self._open_ranges().with_columns(
+            pl.col("open_time").fill_null(pl.lit(self.activestarttime)),
+            pl.col("close_time").fill_null(pl.lit(self.activeendtime)),
+        ).with_columns(
+            open_time=self._time_after_activestart_pl("open_time", x_units),
+            close_time=self._time_after_activestart_pl("close_time", x_units),
+        )
+
+        xlim = ax.get_xlim()
+
+        for ev in open_ranges.filter(pl.col("type") == "Cover").iter_rows(named=True):                
+                ax.axvspan(
+                    ev["open_time"],
+                    ev["close_time"],
+                    alpha=0.5,
+                    color="yellow",
+                )
+
+        for ev in open_ranges.filter(pl.col("type") == "Drawer").iter_rows(named=True):                
+                ax.axvspan(
+                    ev["open_time"],
+                    ev["close_time"],
+                    alpha=0.5,
+                    color="red",
+                )
+
+        ax.set_xlim(xlim)
 
     def plot_over_time_altair(
             self,
             samples: str | Sequence[str] | None = None,
             filters: str | FilterSet | Collection[str | FilterSet] | None = None,
             stages: slice | int | Sequence[int] | None = None,
-            process = None,
+            process = (),
             start_time: Literal['experiment', 'stage'] = 'experiment',
             duration_units: Literal["hours", "minutes", "seconds"] = "hours",
             show_legend: bool = True,
@@ -2763,14 +2828,11 @@ table, th, td {{
         alt.data_transformers.enable("vegafusion")
 
         d = self.filter_data_polars.lazy()
-        match process:
-            case tuple():
-                pass
-            case pl.Expr():
-                d = d.with_columns(process.alias("processed_fluorescence"))
-            case None:
-                d = d.with_columns(pl.col("fluorescence").alias("processed_fluorescence"))
 
+        ylabel = "fluorescence"
+        
+        d, ylabel = polars_process(d, process, ylabel)
+        
         match samples:
             case None:
                 pass
@@ -2839,7 +2901,7 @@ table, th, td {{
 
         d = d.collect()
         
-        return alt.Chart(d).mark_line().encode(
+        return alt.Chart(d).mark_line(point=True).encode(
             alt.X("time_since_mark_float:Q", axis=alt.Axis(title=f"Time since {start_time_descr} ({duration_units})")),
             alt.Y("processed_fluorescence:Q", axis=alt.Axis(title="Fluorescence")).scale(zero=False),
             color=alt.Color("sample:N", legend=alt.Legend(title="Sample") if show_legend else None),
@@ -2951,3 +3013,4 @@ def _get_manifest_info(f: zipfile.ZipFile | os.PathLike[str] | str, checkinfo=Tr
         )
 
     return manifest_properties
+

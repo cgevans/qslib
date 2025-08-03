@@ -1,9 +1,10 @@
+from dataclasses import dataclass
 from .data import FilterDataReading
 from datetime import datetime, timezone
 import numpy as np
-from typing import Literal, Sequence
+from typing import ClassVar, Literal, Sequence
 from typing import TypedDict
-
+import re
 
 try:
     import polars as pl
@@ -45,59 +46,126 @@ def polars_from_filterdata(dr: FilterDataReading, start_time: float | None = Non
 
 
 def match_expr(
-    stages: int | Sequence[int] | range | None = None,
-    cycles: int | Sequence[int] | range | None = None,
-    steps: int | Sequence[int] | range | None = None,
-    points: int | Sequence[int] | range | None = None,
+    stage: int | Sequence[int] | range | None = None,
+    cycle: int | Sequence[int] | range | None = None,
+    step: int | Sequence[int] | range | None = None,
+    point: int | Sequence[int] | range | None = None,
+    expr: pl.Expr | None = None,
 ):
     fexpr = True
-    match stages:
+    match stage:
         case int():
-            fexpr = fexpr & (pl.col("stage") == stages)
+            fexpr = fexpr & (pl.col("stage") == stage)
         case x if isinstance(x, Sequence):
-            fexpr = fexpr & pl.col("stage").is_in(stages)
+            fexpr = fexpr & pl.col("stage").is_in(stage)
         case range():
-            fexpr = fexpr & pl.col("stage").is_in(range(stages.start, stages.stop))
-    match cycles:
+            fexpr = fexpr & pl.col("stage").is_in(range(stage.start, stage.stop))
+    match cycle:
         case int():
-            fexpr = fexpr & (pl.col("cycle") == cycles)
+            fexpr = fexpr & (pl.col("cycle") == cycle)
         case x if isinstance(x, Sequence):
-            fexpr = fexpr & pl.col("cycle").is_in(cycles)
+            fexpr = fexpr & pl.col("cycle").is_in(cycle)
         case range():
-            fexpr = fexpr & pl.col("cycle").is_in(range(cycles.start, cycles.stop))
-    match steps:
+            fexpr = fexpr & pl.col("cycle").is_in(range(cycle.start, cycle.stop))
+    match step:
         case int():
-            fexpr = fexpr & (pl.col("step") == steps)
+            fexpr = fexpr & (pl.col("step") == step)
         case x if isinstance(x, Sequence):
-            fexpr = fexpr & pl.col("step").is_in(steps)
+            fexpr = fexpr & pl.col("step").is_in(step)
         case range():
-            fexpr = fexpr & pl.col("step").is_in(range(steps.start, steps.stop))
-    match points:
+            fexpr = fexpr & pl.col("step").is_in(range(step.start, step.stop))
+    match point:
         case int():
-            fexpr = fexpr & (pl.col("point") == points)
+            fexpr = fexpr & (pl.col("point") == point)
         case x if isinstance(x, Sequence):
-            fexpr = fexpr & pl.col("point").is_in(points)
+            fexpr = fexpr & pl.col("point").is_in(point)
         case range():
-            fexpr = fexpr & pl.col("point").is_in(range(points.start, points.stop))
+            fexpr = fexpr & pl.col("point").is_in(range(point.start, point.stop))
+    if expr is not None:
+        fexpr = fexpr & expr
     return fexpr
 
 def match_expr_single(stage: int | None = None, cycle: int | None = None, step: int | None = None, point: int | None = None):
-    return match_expr(stages=stage, cycles=cycle, steps=step, points=point)
+    return match_expr(stage=stage, cycle=cycle, step=step, point=point)
 
 class FilterDict(TypedDict):
     stage: int | Sequence[int] | range | None
     cycle: int | Sequence[int] | range | None
     step: int | Sequence[int] | range | None
     point: int | Sequence[int] | range | None
+    expr: pl.Expr | None = None
 
 
+@dataclass(init=False)
+class NormToMeanPerWell:
+    """
+    A Processor that divides the fluorescence reading for each (filterset, well) pair
+    by the mean value of that pair within a particular selection of data.
 
-def norm_to_mean_per_well(**norm_filter: FilterDict):
-    return (
-            pl.col("fluorescence")
-            / pl.col("fluorescence").filter(match_expr(**norm_filter)).mean().over("well", "filter_set")
+    The easiest way to use this is to give a particular stage (all data in that
+    stage will be used), or a stage and set of cycles (those cycles in that stage
+    will be used).  For example:
+
+    - To normalize to the mean stage 8 values, use `NormToMeanPerWell(stage=8)`.
+    - To normalize to the first 5 cycles of stage 2, use
+        NormToMeanPerWell(stage=2, cycle=slice(1, 6)).
+
+    `selection` allows arbitrary Pandas indexing (without the filter_set level
+    of the MultiIndex) for unusual cases.
+    """
+
+    selection: pl.Expr | None
+    scope: ClassVar[str] = "limited"
+
+    def __init__(
+        self,
+        stage: int | slice | Sequence[int] | None = None,
+        step: int | slice | Sequence[int] | None = None,
+        cycle: int | slice | Sequence[int] | None = None,
+        point: int | slice | Sequence[int] | None = None,
+        *,
+        expr: pl.Expr | None = None,
+    ):
+        self.selection = match_expr(stage=stage, step=step, cycle=cycle, point=point, expr=expr)
+
+    def ylabel(self, previous_label: str | None = None) -> str:
+        if previous_label is None:
+            return "fluorescence (norm. to mean)"
+        return re.sub(r"\(([^)]+)\)", r"(\1, norm. to mean)", previous_label)
+
+    def process(self, data: pl.LazyFrame) -> pl.LazyFrame:
+        return data.with_columns(
+            pl.col("processed_fluorescence") / pl.col("processed_fluorescence").filter(self.selection).mean().over("well", "filter_set")
         )
-    
+
+@dataclass(init=False)
+class SmoothWindowMean:
+    """
+    A Processor that smooths fluorescence readings using Pandas' Rolling,
+    and mean.
+    """
+
+    window: int
+    min_samples: int | None = None
+    center: bool = False
+    scope: ClassVar = "limited"
+
+    def process(self, data: pl.LazyFrame) -> pl.LazyFrame:
+        return data.with_columns(
+            pl.col("processed_fluorescence").rolling_mean(
+                window_size=self.window,
+                min_periods=self.min_samples,
+                center=self.center,
+            )
+        )
+
+    def ylabel(self, previous_label: str | None = None) -> str:
+        if previous_label is None:
+            return f"fluorescence (window mean {self.window})"
+        return re.sub(
+            r"\(([^)]+)\)", rf"(\1, window mean {self.window})", previous_label
+        )
+
 
 def norm_zero_to_one_per_well(zero_filter: FilterDict, one_filter: FilterDict):
     norm_fl_a =  pl.col("fluorescence") - pl.col("fluorescence").filter(match_expr(**zero_filter)).mean().over("well", "filter_set")
@@ -105,4 +173,18 @@ def norm_zero_to_one_per_well(zero_filter: FilterDict, one_filter: FilterDict):
         norm_fl_a / norm_fl_a.filter(match_expr(**one_filter)).mean().over("well", "filter_set")
     )
 
-
+def polars_process(data: pl.LazyFrame, processors, ylabel: str | None = None):
+    data = data.with_columns(pl.col("fluorescence").alias("processed_fluorescence"))
+    if not isinstance(processors, Sequence):
+        processors = [processors]
+    for processor in processors:
+        if isinstance(processor, pl.Expr):
+            data = data.with_columns(processor)
+        else:
+            data = processor.process(data)
+            if ylabel is not None:
+                ylabel = processor.ylabel(ylabel)
+    if ylabel is not None:
+        return data, ylabel
+    else:
+        return data
