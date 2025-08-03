@@ -46,6 +46,7 @@ from qslib.scpi_commands import AccessLevel, SCPICommand
 
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
 from ._util import _nowuuid, _pp_seqsliceint, _set_or_create, cached_method
+from ._qslib import RunLogInfo
 from .base import RunStatus
 from .data import (
     FilterDataReading,
@@ -1770,72 +1771,21 @@ table, th, td {{
         logpath = self._msglog_path()
         if not logpath.is_file():
             return
-        try:
-            msglog = logpath.read_text()
-        except UnicodeDecodeError as error:
-            log.debug(
-                "Decoding log failed. If <binary.reply> is present in log this may be the cause:"
-                "if so contact Constantine (<const@costi.net>).  Continuing with failed characters"
-                " replaced with backslash notation"
-                "Failure was in this area:\n"
-                "{!r}".format(error.object[error.start - 500 : error.end + 500])
-            )
-            msglog = open(
-                logpath,
-                "r",
-                errors="backslashreplace",
-            ).read()
+        msglog = logpath.read_bytes()
 
-        ms = re.finditer(
-            r"^Run (?P<ts>[\d.]+) (?P<msg>\w+)(?: (?P<ext>\S+))?", msglog, re.MULTILINE
-        )
-        self.runstarttime = None
-        self.runendtime = None
-        self.prerunstart = None
-        self.activestarttime = None
-        self.activeendtime = None
-        self.runstate = "INIT"
+        ms = RunLogInfo.parse(msglog)
+        self.runstarttime = datetime.fromtimestamp(ms.runstarttime, tz=timezone.utc) if ms.runstarttime else None
+        self.runendtime = datetime.fromtimestamp(ms.runendtime, tz=timezone.utc) if ms.runendtime else None
+        self.prerunstart = datetime.fromtimestamp(ms.prerunstart, tz=timezone.utc) if ms.prerunstart else None
+        self.activestarttime = datetime.fromtimestamp(ms.activestarttime, tz=timezone.utc) if ms.activestarttime else None
+        self.activeendtime = datetime.fromtimestamp(ms.activeendtime, tz=timezone.utc) if ms.activeendtime else None
+        self.runstate = ms.runstate
 
-        m: Optional[re.Match[str]]
-        stages: list[dict[str, int | str | datetime]] = []
-
-        for m in ms:
-            ts = datetime.fromtimestamp(float(m["ts"]), tz=timezone.utc)
-            if m["msg"] == "Starting":
-                self.runstarttime = ts
-            elif m["msg"] == "Stage":
-                if m["ext"] == "PRERUN":
-                    self.prerunstart = ts
-                    self.runstate = "RUNNING"
-                elif (self.activestarttime is None) and (self.prerunstart is not None):
-                    self.activestarttime = ts
-                elif m["ext"] == "POSTRun":
-                    self.activeendtime = ts
-                try:
-                    stages.append({"stage": int(m["ext"]), "start_time": ts})
-                except ValueError:
-                    stages.append({"stage": m["ext"], "start_time": ts})
-                if len(stages) > 1:
-                    stages[-2]["end_time"] = ts
-            elif m["msg"] == "Ended":
-                self.runendtime = ts
-                self.runstate = "COMPLETE"
-                if len(stages) > 1:
-                    stages[-1].setdefault("end_time", ts)
-            elif m["msg"] == "Aborted":
-                self.runstate = "ABORTED"
-                self.activeendtime = ts
-                self.runendtime = ts
-                if len(stages) > 1:
-                    stages[-1].setdefault("end_time", ts)
-            elif m["msg"] == "Stopped":
-                self.runstate = "STOPPED"
-                self.activeendtime = ts
-                self.runendtime = ts
-                if len(stages) > 1:
-                    stages[-1].setdefault("end_time", ts)
-
-        self.stages = pd.DataFrame(stages, columns=["stage", "start_time", "end_time"])
+        self.stages = pd.DataFrame({
+            "stage": ms.stage_names,
+            "start_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_start_times],
+            "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_end_times],
+        })
 
         if self.activestarttime:
             self.stages["start_seconds"] = (
@@ -1850,37 +1800,39 @@ table, th, td {{
             # beginning of the log as an info command, with quote.message.  Let's
             # try to grab it!
             if m := re.match(
-                r"^Info (?:[\d.]+) (<quote.message>.*?</quote.message>)",
+                rb"^Info (?:[\d.]+) (<quote.message>.*?</quote.message>)",
                 msglog,
                 re.DOTALL | re.MULTILINE,
             ):
+                prot_u = m[1].decode("utf-8")
                 # We can get the prot name too, and sample volume! FIXME: not from qslib runs!
                 rp = re.search(
-                    r"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?"
-                    r"(?:-SampleVolume=(?P<sv>[\d.]+) )?([\w-]+) (?P<protoname>[\w-]+)",
+                    rb"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?"
+                    rb"(?:-SampleVolume=(?P<sv>[\d.]+) )?([\w-]+) (?P<protoname>[\w-]+)",
                     msglog,
                     re.IGNORECASE,
                 )
                 if rp:
+                    pname_u = rp["protoname"].decode("utf-8")
                     prot = Protocol.from_scpicommand(
-                        SCPICommand.from_string(f"PROT {rp['protoname']} {m[1]}")
+                        SCPICommand.from_string(f"PROT {pname_u} {prot_u}")
                     )
                     if rp[1]:
                         prot.volume = float(rp["sv"])
                 else:
                     prot = Protocol.from_scpicommand(
-                        SCPICommand.from_string(f"PROT unknown_name {m[1]}")
+                        SCPICommand.from_string(f"PROT unknown_name {prot_u}")
                     )
                 self._protocol_from_log = prot
 
                 # Now that we know the protocol name, we can search for whether the protocol was changed later:
                 for mm in re.finditer(
-                    r"^Debug.*<quote.message>C:.* (PROT[ O].*\n(c:.*\n)+.*)</quote.message>",
+                    rb"^Debug.*<quote.message>C:.* (PROT[ O].*\n(c:.*\n)+.*)</quote.message>",
                     msglog,
                     re.MULTILINE,
                 ):
                     newprot = Protocol.from_scpicommand(
-                        SCPICommand.from_string(mm[1].replace("\nc:", "\n"))
+                        SCPICommand.from_string(mm[1].decode("utf-8").replace("\nc:", "\n"))
                     )
                     # if newprot.name == prot.name:
                     self._protocol_from_log = newprot
@@ -1890,22 +1842,32 @@ table, th, td {{
         except ValueError:
             self._protocol_from_log = None
 
+    def _events_from_log(self) -> pl.DataFrame:
+        try:
+            msglog = self._msglog_path().read_bytes()
+        except FileNotFoundError as e:
+            raise ValueError("no events data")
+        
         events = []
         for m in re.finditer(
-            r"^Debug ([\d.]+) (Drawer|Cover) (.+)$", msglog, re.MULTILINE
+            rb"^Debug ([\d.]+) (Drawer|Cover) (.+)$", msglog, re.MULTILINE
         ):
-            events.append((float(m[1]), m[2], m[3]))
+            events.append((float(m[1]), m[2].decode("utf-8"), m[3].decode("utf-8")))
 
-        self.events = pd.DataFrame(
-            events, columns=["timestamp", "type", "message"], dtype="object"
+        events = pl.DataFrame(
+            events, schema={"timestamp": pl.Float64, "type": pl.Utf8, "message": pl.Utf8}
         )
 
         if self.activestarttime:
-            self.events["seconds"] = (
-                self.events["timestamp"] - self.activestarttime.timestamp()
+            events = events.with_columns(
+                (pl.col("timestamp") - self.activestarttime.timestamp()).alias("seconds")).with_columns(
+                (pl.col("seconds") / 3600.0).alias("hours")
             )
-            self.events["hours"] = self.events["seconds"] / 3600.0
 
+    @property
+    @cached_method
+    def events(self) -> pl.DataFrame:
+        return self._events_from_log()
 
     @property
     @cached_method
