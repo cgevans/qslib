@@ -338,10 +338,10 @@ impl FilterDataCollection {
     }
 
     #[pyo3(name = "to_polars")]
-    pub fn py_to_polars(&self) -> PyDataFrame {
+    pub fn py_to_polars(&self) -> PyResult<PyDataFrame> {
         let lfs = self.plate_point_data.iter().map(|pd| pd.to_polars()).collect::<Vec<_>>();
         let lf = concat(lfs, UnionArgs::default()).unwrap();
-        PyDataFrame(lf.collect().unwrap())
+        Ok(PyDataFrame(lf.collect().unwrap()))
     }
 }
 

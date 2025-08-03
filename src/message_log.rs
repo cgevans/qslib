@@ -26,6 +26,7 @@ pub enum RunState {
     STOPPED,
 }
 
+
 #[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct RunLogInfo {
     pub runstarttime: Option<f64>,
@@ -223,50 +224,53 @@ impl TemperatureLog {
         Ok(parsed_log)
     }
 
-    pub fn parse_to_polars(log: &[u8]) -> anyhow::Result<DataFrame> {
-        let log = Self::parse(log)?;
-        // convert in place
-        let mut df = df! {
-            "timestamp" => log.timestamps,
-        }?;
-        let mut dfr = &mut df;
-        for i in 0..log.num_zones {
-            dfr = dfr.with_column(Column::new(
-                format!("sample_{}", i + 1).into(),
-                &log.sample_temperatures[i],
-            ))?;
-        }
-        dfr = dfr.with_column(Column::new("heatsink".into(), &log.heatsink_temps))?;
-        dfr = dfr.with_column(Column::new("cover".into(), &log.cover_temperatures))?;
-        for i in 0..log.num_zones {
-            dfr = dfr.with_column(Column::new(
-                format!("block_{}", i + 1).into(),
-                &log.block_temperatures[i],
-            ))?;
-        }
-        Ok(dfr.clone())
-    }
+    // pub fn parse_to_polars(log: &[u8]) -> anyhow::Result<DataFrame> {
+    //     let log = Self::parse(log)?;
+    //     // convert in place
+    //     let mut df = df! {
+    //         "timestamp" => log.timestamps,
+    //     }?;
+    //     let mut dfr = &mut df;
+    //     for i in 0..log.num_zones {
+    //         dfr = dfr.with_column(Column::new(
+    //             format!("sample_{}", i + 1).into(),
+    //             &log.sample_temperatures[i],
+    //         ))?;
+    //     }
+    //     dfr = dfr.with_column(Column::new("heatsink".into(), &log.heatsink_temps))?;
+    //     dfr = dfr.with_column(Column::new("cover".into(), &log.cover_temperatures))?;
+    //     for i in 0..log.num_zones {
+    //         dfr = dfr.with_column(Column::new(
+    //             format!("block_{}", i + 1).into(),
+    //             &log.block_temperatures[i],
+    //         ))?;
+    //     }
+    //     Ok(dfr.clone())
+    // }
 
     pub fn to_polars(&self) -> anyhow::Result<DataFrame> {
-        let mut df = df! {
+        let mut dfs = Vec::new();
+
+        for i in 0..self.num_zones {
+            dfs.push(df! {
+                "timestamp" => &self.timestamps,
+                "temperature" => &self.sample_temperatures[i],
+            }?.lazy().with_columns([lit((i+1) as u32).alias("zone"), lit("sample").alias("kind")]));
+            dfs.push(df! {
+                "timestamp" => &self.timestamps,
+                "temperature" => &self.block_temperatures[i],
+            }?.lazy().with_columns([lit((i+1) as u32).alias("zone"), lit("block").alias("kind")]));
+        }
+        dfs.push(df! {
             "timestamp" => &self.timestamps,
-        }?;
-        let mut dfr = &mut df;
-        for i in 0..self.num_zones {
-            dfr = dfr.with_column(Column::new(
-                format!("sample_{}", i + 1).into(),
-                self.sample_temperatures.get(i).unwrap(),
-            ))?;
-        }
-        dfr = dfr.with_column(Column::new("heatsink".into(), &self.heatsink_temps))?;
-        dfr = dfr.with_column(Column::new("cover".into(), &self.cover_temperatures))?;
-        for i in 0..self.num_zones {
-            dfr = dfr.with_column(Column::new(
-                format!("block_{}", i + 1).into(),
-                self.block_temperatures.get(i).unwrap(),
-            ))?;
-        }
-        Ok(dfr.clone())
+            "temperature" => &self.heatsink_temps,
+        }?.lazy().with_columns([lit("heatsink").alias("kind")]));
+        dfs.push(df! {
+            "timestamp" => &self.timestamps,
+            "temperature" => &self.cover_temperatures,    
+        }?.lazy().with_columns([lit("cover").alias("kind")]));
+
+        Ok(concat_lf_diagonal(dfs, UnionArgs::default())?.collect()?)
     }
 }
 
@@ -281,13 +285,13 @@ impl TemperatureLog {
 
     #[pyo3(name = "to_polars")]
     pub fn py_to_polars(&self) -> anyhow::Result<PyDataFrame> {
-        self.to_polars().map(PyDataFrame)
+        self.to_polars().map(|df| PyDataFrame(df))
     }
 
     #[staticmethod]
     #[pyo3(name = "parse_to_polars")]
     pub fn py_parse_to_polars(log: &[u8]) -> anyhow::Result<PyDataFrame> {
-        Self::parse_to_polars(log).map(PyDataFrame)
+        Self::parse(log).map(|log| PyDataFrame(log.to_polars().unwrap()))
     }
 }
 
