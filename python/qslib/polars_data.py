@@ -1,15 +1,21 @@
 from dataclasses import dataclass
 from .data import FilterDataReading
 from datetime import datetime, timezone
-import numpy as np
-from typing import ClassVar, Literal, Sequence
+from typing import ClassVar, Sequence
 from typing import TypedDict
 import re
+from abc import ABCMeta, abstractmethod
+import polars as pl
 
-try:
-    import polars as pl
-except ImportError:
-    raise ImportError("polars is not installed")
+
+class PolarsProcessor(metaclass=ABCMeta):
+    @abstractmethod
+    def process(self, data: pl.LazyFrame) -> pl.LazyFrame:  # pragma: no cover
+        ...
+
+    @abstractmethod
+    def ylabel(self, previous_label: str | None = None) -> str:  # pragma: no cover
+        ...
 
 
 def polars_from_filterdata(dr: FilterDataReading, start_time: float | None = None) -> "pl.LazyFrame":
@@ -95,9 +101,17 @@ class FilterDict(TypedDict):
     point: int | Sequence[int] | range | None
     expr: pl.Expr | None = None
 
+class NormRaw(PolarsProcessor):
+    def process(self, data: pl.LazyFrame) -> pl.LazyFrame:
+        return data
+
+    def ylabel(self, previous_label: str | None = None) -> str:
+        if previous_label == "fluorescence":
+            return "fluorescence"
+        return re.sub(r"\(([^)]+)\)", r"(\1, raw)", previous_label)
 
 @dataclass(init=False)
-class NormToMeanPerWell:
+class NormToMeanPerWell(PolarsProcessor):
     """
     A Processor that divides the fluorescence reading for each (filterset, well) pair
     by the mean value of that pair within a particular selection of data.
@@ -140,7 +154,7 @@ class NormToMeanPerWell:
 
 
 @dataclass(init=False)
-class NormToMaxPerWell:
+class NormToMaxPerWell(PolarsProcessor):
     """
     A Processor that divides the fluorescence reading for each (filterset, well) pair
     by the max value of that pair within a particular selection of data.
@@ -171,7 +185,7 @@ class NormToMaxPerWell:
         )
 
 @dataclass(init=False)
-class SubtractByMeanPerWell:
+class SubtractByMeanPerWell(PolarsProcessor):
     """
     A Processor that subtracts the fluorescence reading for each (filterset, well) pair
     by the mean value of that pair within a particular selection of data.
@@ -202,7 +216,7 @@ class SubtractByMeanPerWell:
         )
 
 @dataclass
-class SmoothWindowMean:
+class SmoothWindowMean(PolarsProcessor):
     """
     A Processor that smooths fluorescence readings using Pandas' Rolling,
     and mean.
@@ -231,7 +245,7 @@ class SmoothWindowMean:
 
 
 @dataclass
-class SmoothEMWMean:
+class SmoothEMWMean(PolarsProcessor):
     """
     A Processor that smooths fluorescence readings using Pandas' Exponential Moving Window
     (ewm / exponentially weighted moving-average).
