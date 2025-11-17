@@ -1936,17 +1936,25 @@ table, th, td {{
         return tl
 
     def _temperatures_from_log(self) -> tuple[pd.DataFrame, int]:
-        temperatures, num_zones = self._temperatures_polars
+        temperatures_polars, num_zones = self._temperatures_polars
 
+        # Convert from long to wide format:
+        temperatures_polars = (temperatures_polars
+                        .with_columns(pl.col("zone").fill_null("null")) # see https://github.com/pola-rs/polars/issues/14445
+                        .pivot(index="timestamp", values="temperature", on=["kind", "zone"]))
 
-        temperatures = temperatures.to_pandas()
-        ix = pd.MultiIndex.from_tuples(
+        temperatures = pd.DataFrame(columns=pd.MultiIndex.from_tuples(
             [(cast(str, "time"), cast(Union[str, int], "timestamp"))]
             + [("sample", n) for n in range(1, num_zones + 1)]
             + [("other", "heatsink"), ("other", "cover")]
             + [("block", n) for n in range(1, num_zones + 1)]
-        )
-        temperatures.columns = ix
+        ))
+        temperatures[("time", "timestamp")] = temperatures_polars["timestamp"]
+        for zone in range(1, num_zones + 1):
+            temperatures[("sample", zone)] = temperatures_polars[f'{{"sample","{zone}"}}']
+            temperatures[("block", zone)] = temperatures_polars[f'{{"block","{zone}"}}']
+        temperatures[("other", "heatsink")] = temperatures_polars['{"heatsink","null"}']
+        temperatures[("other", "cover")] = temperatures_polars['{"cover","null"}']
 
         if self.activestarttime:
             temperatures[("time", "seconds")] = (
