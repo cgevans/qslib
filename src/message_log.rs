@@ -16,15 +16,12 @@ lazy_static! {
     static ref LOG_DRAWER_REGEX: Regex = Regex::new(r"(?m)^Debug ([\d.]+) (Drawer|Cover) (.+)$").unwrap();
 }
 
-#[pyclass(eq, eq_int, hash, frozen)]
-#[derive(Clone, PartialEq, Eq, Hash)]
-pub enum RunState {
-    INIT,
-    RUNNING,
-    COMPLETE,
-    ABORTED,
-    STOPPED,
-}
+// RunState constants for potential future changes
+pub const RUNSTATE_INIT: &str = "INIT";
+pub const RUNSTATE_RUNNING: &str = "RUNNING";
+pub const RUNSTATE_COMPLETE: &str = "COMPLETE";
+pub const RUNSTATE_ABORTED: &str = "ABORTED";
+pub const RUNSTATE_STOPPED: &str = "STOPPED";
 
 #[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct RunLogInfo {
@@ -33,7 +30,7 @@ pub struct RunLogInfo {
     pub prerunstart: Option<f64>,
     pub activestarttime: Option<f64>,
     pub activeendtime: Option<f64>,
-    pub runstate: RunState,
+    pub runstate: String,
     pub stage_names: Vec<String>,
     pub stage_start_times: Vec<f64>,
     pub stage_end_times: Vec<Option<f64>>,
@@ -47,7 +44,7 @@ impl RunLogInfo {
             prerunstart: None,
             activestarttime: None,
             activeendtime: None,
-            runstate: RunState::INIT,
+            runstate: RUNSTATE_INIT.to_string(),
             stage_names: Vec::new(),
             stage_start_times: Vec::new(),
             stage_end_times: Vec::new(),
@@ -69,14 +66,14 @@ impl RunLogInfo {
                     match ext {
                         b"PRERUN" => {
                             info.prerunstart = Some(timestamp);
-                            info.runstate = RunState::RUNNING;
+                            info.runstate = RUNSTATE_RUNNING.to_string();
                         }
                         b"POSTRun" => info.activeendtime = Some(timestamp),
                         _ => {
                             if info.prerunstart.is_some() {
                                 info.activestarttime.get_or_insert(timestamp);
                             }
-                            info.runstate = RunState::RUNNING;
+                            info.runstate = RUNSTATE_RUNNING.to_string();
                         }
                     }
                     info.stage_names.push(ext.to_str_lossy().to_string());
@@ -88,13 +85,13 @@ impl RunLogInfo {
                 b"Ended" => {
                     info.runendtime = Some(timestamp);
                     info.activeendtime.get_or_insert(timestamp);
-                    info.runstate = RunState::COMPLETE;
+                    info.runstate = RUNSTATE_COMPLETE.to_string();
                     if info.stage_start_times.len() > 1 {
                         info.stage_end_times.push(Some(timestamp));
                     }
                 }
                 b"Aborted" => {
-                    info.runstate = RunState::ABORTED;
+                    info.runstate = RUNSTATE_ABORTED.to_string();
                     info.activeendtime.get_or_insert(timestamp);
                     info.runendtime = Some(timestamp);
                     if info.stage_start_times.len() > 1 {
@@ -102,7 +99,7 @@ impl RunLogInfo {
                     }
                 }
                 b"Stopped" => {
-                    info.runstate = RunState::STOPPED;
+                    info.runstate = RUNSTATE_STOPPED.to_string();
                     info.activeendtime.get_or_insert(timestamp);
                     info.runendtime = Some(timestamp);
                     if info.stage_start_times.len() > 1 {

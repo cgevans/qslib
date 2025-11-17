@@ -63,7 +63,7 @@ mod qslib {
     #[pymodule_export]
     use crate::message_log::RunLogInfo;
 
-    #[pymodule_export]
-    use crate::message_log::RunState;
+    // #[pymodule_export]
+    // use crate::message_log::RunState;
 
 }
