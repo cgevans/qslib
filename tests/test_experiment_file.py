@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from qslib import Experiment
-from qslib.polars_data import (
+from qslib.processors import (
     NormToMaxPerWell,
     NormToMeanPerWell,
     SmoothEMWMean,
