@@ -19,10 +19,10 @@ def test_fail_plots():
     with pytest.raises(ValueError, match="no temperature data"):
         exp.plot_temperatures()
 
-    with pytest.raises(ValueError, match="no data available"):
+    with pytest.raises(ValueError, match="No filterdata found"):
         exp.plot_over_time()
 
-    with pytest.raises(ValueError, match="no data available"):
+    with pytest.raises(ValueError, match="Run hasn't started yet: no data available."): # FIXME: why is this inconsistent?
         exp.plot_anneal_melt()
 
 

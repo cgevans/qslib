@@ -129,7 +129,7 @@ class NormToMeanPerWell:
         self.selection = match_expr(stage=stage, step=step, cycle=cycle, point=point, expr=expr)
 
     def ylabel(self, previous_label: str | None = None) -> str:
-        if previous_label is None:
+        if previous_label == "fluorescence":
             return "fluorescence (norm. to mean)"
         return re.sub(r"\(([^)]+)\)", r"(\1, norm. to mean)", previous_label)
 
@@ -138,7 +138,70 @@ class NormToMeanPerWell:
             pl.col("processed_fluorescence") / pl.col("processed_fluorescence").filter(self.selection).mean().over("well", "filter_set")
         )
 
+
 @dataclass(init=False)
+class NormToMaxPerWell:
+    """
+    A Processor that divides the fluorescence reading for each (filterset, well) pair
+    by the max value of that pair within a particular selection of data.
+    """
+
+    selection: pl.Expr | None
+    scope: ClassVar[str] = "limited"
+
+    def __init__(
+        self,
+        stage: int | slice | Sequence[int] | None = None,
+        step: int | slice | Sequence[int] | None = None,
+        cycle: int | slice | Sequence[int] | None = None,
+        point: int | slice | Sequence[int] | None = None,
+        *,
+        expr: pl.Expr | None = None,
+    ):
+        self.selection = match_expr(stage=stage, step=step, cycle=cycle, point=point, expr=expr)
+
+    def ylabel(self, previous_label: str | None = None) -> str:
+        if previous_label == "fluorescence":
+            return "fluorescence (norm. to max)"
+        return re.sub(r"\(([^)]+)\)", r"(\1, norm. to max)", previous_label)
+
+    def process(self, data: pl.LazyFrame) -> pl.LazyFrame:
+        return data.with_columns(
+            pl.col("processed_fluorescence") / pl.col("processed_fluorescence").filter(self.selection).max().over("well", "filter_set")
+        )
+
+@dataclass(init=False)
+class SubtractByMeanPerWell:
+    """
+    A Processor that subtracts the fluorescence reading for each (filterset, well) pair
+    by the mean value of that pair within a particular selection of data.
+    """
+
+    selection: pl.Expr | None
+    scope: ClassVar[str] = "limited"
+
+    def __init__(
+        self,
+        stage: int | slice | Sequence[int] | None = None,
+        step: int | slice | Sequence[int] | None = None,
+        cycle: int | slice | Sequence[int] | None = None,
+        point: int | slice | Sequence[int] | None = None,
+        *,
+        expr: pl.Expr | None = None,
+    ):
+        self.selection = match_expr(stage=stage, step=step, cycle=cycle, point=point, expr=expr)
+
+    def ylabel(self, previous_label: str | None = None) -> str:
+        if previous_label == "fluorescence":
+            return "fluorescence (subtr. by mean)"
+        return re.sub(r"\(([^)]+)\)", r"(\1, subtr. by mean)", previous_label)
+
+    def process(self, data: pl.LazyFrame) -> pl.LazyFrame:
+        return data.with_columns(
+            pl.col("processed_fluorescence") - pl.col("processed_fluorescence").filter(self.selection).mean().over("well", "filter_set")
+        )
+
+@dataclass
 class SmoothWindowMean:
     """
     A Processor that smooths fluorescence readings using Pandas' Rolling,
@@ -160,12 +223,42 @@ class SmoothWindowMean:
         )
 
     def ylabel(self, previous_label: str | None = None) -> str:
-        if previous_label is None:
+        if previous_label == "fluorescence":
             return f"fluorescence (window mean {self.window})"
         return re.sub(
             r"\(([^)]+)\)", rf"(\1, window mean {self.window})", previous_label
         )
 
+
+@dataclass
+class SmoothEMWMean:
+    """
+    A Processor that smooths fluorescence readings using Pandas' Exponential Moving Window
+    (ewm / exponentially weighted moving-average).
+    """
+
+    com: float | None = None
+    span: float | None = None
+    halflife: float | str | None = None
+    alpha: float | None = None
+    min_periods: int = 0
+    adjust: bool = True
+    ignore_na: bool = False
+
+    def process(self, data: pl.LazyFrame) -> pl.LazyFrame:
+        return data.with_columns(
+            pl.col("processed_fluorescence").ewm_mean(
+                com=self.com,
+                span=self.span,
+                half_life=self.halflife,
+                alpha=self.alpha,
+            )
+        )
+
+    def ylabel(self, previous_label: str | None = None) -> str:
+        if previous_label == "fluorescence":
+            return "fluorescence (EMW-smoothed)"
+        return re.sub(r"\(([^)]+)\)", r"(\1, EMW-smoothed)", previous_label)
 
 def norm_zero_to_one_per_well(zero_filter: FilterDict, one_filter: FilterDict):
     norm_fl_a =  pl.col("fluorescence") - pl.col("fluorescence").filter(match_expr(**zero_filter)).mean().over("well", "filter_set")

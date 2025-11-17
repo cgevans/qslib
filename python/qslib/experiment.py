@@ -2425,7 +2425,7 @@ table, th, td {{
 
         reduceddata, ylabel = polars_process(reduceddata, process, ylabel="fluorescence")
 
-        
+        print(ylabel)
 
         if start_time is None:
             start_time_value = 0.0
@@ -2517,8 +2517,10 @@ table, th, td {{
             xlims = ax[0].get_xlim()
             tmin, tmax = np.inf, 0.0
 
-            tmin = reduceddata.select(pl.col("time")).min()
-            tmax = reduceddata.select(pl.col("time")).max()
+            tmin = reduceddata.select(pl.col("time")).min()["time"][0]
+            tmax = reduceddata.select(pl.col("time")).max()["time"][0]
+
+            print(tmin, tmax)
 
             self.plot_temperatures(
                 times=(tmin, tmax),

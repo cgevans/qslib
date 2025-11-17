@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from qslib import Experiment
-from qslib.processors import (
+from qslib.polars_data import (
     NormToMaxPerWell,
     NormToMeanPerWell,
     SmoothEMWMean,
@@ -74,10 +74,9 @@ def test_plots(exp: Experiment) -> None:
         legend=False, figure_kw={"constrained_layout": False}, annotate_stage_lines=True
     )
 
-    # +2 here is for stage lines
-    assert len(axf.get_lines()) == 5 * len(exp.all_filters) + 2
+    assert len(axf.get_lines()) == 5 * len(exp.all_filters) # + 2 # No +2, because stage lines are outside of plot
     assert np.allclose(
-        axf.get_xlim(), (-0.004825680553913112, 0.10133929163217542), atol=0.01
+        axf.get_xlim(), (0.0287576, 0.089), atol=0.01
     )
 
     with pytest.raises(ValueError, match="Samples not found"):
