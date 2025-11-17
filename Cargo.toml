@@ -17,21 +17,21 @@ crate-type = ["cdylib", "rlib"]
 dashmap = "6.1"
 enum_dispatch = "0.3.13"
 futures = "0.3.31"
-indexmap = "2.7.1"
+indexmap = "2.7"
 log = "0.4.25"
 pyo3 = { version = "0.25", optional = true, features = ["extension-module", "abi3-py310", "anyhow", "multiple-pymethods"] }
 quick-xml = { version = "0.37.2", features = ["overlapped-lists", "serialize"] }
 regex = "1.11.1"
 rustls = { version = "0.23.20", features = ["ring"], default-features = false }
 rustls-pki-types = "1.10.1"
-serde = { version = "1.0.217", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
 thiserror = "2.0.9"
 tokio = { version = "1.42.0", features = ["net", "sync", "rt", "rt-multi-thread", "io-util", "macros"] }
 tokio-rustls = { version = "0.26.1", features = ["ring", "logging", "tls12"], default-features = false }
 tokio-stream = { version = "0.1.17", features = ["sync"] }
 uuid = { version = "1.12.1", features = ["v4"] }
 winnow = "0.6.22"
-zip = "2.2.2"
+zip = "2"
 memchr = { version = "2.7", optional = true }
 lazy_static = "1.5.0"
 data-encoding = "2.7.0"
