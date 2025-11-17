@@ -331,6 +331,14 @@ class Experiment:
     """The number of temperature zones (excluding cover), or -1 if not known."""
     spec_major_version: int = 1
 
+    def _clear_cache(self: Any) -> None:
+        "Clear all method caches on this instance."
+        if hasattr(self, '_cached_methods'):
+            for cache_name in self._cached_methods:
+                if hasattr(self, cache_name):
+                    delattr(self, cache_name)
+            self._cached_methods.clear()
+
     @property
     def all_filters(self) -> Collection[FilterSet]:
         """All filters used at some point in the experiment.
@@ -1918,11 +1926,11 @@ table, th, td {{
         from ._qslib import TemperatureLog, get_n_zones
         try:
             b = self._msglog_path().read_bytes()
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             raise ValueError("no temperature data")
         try:
             n_zones = get_n_zones(b)
-        except Exception as e:
+        except Exception:
             raise ValueError("no temperature data")
         tl = TemperatureLog.parse_to_polars(b)
         return tl, n_zones
