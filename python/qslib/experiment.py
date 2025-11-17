@@ -47,7 +47,7 @@ from qslib.scpi_commands import AccessLevel, SCPICommand
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
 from ._util import _nowuuid, _pp_seqsliceint, _set_or_create, cached_method
 from ._qslib import RunLogInfo
-from .polars_data import polars_process
+from .processors import PolarsProcessor, polars_process
 from .base import RunStatus
 from .data import (
     FilterDataReading,
@@ -59,7 +59,8 @@ from .data import (
     df_from_readings,
 )
 from .machine import Machine
-from .processors import NormRaw, Processor
+from .processors import NormRaw
+from .pandas_processors import PandasProcessor
 from .protocol import Protocol, Stage, Step
 from .version import __version__
 
@@ -1613,8 +1614,7 @@ table, th, td {{
 
 
     def filter_data_polars_lazy(self) -> 'pl.LazyFrame':
-        import polars as pl
-        from .polars_data import polars_from_filterdata
+        from .processors import polars_from_filterdata
         start_time = self.activestarttime.timestamp() if self.activestarttime else None
         d = pl.concat(polars_from_filterdata(x, start_time=start_time) for x in self._get_filterdatareadings()).sort("timestamp")
         duration = (1000 * (pl.col("from") - pl.col("to")).abs() / pl.col("rate")).alias("duration").cast(pl.Duration(time_unit="ms"))
@@ -2017,8 +2017,8 @@ table, th, td {{
         anneal_stages: int | Sequence[int] | None = None,
         melt_stages: int | Sequence[int] | None = None,
         between_stages: int | Sequence[int] | None = None,
-        process: Sequence[Processor] | Processor | None = None,
-        normalization: Processor | None = None,
+        process: Sequence[PandasProcessor] | PandasProcessor | None = None,
+        normalization: PandasProcessor | None = None,
         ax: "Axes | None" = None,
         marker: str | None = None,
         legend: bool | Literal["inset", "right"] = True,
@@ -2096,14 +2096,15 @@ table, th, td {{
         """
 
         import matplotlib.pyplot as plt
+        from .pandas_processors import NormRaw as PandasNormRaw
 
         if process is None:
-            process = [normalization or NormRaw()]
+            process = [normalization or PandasNormRaw()]
         elif normalization:
             raise ValueError(
                 "Can't specify both process and normalization (include normalization in process list)."
             )
-        if isinstance(process, Processor):
+        if isinstance(process, PandasProcessor):
             process = [process]
 
         if filters is None:
@@ -2268,8 +2269,8 @@ table, th, td {{
         samples: str | Sequence[str] | None = None,
         filters: str | FilterSet | Collection[str | FilterSet] | None = None,
         stages: slice | int | Sequence[int] = slice(None),
-        process: Sequence[Processor] | Processor | None = None,
-        normalization: Processor | None = None,
+        process: Sequence[PolarsProcessor] | PolarsProcessor | None = None,
+        normalization: PolarsProcessor | None = None,
         ax: "Axes" | "Sequence[Axes]" | None = None,
         legend: bool | Literal["inset", "right"] = True,
         temperatures: Literal[False, "axes", "inset", "twin"] = "axes",
