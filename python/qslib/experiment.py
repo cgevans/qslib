@@ -1785,7 +1785,7 @@ table, th, td {{
         self.stages = pl.DataFrame({
             "stage": ms.stage_names,
             "start_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_start_times],
-            "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_end_times],
+            "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_end_times] + ([None] if len(ms.stage_end_times) > len(ms.stage_start_times) else []), # FIXME
         }).with_row_index("stage_index")
 
         if self.activestarttime:

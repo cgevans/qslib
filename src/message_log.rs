@@ -4,11 +4,11 @@ use lazy_static::lazy_static;
 use log::debug;
 use polars::prelude::*;
 #[cfg(feature = "python")]
+use pyo3::prelude::*;
+#[cfg(feature = "python")]
 use pyo3_polars::PyDataFrame;
 use regex::bytes::{Captures, Regex};
 use tracing::error;
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
 
 lazy_static! {
     static ref LOG_TEMP_REGEX: Regex = Regex::new(r"(?m)^Temperature ([\d.]+) -sample=([\d.,]+) -heatsink=([\d.]+) -cover=([\d.]+) -block=([\d.,]+)$").unwrap();
@@ -26,7 +26,6 @@ pub enum RunState {
     STOPPED,
 }
 
-
 #[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct RunLogInfo {
     pub runstarttime: Option<f64>,
@@ -37,7 +36,7 @@ pub struct RunLogInfo {
     pub runstate: RunState,
     pub stage_names: Vec<String>,
     pub stage_start_times: Vec<f64>,
-    pub stage_end_times: Vec<f64>,
+    pub stage_end_times: Vec<Option<f64>>,
 }
 
 impl RunLogInfo {
@@ -54,68 +53,85 @@ impl RunLogInfo {
             stage_end_times: Vec::new(),
         };
         for captures in LOG_RUN_REGEX.captures_iter(log) {
-           let timestamp = captures.name("ts").unwrap().as_bytes().to_str_lossy().parse::<f64>().unwrap();
-           let msg = captures.name("msg").unwrap().as_bytes();
-           let ext = captures.name("ext").map(|m| m.as_bytes());
-                    match msg {
-                        b"Starting" => info.runstarttime = Some(timestamp),
-                        b"Stage" => {
-                            let ext = ext.unwrap_or(b""); // FIXME: handle error here
-                            match ext {
-                                b"PRERUN" => {
-                                    info.prerunstart = Some(timestamp);
-                                    info.runstate = RunState::RUNNING;
-                                }
-                                b"POSTRun" => {
-                                    info.activeendtime = Some(timestamp)
-                                }
-                                _ => {
-                                    if info.prerunstart.is_some() {
-                                        info.activestarttime.get_or_insert(timestamp);
-                                    }
-                                    info.runstate = RunState::RUNNING;
-                                }
-                            }
-                            info.stage_names.push(ext.to_str_lossy().to_string());
-                            info.stage_start_times.push(timestamp);
-                            if info.stage_start_times.len() > 1 {
-                                info.stage_end_times.push(timestamp);
-                            }
+            let timestamp = captures
+                .name("ts")
+                .unwrap()
+                .as_bytes()
+                .to_str_lossy()
+                .parse::<f64>()
+                .unwrap();
+            let msg = captures.name("msg").unwrap().as_bytes();
+            let ext = captures.name("ext").map(|m| m.as_bytes());
+            match msg {
+                b"Starting" => info.runstarttime = Some(timestamp),
+                b"Stage" => {
+                    let ext = ext.unwrap_or(b""); // FIXME: handle error here
+                    match ext {
+                        b"PRERUN" => {
+                            info.prerunstart = Some(timestamp);
+                            info.runstate = RunState::RUNNING;
                         }
-                        b"Ended" => {
-                            info.runendtime = Some(timestamp);
-                            info.activeendtime.get_or_insert(timestamp);
-                            info.runstate = RunState::COMPLETE;
-                            if info.stage_start_times.len() > 1 {
-                                info.stage_end_times.push(timestamp);
-                            }
-                        }
-                        b"Aborted" => {
-                            info.runstate = RunState::ABORTED;
-                            info.activeendtime.get_or_insert(timestamp);
-                            info.runendtime = Some(timestamp);
-                            if info.stage_start_times.len() > 1 {
-                                info.stage_end_times.push(timestamp);
-                            }
-                        }
-                        b"Stopped" => {
-                            info.runstate = RunState::STOPPED;
-                            info.activeendtime.get_or_insert(timestamp);
-                            info.runendtime = Some(timestamp);
-                            if info.stage_start_times.len() > 1 {
-                                info.stage_end_times.push(timestamp);
-                            }
-                        }
+                        b"POSTRun" => info.activeendtime = Some(timestamp),
                         _ => {
-                            debug!("Unknown message: {}", msg.to_str_lossy());
+                            if info.prerunstart.is_some() {
+                                info.activestarttime.get_or_insert(timestamp);
+                            }
+                            info.runstate = RunState::RUNNING;
                         }
                     }
+                    info.stage_names.push(ext.to_str_lossy().to_string());
+                    info.stage_start_times.push(timestamp);
+                    if info.stage_start_times.len() > 1 {
+                        info.stage_end_times.push(Some(timestamp));
+                    }
+                }
+                b"Ended" => {
+                    info.runendtime = Some(timestamp);
+                    info.activeendtime.get_or_insert(timestamp);
+                    info.runstate = RunState::COMPLETE;
+                    if info.stage_start_times.len() > 1 {
+                        info.stage_end_times.push(Some(timestamp));
+                    }
+                }
+                b"Aborted" => {
+                    info.runstate = RunState::ABORTED;
+                    info.activeendtime.get_or_insert(timestamp);
+                    info.runendtime = Some(timestamp);
+                    if info.stage_start_times.len() > 1 {
+                        info.stage_end_times.push(Some(timestamp));
+                    }
+                }
+                b"Stopped" => {
+                    info.runstate = RunState::STOPPED;
+                    info.activeendtime.get_or_insert(timestamp);
+                    info.runendtime = Some(timestamp);
+                    if info.stage_start_times.len() > 1 {
+                        info.stage_end_times.push(Some(timestamp));
+                    }
+                }
+                _ => {
+                    debug!("Unknown message: {}", msg.to_str_lossy());
+                }
+            }
+        }
+        let x = info.stage_start_times.len() as i64 - info.stage_end_times.len() as i64;
+        if x > 0 {
+            for _ in 0..x {
+                info.stage_end_times.push(None);
+            }
+        } else if x < 0 {
+            error!(
+                "Found {} stage start times but {} stage end times",
+                info.stage_start_times.len(),
+                info.stage_end_times.len()
+            );
         }
         Ok(info)
+        // TODO: we should eventually validate lengths here more generally.
     }
 }
 
-#[cfg(feature = "python")]  
+#[cfg(feature = "python")]
 #[pyo3::pymethods]
 impl RunLogInfo {
     #[staticmethod]
@@ -252,23 +268,45 @@ impl TemperatureLog {
         let mut dfs = Vec::new();
 
         for i in 0..self.num_zones {
-            dfs.push(df! {
-                "timestamp" => &self.timestamps,
-                "temperature" => &self.sample_temperatures[i],
-            }?.lazy().with_columns([lit((i+1) as u32).alias("zone"), lit("sample").alias("kind")]));
-            dfs.push(df! {
-                "timestamp" => &self.timestamps,
-                "temperature" => &self.block_temperatures[i],
-            }?.lazy().with_columns([lit((i+1) as u32).alias("zone"), lit("block").alias("kind")]));
+            dfs.push(
+                df! {
+                    "timestamp" => &self.timestamps,
+                    "temperature" => &self.sample_temperatures[i],
+                }?
+                .lazy()
+                .with_columns([
+                    lit((i + 1) as u32).alias("zone"),
+                    lit("sample").alias("kind"),
+                ]),
+            );
+            dfs.push(
+                df! {
+                    "timestamp" => &self.timestamps,
+                    "temperature" => &self.block_temperatures[i],
+                }?
+                .lazy()
+                .with_columns([
+                    lit((i + 1) as u32).alias("zone"),
+                    lit("block").alias("kind"),
+                ]),
+            );
         }
-        dfs.push(df! {
-            "timestamp" => &self.timestamps,
-            "temperature" => &self.heatsink_temps,
-        }?.lazy().with_columns([lit("heatsink").alias("kind")]));
-        dfs.push(df! {
-            "timestamp" => &self.timestamps,
-            "temperature" => &self.cover_temperatures,    
-        }?.lazy().with_columns([lit("cover").alias("kind")]));
+        dfs.push(
+            df! {
+                "timestamp" => &self.timestamps,
+                "temperature" => &self.heatsink_temps,
+            }?
+            .lazy()
+            .with_columns([lit("heatsink").alias("kind")]),
+        );
+        dfs.push(
+            df! {
+                "timestamp" => &self.timestamps,
+                "temperature" => &self.cover_temperatures,
+            }?
+            .lazy()
+            .with_columns([lit("cover").alias("kind")]),
+        );
 
         Ok(concat_lf_diagonal(dfs, UnionArgs::default())?.collect()?)
     }
