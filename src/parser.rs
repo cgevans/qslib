@@ -447,8 +447,7 @@ impl Command {
 
     pub fn parse(input: &mut &[u8]) -> ModalResult<Command> {
         let comm = take_while(1.., |c: u8| {
-            c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*'
-        })
+            c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*' || c == b'='        })
         .context(StrContext::Label("command"))
         .parse_next(input)?;
         space0

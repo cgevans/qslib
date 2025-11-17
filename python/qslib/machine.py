@@ -16,7 +16,7 @@ from functools import wraps
 from typing import IO, TYPE_CHECKING, Any, Generator, Literal, cast, overload
 from datetime import datetime, timezone
 from typing import TypedDict
-from ._qslib import QSConnection
+from ._qslib import QSConnection, CommandError
 import io
 from .data import FilterSet, FilterDataReading, df_from_readings
 import xml.etree.ElementTree as ET
@@ -228,8 +228,15 @@ class Machine:
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
-        self.port = port or 7443
         self.ssl = ssl
+        # Determine port based on ssl if not provided
+        if port is not None:
+            self.port = port
+        else:
+            if self.ssl is False:
+                self.port = 7000
+            else:
+                self.port = 7443
         self.password = password
         self.automatic = automatic
         self.max_access_level = AccessLevel(max_access_level)
@@ -250,6 +257,8 @@ class Machine:
             #client_certificate_path=self.client_certificate_path,
             #server_ca_file=self.server_ca_file,
         )
+        if self.password is not None:
+            self.authenticate(self.password)
         if self._initial_access_level is not None:
             self.set_access_level(self._initial_access_level)
         self._current_access_level = self.get_access_level()[0]
@@ -558,13 +567,20 @@ class Machine:
         """
         if not glob.endswith("eds"):
             glob = f"{glob}eds"
+        try:
+            filelist = self.list_files(f"public_run_complete:{glob}", verbose=verbose)
+        except CommandError as e:
+            if e.args[0]['error'] == 'NoMatch':
+                return []
+            else:
+                raise e
         if not verbose:
             return [
                 re.sub("^public_run_complete:", "", s)[:-4]
-                for s in self.list_files(f"public_run_complete:{glob}", verbose=False)
+                for s in filelist
             ]
         else:
-            a = self.list_files(f"public_run_complete:{glob}", verbose=True)
+            a = filelist
             for e in a:
                 e["path"] = re.sub("^public_run_complete:", "", e["path"])[:-4]
             return a

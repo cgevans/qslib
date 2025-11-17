@@ -13,7 +13,7 @@ from qslib.experiment import MachineBusyError
 
 @pytest.mark.asyncio
 async def test_real_insufficientaccess():
-    m = Machine("localhost", password="correctpassword")
+    m = Machine("localhost", password="correctpassword",  ssl=False)
     with m:
         with pytest.raises(Exception):
             m.run_command("MACRO USER?")
@@ -21,7 +21,7 @@ async def test_real_insufficientaccess():
 
 @pytest.mark.asyncio
 async def test_real_accesslevelexceeded():
-    m = Machine("localhost", max_access_level="Full", password="correctpassword")
+    m = Machine("localhost", max_access_level="Full", password="correctpassword",  ssl=False)
     with m:
         with pytest.raises(Exception):
             m.set_access_level(AccessLevel.Full)
@@ -29,14 +29,14 @@ async def test_real_accesslevelexceeded():
 
 @pytest.mark.asyncio
 async def test_real_autherror():
-    m = Machine("localhost", password="aninvalidpassword")
+    m = Machine("localhost", password="aninvalidpassword",  ssl=False)
     with pytest.raises(Exception):
         with m:
             m.run_command("HELP?")
 
 
 def test_real_invocationerror():
-    m = Machine("localhost", password="correctpassword")
+    m = Machine("localhost", password="correctpassword",  ssl=False)
     with m:
         with pytest.raises(Exception):
             m.run_command("HELP? A B")
@@ -76,7 +76,7 @@ async def test_real_experiment():
 
     exp = Experiment(uuid.uuid1().hex, proto, PlateSetup({"s": "A1"}))
 
-    m = Machine("localhost", max_access_level="Controller", password="correctpassword")
+    m = Machine("localhost", max_access_level="Controller", password="correctpassword", ssl=False)
 
     exp.run(m, require_drawer_check=False)
 
@@ -136,7 +136,7 @@ async def test_real_experiment():
 
     with m:
         with m.at_access("Controller"):
-            await m.connection.compile_eds(exp.name)
+            m.compile_eds(exp.name)
 
     # with pytest.raises(AlreadyExistsError, match=f"Run {exp.name} exists.*"):
     #     exp.runstate = "INIT"
