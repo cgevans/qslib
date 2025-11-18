@@ -5,20 +5,20 @@
 [global]
 
 
-[[instruments]]
+[[machines]]
 name = "qpcr1"
 host = "qpcr1"
 
 
-[[instruments]]
+[[machines]]
 name = "qpcr2"
 host = "qpcr2"
 
-[[instruments]]
+[[machines]]
 name = "qpcr3"
 host = "qpcr3"
 
-[[instruments]]
+[[machines]]
 name = "qpcr4"
 host = "qpcr4"
 
@@ -28,7 +28,7 @@ host = "qpcr4"
 host = "https://matrix.org"
 user = "qsbot"
 password = "your-secure-password"
-room = "!roomid:matrix.org"
+rooms = ["!roomid:matrix.org"]
 session_file = "matrix_session.json"
 allow_verification = false  # Enable temporarily for session verification
 allow_commands = true      # Allow commands to be sent to the bot
