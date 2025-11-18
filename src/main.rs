@@ -528,8 +528,18 @@ async fn run_to_lineprotocol(
                 .clone()
                 .try_into_i64()
                 .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
-
+            let run_name = match con.as_ref() {
+                Some(con) => con
+                    .get_current_run_name()
+                    .await
+                    .map_err(|e| anyhow::anyhow!("Error getting current run name: {}", e))?,
+                None => None,
+            };
             point = point.field(action.to_lowercase(), value);
+
+            if let Some(run_name) = run_name {
+                point = point.field("run_name", run_name);
+            }
             points.push(point.build()?);
 
             // Also create run_status point
