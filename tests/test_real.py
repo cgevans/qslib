@@ -6,8 +6,9 @@ import uuid
 
 import pytest
 
-from qslib import AccessLevel, Experiment, Machine, PlateSetup, Protocol, Stage
+from qslib import AccessLevel, Experiment, Machine, PlateSetup, Protocol, RunStatus, Stage
 from qslib.experiment import MachineBusyError
+from qslib.machine import AlreadyCollectedError
 
 
 
@@ -27,6 +28,12 @@ async def test_real_accesslevelexceeded():
             m.set_access_level(AccessLevel.Full)
 
 
+def test_above_self_access_limit():
+    m = Machine("localhost", max_access_level="Observer", password="correctpassword",  ssl=False)
+    with pytest.raises(ValueError):
+        m.set_access_level(AccessLevel.Controller)
+    with m:
+        assert m.access_level == AccessLevel.Observer
 @pytest.mark.asyncio
 async def test_real_autherror():
     m = Machine("localhost", password="aninvalidpassword",  ssl=False)
@@ -40,6 +47,25 @@ def test_real_invocationerror():
     with m:
         with pytest.raises(Exception):
             m.run_command("HELP? A B")
+
+@pytest.mark.parametrize("encoding", ["base64", "plain"])
+def test_file_read_write_default(encoding):
+    m = Machine("localhost", password="correctpassword",  ssl=False)
+
+    m.write_file("public_run_complete:test.txt", "Hello, world!")
+
+    assert "public_run_complete:test.txt" in m.list_files("public_run_complete:")
+
+    data = m.read_file("public_run_complete:test.txt", encoding=encoding)
+    assert data == b"Hello, world!"
+
+    assert data == m.read_file("test.txt", context="public_run_complete", encoding=encoding)
+    assert data == m.read_file("test.txt", context="public_run_complete:", encoding=encoding)
+
+    with m.at_access(AccessLevel.Controller):
+        m.run_command("FILE:REMOVE public_run_complete:test.txt")
+
+    assert "public_run_complete:test.txt" not in m.list_files("public_run_complete:")
 
 
 # @pytest.mark.asyncio
@@ -138,6 +164,17 @@ async def test_real_experiment():
         with m.at_access("Controller"):
             m.compile_eds(exp.name)
 
+    exp_from_eds = Experiment.from_machine(m, exp.name)
+    assert exp_from_eds.name == exp.name
+
+    with pytest.raises(AlreadyCollectedError):
+        m.compile_eds(exp.name)
+
     # with pytest.raises(AlreadyExistsError, match=f"Run {exp.name} exists.*"):
     #     exp.runstate = "INIT"
     #     exp.run("localhost")
+
+def test_block_temp():
+    m = Machine("localhost", password="correctpassword",  ssl=False)
+    with m:
+        assert m.block == (False, 25.0)
