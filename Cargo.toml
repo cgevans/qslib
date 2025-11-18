@@ -2,9 +2,12 @@
 members = [".", "qs-monitor"]
 resolver = "2"
 
+[workspace.package]
+version = "0.14.0-rc6"
+
 [package]
 name = "qslib"
-version = "0.14.0-rc6"
+version.workspace = true
 edition = "2021"
 description = "QSlib QuantStudio qPCR machine library"
 license = "EUPL-1.2"
