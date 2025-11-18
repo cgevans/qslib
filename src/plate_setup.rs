@@ -233,8 +233,25 @@ struct CustomProperty {
 
 
 impl PlateSetup {
+    /// Clean up malformed XML by removing duplicate Property and Value tags within CustomProperty elements
+    fn clean_xml(xml: &str) -> String {
+        use regex::Regex;
+        
+        // Pattern to match CustomProperty blocks with duplicate Property/Value tags
+        let custom_property_re = Regex::new(
+            r"<CustomProperty>\s*(?:<Property>([^<]*)</Property>\s*)*<Property>([^<]*)</Property>\s*(?:<Value>([^<]*)</Value>\s*)*<Value>([^<]*)</Value>\s*</CustomProperty>"
+        ).unwrap();
+        
+        custom_property_re.replace_all(xml, |caps: &regex::Captures| {
+            let property = caps.get(2).map_or("", |m| m.as_str());
+            let value = caps.get(4).map_or("", |m| m.as_str());
+            format!("<CustomProperty><Property>{}</Property><Value>{}</Value></CustomProperty>", property, value)
+        }).to_string()
+    }
+
     pub fn from_xml(xml: &str) -> Result<Self, quick_xml::DeError> {
-        let mut plate: PlateSetup = from_str(xml)?;
+        let cleaned_xml = Self::clean_xml(xml);
+        let mut plate: PlateSetup = from_str(&cleaned_xml)?;
 
         // Determine plate type from PlateKind
         if let Some(kind) = plate.plate_kinds.first() {
@@ -993,6 +1010,57 @@ mod tests {
 
         // Check last well (P24)
         assert_eq!(lines[383], "platesetup,row=P,col=24 sample=\"\" 1234567890");
+    }
+
+    #[test]
+    fn test_deserialize_plate_setup_with_duplicate_sp_uuid() {
+        // Test XML with duplicate SP_UUID Property and Value tags (from Python bug)
+        let xml = r#"
+    <Plate>
+        <Name>Test Plate</Name>
+        <BarCode>BC123</BarCode>
+        <Description>Test Description</Description>
+        <Rows>8</Rows>
+        <Columns>12</Columns>
+        <FeatureMap>
+            <Feature>
+                <Id>sample</Id>
+                <Name>Sample</Name>
+            </Feature>
+            <FeatureValue>
+                <Index>0</Index>
+                <FeatureItem>
+                    <Sample>
+                        <Name>Test Sample</Name>
+                        <Color>-16776961</Color>
+                        <CustomProperty>
+                            <Property>SP_UUID</Property>
+                            <Property>SP_UUID</Property>
+                            <Value>f29793389d7511efbfaeb88584b13f7c</Value>
+                            <Value>f29793389d7511efbfaeb88584b13f7c</Value>
+                        </CustomProperty>
+                    </Sample>
+                </FeatureItem>
+            </FeatureValue>
+        </FeatureMap>
+        <PlateKind>
+            <Name>96-Well Plate (8x12)</Name>
+            <Type>TYPE_8X12</Type>
+            <RowCount>8</RowCount>
+            <ColumnCount>12</ColumnCount>
+        </PlateKind>
+    </Plate>
+    "#;
+
+        let result = PlateSetup::from_xml(xml);
+        assert!(result.is_ok(), "Should handle duplicate SP_UUID tags gracefully");
+        let plate = result.unwrap();
+        assert_eq!(plate.plate_type, PlateType::Well96);
+
+        // Test sample data
+        let sample_wells = plate.get_sample_wells();
+        assert!(sample_wells.contains_key("Test Sample"));
+        assert_eq!(sample_wells["Test Sample"], vec!["A1"]);
     }
 
     #[test]
