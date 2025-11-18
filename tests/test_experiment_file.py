@@ -126,6 +126,39 @@ def test_plots(exp: Experiment) -> None:
 #     exp.rawdata.loc[:, :]
 
 
+def test_all_filters(exp: Experiment) -> None:
+    """Test that all_filters returns the expected filter sets."""
+    expected_filters = {
+        "x1-m1", "x1-m2", "x2-m2", "x2-m3", "x3-m3", 
+        "x3-m4", "x4-m4", "x4-m5", "x5-m5", "x5-m6"
+    }
+    
+    actual_filters = {str(f) for f in exp.all_filters}
+    
+    assert actual_filters == expected_filters
+    assert len(exp.all_filters) == 10
+
+
+def test_filter_strings(exp: Experiment) -> None:
+    """Test that filter_strings returns the expected filter strings."""
+    expected_filter_strings = [
+        "x1-m1", "x1-m2", "x2-m2", "x2-m3", "x3-m3", 
+        "x3-m4", "x4-m4", "x4-m5", "x5-m5", "x5-m6"
+    ]
+    
+    actual_filter_strings = exp.filter_strings
+    
+    # Convert to sets for comparison since order might vary
+    assert set(actual_filter_strings) == set(expected_filter_strings)
+    assert len(actual_filter_strings) == 10
+    
+    # Verify that filter_strings matches string conversion of all_filters
+    assert set(actual_filter_strings) == {str(f) for f in exp.all_filters}
+
+
+
+
+
 def test_save_file_with_dots(exp: Experiment, tmp_path_factory: pytest.TempPathFactory) -> None: # test for issue #33
     tmp_path = tmp_path_factory.mktemp("exp")
     
