@@ -819,6 +819,48 @@ impl QSConnection {
             .await??;
         Ok(response)
     }
+
+    pub async fn abort_current_run(
+        &self,
+    ) -> Result<Result<(), ErrorResponse>, CommandError<ErrorResponse>> {
+        let mut response = commands::AbortRun("${RunTitle}".to_string()).send(self).await?;
+        match response.receive_response().await? {
+            Ok(_) => Ok(Ok(())),
+            Err(e) => Ok(Err(e)),
+        }
+    }
+
+    pub async fn abort_run(
+        &self,
+        run_title: &str,
+    ) -> Result<Result<(), ErrorResponse>, CommandError<ErrorResponse>> {
+        let mut response = commands::AbortRun(run_title.to_string()).send(self).await?;
+        match response.receive_response().await? {
+            Ok(_) => Ok(Ok(())),
+            Err(e) => Ok(Err(e)),
+        }
+    }
+
+    pub async fn stop_current_run(
+        &self,
+    ) -> Result<Result<(), ErrorResponse>, CommandError<ErrorResponse>> {
+        let mut response = commands::StopRun("${RunTitle}".to_string()).send(self).await?;
+        match response.receive_response().await? {
+            Ok(_) => Ok(Ok(())),
+            Err(e) => Ok(Err(e)),
+        }
+    }
+
+    pub async fn stop_run(
+        &self,
+        run_title: &str,
+    ) -> Result<Result<(), ErrorResponse>, CommandError<ErrorResponse>> {
+        let mut response = commands::StopRun(run_title.to_string()).send(self).await?;
+        match response.receive_response().await? {
+            Ok(_) => Ok(Ok(())),
+            Err(e) => Ok(Err(e)),
+        }
+    }
 }
 
 #[derive(Debug, Error)]

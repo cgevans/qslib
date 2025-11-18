@@ -862,6 +862,30 @@ impl CommandBuilder for BlockTemperaturesQuery {
     const COMMAND: &'static [u8] = b"TBC:BlockTemperatures?";
 }
 
+#[derive(Debug, Clone)]
+pub struct AbortRun(pub String);
+
+impl CommandBuilder for AbortRun {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"AbortRun";
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![self.0.clone().into()])
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct StopRun(pub String);
+
+impl CommandBuilder for StopRun {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"StopRun";
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![self.0.clone().into()])
+    }
+}
+
 impl TryFrom<OkResponse> for Vec<f64> {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
