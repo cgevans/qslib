@@ -1115,7 +1115,7 @@ mod tests {
         // Check first line (A1 with Sample1)
         assert_eq!(
             lines[0],
-            "platesetup,row=A,col=1 sample=\"Sample1\" 1234567890"
+            "platesetup,row=A,col=01 sample=\"Sample1\" 1234567890"
         );
 
         // Check a random empty well (H12)
@@ -1125,7 +1125,7 @@ mod tests {
         let lines_with_run = plate.to_lineprotocol(1234567890, Some("Test Run"), None);
         assert_eq!(
             lines_with_run[0],
-            "platesetup,row=A,col=1,run_name=\"Test Run\" sample=\"Sample1\" 1234567890"
+            "platesetup,row=A,col=01,run_name=\"Test Run\" sample=\"Sample1\" 1234567890"
         );
     }
 
@@ -1175,7 +1175,7 @@ mod tests {
         // Check first line (A1 with Sample1)
         assert_eq!(
             lines[0],
-            "platesetup,row=A,col=1 sample=\"Sample1\" 1234567890"
+            "platesetup,row=A,col=01 sample=\"Sample1\" 1234567890"
         );
 
         // Check last well (P24)
