@@ -273,10 +273,78 @@ async fn handle_message(
             }
             Ok(())
         }
+        "!abort" => {
+            if !settings.allow_control {
+                error!("Control commands not allowed");
+                return Ok(());
+            }
+            let machine = parts.next().unwrap_or("");
+            match qs.get(machine) {
+                Some(x) => {
+                    let (conn, _) = x.value();
+                    conn.set_access_level(AccessLevel::Controller).await?;
+                    let response = conn
+                        .send_command("AbortRun ${RunTitle}")
+                        .await?
+                        .get_response()
+                        .await?;
+                    conn.set_access_level(AccessLevel::Observer).await?;
+                    match response {
+                        Ok(_) => {
+                            send_matrix_message(&room, "Run aborted", false).await?;
+                        }
+                        Err(e) => {
+                            send_matrix_message(&room, &format!("Error aborting run: {}", e), true)
+                                .await?;
+                        }
+                    }
+                }
+                None => {
+                    error!("Machine {} not found", machine);
+                    send_matrix_message(&room, &format!("Machine {} not found", machine), true)
+                        .await?;
+                }
+            }
+            Ok(())
+        }
+        "!stop" => {
+            if !settings.allow_control {
+                error!("Control commands not allowed");
+                return Ok(());
+            }
+            let machine = parts.next().unwrap_or("");
+            match qs.get(machine) {
+                Some(x) => {
+                    let (conn, _) = x.value();
+                    conn.set_access_level(AccessLevel::Controller).await?;
+                    let response = conn
+                        .send_command("StopRun ${RunTitle}")
+                        .await?
+                        .get_response()
+                        .await?;
+                    conn.set_access_level(AccessLevel::Observer).await?;
+                    match response {
+                        Ok(_) => {
+                            send_matrix_message(&room, "Run stopped", false).await?;
+                        }
+                        Err(e) => {
+                            send_matrix_message(&room, &format!("Error stopping run: {}", e), true)
+                                .await?;
+                        }
+                    }
+                }
+                None => {
+                    error!("Machine {} not found", machine);
+                    send_matrix_message(&room, &format!("Machine {} not found", machine), true)
+                        .await?;
+                }
+            }
+            Ok(())
+        }
         "!help" => {
             send_matrix_message(
                 &room,
-                "Available commands: !status, !command, !close, !open",
+                "Available commands: !status, !command, !close, !open, !abort, !stop",
                 false,
             )
             .await?;
