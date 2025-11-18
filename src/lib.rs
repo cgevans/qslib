@@ -14,6 +14,7 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 #[pymodule(name = "_qslib")]
 mod qslib {
+    use pyo3::prelude::*;
 
     #[pymodule_export]
     use crate::python::PyQSConnection;
@@ -26,6 +27,9 @@ mod qslib {
 
     #[pymodule_export]
     use crate::parser::OkResponse;
+
+    #[pymodule_export]
+    use crate::parser::Command;
 
     #[pymodule_export]
     use crate::python::UnexpectedMessageResponse;
@@ -65,5 +69,41 @@ mod qslib {
 
     // #[pymodule_export]
     // use crate::message_log::RunState;
+
+    /// Parse a string into an ArgMap
+    #[pyfunction]
+    fn parse_argmap(input: String) -> PyResult<crate::parser::ArgMap> {
+        use crate::parser::parse_options;
+        parse_options(&mut input.as_bytes()).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse ArgMap: {}", e))
+        })
+    }
+
+    /// Parse bytes into an ArgMap
+    #[pyfunction]
+    fn parse_argmap_bytes(input: &[u8]) -> PyResult<crate::parser::ArgMap> {
+        use crate::parser::parse_options;
+        parse_options(&mut &input[..]).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse ArgMap: {}", e))
+        })
+    }
+
+    /// Parse a string into a Value
+    #[pyfunction]
+    fn parse_value(input: String) -> PyResult<crate::parser::Value> {
+        use crate::parser::Value;
+        Value::parse(&mut input.as_bytes()).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse Value: {}", e))
+        })
+    }
+
+    /// Parse bytes into a Value
+    #[pyfunction]
+    fn parse_value_bytes(input: &[u8]) -> PyResult<crate::parser::Value> {
+        use crate::parser::Value;
+        Value::parse(&mut &input[..]).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse Value: {}", e))
+        })
+    }
 
 }
