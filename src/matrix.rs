@@ -29,7 +29,7 @@ use qslib::{
     parser::{ErrorResponse, LogMessage},
 };
 use serde::{Deserialize, Serialize};
-use std::{io::Write, path::PathBuf, sync::Arc};
+use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
@@ -638,28 +638,69 @@ pub async fn setup_matrix(
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, LogMessage)>();
 
+    let qs_connections_for_tasks = qs_connections.clone();
+
     for x in qs_connections.iter() {
         let name = x.value().1.name.clone();
-        let conn = x.value().0.clone();
         let tx = tx.clone();
+        let qs_connections_clone = qs_connections_for_tasks.clone();
+        let task_name = name.clone();
         tokio::spawn(async move {
-            let mut inner_sm = conn.subscribe_log(&["Run", "Error"]).await;
+            let mut backoff_secs = 1u64;
+            const MAX_BACKOFF_SECS: u64 = 60;
+            let mut last_conn_id = None::<usize>;
             loop {
-                match inner_sm.next().await {
-                    Some((topic, Ok(msg))) => {
-                        if (topic == "Run" || topic == "Error")
-                            && let Err(e) = tx.send((name.clone(), msg))
-                        {
-                            error!("Failed to send message for {}: {}", name, e);
-                            break;
-                        }
-                    }
-                    Some((topic, Err(BroadcastStreamRecvError::Lagged(n)))) => {
-                        warn!("Machine {} topic {} lagged by {} messages", name, topic, n);
+                let current_conn = qs_connections_clone.get(&task_name);
+                let (conn, conn_id) = match current_conn {
+                    Some(entry) => {
+                        let conn = entry.value().0.clone();
+                        let conn_id = Arc::as_ptr(&conn) as usize;
+                        (conn, conn_id)
                     }
                     None => {
-                        warn!("Stream ended for machine {}", name);
-                        break;
+                        debug!("Machine {} not in connections map, waiting", task_name);
+                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                        last_conn_id = None;
+                        continue;
+                    }
+                };
+
+                if Some(conn_id) == last_conn_id {
+                    debug!(
+                        "Machine {} connection unchanged, waiting for new connection",
+                        task_name
+                    );
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
+                last_conn_id = Some(conn_id);
+                backoff_secs = 1;
+                let mut inner_sm = conn.subscribe_log(&["Run", "Error"]).await;
+                debug!("Subscribed to log stream for machine {}", task_name);
+
+                loop {
+                    match inner_sm.next().await {
+                        Some((topic, Ok(msg))) => {
+                            if (topic == "Run" || topic == "Error")
+                                && let Err(e) = tx.send((task_name.clone(), msg))
+                            {
+                                error!("Failed to send message for {}: {}", task_name, e);
+                                break;
+                            }
+                        }
+                        Some((topic, Err(BroadcastStreamRecvError::Lagged(n)))) => {
+                            warn!(
+                                "Machine {} topic {} lagged by {} messages",
+                                task_name, topic, n
+                            );
+                        }
+                        None => {
+                            warn!("Stream ended for machine {}, will reconnect", task_name);
+                            last_conn_id = None;
+                            break;
+                        }
                     }
                 }
             }
