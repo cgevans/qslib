@@ -709,13 +709,14 @@ class Machine:
 
 
     @property
+    @_ensure_connection(AccessLevel.Guest)
     def access_level(self) -> AccessLevel:
-        return self._current_access_level
+        return self.get_access_level()[0]
 
     @access_level.setter
+    @_ensure_connection(AccessLevel.Guest)
     def access_level(self, v: AccessLevel | str) -> None:
-        with self.ensured_connection(AccessLevel.Guest):
-            self.set_access_level(v)
+        self.set_access_level(v)
 
     @_ensure_connection(AccessLevel.Controller)
     def drawer_open(self) -> None:
@@ -920,10 +921,11 @@ class Machine:
     ) -> Generator[Machine, None, None]:
         if self.automatic:
             was_connected = self.connected
+            old_access = self._current_access_level
             if not was_connected:
                 self.connect()
-            old_access = self.access_level
-            if old_access < access_level:
+                self.set_access_level(max(old_access, access_level))
+            elif old_access < access_level:
                 self.set_access_level(access_level)
             yield self
             if not was_connected:
