@@ -237,8 +237,11 @@ async fn main() -> Result<()> {
     let mut ids = HashMap::new();
 
     for config in config.machines.iter() {
-        let (conn, id) = log_machine(config, tx.clone(), &mut log_tasks).await?;
-        conns.insert(config.name.clone(), (Arc::new(conn), config.clone()));
+        let con = Arc::new(
+            QSConnection::connect(&config.host, 7443, qslib::com::ConnectionType::SSL).await?,
+        );
+        let id = log_machine(con.clone(), config, tx.clone(), &mut log_tasks).await?;
+        conns.insert(config.name.clone(), (con, config.clone()));
         ids.insert(id, config.clone());
     }
 
@@ -257,11 +260,11 @@ async fn main() -> Result<()> {
         warn!("Reconnecting to {}", config.name);
         conns.remove(&config.name);
         ids.remove(&id);
-        let (conn, id) = log_machine(&config, tx.clone(), &mut log_tasks).await?;
-        let old = conns.insert(config.name.clone(), (Arc::new(conn), config.clone()));
-        if let Some(_) = old {
-            debug!("Replacing existing connection for {}", config.name);
-        }
+        let new_con = Arc::new(
+            QSConnection::connect(&config.host, 7443, qslib::com::ConnectionType::SSL).await?,
+        );
+        let id = log_machine(new_con.clone(), &config, tx.clone(), &mut log_tasks).await?;
+        conns.insert(config.name.clone(), (new_con, config.clone()));
         ids.insert(id, config.clone());
     }
 
@@ -278,13 +281,11 @@ async fn main() -> Result<()> {
 // }
 
 async fn log_machine(
+    mut con: Arc<QSConnection>,
     config: &MachineConfig,
     tx: mpsc::Sender<(String, DataPoint)>,
     log_tasks: &mut JoinSet<()>,
-) -> Result<(QSConnection, Id)> {
-    let mut con =
-        QSConnection::connect(&config.host, 7443, qslib::com::ConnectionType::SSL).await?;
-
+) -> Result<Id> {
     let access = AccessLevelSet::level(AccessLevel::Observer);
     access.send(&mut con).await?.receive_response().await?;
     Subscribe::topic("Temperature").send(&mut con).await?;
@@ -299,7 +300,7 @@ async fn log_machine(
     let config_clone = config.clone();
 
     let aborthandle = log_tasks.spawn(async move {
-        influx_log_loop(&mut log_sub, tx, &config_clone, None)
+        influx_log_loop(&mut log_sub, tx, &config_clone, None, con.clone())
             .await
             .unwrap();
     });
@@ -307,7 +308,7 @@ async fn log_machine(
 
     info!("Logging task started for {}", config.name);
 
-    Ok((con, id))
+    Ok(id)
 }
 
 async fn influx_log_loop(
@@ -315,12 +316,12 @@ async fn influx_log_loop(
     tx: mpsc::Sender<(String, DataPoint)>,
     config: &MachineConfig,
     timeout_secs: Option<u64>,
+    con: Arc<QSConnection>,
 ) -> Result<()> {
     let machine_name = config.name.as_ref();
     let mut last_message = tokio::time::Instant::now();
     let timeout = Duration::from_secs(timeout_secs.unwrap_or(60));
     let mut check_interval = tokio::time::interval(Duration::from_secs(5));
-
     loop {
         select! {
             msg = log_sub.next() => {
@@ -340,6 +341,8 @@ async fn influx_log_loop(
                     }
                 };
 
+                info!("Message: {:?}", msg);
+
                 // Safely convert points, logging errors instead of propagating
                 let points = match msg.topic.as_str() {
                     "Temperature" => match temperature_to_lineprotocol(&msg, machine_name, timestamp) {
@@ -356,7 +359,7 @@ async fn influx_log_loop(
                             continue;
                         }
                     },
-                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp) {
+                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp, con.clone()).await {
                         Ok(points) => points,
                         Err(e) => {
                             error!("Error converting run data for {}: {}", config.name, e);
@@ -422,10 +425,11 @@ fn ledstatus_to_lineprotocol(
     ])
 }
 
-fn run_to_lineprotocol(
+async fn run_to_lineprotocol(
     msg: &LogMessage,
     machine_name: &str,
     timestamp: chrono::DateTime<chrono::Utc>,
+    con: Arc<QSConnection>,
 ) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
     let mut parts = msg.message.splitn(2, ' ');
@@ -466,20 +470,91 @@ fn run_to_lineprotocol(
         }
         "Holding" => {
             let time = content
-                .args
-                .get(0)
-                .ok_or(anyhow::anyhow!("Missing value"))?
+                .options
+                .get("time")
+                .ok_or(anyhow::anyhow!("Missing time"))?
                 .clone()
                 .try_into_f64()
-                .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Missing time: {}", e))?;
             point = point.field("holdtime", time);
             points.push(point.build()?);
         }
-        "Ramping" | "Acquiring" | "Collected" => {
-            for (key, value) in content.options {
-                point = point.field(key, value_to_influxvalue(value));
+        "Ramping" => {
+            let rates = content
+                .options
+                .get("rates")
+                .unwrap()
+                .to_string()
+                .split(',')
+                .map(|s| s.parse::<f64>().unwrap())
+                .collect::<Vec<f64>>();
+            let zones = content
+                .options
+                .get("zones")
+                .unwrap()
+                .to_string()
+                .split(',')
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>();
+            let targets = content
+                .options
+                .get("targets")
+                .unwrap()
+                .to_string()
+                .split(',')
+                .map(|s| s.parse::<f64>().unwrap())
+                .collect::<Vec<f64>>();
+            for ((zone, rate), target) in zones.iter().zip(rates.iter()).zip(targets.iter()) {
+                point = point.field(format!("rate_{}", zone), *rate);
+                point = point.field(format!("target_{}", zone), *target);
             }
             points.push(point.build()?);
+        }
+        "Collected" => {
+            let stage = content
+                .options
+                .get("stage")
+                .unwrap()
+                .to_string()
+                .parse::<i64>()
+                .unwrap();
+            let cycle = content
+                .options
+                .get("cycle")
+                .unwrap()
+                .to_string()
+                .parse::<i64>()
+                .unwrap();
+            let step = content
+                .options
+                .get("step")
+                .unwrap()
+                .to_string()
+                .parse::<i64>()
+                .unwrap();
+            let run_point = content
+                .options
+                .get("point")
+                .unwrap()
+                .to_string()
+                .parse::<i64>()
+                .unwrap();
+            point = point
+                .field("stage", stage)
+                .field("cycle", cycle)
+                .field("step", step)
+                .field("point", run_point);
+            points.push(point.build()?);
+            tokio::spawn(docollect(
+                None,
+                stage,
+                cycle,
+                step,
+                run_point,
+                None,
+                con.clone(),
+                timestamp,
+            ));
         }
         "Error" | "Ended" | "Aborted" | "Stopped" | "Starting" => {
             // Collect remaining message
@@ -496,7 +571,7 @@ fn run_to_lineprotocol(
             points.push(point.build()?);
         }
     }
-
+    info!("Points: {:?}", points);
     Ok(points)
 }
 
@@ -613,99 +688,66 @@ fn time_to_lineprotocol(
 }
 
 async fn docollect(
-    args: &HashMap<String, String>,
-    machine_name: &str,
+    run: Option<&str>,
+    stage: i64,
+    cycle: i64,
+    step: i64,
+    point: i64,
     plate_setup: Option<&PlateSetup>,
-    connection: &QSConnection,
-    config: &Config,
+    con: Arc<QSConnection>,
     timestamp: chrono::DateTime<chrono::Utc>,
-    tx: mpsc::Sender<(String, DataPoint)>,
 ) -> Result<(), CommandError<ErrorResponse>> {
-    let run = args
-        .get("run")
-        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Missing run argument")))
-        .and_then(|s| {
-            s.trim_matches('"').to_string().parse::<u32>().map_err(|e| {
-                CommandError::InternalError(anyhow::anyhow!("Invalid run argument: {}", e))
-            })
-        })?;
-
-    // Convert args to proper format for filter data filename
-    let stage = args
-        .get("stage")
-        .and_then(|s| s.parse::<i32>().ok())
-        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Invalid stage argument")))?;
-    let cycle = args
-        .get("cycle")
-        .and_then(|s| s.parse::<i32>().ok())
-        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Invalid cycle argument")))?;
-    let step = args
-        .get("step")
-        .and_then(|s| s.parse::<i32>().ok())
-        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Invalid step argument")))?;
-    let point = args
-        .get("point")
-        .and_then(|s| s.parse::<i32>().ok())
-        .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("Invalid point argument")))?;
-
     // Get plate setup samples if available
     // let sample_array = plate_setup.map(|ps| ps.well_samples_as_array());
-
+    info!(
+        "Collecting data for stage {}, cycle {}, step {}, point {}",
+        stage, cycle, step, point
+    );
     // Get list of filter data files
     let pattern = format!(
-        "{}/apldbio/sds/filter/S{:02}_C{:03}_T{:02}_P{:04}_*_filterdata.xml",
-        run, stage, cycle, step, point
+        "${{FilterFolder}}/S{:02}_C{:03}_T{:02}_P{:04}_*_filterdata.xml",
+        stage, cycle, step, point
     );
-    let files = connection.get_expfile_list(&pattern).await?;
-
+    let files = con.get_expfile_list(&pattern).await?;
+    info!("Found {} files", files.len());
     let mut filter_files: Vec<FilterDataFilename> = files
         .iter()
         .filter_map(|f| FilterDataFilename::from_string(f).ok())
         .collect();
     // filter_files.sort(); FIXME
 
-    // Get latest point's files
-    let latest_files: Vec<_> = filter_files
-        .iter()
-        .filter(|x| x.is_same_point(&filter_files[filter_files.len() - 1]))
-        .collect();
+    let mut line_protocols = Vec::new();
 
-    // let mut line_protocols = Vec::new();
+    // Process filter data
+    info!("Getting filter data for {:?}", filter_files);
 
-    // // Process filter data
-    // if let Some(ipdir) = &config.sync.in_progress_directory {
-    //     let filter_path = Path::new(ipdir).join(&run).join("apldbio/sds/filter");
-    //     if filter_path.exists() {
-    //         for fdf in latest_files {
-    //             let filter_data = connection
-    //                 .get_filterdata_one(*fdf, Some(run.clone()))
-    //                 .await?;
-    //             line_protocols.extend(filter_data.to_lineprotocol(
-    //                 Some(&run),
-    //                 None, // FIXME  sample_array,
-    //                 None,
-    //             )?);
-    //         }
-    //     } else {
-    //         for fdf in latest_files {
-    //             let filter_data = connection
-    //                 .get_filterdata_one(*fdf, Some(run.clone()))
-    //                 .await?;
-    //             line_protocols.extend(filter_data.to_lineprotocol(
-    //                 Some(&run),
-    //                 None, // FIXME  sample_array,
-    //                 None,
-    //             )?);
-    //         }
-    //     }
-    // }
+    for fdf in filter_files {
+        info!("Getting filter data for {:?}", fdf);
+        let filter_data_t = con.get_filterdata_one(fdf, None).await;
+        let filter_data = match filter_data_t {
+            Ok(filter_data) => filter_data,
+            Err(e) => {
+                error!("Error getting filter data for {:?}: {:?}", fdf, e);
+                continue;
+            }
+        };
+        info!("Filter data: {:?}", filter_data);
+        line_protocols.extend(
+            filter_data
+                .to_lineprotocol(
+                    None, None, // FIXME  sample_array,
+                    None,
+                )
+                .unwrap(),
+        );
+    }
 
-    // for lp in line_protocols {
-    //     // Just print to stdout for now
-    //     println!("{}", lp);
-    // }
+    for lp in line_protocols {
+        // Just print to stdout for now
+        info!("{:?}", lp);
+    }
 
-    // Write to InfluxDB
+    // // Write to InfluxDB
     // if let Some(influx) = &config.influxdb {
     //     let client = Client::new(&influx.url, &influx.org, &influx.token);
 
@@ -775,7 +817,9 @@ mod tests {
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
 
-        let points = run_to_lineprotocol(&msg, "qpcr1", timestamp).unwrap();
+        let points =
+            futures::executor::block_on(run_to_lineprotocol(&msg, "qpcr1", timestamp, None))
+                .unwrap();
         assert_eq!(points.len(), 2);
 
         let mut buf = Vec::new();
@@ -797,7 +841,9 @@ mod tests {
         };
         let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
 
-        let points = run_to_lineprotocol(&msg, "qpcr1", timestamp).unwrap();
+        let points =
+            futures::executor::block_on(run_to_lineprotocol(&msg, "qpcr1", timestamp, None))
+                .unwrap();
         assert_eq!(points.len(), 1);
 
         let mut buf = Vec::new();
