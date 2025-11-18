@@ -2,10 +2,12 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 
+import datetime
 import numpy as np
 import pytest
 
 from qslib import Experiment
+import qslib
 from qslib.processors import (
     NormToMaxPerWell,
     NormToMeanPerWell,
@@ -181,3 +183,35 @@ def test_save_file_with_dots(exp: Experiment, tmp_path_factory: pytest.TempPathF
     # Check that the file was saved with correct name
     saved_file = tmp_path / "test.with.dots_and_spaces.eds"
     assert saved_file.exists()
+
+def test_mid_run_eds():
+    exp = Experiment.from_file("tests/mid-run.eds")
+
+    assert exp.runstate == "RUNNING"
+    assert exp.activeendtime is None
+    assert exp.activestarttime == datetime.datetime(2025, 11, 18, 1, 52, 11, 949000, tzinfo=datetime.timezone.utc) # datetime.datetime(2025, 11, 18, 1, 52, 11, 949000, tzinfo=datetime.timezone.utc)
+
+    # ps = qslib.PlateSetup({
+    #     "s1": ["A1"],
+    #     "s2": ["A2", "B4"],
+    # })
+    prot = qslib.Protocol(
+        [
+            qslib.Stage.hold_at(25, "5min", "60s", collect=True)
+        ], filters=["x1-m1", "x3-m5", "x2-m2"]
+    )
+
+    # assert exp.plate_setup == ps
+    assert exp.protocol == prot
+
+    exp.filter_data_polars
+
+    # Test that analysis data is not available for mid-run experiments
+    with pytest.raises(ValueError, match="Multicomponent data is not available"):
+        exp.multicomponent_data
+    
+    with pytest.raises(ValueError, match="Analysis result is not available"):
+        exp.analysis_result
+    
+    with pytest.raises(ValueError, match="Amplification data is not available"):
+        exp.amplification_data

@@ -25,6 +25,9 @@ These are often compatible with AB's software.
    Stage
    Step
 
+.. note::
+   Protocol equality comparison excludes the protocol name.
+
 There are also some convenience commands to construct often-used stages:
 
 .. autosummary::
@@ -64,6 +67,9 @@ Plates
 
 .. autosummary::
    PlateSetup
+
+.. note::
+   PlateSetup and Sample equality comparison excludes auto-generated identifiers like SP_UUID.
 
 Loading and saving existing experiments
 ---------------------------------------

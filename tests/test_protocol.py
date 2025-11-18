@@ -291,3 +291,21 @@ def test_hold():
     assert Stage.hold_at("50 °C", total_time="1 hour").steps[0].duration_at_cycle_point(
         0
     ) == Q_("1 hour")
+
+def test_protocol_equality():
+    """Test that protocols are equal if they have the same stages, filters, and 
+       volume, even if the names are different"""
+    prot = Protocol(
+        [
+            Stage.hold_at(25, "3min", "30s", collect=True)
+        ], filters=["x1-m1", "x3-m5", "x2-m2"]
+    )
+    prot2 = Protocol(
+        [
+            Stage.hold_at(25, "3min", "30s", collect=True)
+        ], filters=["x1-m1", "x3-m5", "x2-m2"], name="prot2"
+    )
+    assert prot == prot2
+
+    prot2.volume = 40
+    assert prot != prot2

@@ -93,9 +93,9 @@ testing = [
     "qslib[monitor]",
 ]
 altair = [
-    "altair",
     "vegafusion",
-    "vl-convert-python"
+    "altair",
+    "vl-convert-python",
 ]
 
 [project.urls]
