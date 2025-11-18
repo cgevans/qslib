@@ -85,6 +85,12 @@ _SAMPLE_SCHEMA = {
 
 @attrs.define(init=False)
 class Sample:
+    """A sample in a plate setup.
+    
+    Notes
+    -----
+    Sample equality excludes the auto-generated SP_UUID.
+    """
     name: str
     color: Tuple[int, int, int, int] = attrs.field(default=(255, 0, 0, 255))
     properties: dict[str, str] = attrs.field(factory=dict)
@@ -154,6 +160,22 @@ class Sample:
             ET.SubElement(u, "Value").text = value
         ET.SubElement(u, "Value").text = self.uuid
         return x
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Sample):
+            return False
+        if self.__class__ != other.__class__:
+            return False
+        # Compare all fields except SP_UUID in properties
+        properties_without_uuid = {k: v for k, v in self.properties.items() if k != "SP_UUID"}
+        other_properties_without_uuid = {k: v for k, v in other.properties.items() if k != "SP_UUID"}
+        return (
+            self.name == other.name
+            and self.color == other.color
+            and properties_without_uuid == other_properties_without_uuid
+            and self.description == other.description
+            and self.wells == other.wells
+        )
 
     def to_record(self) -> dict[str, Any]:
         return {

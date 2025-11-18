@@ -1646,6 +1646,13 @@ class Protocol(ProtoCommand):
         Sets PRERUN.  *DO NOT USE THIS UNLESS YOU KNOW WHAT YOU ARE DOING*.
     postrun: Sequence[SCPICommand]
         Sets POSTRUN. *DO NOT USE THIS UNLESS YOU KNOW WHAT YOU ARE DOING*.
+    
+    Notes
+    -----
+    Protocol equality is based on functional attributes (stages, volume, runmode, 
+    filters, covertemperature, prerun, postrun) but excludes the name. This means 
+    two protocols with identical configurations but different names are considered 
+    equal.
     """
 
     stages: list[Stage] = attr.field(factory=list)
@@ -1996,6 +2003,23 @@ class Protocol(ProtoCommand):
                 continue
 
         return True
+
+    def __eq__(self, other: object) -> bool:
+        if not isinstance(other, Protocol):
+            return False
+        if self.__class__ != other.__class__:
+            return False
+        # Compare all fields except name
+        return (
+            self.stages == other.stages
+            and self.volume == other.volume
+            and self.runmode == other.runmode
+            and self.filters == other.filters
+            and self.covertemperature == other.covertemperature
+            and self.prerun == other.prerun
+            and self.postrun == other.postrun
+            and self._classname == other._classname
+        )
 
     def validate(self, fix: bool = True):
         for i, stage in enumerate(self.stages):

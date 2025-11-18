@@ -1,14 +1,35 @@
-- The machine this library is for is a "QuantStudio" qPCR machine.
-- The code is licensed under the EUPL-1.2 license.
-- The author is Constantine Evans.
-- Do not be overly boastful in commit messages or docstrings, or say that code is improved.
-- The code uses:
-  - criterion for benchmarking
-  - maturin and pyo3 for python bindings
-  - tokio for async io
-  - serde for serialization and deserialization in some places, but manual implementation in others
-  - thiserror for error handling
-  - clap for cli parsing
-  - log for logging
-- The core communications sections of this code will be used for long-term communications with the machine, and must be extremely robust and reliable.
-- Core communications should be able to accept malformed messages and not fail.
+# Cursor Rules for qslib
+
+## Project Overview
+- This is a library for QuantStudio qPCR machines
+- Licensed under EUPL-1.2
+- Author: Constantine Evans
+
+## Python Package Management
+- **Always use `uv` instead of `pip`** for Python package management
+- Use `uv add <package>` to add dependencies
+- Use `uv install` to install dependencies
+- Use `uv run <command>` to run commands in the virtual environment
+- Use `uv run pytest` to run tests
+- Use `uv run pytest --cov=qslib` to run tests with coverage
+
+## Technology Stack
+- Rust with Python bindings via maturin and pyo3
+- criterion for benchmarking
+- tokio for async I/O
+- serde for serialization/deserialization (some places use manual implementation)
+- thiserror for error handling
+- clap for CLI parsing
+- log for logging
+- Polars as the default dataframe library for Python
+
+## Code Quality Guidelines
+- Core communications must be extremely robust and reliable
+- Core communications should handle malformed messages gracefully
+- Do not be overly boastful in commit messages or docstrings
+- Prefer concise code and comments
+- Avoid obvious comments
+
+## Development
+- This code is used for long-term communications with qPCR machines
+- Reliability and robustness are critical for core communications components
