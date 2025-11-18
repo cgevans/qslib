@@ -393,7 +393,7 @@ async fn influx_log_loop(
                     }
                 };
 
-                info!("Message: {:?}", msg);
+                debug!("Message: {:?}", msg);
 
                 // Safely convert points, logging errors instead of propagating
                 let points = match msg.topic.as_str() {
@@ -599,12 +599,10 @@ async fn run_to_lineprotocol(
             points.push(point.build()?);
             if let Some(con) = con.as_ref() {
                 match docollect(
-                    None,
                     stage,
                     cycle,
                     step,
                     run_point,
-                    None,
                     con.clone(),
                     timestamp,
                     machine_name,
@@ -635,7 +633,7 @@ async fn run_to_lineprotocol(
             points.push(point.build()?);
         }
     }
-    info!("Points: {:?}", points);
+    debug!("Points: {:?}", points);
     Ok(points)
 }
 
@@ -822,12 +820,10 @@ fn parse_line_protocol_to_datapoint(line: &str, machine_name: &str) -> Result<Da
 }
 
 async fn docollect(
-    run: Option<&str>,
     stage: i64,
     cycle: i64,
     step: i64,
     point: i64,
-    plate_setup: Option<&PlateSetup>,
     con: Arc<QSConnection>,
     timestamp: chrono::DateTime<chrono::Utc>,
     machine_name: &str,
@@ -859,6 +855,33 @@ async fn docollect(
     // Process filter data
     info!("Getting filter data for {:?}", filter_files);
 
+    let sample_array = match con.get_plate_setup(None).await {
+        Ok(plate_setup) => plate_setup.well_samples_as_array(),
+        Err(e) => {
+            error!("Error getting plate setup: {:?}", e);
+            return Err(anyhow::anyhow!("Error getting plate setup: {:?}", e));
+        }
+    };
+
+    let current_run_name = match con.get_current_run_name().await {
+        Ok(run_name) => run_name,
+        Err(e) => {
+            error!("Error getting current run name: {:?}", e);
+            return Err(anyhow::anyhow!("Error getting current run name: {:?}", e));
+        }
+    };
+
+    let current_temperature_setpoints = match con.get_current_temperature_setpoints().await {
+        Ok(setpoints) => setpoints,
+        Err(e) => {
+            error!("Error getting current temperature setpoints: {:?}", e);
+            return Err(anyhow::anyhow!(
+                "Error getting current temperature setpoints: {:?}",
+                e
+            ));
+        }
+    };
+
     for fdf in filter_files {
         info!("Getting filter data for {:?}", fdf);
         let filter_data_t = con.get_filterdata_one(fdf, None).await;
@@ -872,7 +895,9 @@ async fn docollect(
         info!("Filter data: {:?}", filter_data);
         let line_protocols = filter_data
             .to_lineprotocol(
-                None, None, // FIXME  sample_array,
+                None,
+                Some(&sample_array),
+                Some(&current_temperature_setpoints.0),
                 None,
             )
             .map_err(|e| anyhow::anyhow!("Error converting to line protocol: {}", e))?;
