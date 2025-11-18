@@ -144,6 +144,7 @@ impl PlateData {
         &self,
         run_name: Option<&str>,
         sample_array: Option<&[String]>,
+        set_temperatures: Option<&[f64]>,
         additional_tags: Option<&[(&str, &str)]>,
     ) -> Result<Vec<String>, DataError> {
         let mut lines = Vec::new();
@@ -167,8 +168,11 @@ impl PlateData {
         let well_names = self.well_names();
 
         // Get temperatures if available
-        let temperatures = self.set_temperatures.as_ref();
-
+        let temperatures: Option<&[f64]> = if let Some(temps) = set_temperatures {
+            Some(temps)
+        } else {
+            self.set_temperatures.as_deref()
+        };
         // Generate a line for each well
         for ((row_letter, col), &fluorescence) in well_names.iter().zip(self.well_data.iter()) {
             let mut line = format!(
@@ -419,7 +423,7 @@ mod tests {
         };
 
         let lines = plate_data
-            .to_lineprotocol(Some("test_run"), None, None)
+            .to_lineprotocol(Some("test_run"), None, None, None)
             .unwrap();
 
         assert_eq!(lines.len(), 6);
