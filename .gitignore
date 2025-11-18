@@ -151,3 +151,5 @@ Cargo.lock
 *.key
 .aider*
 example-eds/
+uv.lock
+CLAUDE.md
