@@ -314,9 +314,21 @@ async fn main() -> Result<()> {
 
     let conns_clone = conns.clone();
     if let Some(matrix_config) = config.matrix.clone() {
+        let reconnect_wait_matrix = reconnect_wait;
         tokio::spawn(async move {
-            if let Err(e) = matrix::setup_matrix(&matrix_config, conns_clone).await {
-                error!("Error setting up Matrix: {}", e);
+            loop {
+                match matrix::setup_matrix(&matrix_config, conns_clone.clone()).await {
+                    Ok(()) => {
+                        warn!("Matrix connection ended, attempting to reconnect");
+                    }
+                    Err(e) => {
+                        error!(
+                            "Error setting up Matrix: {}, retrying in {:?}",
+                            e, reconnect_wait_matrix
+                        );
+                    }
+                }
+                tokio::time::sleep(reconnect_wait_matrix).await;
             }
         });
     }
