@@ -93,6 +93,32 @@ impl<'py> IntoPyObject<'py> for ArgMap {
     }
 }
 
+#[cfg(feature = "python")]
+impl<'py> FromPyObject<'py> for ArgMap {
+    fn extract_bound(ob: &Bound<'py, pyo3::PyAny>) -> PyResult<Self> {
+        use pyo3::types::PyDict;
+        
+        if let Ok(dict) = ob.downcast::<PyDict>() {
+            let mut arg_map = ArgMap::new();
+            for (key, value) in dict.iter() {
+                // Convert key to string - try direct extraction first, then fallback to str()
+                let key_str: String = match key.extract::<String>() {
+                    Ok(s) => s,
+                    Err(_) => key.str()?.extract()?,
+                };
+                let value_parsed: Value = value.extract()?;
+                arg_map.insert(key_str, value_parsed);
+            }
+            Ok(arg_map)
+        } else {
+            Err(pyo3::exceptions::PyTypeError::new_err(
+                "Expected a dictionary for ArgMap conversion"
+            ))
+        }
+    }
+}
+
+
 #[derive(PartialEq, Clone)]
 pub enum Value {
     String(String),
@@ -122,6 +148,52 @@ impl<'py> IntoPyObject<'py> for Value {
         }
     }
 }
+
+#[cfg(feature = "python")]
+impl<'py> FromPyObject<'py> for Value {
+    fn extract_bound(ob: &Bound<'py, pyo3::PyAny>) -> PyResult<Self> {
+        use pyo3::types::{PyBool, PyBytes, PyFloat, PyInt, PyString};
+        
+        if let Ok(b) = ob.downcast::<PyBool>() {
+            Ok(Value::Bool(b.is_true()))
+        } else if let Ok(i) = ob.downcast::<PyInt>() {
+            Ok(Value::Int(i.extract()?))
+        } else if let Ok(f) = ob.downcast::<PyFloat>() {
+            Ok(Value::Float(f.extract()?))
+        } else if let Ok(s) = ob.downcast::<PyString>() {
+            let string_val: String = s.extract()?;
+            if string_val.contains('\n') {
+                Ok(Value::XmlString { 
+                    value: BString::from(string_val.as_bytes()), 
+                    tag: "quote".to_string() 
+                })
+            } else if string_val.contains(' ') {
+                Ok(Value::QuotedString(string_val))
+            } else {
+                Ok(Value::String(string_val))
+            }
+        } else if let Ok(b) = ob.downcast::<PyBytes>() {
+            let bytes: Vec<u8> = b.extract()?;
+            Ok(Value::XmlString { 
+                value: BString::from(bytes), 
+                tag: String::new() 
+            })
+        } else {
+            let s: String = ob.str()?.extract()?;
+            if s.contains('\n') {
+                Ok(Value::XmlString { 
+                    value: BString::from(s.as_bytes()), 
+                    tag: "quote".to_string() 
+                })
+            } else if s.contains(' ') {
+                Ok(Value::QuotedString(s))
+            } else {
+                Ok(Value::String(s))
+            }
+        }
+    }
+}
+
 
 impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -357,6 +429,7 @@ impl Message {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
 pub struct Command {
     pub command: Vec<u8>,
     pub options: ArgMap,
@@ -488,6 +561,62 @@ impl Command {
     }
 }
 
+#[cfg(feature = "python")]
+#[pymethods]
+impl Command {
+    #[new]
+    fn py_new(command: String) -> Self {
+        Command::new(&command)
+    }
+
+    #[pyo3(name = "to_string")]
+    fn py_to_string(&self) -> String {
+        let mut bytes = Vec::new();
+        self.write_bytes(&mut bytes).unwrap();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    #[pyo3(name = "from_string")]
+    #[staticmethod]
+    fn py_from_string(s: String) -> Result<Self, ParseError> {
+        Command::try_from(s)
+    }
+
+    fn __str__(&self) -> String {
+        let mut bytes = Vec::new();
+        self.write_bytes(&mut bytes).unwrap();
+        String::from_utf8_lossy(&bytes).to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        let command_str = String::from_utf8_lossy(&self.command);
+        let mut repr = format!("Command(command='{}', options={{", command_str);
+        
+        let mut first_option = true;
+        for (key, value) in &self.options {
+            if !first_option {
+                repr.push_str(", ");
+            }
+            first_option = false;
+            repr.push_str(&format!("'{}': {:?}", key, value));
+        }
+        
+        repr.push_str("}, args=[");
+        
+        let mut first_arg = true;
+        for arg in &self.args {
+            if !first_arg {
+                repr.push_str(", ");
+            }
+            first_arg = false;
+            repr.push_str(&format!("{:?}", arg));
+        }
+        
+        repr.push_str("])");
+        repr
+    }
+}
+
 impl From<Command> for String {
     fn from(cmd: Command) -> Self {
         let mut bytes = Vec::new();
@@ -505,7 +634,7 @@ fn parse_args(input: &mut &[u8]) -> ModalResult<Vec<Value>> {
     .parse_next(input)
 }
 
-fn parse_options(input: &mut &[u8]) -> ModalResult<ArgMap> {
+pub fn parse_options(input: &mut &[u8]) -> ModalResult<ArgMap> {
     let x: Vec<(String, Value)> = winnow::combinator::separated(
         0..,
         parse_option.context(StrContext::Label("option")),
