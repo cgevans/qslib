@@ -23,7 +23,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
 
 use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError};
-use crate::data::{PlateData, PlatePointData};
+use crate::data::{FilterDataCollection, PlateData, PlatePointData};
 use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
 
 use lazy_static::lazy_static;
@@ -735,41 +735,24 @@ impl QSConnection {
         fref: FilterDataFilename,
         run: Option<String>,
     ) -> Result<PlateData, CommandError<ErrorResponse>> {
-        let run = match run {
-            Some(r) => r,
-            None => self.get_run_title().await?,
+        let path = match run {
+            Some(r) => format!("{}/apldbio/sds/filter/{}", r, fref),
+            None => format!("${{FilterFolder}}/{}", fref),
         };
-        let path = format!("{}/apldbio/sds/filter/{}", run, fref);
-        let mut reply = self.send_command_bytes(path.as_bytes().as_bstr()).await?;
-        let mut reply = reply.get_response().await??;
+        let x = self.get_exp_file(&path).await?;
 
-        let x = match reply
-            .args
-            .pop()
-            .ok_or(CommandError::InternalError(anyhow::anyhow!(
-                "Not enough arguments"
-            )))? {
-            Value::XmlString { value, .. } => value,
-            _ => {
-                return Err(CommandError::InternalError(anyhow::anyhow!(
-                    "Invalid response"
-                )))
-            }
-        };
-        let plate_data: PlatePointData = quick_xml::de::from_str(&x.to_str_lossy())
+        let filter_data_collection: FilterDataCollection = quick_xml::de::from_str(&x.to_str_lossy())
             .with_context(|| "PlatePointData deserialization error")
             .map_err(CommandError::InternalError)?;
 
-        // transform into first plate data
-        let plate_data =
-            plate_data
-                .plate_data
-                .into_iter()
-                .next()
-                .ok_or(CommandError::InternalError(anyhow::anyhow!(
-                    "No plate data returned"
-                )))?;
-
+        // Directly access the first PlateData by value without unnecessary clones, if possible.
+        // Since we need to return an owned PlateData (not a reference), we can implement this 
+        // by consuming the collection to extract the value. 
+        // If there are no entries, return an error instead of panicking.
+        let plate_point_data = filter_data_collection.plate_point_data.into_iter().next()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No PlatePointData found")))?;
+        let plate_data = plate_point_data.plate_data.into_iter().next()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No PlateData found")))?;
         Ok(plate_data)
     }
 
