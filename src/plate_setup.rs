@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+#[cfg(feature = "python")]
 use polars::frame::DataFrame;
 use quick_xml::{de::from_str, se::to_string};
 use serde::de::Error;
@@ -110,6 +111,8 @@ pub struct Sample {
     pub name: String,
     #[serde(rename = "Color")]
     pub color: Color,
+    #[serde(rename = "Description")]
+    pub description: Option<String>,
     #[serde(rename = "CustomProperty")]
     custom_properties: Vec<CustomProperty>,
 }
@@ -119,6 +122,7 @@ impl Sample {
         Self {
             name,
             color: Color::rgb(100, 100, 100),
+            description: None,
             custom_properties: vec![],
         }
     }
@@ -131,6 +135,10 @@ impl Sample {
     pub fn with_property(mut self, key: &str, value: String) -> Self {
         self.set_property(key, value);
         self
+    }
+
+    pub fn with_generated_uuid(self) -> Self {
+        self.with_property("SP_UUID", uuid::Uuid::new_v4().simple().to_string())
     }
 
     pub fn get_property(&self, key: &str) -> Option<String> {
@@ -154,10 +162,157 @@ impl Sample {
     }
 }
 
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl Sample {
+    #[new]
+    #[pyo3(signature = (name, uuid=None, color=None, properties=None, description=None))]
+    fn new_py(name: String, uuid: Option<String>, color: Option<(u8, u8, u8, u8)>, properties: Option<HashMap<String, String>>, description: Option<String>) -> Self {
+        let mut sample = Self::new(name);
+        if let Some(uuid) = uuid {
+            sample.set_property("SP_UUID", uuid);
+        } else {
+            sample.set_property("SP_UUID", uuid::Uuid::new_v4().simple().to_string());
+        }
+        if let Some(color) = color {
+            sample.color = Color::rgba(color.0, color.1, color.2, color.3);
+        } else {
+            sample.color = Color::rgb(100, 100, 100);
+        }
+        if let Some(properties) = properties {
+            for (key, value) in properties {
+                sample.set_property(&key, value);
+            }
+        }
+        if let Some(description) = description {
+            sample.description = Some(description);
+        }
+        sample
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.name.clone()
+    }
+
+    #[setter]
+    fn py_set_name(&mut self, name: String) {
+        self.name = name;
+    }
+
+    #[getter]
+    fn color(&self) -> String {
+        self.color.to_hex()
+    }
+
+    #[setter]
+    fn set_color(&mut self, color: String) {
+        self.color = Color::try_from(color).unwrap();
+    }
+
+    /// Set color from RGBA tuple
+    #[pyo3(name = "set_color_rgba")]
+    fn py_set_color_rgba(&mut self, r: u8, g: u8, b: u8, a: u8) {
+        self.color = Color::rgba(r, g, b, a);
+    }
+
+    /// Get color as RGBA tuple
+    #[getter]
+    fn color_rgba(&self) -> (u8, u8, u8, u8) {
+        self.color.to_rgba()
+    }
+
+    #[getter]
+    fn description(&self) -> Option<String> {
+        self.description.clone()
+    }
+
+    #[setter]
+    fn set_description(&mut self, description: Option<String>) {
+        self.description = description;
+    }
+
+    #[getter]
+    fn uuid(&self) -> Option<String> {
+        self.get_property("SP_UUID")
+    }
+
+    #[setter]
+    fn set_uuid(&mut self, uuid: String) {
+        self.set_property("SP_UUID", uuid);
+    }
+
+    /// Get a property value by key
+    #[pyo3(name = "get_property")]
+    fn py_get_property(&self, key: &str) -> Option<String> {
+        self.get_property(key)
+    }
+
+    /// Get all properties as a dictionary
+    #[pyo3(name = "get_properties")]
+    fn get_properties(&self) -> std::collections::HashMap<String, String> {
+        self.custom_properties.iter()
+            .map(|prop| (prop.property.clone(), prop.value.clone()))
+            .collect()
+    }
+
+    /// Set a property
+    #[pyo3(name = "set_property")]
+    fn py_set_property(&mut self, key: String, value: String) {
+        self.set_property(&key, value);
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Sample(name='{}', color={:?})", self.name, self.color)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self.name == other.name
+        && self.color == other.color
+        && self.description == other.description
+        && self.custom_properties.iter().filter(|prop| prop.property != "SP_UUID").eq(
+            other.custom_properties.iter().filter(|prop| prop.property != "SP_UUID")
+        )
+    }
+
+    #[pyo3(name = "to_record")]
+    fn to_record(&self, py: pyo3::Python<'_>) -> pyo3::PyObject {
+        use pyo3::types::{PyDict};
+        let record = PyDict::new(py);
+
+        record.set_item("name", self.name.clone()).unwrap();
+        record.set_item("color", self.color.to_hex()).unwrap();
+        record.set_item("description", self.description()).unwrap_or(());
+        record.set_item("uuid", self.get_property("SP_UUID")).unwrap_or(());
+
+        let properties = PyDict::new(py);
+        for prop in &self.custom_properties {
+            properties.set_item(&prop.property, &prop.value).unwrap();
+        }
+        record.set_item("properties", properties).unwrap();
+
+        record.into()
+    }
+
+    fn __getitem__(&self, key: &str) -> pyo3::PyResult<String> {
+        self.get_property(key).ok_or_else(|| pyo3::exceptions::PyKeyError::new_err(format!("No property found for key: {}", key)))
+    }
+
+
+    fn __setitem__(&mut self, key: &str, value: String) {
+        self.set_property(key, value);
+    }
+
+    fn __delitem__(&mut self, key: &str) {
+        self.clear_property(key);
+    }
+}
+
 /// A color in RGBA format, but serialized and deserialized as an i32.
 /// This makes little sense, but it is the format used by the QuantStudio
 /// files.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     r: u8,
     g: u8,
@@ -223,7 +378,7 @@ impl TryFrom<String> for Color {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct CustomProperty {
     #[serde(rename = "Property")]
     pub property: String,
@@ -280,19 +435,20 @@ impl PlateSetup {
     }
 
     // Get samples by well position
-    pub fn get_sample_wells(&self) -> HashMap<String, Vec<String>> {
+    pub fn get_sample_wells(&self) -> HashMap<String, (Sample, Vec<String>)> {
         let well_names = self.well_names();
-        let mut sample_wells: HashMap<String, Vec<String>> = HashMap::new();
+        let mut sample_wells: HashMap<String, (Sample, Vec<String>)> = HashMap::new();
 
         for feature_map in &self.feature_maps {
             if feature_map.feature.id == "sample" {
                 for value in &feature_map.feature_values {
                     if let Some(well_name) = well_names.get(value.index as usize) {
                         if let Some(sample) = &value.feature_item.sample {
-                            sample_wells
-                                .entry(sample.name.clone())
-                                .or_default()
-                                .push(well_name.clone());
+                            if let Some(existing) = sample_wells.get_mut(&sample.name) {
+                                existing.1.push(well_name.clone());
+                            } else {
+                                sample_wells.insert(sample.name.clone(), (sample.clone(), vec![well_name.clone()]));
+                            }
                         }
                     }
                 }
@@ -315,8 +471,8 @@ impl PlateSetup {
         let well_sample = self
             .get_sample_wells()
             .into_iter()
-            .flat_map(|(sample, wells)| wells.into_iter().map(move |well| (well, sample.clone())))
-            .collect::<HashMap<_, _>>();
+            .flat_map(|(sample_name, (sample, wells))| wells.into_iter().map(move |well| (well, (sample_name.clone(), sample.clone()))))
+            .collect::<HashMap<String, (String, Sample)>>();
 
         let (rows, cols) = match self.plate_type {
             PlateType::Well96 => ("ABCDEFGH", 12),
@@ -337,7 +493,7 @@ impl PlateSetup {
                     let well = format!("{}{}", row, col);
                     let sample = well_sample_ref
                         .get(&well)
-                        .map_or("", |s| s.as_str())
+                        .map_or("", |s| s.0.as_str())
                         .to_string();
                     format!(
                         "platesetup,row={},col={}{}{} sample=\"{}\" {}",
@@ -486,12 +642,40 @@ impl PlateSetup {
         }
     }
 
+    #[setter]
+    fn set_plate_type(&mut self, plate_type: String) -> PyResult<()> {
+        self.plate_type = match plate_type.as_str() {
+            "TYPE_8X12" => PlateType::Well96,
+            "TYPE_16X24" => PlateType::Well384,
+            "96" => PlateType::Well96,
+            "384" => PlateType::Well384,
+            _ => return Err(pyo3::exceptions::PyValueError::new_err("Invalid plate type")),
+        };
+        Ok(())
+    }
+
     fn get_well_names(&self) -> Vec<String> {
         self.well_names()
     }
 
-    fn get_sample_wells_dict(&self) -> std::collections::HashMap<String, Vec<String>> {
+    fn get_samples_and_wells(&self) -> std::collections::HashMap<String, (Sample, Vec<String>)> {
         self.get_sample_wells()
+    }
+
+    /// Get a specific sample by name
+    fn get_sample(&self, name: &str) -> Option<Sample> {
+        for feature_map in &self.feature_maps {
+            if feature_map.feature.id == "sample" {
+                for value in &feature_map.feature_values {
+                    if let Some(sample) = &value.feature_item.sample {
+                        if sample.name == name {
+                            return Some(sample.clone());
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 
     fn to_line_protocol(&self, timestamp: i64, run_name: Option<&str>, machine_name: Option<&str>) -> Vec<String> {
@@ -510,45 +694,13 @@ impl PlateSetup {
         } else {
             let mut result = format!("PlateSetup with {} samples:\n", sample_wells.len());
             for (sample, wells) in sample_wells.iter() {
-                result.push_str(&format!("  {}: {} wells\n", sample, wells.len()));
+                result.push_str(&format!("  {}: {} wells\n", sample, wells.1.len()));
             }
             result
         }
     }
 }
 
-#[cfg(feature = "python")]
-#[pymethods]
-impl Sample {
-    #[new]
-    fn new_py(name: String) -> Self {
-        Self::new(name)
-    }
-
-    #[getter]
-    fn name(&self) -> String {
-        self.name.clone()
-    }
-
-    #[setter]
-    fn py_set_name(&mut self, name: String) {
-        self.name = name;
-    }
-
-    #[getter]
-    fn color(&self) -> String {
-        self.color.to_hex()
-    }
-
-    #[setter]
-    fn set_color(&mut self, color: String) {
-        self.color = Color::try_from(color).unwrap();
-    }
-
-    fn __repr__(&self) -> String {
-        format!("Sample(name='{}', color={:?})", self.name, self.color)
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -602,7 +754,7 @@ mod tests {
         // Test sample data
         let sample_wells = plate.get_sample_wells();
         assert!(sample_wells.contains_key("Test Sample"));
-        assert_eq!(sample_wells["Test Sample"], vec!["A1"]);
+        assert_eq!(sample_wells["Test Sample"].1, vec!["A1"]);
     }
 
     #[test]
@@ -776,15 +928,15 @@ mod tests {
         // Test Sample1 wells
         assert!(sample_wells.contains_key("Sample1"));
         let sample1_wells = &sample_wells["Sample1"];
-        assert_eq!(sample1_wells.len(), 2);
-        assert!(sample1_wells.contains(&"A1".to_string()));
-        assert!(sample1_wells.contains(&"A2".to_string()));
+        assert_eq!(sample1_wells.1.len(), 2);
+        assert!(sample1_wells.1.contains(&"A1".to_string()));
+        assert!(sample1_wells.1.contains(&"A2".to_string()));
 
         // Test Sample2 wells
         assert!(sample_wells.contains_key("Sample2"));
         let sample2_wells = &sample_wells["Sample2"];
-        assert_eq!(sample2_wells.len(), 1);
-        assert!(sample2_wells.contains(&"B1".to_string()));
+        assert_eq!(sample2_wells.1.len(), 1);
+        assert!(sample2_wells.1.contains(&"B1".to_string()));
     }
 
     #[test]
@@ -859,13 +1011,13 @@ mod tests {
         // Test Sample1 wells
         assert!(sample_wells.contains_key("Sample1"));
         let sample1_wells = &sample_wells["Sample1"];
-        assert_eq!(sample1_wells.len(), 2);
-        assert!(sample1_wells.contains(&"A1".to_string()));
-        assert!(sample1_wells.contains(&"A24".to_string()));
+        assert_eq!(sample1_wells.1.len(), 2);
+        assert!(sample1_wells.1.contains(&"A1".to_string()));
+        assert!(sample1_wells.1.contains(&"A24".to_string()));
 
         assert!(sample_wells.contains_key("Sample2"));
         let sample2_wells = &sample_wells["Sample2"];
-        assert_eq!(sample2_wells.len(), 1);
+        assert_eq!(sample2_wells.1.len(), 1);
     }
 
     #[test]
@@ -1060,7 +1212,7 @@ mod tests {
         // Test sample data
         let sample_wells = plate.get_sample_wells();
         assert!(sample_wells.contains_key("Test Sample"));
-        assert_eq!(sample_wells["Test Sample"], vec!["A1"]);
+        assert_eq!(sample_wells["Test Sample"].1, vec!["A1"]);
     }
 
     #[test]
