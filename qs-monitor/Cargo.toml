@@ -25,5 +25,4 @@ data-encoding = "2.7.0"
 lazy_static = "1.5.0"
 zip = "2.2.2"
 walkdir = "2.5.0"
-# qslib = "0.14.0-rc6"
-qslib = { git = "https://github.com/cgevans/qslib", branch = "main" }
+qslib = { path = "..", package = "qslib" }

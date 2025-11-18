@@ -1,3 +1,7 @@
+[workspace]
+members = [".", "qs-monitor"]
+resolver = "2"
+
 [package]
 name = "qslib"
 version = "0.14.0-rc6"
