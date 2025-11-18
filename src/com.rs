@@ -25,6 +25,7 @@ use tokio_stream::StreamMap;
 use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError};
 use crate::data::{FilterDataCollection, PlateData, PlatePointData};
 use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
+use crate::plate_setup::PlateSetup;
 
 use lazy_static::lazy_static;
 
@@ -728,6 +729,46 @@ impl QSConnection {
         let title_str = title.to_string().trim_matches('"').to_string();
 
         Ok(title_str)
+    }
+
+    pub async fn get_plate_setup(&self, run: Option<String>) -> Result<PlateSetup, CommandError<ErrorResponse>> {
+        let path = match run {
+            Some(r) => format!("{}/apldbio/sds/plate_setup.xml", r),
+            None => "${LogFolder}/plate_setup.xml".to_string(),
+        };
+        let x = self.get_exp_file(&path).await?;
+        let plate_setup: PlateSetup = quick_xml::de::from_str(&x.to_str_lossy())
+            .with_context(|| "PlateSetup deserialization error")
+            .map_err(CommandError::InternalError)?;
+
+        Ok(plate_setup)
+    }
+
+    pub async fn get_current_run_name(&self) -> Result<Option<String>, CommandError<ErrorResponse>> {
+        let mut response = self.send_command_bytes(b"RUNTitle?".as_bstr()).await?;
+        let response = response.get_response().await??;
+        let title = response
+            .args
+            .first()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No run title returned")))?;
+        if title.to_string() == "-" {
+            Ok(None)
+        } else {
+            Ok(Some(title.to_string().trim_matches('"').to_string()))
+        }
+    }
+
+
+    // In [8]: m.run_command("TBC:SETT?")
+    // Out[8]: '-Zone1=25 -Zone2=25 -Zone3=25 -Zone4=25 -Zone5=25 -Zone6=25 -Fan1=44 -Cover=105'
+    pub async fn get_current_temperature_setpoints(&self) -> Result<(Vec<f64>, Vec<f64>, f64), CommandError<ErrorResponse>> {
+        let mut response = self.send_command_bytes(b"TBC:SETT?".as_bstr()).await?;
+        let response = response.get_response().await??;
+        let setpoints = response.options;
+        let zones = setpoints.iter().filter(|(s, v)| s.starts_with("Zone")).map(|(s, v)| v.clone().try_into_f64().unwrap()).collect();
+        let fans = setpoints.iter().filter(|(s, v)| s.starts_with("Fan")).map(|(s, v)| v.clone().try_into_f64().unwrap()).collect();
+        let cover = setpoints.iter().filter(|(s, v)| s.starts_with("Cover")).map(|(s, v)| v.clone().try_into_f64().unwrap()).next().unwrap();
+        Ok((zones, fans, cover))
     }
 
     pub async fn get_filterdata_one(

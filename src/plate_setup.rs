@@ -434,7 +434,7 @@ impl PlateSetup {
             .collect()
     }
 
-    // Get samples by well position
+    /// Get wells for each sample, and the sample itself.  Return is a hashmap of sample name to (sample, wells).
     pub fn get_sample_wells(&self) -> HashMap<String, (Sample, Vec<String>)> {
         let well_names = self.well_names();
         let mut sample_wells: HashMap<String, (Sample, Vec<String>)> = HashMap::new();
@@ -455,6 +455,24 @@ impl PlateSetup {
             }
         }
         sample_wells
+    }
+
+    /// Get the well sample names as a 1D array, row-major order (eg, A1, A2, ..., H12, A13, A14, ..., H24).
+    /// Empty wells are empty strings.
+    pub fn well_samples_as_array(&self) -> Vec<String> {
+        let well_names = self.well_names();
+        let well_sample: HashMap<String, String> = self
+            .get_sample_wells()
+            .into_iter()
+            .flat_map(|(sample_name, (_, wells))| {
+                wells.into_iter().map(move |well| (well, sample_name.clone()))
+            })
+            .collect();
+
+        well_names
+            .into_iter()
+            .map(|well| well_sample.get(&well).cloned().unwrap_or_default())
+            .collect()
     }
 
     /// Convert plate setup to InfluxDB line protocol format
@@ -496,7 +514,7 @@ impl PlateSetup {
                         .map_or("", |s| s.0.as_str())
                         .to_string();
                     format!(
-                        "platesetup,row={},col={}{}{} sample=\"{}\" {}",
+                        "platesetup,row={},col={:02}{}{} sample=\"{}\" {}",
                         row, col, run_tag_ref, machine_tag_ref, sample, timestamp
                     )
                 })
@@ -1327,5 +1345,288 @@ mod tests {
                 reparse_result.err()
             );
         }
+    }
+
+    #[test]
+    fn test_well_samples_as_array_empty() {
+        let xml = r#"
+        <Plate>
+            <Name>Empty Plate</Name>
+            <BarCode>BC123</BarCode>
+            <Description>Test Description</Description>
+            <Rows>8</Rows>
+            <Columns>12</Columns>
+            <PlateKind>
+                <Name>96-Well Plate (8x12)</Name>
+                <Type>TYPE_8X12</Type>
+                <RowCount>8</RowCount>
+                <ColumnCount>12</ColumnCount>
+            </PlateKind>
+            <FeatureMap>
+                <Feature>
+                    <Id>sample</Id>
+                    <Name>Sample</Name>
+                </Feature>
+            </FeatureMap>
+        </Plate>
+        "#;
+
+        let plate = PlateSetup::from_xml(xml).unwrap();
+        let samples = plate.well_samples_as_array();
+
+        assert_eq!(samples.len(), 96);
+        assert!(samples.iter().all(|s| s.is_empty()));
+    }
+
+    #[test]
+    fn test_well_samples_as_array_96() {
+        let xml = r#"
+        <Plate>
+            <Name>Test Plate</Name>
+            <BarCode>BC123</BarCode>
+            <Description>Test Description</Description>
+            <Rows>8</Rows>
+            <Columns>12</Columns>
+            <PlateKind>
+                <Name>96-Well Plate (8x12)</Name>
+                <Type>TYPE_8X12</Type>
+                <RowCount>8</RowCount>
+                <ColumnCount>12</ColumnCount>
+            </PlateKind>
+            <FeatureMap>
+                <Feature>
+                    <Id>sample</Id>
+                    <Name>Sample</Name>
+                </Feature>
+                <FeatureValue>
+                    <Index>0</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>Sample1</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid1</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+                <FeatureValue>
+                    <Index>1</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>Sample1</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid1</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+                <FeatureValue>
+                    <Index>12</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>Sample2</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid2</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+            </FeatureMap>
+        </Plate>
+        "#;
+
+        let plate = PlateSetup::from_xml(xml).unwrap();
+        let samples = plate.well_samples_as_array();
+
+        assert_eq!(samples.len(), 96);
+        assert_eq!(samples[0], "Sample1");
+        assert_eq!(samples[1], "Sample1");
+        assert_eq!(samples[12], "Sample2");
+        assert_eq!(samples[2], "");
+        assert_eq!(samples[11], "");
+        assert_eq!(samples[13], "");
+        assert_eq!(samples[95], "");
+    }
+
+    #[test]
+    fn test_well_samples_as_array_384() {
+        let xml = r#"
+        <Plate>
+            <Name>Test Plate 384</Name>
+            <BarCode>BC123</BarCode>
+            <Description>Test Description</Description>
+            <Rows>16</Rows>
+            <Columns>24</Columns>
+            <PlateKind>
+                <Name>384-Well Plate (16x24)</Name>
+                <Type>TYPE_16X24</Type>
+                <RowCount>16</RowCount>
+                <ColumnCount>24</ColumnCount>
+            </PlateKind>
+            <FeatureMap>
+                <Feature>
+                    <Id>sample</Id>
+                    <Name>Sample</Name>
+                </Feature>
+                <FeatureValue>
+                    <Index>0</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>Sample1</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid1</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+                <FeatureValue>
+                    <Index>23</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>Sample1</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid1</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+                <FeatureValue>
+                    <Index>24</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>Sample2</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid2</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+                <FeatureValue>
+                    <Index>383</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>Sample3</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid3</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+            </FeatureMap>
+        </Plate>
+        "#;
+
+        let plate = PlateSetup::from_xml(xml).unwrap();
+        let samples = plate.well_samples_as_array();
+
+        assert_eq!(samples.len(), 384);
+        assert_eq!(samples[0], "Sample1");
+        assert_eq!(samples[23], "Sample1");
+        assert_eq!(samples[24], "Sample2");
+        assert_eq!(samples[383], "Sample3");
+        assert_eq!(samples[1], "");
+        assert_eq!(samples[22], "");
+        assert_eq!(samples[25], "");
+        assert_eq!(samples[382], "");
+    }
+
+    #[test]
+    fn test_well_samples_as_array_row_major_order() {
+        let xml = r#"
+        <Plate>
+            <Name>Test Plate</Name>
+            <BarCode>BC123</BarCode>
+            <Description>Test Description</Description>
+            <Rows>8</Rows>
+            <Columns>12</Columns>
+            <PlateKind>
+                <Name>96-Well Plate (8x12)</Name>
+                <Type>TYPE_8X12</Type>
+                <RowCount>8</RowCount>
+                <ColumnCount>12</ColumnCount>
+            </PlateKind>
+            <FeatureMap>
+                <Feature>
+                    <Id>sample</Id>
+                    <Name>Sample</Name>
+                </Feature>
+                <FeatureValue>
+                    <Index>0</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>A1</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid1</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+                <FeatureValue>
+                    <Index>11</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>A12</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid2</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+                <FeatureValue>
+                    <Index>12</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>B1</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid3</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+                <FeatureValue>
+                    <Index>95</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>H12</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>uuid4</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+            </FeatureMap>
+        </Plate>
+        "#;
+
+        let plate = PlateSetup::from_xml(xml).unwrap();
+        let samples = plate.well_samples_as_array();
+
+        assert_eq!(samples.len(), 96);
+        assert_eq!(samples[0], "A1");
+        assert_eq!(samples[11], "A12");
+        assert_eq!(samples[12], "B1");
+        assert_eq!(samples[95], "H12");
     }
 }
