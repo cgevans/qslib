@@ -152,13 +152,10 @@ class Sample:
         ET.SubElement(x, "Color").text = _color_to_str_int(self.color)
         if self.description:
             ET.SubElement(x, "Description").text = self.description
-        u = ET.SubElement(x, "CustomProperty")
-        for key in self.properties.keys():
+        for key, value in self.properties.items():
+            u = ET.SubElement(x, "CustomProperty")
             ET.SubElement(u, "Property").text = key
-        ET.SubElement(u, "Property").text = "SP_UUID"
-        for value in self.properties.values():
             ET.SubElement(u, "Value").text = value
-        ET.SubElement(u, "Value").text = self.uuid
         return x
 
     def __eq__(self, other: object) -> bool:
