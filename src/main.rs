@@ -671,6 +671,52 @@ async fn run_to_lineprotocol(
                 }
             }
         }
+        "Acquiring" => {
+            let stage = content
+                .options
+                .get("stage")
+                .ok_or(anyhow::anyhow!("Missing stage in Acquiring message"))?
+                .to_string()
+                .parse::<i64>()
+                .map_err(|e| anyhow::anyhow!("Invalid stage value: {}", e))?;
+            let cycle = content
+                .options
+                .get("cycle")
+                .ok_or(anyhow::anyhow!("Missing cycle in Acquiring message"))?
+                .to_string()
+                .parse::<i64>()
+                .map_err(|e| anyhow::anyhow!("Invalid cycle value: {}", e))?;
+            let run_point = content
+                .options
+                .get("point")
+                .ok_or(anyhow::anyhow!("Missing point in Acquiring message"))?
+                .to_string()
+                .parse::<i64>()
+                .map_err(|e| anyhow::anyhow!("Invalid point value: {}", e))?;
+
+            point = point
+                .field("stage", stage)
+                .field("cycle", cycle)
+                .field("point", run_point);
+
+            if let Some(temperature_str) = content.options.get("Temperature") {
+                let temperatures: Result<Vec<f64>, _> = temperature_str
+                    .to_string()
+                    .split(',')
+                    .map(|s| {
+                        s.parse::<f64>().map_err(|e| {
+                            anyhow::anyhow!("Invalid temperature value '{}': {}", s, e)
+                        })
+                    })
+                    .collect();
+                let temperatures = temperatures?;
+                for (i, temp) in temperatures.iter().enumerate() {
+                    point = point.field(format!("temperature_zone_{}", i), *temp);
+                }
+            }
+
+            points.push(point.build()?);
+        }
         "Error" | "Ended" | "Aborted" | "Stopped" | "Starting" => {
             // Collect remaining message
             let remaining = content.to_string();
