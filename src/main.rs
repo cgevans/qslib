@@ -598,19 +598,26 @@ async fn run_to_lineprotocol(
                 .field("point", run_point);
             points.push(point.build()?);
             if let Some(con) = con.as_ref() {
-                // points.extend(
-                //     docollect(
-                //         None,
-                //         stage,
-                //         cycle,
-                //         step,
-                //         run_point,
-                //         None,
-                //         con.clone(),
-                //         timestamp,
-                //     )
-                //     .await?,
-                // );
+                match docollect(
+                    None,
+                    stage,
+                    cycle,
+                    step,
+                    run_point,
+                    None,
+                    con.clone(),
+                    timestamp,
+                    machine_name,
+                )
+                .await
+                {
+                    Ok(collected_points) => {
+                        points.extend(collected_points);
+                    }
+                    Err(e) => {
+                        error!("Error collecting data: {}", e);
+                    }
+                }
             }
         }
         "Error" | "Ended" | "Aborted" | "Stopped" | "Starting" => {
@@ -744,6 +751,76 @@ fn time_to_lineprotocol(
     Ok(vec![point.timestamp(ts).build()?])
 }
 
+fn parse_line_protocol_to_datapoint(line: &str, machine_name: &str) -> Result<DataPoint> {
+    let line = line.trim();
+    if line.is_empty() {
+        return Err(anyhow::anyhow!("Empty line protocol string"));
+    }
+
+    let parts: Vec<&str> = line.splitn(3, ' ').collect();
+    if parts.len() < 2 {
+        return Err(anyhow::anyhow!(
+            "Invalid line protocol format: missing fields"
+        ));
+    }
+
+    let measurement_and_tags = parts[0];
+    let fields_and_timestamp = parts[1];
+
+    let mut measurement_parts = measurement_and_tags.splitn(2, ',');
+    let measurement = measurement_parts
+        .next()
+        .ok_or(anyhow::anyhow!("Missing measurement"))?;
+    let tags_str = measurement_parts.next().unwrap_or("");
+
+    let mut builder = DataPoint::builder(measurement).tag("machine", machine_name);
+
+    for tag_pair in tags_str.split(',') {
+        if let Some((key, value)) = tag_pair.split_once('=') {
+            let value = value.trim_matches('"');
+            builder = builder.tag(key, value);
+        }
+    }
+
+    let (fields_str, timestamp_str) = if let Some(space_idx) = fields_and_timestamp.rfind(' ') {
+        let (fields, ts) = fields_and_timestamp.split_at(space_idx);
+        (fields, Some(ts.trim()))
+    } else {
+        (fields_and_timestamp, None)
+    };
+
+    for field_pair in fields_str.split(',') {
+        if let Some((key, value)) = field_pair.split_once('=') {
+            let value = value.trim();
+            if value.starts_with('"') && value.ends_with('"') {
+                let str_value = value.trim_matches('"');
+                builder = builder.field(key, str_value);
+            } else if value.ends_with('i') {
+                let int_value = value.trim_end_matches('i').parse::<i64>()?;
+                builder = builder.field(key, int_value);
+            } else if let Ok(float_value) = value.parse::<f64>() {
+                builder = builder.field(key, float_value);
+            } else if let Ok(int_value) = value.parse::<i64>() {
+                builder = builder.field(key, int_value);
+            } else if value == "true" {
+                builder = builder.field(key, true);
+            } else if value == "false" {
+                builder = builder.field(key, false);
+            } else {
+                builder = builder.field(key, value);
+            }
+        }
+    }
+
+    let timestamp = if let Some(ts_str) = timestamp_str {
+        ts_str.parse::<i64>()?
+    } else {
+        chrono::Utc::now().timestamp_nanos_opt().unwrap() as i64
+    };
+
+    Ok(builder.timestamp(timestamp).build()?)
+}
+
 async fn docollect(
     run: Option<&str>,
     stage: i64,
@@ -753,7 +830,8 @@ async fn docollect(
     plate_setup: Option<&PlateSetup>,
     con: Arc<QSConnection>,
     timestamp: chrono::DateTime<chrono::Utc>,
-) -> Result<Vec<String>, CommandError<ErrorResponse>> {
+    machine_name: &str,
+) -> Result<Vec<DataPoint>> {
     // Get plate setup samples if available
     // let sample_array = plate_setup.map(|ps| ps.well_samples_as_array());
     info!(
@@ -765,7 +843,10 @@ async fn docollect(
         "${{FilterFolder}}/S{:02}_C{:03}_T{:02}_P{:04}_*_filterdata.xml",
         stage, cycle, step, point
     );
-    let files = con.get_expfile_list(&pattern).await?;
+    let files = con
+        .get_expfile_list(&pattern)
+        .await
+        .map_err(|e| anyhow::anyhow!("Error getting file list: {}", e))?;
     info!("Found {} files", files.len());
     let mut filter_files: Vec<FilterDataFilename> = files
         .iter()
@@ -773,7 +854,7 @@ async fn docollect(
         .collect();
     // filter_files.sort(); FIXME
 
-    let mut line_protocols = Vec::new();
+    let mut points = Vec::new();
 
     // Process filter data
     info!("Getting filter data for {:?}", filter_files);
@@ -789,27 +870,24 @@ async fn docollect(
             }
         };
         info!("Filter data: {:?}", filter_data);
-        line_protocols.extend(
-            filter_data
-                .to_lineprotocol(
-                    None, None, // FIXME  sample_array,
-                    None,
-                )
-                .unwrap(),
-        );
+        let line_protocols = filter_data
+            .to_lineprotocol(
+                None, None, // FIXME  sample_array,
+                None,
+            )
+            .map_err(|e| anyhow::anyhow!("Error converting to line protocol: {}", e))?;
+
+        for lp in line_protocols {
+            match parse_line_protocol_to_datapoint(&lp, machine_name) {
+                Ok(point) => points.push(point),
+                Err(e) => {
+                    error!("Error parsing line protocol '{}': {}", lp, e);
+                }
+            }
+        }
     }
 
-    // // Write to InfluxDB
-    // if let Some(influx) = &config.influxdb {
-    //     let client = Client::new(&influx.url, &influx.org, &influx.token);
-
-    //     for lp in line_protocols {
-    //         write_api.write(&influx.bucket, None, lp.as_bytes()).await?;
-    //     }
-    //     write_api.flush().await?;
-    // }
-
-    Ok(line_protocols)
+    Ok(points)
 }
 
 #[cfg(test)]
