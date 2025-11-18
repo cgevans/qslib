@@ -78,8 +78,8 @@ pub struct PlatePointData {
 impl PlatePointData {
     pub fn to_polars(&self) -> LazyFrame {
         let lfs = self.plate_data.iter().map(|pd| pd.to_polars().unwrap()).collect::<Vec<_>>();
-        let lf = concat(lfs, UnionArgs::default()).unwrap();
-        lf
+        
+        concat(lfs, UnionArgs::default()).unwrap()
     }
 }
 
@@ -132,7 +132,7 @@ impl PlateData {
     }
 
     fn col_indices(&self) -> Vec<u32> {
-        (0..self.rows).flat_map(|_row| (0..self.cols)).collect()
+        (0..self.rows).flat_map(|_row| 0..self.cols ).collect()
     }
 
     fn row_indices(&self) -> Vec<u32> {
@@ -283,7 +283,7 @@ impl PlateData {
         let zone_size = self.cols / templist.len() as u32;
         let sts = self.col_indices().iter().map(|c| templist[(c / zone_size) as usize]).collect::<Vec<_>>();
         let zone = self.col_indices().iter().map(|c| c / zone_size).collect::<Vec<_>>();
-        let mut df = df![
+        let df = df![
             "well" => well_names.iter().map(|(row, col)| format!("{row}{col}")).collect::<Vec<String>>(),
             "row" => self.row_indices(),
             "column" => c,

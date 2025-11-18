@@ -23,7 +23,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
 
 use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError};
-use crate::data::{FilterDataCollection, PlateData, PlatePointData};
+use crate::data::{FilterDataCollection, PlateData};
 use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
 use crate::plate_setup::PlateSetup;
 
@@ -765,9 +765,9 @@ impl QSConnection {
         let mut response = self.send_command_bytes(b"TBC:SETT?".as_bstr()).await?;
         let response = response.get_response().await??;
         let setpoints = response.options;
-        let zones = setpoints.iter().filter(|(s, v)| s.starts_with("Zone")).map(|(s, v)| v.clone().try_into_f64().unwrap()).collect();
-        let fans = setpoints.iter().filter(|(s, v)| s.starts_with("Fan")).map(|(s, v)| v.clone().try_into_f64().unwrap()).collect();
-        let cover = setpoints.iter().filter(|(s, v)| s.starts_with("Cover")).map(|(s, v)| v.clone().try_into_f64().unwrap()).next().unwrap();
+        let zones = setpoints.iter().filter(|(s, _v)| s.starts_with("Zone")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).collect();
+        let fans = setpoints.iter().filter(|(s, _v)| s.starts_with("Fan")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).collect();
+        let cover = setpoints.iter().filter(|(s, _v)| s.starts_with("Cover")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).next().unwrap();
         Ok((zones, fans, cover))
     }
 

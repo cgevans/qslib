@@ -266,7 +266,7 @@ async fn handle_message(
                                     ),
                                     PossibleRunProgress::NotRunning(_) => "idle.".to_string(),
                                 };
-                                statuses.push_str(&"power ".to_string());
+                                statuses.push_str("power ");
                                 match v.power {
                                     PowerStatus::On => statuses.push_str("on"),
                                     PowerStatus::Off => statuses.push_str("off"),

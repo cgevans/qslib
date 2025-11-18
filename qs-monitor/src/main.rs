@@ -348,7 +348,7 @@ async fn main() -> Result<()> {
 // }
 
 async fn log_machine(
-    mut con: Arc<QSConnection>,
+    con: Arc<QSConnection>,
     config: &MachineConfig,
     tx: mpsc::Sender<(String, DataPoint)>,
     log_tasks: &mut JoinSet<()>,
@@ -472,7 +472,7 @@ fn ledstatus_to_lineprotocol(
     // and will need to be parsed manually.
 
     let mut fields = Vec::with_capacity(4);
-    let mut args = msg.message.split_ascii_whitespace();
+    let args = msg.message.split_ascii_whitespace();
     for arg in args {
         let (key, value) = arg
             .split_once(':')
