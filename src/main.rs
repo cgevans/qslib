@@ -17,7 +17,6 @@ use qslib::{
     parser::LogMessage,
 };
 use serde_derive::Deserialize;
-use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
@@ -56,7 +55,7 @@ struct Config {
 
 #[derive(Debug, Deserialize)]
 struct GlobalConfig {
-    // Add global settings as needed
+    reconnect_wait_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -232,48 +231,101 @@ async fn main() -> Result<()> {
         None
     };
 
-    let mut log_tasks = JoinSet::new();
     let conns = Arc::new(DashMap::new());
-    let mut ids = HashMap::new();
 
-    for config in config.machines.iter() {
-        let con = Arc::new(
-            QSConnection::connect(&config.host, 7443, qslib::com::ConnectionType::SSL).await?,
-        );
-        let id = log_machine(con.clone(), config, tx.clone(), &mut log_tasks).await?;
-        conns.insert(config.name.clone(), (con, config.clone()));
-        ids.insert(id, config.clone());
+    let reconnect_wait = Duration::from_secs(
+        config
+            .global
+            .as_ref()
+            .and_then(|g| g.reconnect_wait_seconds)
+            .unwrap_or(60),
+    );
+
+    for machine_config in config.machines.iter() {
+        let machine_config = machine_config.clone();
+        let conns_clone = conns.clone();
+        let tx_clone = tx.clone();
+        let reconnect_wait_clone = reconnect_wait;
+
+        tokio::spawn(async move {
+            loop {
+                match QSConnection::connect_with_timeout(
+                    &machine_config.host,
+                    7443,
+                    qslib::com::ConnectionType::SSL,
+                    Duration::from_secs(10),
+                )
+                .await
+                {
+                    Ok(con) => {
+                        let con = Arc::new(con);
+                        let mut log_tasks = JoinSet::new();
+                        match log_machine(
+                            con.clone(),
+                            &machine_config,
+                            tx_clone.clone(),
+                            &mut log_tasks,
+                        )
+                        .await
+                        {
+                            Ok(id) => {
+                                conns_clone.insert(
+                                    machine_config.name.clone(),
+                                    (con, machine_config.clone()),
+                                );
+                                info!("Successfully connected to {}", machine_config.name);
+
+                                // Wait for the logging task to complete (connection dropped)
+                                if let Some(result) = log_tasks.join_next().await
+                                    && let Err(e) = result
+                                {
+                                    error!(
+                                        "Logging task for {} ended with error: {}",
+                                        machine_config.name, e
+                                    );
+                                }
+
+                                warn!(
+                                    "Connection to {} dropped, attempting to reconnect",
+                                    machine_config.name
+                                );
+                                conns_clone.remove(&machine_config.name);
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Error setting up logging for {}: {}, retrying in {:?}",
+                                    machine_config.name, e, reconnect_wait_clone
+                                );
+                                tokio::time::sleep(reconnect_wait_clone).await;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Error connecting to {}: {}, retrying in {:?}",
+                            machine_config.name, e, reconnect_wait_clone
+                        );
+                        tokio::time::sleep(reconnect_wait_clone).await;
+                    }
+                }
+            }
+        });
     }
 
     let conns_clone = conns.clone();
-    let matrix_task = config.matrix.clone().map(|x| {
+    if let Some(matrix_config) = config.matrix.clone() {
         tokio::spawn(async move {
-            if let Err(e) = matrix::setup_matrix(&x, conns_clone).await {
+            if let Err(e) = matrix::setup_matrix(&matrix_config, conns_clone).await {
                 error!("Error setting up Matrix: {}", e);
             }
-        })
-    });
-
-    while let Some((x)) = log_tasks.join_next_with_id().await {
-        let (id, _) = x.unwrap();
-        let config = ids.remove(&id).unwrap();
-        warn!("Reconnecting to {}", config.name);
-        conns.remove(&config.name);
-        ids.remove(&id);
-        let new_con = Arc::new(
-            QSConnection::connect(&config.host, 7443, qslib::com::ConnectionType::SSL).await?,
-        );
-        let id = log_machine(new_con.clone(), &config, tx.clone(), &mut log_tasks).await?;
-        conns.insert(config.name.clone(), (new_con, config.clone()));
-        ids.insert(id, config.clone());
+        });
     }
 
-    // Wait for influx task to complete if it exists
-    if let Some(task) = influx_task {
-        task.await.unwrap();
+    // Keep the main task alive (all other tasks run in background)
+    // Sleep indefinitely - connections are handled in spawned tasks
+    loop {
+        tokio::time::sleep(Duration::from_secs(3600)).await;
     }
-
-    Ok(())
 }
 
 // async fn machine_to_lineprotocol_loop(logchannel: &StreamMap<String, BroadcastStream<LogMessage>>, lpchannel: &mut mpsc::Sender<Point>, config: &InstrumentConfig) {
@@ -359,7 +411,7 @@ async fn influx_log_loop(
                             continue;
                         }
                     },
-                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp, con.clone()).await {
+                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp, Some(con.clone())).await {
                         Ok(points) => points,
                         Err(e) => {
                             error!("Error converting run data for {}: {}", config.name, e);
@@ -429,7 +481,7 @@ async fn run_to_lineprotocol(
     msg: &LogMessage,
     machine_name: &str,
     timestamp: chrono::DateTime<chrono::Utc>,
-    con: Arc<QSConnection>,
+    con: Option<Arc<QSConnection>>,
 ) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
     let mut parts = msg.message.splitn(2, ' ');
@@ -545,16 +597,21 @@ async fn run_to_lineprotocol(
                 .field("step", step)
                 .field("point", run_point);
             points.push(point.build()?);
-            tokio::spawn(docollect(
-                None,
-                stage,
-                cycle,
-                step,
-                run_point,
-                None,
-                con.clone(),
-                timestamp,
-            ));
+            if let Some(con) = con.as_ref() {
+                // points.extend(
+                //     docollect(
+                //         None,
+                //         stage,
+                //         cycle,
+                //         step,
+                //         run_point,
+                //         None,
+                //         con.clone(),
+                //         timestamp,
+                //     )
+                //     .await?,
+                // );
+            }
         }
         "Error" | "Ended" | "Aborted" | "Stopped" | "Starting" => {
             // Collect remaining message
@@ -696,7 +753,7 @@ async fn docollect(
     plate_setup: Option<&PlateSetup>,
     con: Arc<QSConnection>,
     timestamp: chrono::DateTime<chrono::Utc>,
-) -> Result<(), CommandError<ErrorResponse>> {
+) -> Result<Vec<String>, CommandError<ErrorResponse>> {
     // Get plate setup samples if available
     // let sample_array = plate_setup.map(|ps| ps.well_samples_as_array());
     info!(
@@ -742,11 +799,6 @@ async fn docollect(
         );
     }
 
-    for lp in line_protocols {
-        // Just print to stdout for now
-        info!("{:?}", lp);
-    }
-
     // // Write to InfluxDB
     // if let Some(influx) = &config.influxdb {
     //     let client = Client::new(&influx.url, &influx.org, &influx.token);
@@ -757,7 +809,7 @@ async fn docollect(
     //     write_api.flush().await?;
     // }
 
-    Ok(())
+    Ok(line_protocols)
 }
 
 #[cfg(test)]
