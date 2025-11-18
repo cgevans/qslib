@@ -78,6 +78,106 @@ pub struct MatrixSettings {
     pub allow_control: bool,
 }
 
+fn get_commands_list() -> String {
+    "<b>Available commands:</b><ul>\
+    <li><code>!status [machine]</code> - Show status of machine(s)</li>\
+    <li><code>!command &lt;machine&gt; &lt;command&gt;</code> - Send a command to a machine</li>\
+    <li><code>!close &lt;machine&gt;</code> - Close drawer and lower cover (requires control)</li>\
+    <li><code>!open &lt;machine&gt;</code> - Open drawer (requires control)</li>\
+    <li><code>!abort &lt;machine&gt;</code> - Abort current run (requires control)</li>\
+    <li><code>!stop &lt;machine&gt;</code> - Stop current run (requires control)</li>\
+    <li><code>!help [command]</code> - Show this help or detailed help for a command</li>\
+    </ul>Use <code>!help &lt;command&gt;</code> for detailed documentation."
+        .to_string()
+}
+
+fn get_command_help(command: &str) -> String {
+    match command.to_lowercase().as_str() {
+        "status" => {
+            "<b>!status [machine]</b><br>\
+            Shows the status of one or all machines.<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            • <code>!status</code> - Show status of all machines<br>\
+            • <code>!status &lt;machine&gt;</code> - Show status of a specific machine<br>\
+            <br>\
+            <b>Information shown:</b><br>\
+            • Power status (on/off)<br>\
+            • Cover heat status and temperature<br>\
+            • Current run progress (if running) or idle status".to_string()
+        }
+        "command" => {
+            "<b>!command &lt;machine&gt; &lt;command&gt;</b><br>\
+            Sends a raw command to the specified machine and returns the response.<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            <code>!command &lt;machine&gt; &lt;command&gt;</code><br>\
+            <br>\
+            <b>Example:</b><br>\
+            <code>!command qs1 GETRUNINFO</code><br>\
+            <br>\
+            The command is parsed and sent to the machine. The access level is temporarily \
+            elevated to Controller for the command execution.".to_string()
+        }
+        "close" => {
+            "<b>!close &lt;machine&gt;</b><br>\
+            Closes the drawer and lowers the cover on the specified machine.<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            <code>!close &lt;machine&gt;</code><br>\
+            <br>\
+            <b>Note:</b> This command requires control permissions to be enabled.".to_string()
+        }
+        "open" => {
+            "<b>!open &lt;machine&gt;</b><br>\
+            Opens the drawer on the specified machine.<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            <code>!open &lt;machine&gt;</code><br>\
+            <br>\
+            <b>Note:</b> This command requires control permissions to be enabled.".to_string()
+        }
+        "abort" => {
+            "<b>!abort &lt;machine&gt;</b><br>\
+            Aborts the currently running experiment on the specified machine.<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            <code>!abort &lt;machine&gt;</code><br>\
+            <br>\
+            <b>Note:</b> This command requires control permissions to be enabled. \
+            The access level is temporarily elevated to Controller for the operation.".to_string()
+        }
+        "stop" => {
+            "<b>!stop &lt;machine&gt;</b><br>\
+            Stops the currently running experiment on the specified machine.<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            <code>!stop &lt;machine&gt;</code><br>\
+            <br>\
+            <b>Note:</b> This command requires control permissions to be enabled. \
+            The access level is temporarily elevated to Controller for the operation.".to_string()
+        }
+        "help" => {
+            "<b>!help [command]</b><br>\
+            Shows help information for commands.<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            • <code>!help</code> - Show list of all available commands<br>\
+            • <code>!help &lt;command&gt;</code> - Show detailed documentation for a specific command<br>\
+            <br>\
+            <b>Example:</b><br>\
+            <code>!help status</code>".to_string()
+        }
+        _ => {
+            format!(
+                "Unknown command: <code>{}</code><br>\
+                Use <code>!help</code> to see available commands.",
+                command
+            )
+        }
+    }
+}
+
 async fn handle_message(
     event: OriginalSyncRoomMessageEvent,
     room: Room,
@@ -283,11 +383,7 @@ async fn handle_message(
                 Some(x) => {
                     let (conn, _) = x.value();
                     conn.set_access_level(AccessLevel::Controller).await?;
-                    let response = conn
-                        .send_command("AbortRun ${RunTitle}")
-                        .await?
-                        .get_response()
-                        .await?;
+                    let response = conn.abort_current_run().await?;
                     conn.set_access_level(AccessLevel::Observer).await?;
                     match response {
                         Ok(_) => {
@@ -317,11 +413,7 @@ async fn handle_message(
                 Some(x) => {
                     let (conn, _) = x.value();
                     conn.set_access_level(AccessLevel::Controller).await?;
-                    let response = conn
-                        .send_command("StopRun ${RunTitle}")
-                        .await?
-                        .get_response()
-                        .await?;
+                    let response = conn.stop_current_run().await?;
                     conn.set_access_level(AccessLevel::Observer).await?;
                     match response {
                         Ok(_) => {
@@ -342,12 +434,18 @@ async fn handle_message(
             Ok(())
         }
         "!help" => {
-            send_matrix_message(
-                &room,
-                "Available commands: !status, !command, !close, !open, !abort, !stop",
-                false,
-            )
-            .await?;
+            let command_name = parts.next();
+            match command_name {
+                Some(cmd) => {
+                    let cmd = cmd.strip_prefix('!').unwrap_or(cmd);
+                    let help_text = get_command_help(cmd);
+                    send_matrix_message(&room, &help_text, false).await?;
+                }
+                None => {
+                    let help_text = get_commands_list();
+                    send_matrix_message(&room, &help_text, false).await?;
+                }
+            }
             Ok(())
         }
         m if m.starts_with("!") => {
