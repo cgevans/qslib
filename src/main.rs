@@ -843,7 +843,7 @@ async fn docollect(
         .get_expfile_list(&pattern)
         .await
         .map_err(|e| anyhow::anyhow!("Error getting file list: {}", e))?;
-    info!("Found {} files", files.len());
+    // info!("Found {} files", files.len());
     let mut filter_files: Vec<FilterDataFilename> = files
         .iter()
         .filter_map(|f| FilterDataFilename::from_string(f).ok())
@@ -853,15 +853,17 @@ async fn docollect(
     let mut points = Vec::new();
 
     // Process filter data
-    info!("Getting filter data for {:?}", filter_files);
+    // info!("Getting filter data for {:?}", filter_files);
 
-    let sample_array = match con.get_plate_setup(None).await {
-        Ok(plate_setup) => plate_setup.well_samples_as_array(),
+    let plate_setup = match con.get_plate_setup(None).await {
+        Ok(plate_setup) => Some(plate_setup),
         Err(e) => {
             error!("Error getting plate setup: {:?}", e);
-            return Err(anyhow::anyhow!("Error getting plate setup: {:?}", e));
+            None
         }
     };
+
+    let sample_array = plate_setup.as_ref().map(|ps| ps.well_samples_as_array());
 
     let current_run_name = match con.get_current_run_name().await {
         Ok(run_name) => run_name,
@@ -883,7 +885,6 @@ async fn docollect(
     };
 
     for fdf in filter_files {
-        info!("Getting filter data for {:?}", fdf);
         let filter_data_t = con.get_filterdata_one(fdf, None).await;
         let filter_data = match filter_data_t {
             Ok(filter_data) => filter_data,
@@ -892,15 +893,23 @@ async fn docollect(
                 continue;
             }
         };
-        info!("Filter data: {:?}", filter_data);
-        let line_protocols = filter_data
+        let mut line_protocols = filter_data
             .to_lineprotocol(
-                None,
-                Some(&sample_array),
+                current_run_name.as_deref(),
+                sample_array.as_deref(),
                 Some(&current_temperature_setpoints.0),
                 None,
             )
             .map_err(|e| anyhow::anyhow!("Error converting to line protocol: {}", e))?;
+
+        if let Some(plate_setup) = plate_setup.as_ref() {
+            let plate_setup_line_protocols = plate_setup.to_lineprotocol(
+                timestamp.timestamp_nanos_opt().unwrap(),
+                current_run_name.as_deref(),
+                None,
+            );
+            line_protocols.extend(plate_setup_line_protocols);
+        }
 
         for lp in line_protocols {
             match parse_line_protocol_to_datapoint(&lp, machine_name) {
