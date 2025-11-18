@@ -3,33 +3,27 @@ use clap::Parser;
 use dashmap::DashMap;
 use env_logger::Env;
 use futures::stream;
+use influxdb2::Client;
 use influxdb2::models::{DataPoint, FieldValue};
-use influxdb2::{Client, FromDataPoint, models::WriteDataPoint};
 use log::{debug, error, info, warn};
-use qslib::com::{CommandError, ConnectionError};
-use qslib::parser::{ErrorResponse, MessageResponse, OkResponse, Value};
-use qslib::plate_setup::PlateSetup;
+use qslib::parser::{OkResponse, Value};
 use qslib::{
     com::FilterDataFilename,
     com::QSConnection,
     commands::{AccessLevel, AccessLevelSet, CommandBuilder, Subscribe},
-    data::{FilterDataCollection, PlateData},
     parser::LogMessage,
 };
 use serde_derive::Deserialize;
-use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::select;
 use tokio::sync::mpsc;
-use tokio::task::{Id, JoinHandle, JoinSet};
+use tokio::task::{Id, JoinSet};
 use tokio::time::{Duration, interval};
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use tokio_stream::{Stream, StreamExt, StreamMap, wrappers::BroadcastStream};
-use walkdir;
+use tokio_stream::{StreamExt, StreamMap, wrappers::BroadcastStream};
 
 mod matrix;
 
@@ -137,7 +131,7 @@ async fn write_points_to_influx(
             // Check for new points
             point = rx.recv() => {
                 match point {
-                    Some((machine, point)) => {
+                    Some((_machine, point)) => {
                         points.push(point);
                         batched += 1;
                         if batched >= batch_size {
@@ -150,7 +144,7 @@ async fn write_points_to_influx(
                                 }
                                 Err(e) => {
                                     warn!("Error writing points to InfluxDB, will retry: {}", e);
-                                    to_retry.extend(points.drain(..));
+                                    to_retry.append(&mut points);
                                     batched = 0;
                                 }
                             }
@@ -170,7 +164,7 @@ async fn write_points_to_influx(
                         }
                         Err(e) => {
                             warn!("Error writing points to InfluxDB, will retry: {}", e);
-                            to_retry.extend(points.drain(..));
+                            to_retry.append(&mut points);
                         }
                     }
                 }
@@ -193,7 +187,7 @@ async fn write_points_to_influx(
     // Final flush of any remaining points
     if !points.is_empty() {
         debug!("Flushing {} points to InfluxDB (final flush)", points.len());
-        let tosend = points.drain(..).collect::<Vec<_>>();
+        let tosend = std::mem::take(&mut points);
         client.write(&bucket, stream::iter(tosend)).await?;
     }
 
@@ -213,7 +207,7 @@ async fn main() -> Result<()> {
 
     // Set up InfluxDB if configured
     let (tx, rx) = mpsc::channel(1000);
-    let influx_task = if let Some(influx_config) = config.influxdb.as_ref() {
+    let _influx_task = if let Some(influx_config) = config.influxdb.as_ref() {
         let client = Client::new(&influx_config.url, &influx_config.org, &influx_config.token);
         let batch_size = influx_config.batch_size.unwrap_or(100);
         let flush_interval =
@@ -245,7 +239,7 @@ async fn main() -> Result<()> {
         let machine_config = machine_config.clone();
         let conns_clone = conns.clone();
         let tx_clone = tx.clone();
-        let reconnect_wait_clone = reconnect_wait;
+        let _reconnect_wait_clone = reconnect_wait;
 
         tokio::spawn(async move {
             let mut backoff_secs = 1u64;
@@ -271,7 +265,7 @@ async fn main() -> Result<()> {
                         )
                         .await
                         {
-                            Ok(id) => {
+                            Ok(_id) => {
                                 conns_clone.insert(
                                     machine_config.name.clone(),
                                     (con, machine_config.clone()),
@@ -319,7 +313,7 @@ async fn main() -> Result<()> {
 
     let conns_clone = conns.clone();
     if let Some(matrix_config) = config.matrix.clone() {
-        let reconnect_wait_matrix = reconnect_wait;
+        let _reconnect_wait_matrix = reconnect_wait;
         tokio::spawn(async move {
             let mut backoff_secs = 1u64;
             const MAX_BACKOFF_SECS: u64 = 300;
@@ -360,11 +354,11 @@ async fn log_machine(
     log_tasks: &mut JoinSet<()>,
 ) -> Result<Id> {
     let access = AccessLevelSet::level(AccessLevel::Observer);
-    access.send(&mut con).await?.receive_response().await?;
-    Subscribe::topic("Temperature").send(&mut con).await?;
-    Subscribe::topic("Time").send(&mut con).await?;
-    Subscribe::topic("Run").send(&mut con).await?;
-    Subscribe::topic("LEDStatus").send(&mut con).await?;
+    access.send(&con).await?.receive_response().await?;
+    Subscribe::topic("Temperature").send(&con).await?;
+    Subscribe::topic("Time").send(&con).await?;
+    Subscribe::topic("Run").send(&con).await?;
+    Subscribe::topic("LEDStatus").send(&con).await?;
 
     let mut log_sub = con
         .subscribe_log(&["Temperature", "Time", "Run", "LEDStatus"])
@@ -479,7 +473,7 @@ fn ledstatus_to_lineprotocol(
 
     let mut fields = Vec::with_capacity(4);
     let mut args = msg.message.split_ascii_whitespace();
-    while let Some(arg) = args.next() {
+    for arg in args {
         let (key, value) = arg
             .split_once(':')
             .ok_or(anyhow::anyhow!("Invalid format"))?;
@@ -529,7 +523,7 @@ async fn run_to_lineprotocol(
         "Stage" | "Cycle" | "Step" => {
             let value = content
                 .args
-                .get(0)
+                .first()
                 .ok_or(anyhow::anyhow!("Missing value"))?
                 .clone()
                 .try_into_i64()
@@ -676,7 +670,7 @@ async fn run_to_lineprotocol(
         }
         _ => {
             // Handle other cases
-            let message = format!("{} {}", action, content.to_string());
+            let message = format!("{} {}", action, content);
             point = point.tag("type", "Other").field("message", message);
             points.push(point.build()?);
         }
@@ -898,7 +892,7 @@ async fn docollect(
         .await
         .map_err(|e| anyhow::anyhow!("Error getting file list: {}", e))?;
     // info!("Found {} files", files.len());
-    let mut filter_files: Vec<FilterDataFilename> = files
+    let filter_files: Vec<FilterDataFilename> = files
         .iter()
         .filter_map(|f| FilterDataFilename::from_string(f).ok())
         .collect();

@@ -21,7 +21,7 @@ use matrix_sdk::{
     },
 };
 use qslib::{
-    com::{CommandError, QSConnection, QSConnectionError, SendCommandError},
+    com::{CommandError, QSConnection, SendCommandError},
     commands::{
         AccessLevel, CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery,
         ReceiveOkResponseError,
@@ -166,7 +166,7 @@ async fn handle_message(
                                     ),
                                     PossibleRunProgress::NotRunning(_) => "idle.".to_string(),
                                 };
-                                statuses.push_str(&format!("power "));
+                                statuses.push_str(&"power ".to_string());
                                 match v.power {
                                     PowerStatus::On => statuses.push_str("on"),
                                     PowerStatus::Off => statuses.push_str("off"),
@@ -476,10 +476,10 @@ pub async fn setup_matrix(
     let (client, sync_token) = if settings.session_file.exists() {
         debug!("Found existing session file at {:?}", settings.session_file);
         let session_data = std::fs::read(settings.session_file.clone()).map_err(|e| {
-            MatrixError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to read session file: {}", e),
-            ))
+            MatrixError::IoError(std::io::Error::other(format!(
+                "Failed to read session file: {}",
+                e
+            )))
         })?;
         let session: FullSession = serde_json::from_slice(&session_data).map_err(|e| {
             MatrixError::IoError(std::io::Error::new(
@@ -527,10 +527,7 @@ pub async fn setup_matrix(
             passphrase: settings.password.clone(),
         };
         let user_session = client.matrix_auth().session().ok_or_else(|| {
-            MatrixError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "No session available after login",
-            ))
+            MatrixError::IoError(std::io::Error::other("No session available after login"))
         })?;
         let serialized_session = serde_json::to_string(&FullSession {
             client_session,
@@ -544,10 +541,10 @@ pub async fn setup_matrix(
             ))
         })?;
         std::fs::write(&settings.session_file, serialized_session).map_err(|e| {
-            MatrixError::IoError(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                format!("Failed to write session file: {}", e),
-            ))
+            MatrixError::IoError(std::io::Error::other(format!(
+                "Failed to write session file: {}",
+                e
+            )))
         })?;
         debug!("Successfully created new session");
         (client, None)
@@ -571,7 +568,7 @@ pub async fn setup_matrix(
 
     for room in settings.rooms.iter() {
         debug!("Joining room {}", room);
-        let room_id = matrix_sdk::ruma::RoomId::parse(&room)?;
+        let room_id = matrix_sdk::ruma::RoomId::parse(room)?;
         client.join_room_by_id(&room_id).await?;
     }
 
@@ -585,7 +582,7 @@ pub async fn setup_matrix(
         })?;
     debug!("Successfully joined room");
 
-    let client_clone = client.clone();
+    let _client_clone = client.clone();
 
     debug!("Setting up message event handler");
 
@@ -650,11 +647,11 @@ pub async fn setup_matrix(
             loop {
                 match inner_sm.next().await {
                     Some((topic, Ok(msg))) => {
-                        if topic == "Run" || topic == "Error" {
-                            if let Err(e) = tx.send((name.clone(), msg)) {
-                                error!("Failed to send message for {}: {}", name, e);
-                                break;
-                            }
+                        if (topic == "Run" || topic == "Error")
+                            && let Err(e) = tx.send((name.clone(), msg))
+                        {
+                            error!("Failed to send message for {}: {}", name, e);
+                            break;
                         }
                     }
                     Some((topic, Err(BroadcastStreamRecvError::Lagged(n)))) => {
@@ -695,7 +692,7 @@ async fn handle_run_message(name: String, msg: LogMessage, room: &Room) {
         || msg.message.contains("Starting")
     {
         let mm = format!("{}: {}", name, msg.message);
-        match send_matrix_message(&room, &mm, true).await {
+        match send_matrix_message(room, &mm, true).await {
             Ok(_) => (),
             Err(e) => error!("Error sending message: {}", e),
         }
