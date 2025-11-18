@@ -321,10 +321,6 @@ class Experiment:
     """
     A string describing the software and version used to write the file.
     """
-    _filter_data: pd.DataFrame | None = None
-    _multicomponent_data: pd.DataFrame | None = None
-    _analysis_result: pd.DataFrame | None = None
-    _amplification_data: pd.DataFrame | None = None
 
 
     num_zones: int
@@ -346,12 +342,10 @@ class Experiment:
         If the experiment has data, this is based on the existing data.  Otherwise, it is based
         on the experiment protocol.
         """
-        if self._filter_data is not None:
-            return [
-                FilterSet.fromstring(f)
-                for f in self.welldata.index.get_level_values(0).unique()
-            ]
-        return self.protocol.all_filters
+        if 'filter_data' in self.available_data():
+            return [FilterSet.fromstring(f) for f in self.filter_data_polars['filter_set'].unique()]
+        else:
+            return self.protocol.all_filters
 
     @property
     def filter_strings(self) -> list[str]:
@@ -383,7 +377,7 @@ class Experiment:
         """
         try:
             return self.filter_data
-        except Exception as e:
+        except Exception:
             if self.runstate == "INIT":
                 raise ValueError("Run hasn't started yet: no data available.")
             else:
@@ -431,16 +425,31 @@ class Experiment:
 
     def available_data(self) -> list[str]:
         d = []
-        if self._filter_data is not None:
+        try:
+            self.filter_data_polars
             d.append("filter_data")
-        if self._multicomponent_data is not None:
+        except Exception:
+            pass
+        try:
+            self.multicomponent_data
             d.append("multicomponent_data")
-        if self._amplification_data is not None:
+        except Exception:
+            pass
+        try:
+            self.amplification_data
             d.append("amplification_data")
-        if self._analysis_result is not None:
+        except Exception:
+            pass
+        try:
+            self.analysis_result
             d.append("analysis_result")
-        if self.temperatures is not None:
+        except Exception:
+            pass
+        try:
+            self.temperatures
             d.append("temperatures")
+        except Exception:
+            pass
         return d
 
     def info_html(self) -> str:
@@ -1229,7 +1238,7 @@ table, th, td {{
             if (p / "run" / "messages.log").is_file():
                 self._update_from_log()
 
-        self._update_from_data()
+        # self._update_from_data()
 
         if self._protocol_from_xml:
             self.protocol = self._protocol_from_xml
@@ -1728,25 +1737,25 @@ table, th, td {{
         else:
             return json.load(open(adp, "r"))
 
-    def _update_from_data(self) -> None:
-        if self.spec_major_version == 1:
+    # def _update_from_data(self) -> None:
+    #     if self.spec_major_version == 1:
 
-            adp = os.path.join(self._dir_eds, "analysis_result.txt")
-            if self.plate_type is None:
-                raise ValueError("Plate type must be set before loading analysis.")
-            if os.path.isfile(adp):
-                with open(adp, "r") as f:
-                    (
-                        self._analysis_result,
-                        self._amplification_data,
-                    ) = _parse_analysis_result(
-                        f.read(), plate_type=self.plate_type
-                    )  # FIXME: plate type
-        else:  # spec version 2
+    #         adp = os.path.join(self._dir_eds, "analysis_result.txt")
+    #         if self.plate_type is None:
+    #             raise ValueError("Plate type must be set before loading analysis.")
+    #         if os.path.isfile(adp):
+    #             with open(adp, "r") as f:
+    #                 (
+    #                     self._analysis_result,
+    #                     self._amplification_data,
+    #                 ) = _parse_analysis_result(
+    #                     f.read(), plate_type=self.plate_type
+    #                 )  # FIXME: plate type
+    #     else:  # spec version 2
 
-            ap = Path(self.root_dir) / "primary" / "analysis_result.json"
-            if ap.is_file():
-                self._analysis_dict = json.load(ap.open())
+    #         ap = Path(self.root_dir) / "primary" / "analysis_result.json"
+    #         if ap.is_file():
+    #             self._analysis_dict = json.load(ap.open())
 
     def data_for_sample(self, sample: str) -> pd.DataFrame:
         """Convenience function to return data for a specific sample.
@@ -1792,8 +1801,8 @@ table, th, td {{
 
         self.stages = pl.DataFrame({
             "stage": ms.stage_names,
-            "start_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_start_times],
-            "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) for x in ms.stage_end_times] + ([None] if len(ms.stage_end_times) > len(ms.stage_start_times) else []), # FIXME
+            "start_time": [datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_start_times],
+            "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_end_times] + ([None] if len(ms.stage_end_times) > len(ms.stage_start_times) else []), # FIXME
         }).with_row_index("stage_index")
 
         if self.activestarttime:
