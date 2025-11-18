@@ -6,7 +6,6 @@
 
 from __future__ import annotations
 
-import shlex
 import textwrap
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
@@ -38,6 +37,20 @@ def _make_multi_keyword(kwd_str: str, kwd_value: Any) -> ParserElement:
     x = pp.oneOf(kwd_str)
     x.setParseAction(pp.replaceWith(kwd_value))
     return x
+
+
+def quote_string_if_needed(s: str) -> str:
+    """Quote a string if it contains spaces, quotes, or newlines.
+    
+    Strings with newlines are wrapped in <quote>...</quote> tags.
+    Strings with spaces or quotation marks are wrapped in double quotes with
+    escaped quotes. Other characters like $, {, } are not escaped.
+    """
+    if "\n" in s:
+        return f"<quote>{s}</quote>"
+    if " " in s or '"' in s:
+        return '"' + s.replace('"', '\\"') + '"'
+    return s
 
 
 _pbool = _make_multi_keyword("true True", True) | _make_multi_keyword(
@@ -296,9 +309,7 @@ class SCPICommand(SCPICommandLike):
         if isinstance(opt_val, SCPICommand):
             opt_val = [opt_val]
         if isinstance(opt_val, str):
-            if "\n" in opt_val:
-                return f"<quote>{opt_val}</quote>"
-            return shlex.quote(opt_val)
+            return quote_string_if_needed(opt_val)
         if isinstance(opt_val, (int, float, np.number)):
             return str(opt_val)
         if isinstance(opt_val, (Sequence, np.ndarray)):
