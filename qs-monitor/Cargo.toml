@@ -1,0 +1,29 @@
+[package]
+name = "qs-monitor"
+version = "0.2.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.95"
+serde = { version = "1.0", features = ["derive"] }
+serde_derive = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+config = "0.15.7"
+influxdb2 = "0.5.2"
+log = "0.4.25"
+stderrlog = "0.6.0"
+tokio = { version = "1.42", features = ["net", "sync", "rt", "io-util", "macros", "rt-multi-thread", "tracing"] }
+tokio-stream = "0.1.11"
+chrono = "0.4.39"
+futures = "0.3"
+env_logger = "0.11"
+thiserror = "2.0.11"
+matrix-sdk = "0.9.0"
+serde_json = "1.0.138"
+dashmap = "6.1.0"
+data-encoding = "2.7.0"
+lazy_static = "1.5.0"
+zip = "2.2.2"
+walkdir = "2.5.0"
+# qslib = "0.14.0-rc6"
+qslib = { git = "https://github.com/cgevans/qslib", branch = "main" }

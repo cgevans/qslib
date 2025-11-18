@@ -1,0 +1,4 @@
+/target
+.aider*
+config.toml
+Cargo.lock
