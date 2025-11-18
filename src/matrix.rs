@@ -1,6 +1,6 @@
 use dashmap::DashMap;
 use futures::StreamExt;
-use log::{debug, error, info, trace};
+use log::{debug, error, info, warn};
 use matrix_sdk::{
     Client,
     config::SyncSettings,
@@ -29,15 +29,9 @@ use qslib::{
     parser::{ErrorResponse, LogMessage},
 };
 use serde::{Deserialize, Serialize};
-use std::{
-    io::Write,
-    path::PathBuf,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{io::Write, path::PathBuf, sync::Arc};
 use thiserror::Error;
-use tokio::sync::broadcast::{self, Receiver};
-use tokio_stream::StreamMap;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 
 use crate::MachineConfig;
 
@@ -452,6 +446,8 @@ pub enum MatrixError {
     ClientBuildError(#[from] matrix_sdk::ClientBuildError),
     #[error("Room ID parse error: {0}")]
     RoomIdParseError(#[from] matrix_sdk::IdParseError),
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
 }
 
 async fn persist_sync_token(
@@ -479,8 +475,18 @@ pub async fn setup_matrix(
 
     let (client, sync_token) = if settings.session_file.exists() {
         debug!("Found existing session file at {:?}", settings.session_file);
-        let session: FullSession =
-            serde_json::from_slice(&std::fs::read(settings.session_file.clone()).unwrap()).unwrap();
+        let session_data = std::fs::read(settings.session_file.clone()).map_err(|e| {
+            MatrixError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to read session file: {}", e),
+            ))
+        })?;
+        let session: FullSession = serde_json::from_slice(&session_data).map_err(|e| {
+            MatrixError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to parse session file: {}", e),
+            ))
+        })?;
         debug!(
             "Restoring session for homeserver: {}",
             session.client_session.homeserver
@@ -520,14 +526,29 @@ pub async fn setup_matrix(
             db_path,
             passphrase: settings.password.clone(),
         };
-        let user_session = client.matrix_auth().session().unwrap();
+        let user_session = client.matrix_auth().session().ok_or_else(|| {
+            MatrixError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "No session available after login",
+            ))
+        })?;
         let serialized_session = serde_json::to_string(&FullSession {
             client_session,
             user_session,
             sync_token: None,
         })
-        .unwrap();
-        std::fs::write(&settings.session_file, serialized_session).unwrap();
+        .map_err(|e| {
+            MatrixError::IoError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to serialize session: {}", e),
+            ))
+        })?;
+        std::fs::write(&settings.session_file, serialized_session).map_err(|e| {
+            MatrixError::IoError(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Failed to write session file: {}", e),
+            ))
+        })?;
         debug!("Successfully created new session");
         (client, None)
     };
@@ -556,7 +577,12 @@ pub async fn setup_matrix(
 
     let log_room = client
         .get_room(&matrix_sdk::ruma::RoomId::parse(&settings.rooms[0])?)
-        .expect("Room should exist after joining");
+        .ok_or_else(|| {
+            MatrixError::IoError(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Room {} not found after joining", settings.rooms[0]),
+            ))
+        })?;
     debug!("Successfully joined room");
 
     let client_clone = client.clone();
@@ -585,11 +611,17 @@ pub async fn setup_matrix(
     if settings.allow_verification {
         client.add_event_handler(
             |ev: ToDeviceKeyVerificationRequestEvent, client: Client| async move {
-                let request = client
+                let request = match client
                     .encryption()
                     .get_verification_request(&ev.sender, &ev.content.transaction_id)
                     .await
-                    .expect("Request object wasn't created");
+                {
+                    Some(req) => req,
+                    None => {
+                        error!("Verification request object wasn't created");
+                        return;
+                    }
+                };
 
                 tokio::spawn(request_verification_handler(client, request));
             },
@@ -607,19 +639,48 @@ pub async fn setup_matrix(
         }
     });
 
-    let mut sm = StreamMap::new();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, LogMessage)>();
 
     for x in qs_connections.iter() {
         let name = x.value().1.name.clone();
         let conn = x.value().0.clone();
-        sm.insert(name.clone(), conn.subscribe_log(&["Run", "Error"]).await);
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let mut inner_sm = conn.subscribe_log(&["Run", "Error"]).await;
+            loop {
+                match inner_sm.next().await {
+                    Some((topic, Ok(msg))) => {
+                        if topic == "Run" || topic == "Error" {
+                            if let Err(e) = tx.send((name.clone(), msg)) {
+                                error!("Failed to send message for {}: {}", name, e);
+                                break;
+                            }
+                        }
+                    }
+                    Some((topic, Err(BroadcastStreamRecvError::Lagged(n)))) => {
+                        warn!("Machine {} topic {} lagged by {} messages", name, topic, n);
+                    }
+                    None => {
+                        warn!("Stream ended for machine {}", name);
+                        break;
+                    }
+                }
+            }
+        });
     }
 
     info!("Matrix connected");
 
     loop {
-        let msg = sm.next().await.unwrap();
-        handle_run_message(msg.0, msg.1.1.unwrap(), &log_room).await;
+        match rx.recv().await {
+            Some((name, msg)) => {
+                handle_run_message(name, msg, &log_room).await;
+            }
+            None => {
+                warn!("Message channel closed, reconnecting");
+                break;
+            }
+        }
     }
 
     Ok(())

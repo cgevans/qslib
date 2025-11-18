@@ -248,6 +248,8 @@ async fn main() -> Result<()> {
         let reconnect_wait_clone = reconnect_wait;
 
         tokio::spawn(async move {
+            let mut backoff_secs = 1u64;
+            const MAX_BACKOFF_SECS: u64 = 300;
             loop {
                 match QSConnection::connect_with_timeout(
                     &machine_config.host,
@@ -258,6 +260,7 @@ async fn main() -> Result<()> {
                 .await
                 {
                     Ok(con) => {
+                        backoff_secs = 1;
                         let con = Arc::new(con);
                         let mut log_tasks = JoinSet::new();
                         match log_machine(
@@ -293,19 +296,21 @@ async fn main() -> Result<()> {
                             }
                             Err(e) => {
                                 error!(
-                                    "Error setting up logging for {}: {}, retrying in {:?}",
-                                    machine_config.name, e, reconnect_wait_clone
+                                    "Error setting up logging for {}: {}, retrying in {} seconds",
+                                    machine_config.name, e, backoff_secs
                                 );
-                                tokio::time::sleep(reconnect_wait_clone).await;
+                                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                                backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                             }
                         }
                     }
                     Err(e) => {
                         error!(
-                            "Error connecting to {}: {}, retrying in {:?}",
-                            machine_config.name, e, reconnect_wait_clone
+                            "Error connecting to {}: {}, retrying in {} seconds",
+                            machine_config.name, e, backoff_secs
                         );
-                        tokio::time::sleep(reconnect_wait_clone).await;
+                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
                     }
                 }
             }
@@ -316,19 +321,23 @@ async fn main() -> Result<()> {
     if let Some(matrix_config) = config.matrix.clone() {
         let reconnect_wait_matrix = reconnect_wait;
         tokio::spawn(async move {
+            let mut backoff_secs = 1u64;
+            const MAX_BACKOFF_SECS: u64 = 300;
             loop {
                 match matrix::setup_matrix(&matrix_config, conns_clone.clone()).await {
                     Ok(()) => {
+                        backoff_secs = 1;
                         warn!("Matrix connection ended, attempting to reconnect");
                     }
                     Err(e) => {
                         error!(
-                            "Error setting up Matrix: {}, retrying in {:?}",
-                            e, reconnect_wait_matrix
+                            "Error setting up Matrix: {}, retrying in {} seconds",
+                            e, backoff_secs
                         );
                     }
                 }
-                tokio::time::sleep(reconnect_wait_matrix).await;
+                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
             }
         });
     }
@@ -364,9 +373,9 @@ async fn log_machine(
     let config_clone = config.clone();
 
     let aborthandle = log_tasks.spawn(async move {
-        influx_log_loop(&mut log_sub, tx, &config_clone, None, con.clone())
-            .await
-            .unwrap();
+        if let Err(e) = influx_log_loop(&mut log_sub, tx, &config_clone, None, con.clone()).await {
+            error!("Logging loop error: {}", e);
+        }
     });
     let id = aborthandle.id();
 
@@ -484,7 +493,11 @@ fn ledstatus_to_lineprotocol(
                 DataPoint::builder("lamp").tag("machine", machine_name),
                 |builder, (key, value)| builder.field(key, value),
             )
-            .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64)
+            .timestamp(
+                timestamp
+                    .timestamp_nanos_opt()
+                    .ok_or(anyhow::anyhow!("Timestamp out of range"))? as i64,
+            )
             .build()?,
     ])
 }
@@ -504,10 +517,13 @@ async fn run_to_lineprotocol(
         .map_err(|e| anyhow::anyhow!("Invalid message: {}", e))?;
 
     // Create base point for run_action
+    let ts = timestamp
+        .timestamp_nanos_opt()
+        .ok_or(anyhow::anyhow!("Timestamp out of range"))? as i64;
     let mut point = DataPoint::builder("run_action")
         .tag("machine", machine_name)
         .tag("type", action.to_lowercase())
-        .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64);
+        .timestamp(ts);
 
     match action {
         "Stage" | "Cycle" | "Step" => {
@@ -528,7 +544,7 @@ async fn run_to_lineprotocol(
                     .tag("machine", machine_name)
                     .tag("type", action.to_lowercase())
                     .field(action.to_lowercase(), value)
-                    .timestamp(timestamp.timestamp_nanos_opt().unwrap() as i64)
+                    .timestamp(ts)
                     .build()?,
             );
         }
@@ -544,30 +560,50 @@ async fn run_to_lineprotocol(
             points.push(point.build()?);
         }
         "Ramping" => {
-            let rates = content
+            let rates_str = content
                 .options
                 .get("rates")
-                .unwrap()
-                .to_string()
+                .ok_or(anyhow::anyhow!("Missing rates in Ramping message"))?
+                .to_string();
+            let rates: Result<Vec<f64>, _> = rates_str
                 .split(',')
-                .map(|s| s.parse::<f64>().unwrap())
-                .collect::<Vec<f64>>();
-            let zones = content
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|e| anyhow::anyhow!("Invalid rate value '{}': {}", s, e))
+                })
+                .collect();
+            let rates = rates?;
+
+            let zones_str = content
                 .options
                 .get("zones")
-                .unwrap()
-                .to_string()
-                .split(',')
-                .map(|s| s.to_string())
-                .collect::<Vec<_>>();
-            let targets = content
+                .ok_or(anyhow::anyhow!("Missing zones in Ramping message"))?
+                .to_string();
+            let zones: Vec<String> = zones_str.split(',').map(|s| s.to_string()).collect();
+
+            let targets_str = content
                 .options
                 .get("targets")
-                .unwrap()
-                .to_string()
+                .ok_or(anyhow::anyhow!("Missing targets in Ramping message"))?
+                .to_string();
+            let targets: Result<Vec<f64>, _> = targets_str
                 .split(',')
-                .map(|s| s.parse::<f64>().unwrap())
-                .collect::<Vec<f64>>();
+                .map(|s| {
+                    s.parse::<f64>()
+                        .map_err(|e| anyhow::anyhow!("Invalid target value '{}': {}", s, e))
+                })
+                .collect();
+            let targets = targets?;
+
+            if rates.len() != zones.len() || rates.len() != targets.len() {
+                return Err(anyhow::anyhow!(
+                    "Mismatched lengths: rates={}, zones={}, targets={}",
+                    rates.len(),
+                    zones.len(),
+                    targets.len()
+                ));
+            }
+
             for ((zone, rate), target) in zones.iter().zip(rates.iter()).zip(targets.iter()) {
                 point = point.field(format!("rate_{}", zone), *rate);
                 point = point.field(format!("target_{}", zone), *target);
@@ -578,31 +614,31 @@ async fn run_to_lineprotocol(
             let stage = content
                 .options
                 .get("stage")
-                .unwrap()
+                .ok_or(anyhow::anyhow!("Missing stage in Collected message"))?
                 .to_string()
                 .parse::<i64>()
-                .unwrap();
+                .map_err(|e| anyhow::anyhow!("Invalid stage value: {}", e))?;
             let cycle = content
                 .options
                 .get("cycle")
-                .unwrap()
+                .ok_or(anyhow::anyhow!("Missing cycle in Collected message"))?
                 .to_string()
                 .parse::<i64>()
-                .unwrap();
+                .map_err(|e| anyhow::anyhow!("Invalid cycle value: {}", e))?;
             let step = content
                 .options
                 .get("step")
-                .unwrap()
+                .ok_or(anyhow::anyhow!("Missing step in Collected message"))?
                 .to_string()
                 .parse::<i64>()
-                .unwrap();
+                .map_err(|e| anyhow::anyhow!("Invalid step value: {}", e))?;
             let run_point = content
                 .options
                 .get("point")
-                .unwrap()
+                .ok_or(anyhow::anyhow!("Missing point in Collected message"))?
                 .to_string()
                 .parse::<i64>()
-                .unwrap();
+                .map_err(|e| anyhow::anyhow!("Invalid point value: {}", e))?;
             point = point
                 .field("stage", stage)
                 .field("cycle", cycle)
@@ -655,7 +691,9 @@ fn temperature_to_lineprotocol(
     timestamp: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
-    let ts = timestamp.timestamp_nanos_opt().unwrap() as i64;
+    let ts = timestamp
+        .timestamp_nanos_opt()
+        .ok_or(anyhow::anyhow!("Timestamp out of range"))? as i64;
 
     // Parse the message into key-value pairs
     let mut args = msg
@@ -743,7 +781,9 @@ fn time_to_lineprotocol(
     machine_name: &str,
     timestamp: chrono::DateTime<chrono::Utc>,
 ) -> Result<Vec<DataPoint>> {
-    let ts = timestamp.timestamp_nanos_opt().unwrap() as i64;
+    let ts = timestamp
+        .timestamp_nanos_opt()
+        .ok_or(anyhow::anyhow!("Timestamp out of range"))? as i64;
     let mut point = DataPoint::builder("run_time").tag("machine", machine_name);
 
     // Parse the message into key-value pairs
@@ -825,7 +865,9 @@ fn parse_line_protocol_to_datapoint(line: &str, machine_name: &str) -> Result<Da
     let timestamp = if let Some(ts_str) = timestamp_str {
         ts_str.parse::<i64>()?
     } else {
-        chrono::Utc::now().timestamp_nanos_opt().unwrap() as i64
+        chrono::Utc::now()
+            .timestamp_nanos_opt()
+            .ok_or(anyhow::anyhow!("Current timestamp out of range"))? as i64
     };
 
     Ok(builder.timestamp(timestamp).build()?)
@@ -915,11 +957,11 @@ async fn docollect(
             .map_err(|e| anyhow::anyhow!("Error converting to line protocol: {}", e))?;
 
         if let Some(plate_setup) = plate_setup.as_ref() {
-            let plate_setup_line_protocols = plate_setup.to_lineprotocol(
-                timestamp.timestamp_nanos_opt().unwrap(),
-                current_run_name.as_deref(),
-                None,
-            );
+            let plate_setup_ts = timestamp
+                .timestamp_nanos_opt()
+                .ok_or(anyhow::anyhow!("Timestamp out of range"))?;
+            let plate_setup_line_protocols =
+                plate_setup.to_lineprotocol(plate_setup_ts, current_run_name.as_deref(), None);
             line_protocols.extend(plate_setup_line_protocols);
         }
 
