@@ -793,12 +793,15 @@ pub async fn setup_matrix(
 
     debug!("Starting sync loop");
     let matrix_client = client.clone();
+    let (sync_error_tx, mut sync_error_rx) = tokio::sync::mpsc::unbounded_channel::<MatrixError>();
+    
     tokio::spawn(async move {
         if let Err(e) = matrix_client
             .sync(SyncSettings::default().token(response.next_batch))
             .await
         {
             error!("Matrix sync loop error: {}", e);
+            let _ = sync_error_tx.send(MatrixError::MatrixErr(e));
         }
     });
 
@@ -876,13 +879,26 @@ pub async fn setup_matrix(
     info!("Matrix connected");
 
     loop {
-        match rx.recv().await {
-            Some((name, msg)) => {
-                handle_run_message(name, msg, &log_room).await;
+        tokio::select! {
+            msg_result = rx.recv() => {
+                match msg_result {
+                    Some((name, msg)) => {
+                        handle_run_message(name, msg, &log_room).await;
+                    }
+                    None => {
+                        warn!("Message channel closed, reconnecting");
+                        break;
+                    }
+                }
             }
-            None => {
-                warn!("Message channel closed, reconnecting");
-                break;
+            sync_error = sync_error_rx.recv() => {
+                if let Some(e) = sync_error {
+                    error!("Matrix sync error received, reconnecting: {}", e);
+                    return Err(e);
+                } else {
+                    warn!("Sync error channel closed, reconnecting");
+                    break;
+                }
             }
         }
     }
