@@ -49,7 +49,7 @@ impl RunLogInfo {
             stage_start_times: Vec::new(),
             stage_end_times: Vec::new(),
         };
-        for captures in LOG_RUN_REGEX.captures_iter(log) {
+        'cap: for captures in LOG_RUN_REGEX.captures_iter(log) {
             let timestamp = captures
                 .name("ts")
                 .unwrap()
@@ -89,6 +89,7 @@ impl RunLogInfo {
                     if info.stage_start_times.len() > 1 {
                         info.stage_end_times.push(Some(timestamp));
                     }
+                    break 'cap;
                 }
                 b"Aborted" => {
                     info.runstate = RUNSTATE_ABORTED.to_string();
@@ -97,6 +98,7 @@ impl RunLogInfo {
                     if info.stage_start_times.len() > 1 {
                         info.stage_end_times.push(Some(timestamp));
                     }
+                    break 'cap;
                 }
                 b"Stopped" => {
                     info.runstate = RUNSTATE_STOPPED.to_string();
@@ -105,6 +107,7 @@ impl RunLogInfo {
                     if info.stage_start_times.len() > 1 {
                         info.stage_end_times.push(Some(timestamp));
                     }
+                    break 'cap;
                 }
                 _ => {
                     debug!("Unknown message: {}", msg.to_str_lossy());
