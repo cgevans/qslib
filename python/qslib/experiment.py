@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import tempfile
+import warnings
 import polars as pl
 import xml.etree.ElementTree as ET
 import zipfile
@@ -375,6 +376,9 @@ class Experiment:
         """
         A DataFrame with fluorescence reading information.
 
+        .. deprecated:: 0.14.0
+            Use :attr:`filter_data` instead.
+
         Indices (multi-index) are (filter_set, stage, cycle, step, point), where filter_set
         is a string in familiar form (eg, "x1-m4") and the rest are int.
 
@@ -393,6 +397,11 @@ class Experiment:
             Exposure time from filterdata.xml.  Misleading, because it only refers to the
             longest exposure of multiple exposures.
         """
+        warnings.warn(
+            "welldata is deprecated and will be removed in a future version. Use filter_data instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         try:
             return self.filter_data
         except Exception:
@@ -1789,7 +1798,7 @@ table, th, td {{
         wells = ["time"] + [
             f"{x[0]}{int(x[1:])}" for x in self.plate_setup.sample_wells[sample]
         ]
-        x = self.welldata.loc[:, wells]
+        x = self.filter_data.loc[:, wells]
         return x
     
     def _msglog_path(self) -> Path:
