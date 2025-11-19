@@ -8,6 +8,7 @@ import pytest
 
 from qslib import Experiment
 import qslib
+from qslib.experiment import DataNotAvailableError
 from qslib.processors import (
     NormToMaxPerWell,
     NormToMeanPerWell,
@@ -207,11 +208,11 @@ def test_mid_run_eds():
     exp.filter_data_polars
 
     # Test that analysis data is not available for mid-run experiments
-    with pytest.raises(ValueError, match="Multicomponent data is not available"):
+    with pytest.raises(DataNotAvailableError):
         exp.multicomponent_data
     
-    with pytest.raises(ValueError, match="Analysis result is not available"):
+    with pytest.raises(DataNotAvailableError):
         exp.analysis_result
     
-    with pytest.raises(ValueError, match="Amplification data is not available"):
+    with pytest.raises(DataNotAvailableError):
         exp.amplification_data

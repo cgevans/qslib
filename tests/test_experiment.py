@@ -7,22 +7,29 @@ import warnings
 from pathlib import Path
 
 from qslib import Experiment, Protocol, Stage, Step
+from qslib.experiment import DataNotAvailableError
 
 
 def test_create():
     Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
 
 
-def test_fail_plots():
+def test_fail_plots_temperature():
     exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
 
-    with pytest.raises(ValueError, match="no temperature data"):
+    with pytest.raises(DataNotAvailableError):
         exp.plot_temperatures()
 
-    with pytest.raises(ValueError, match="No filterdata found"):
+
+def test_fail_plots_over_time():
+    exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
+    with pytest.raises(DataNotAvailableError):
         exp.plot_over_time()
 
-    with pytest.raises(ValueError, match="Run hasn't started yet: no data available."): # FIXME: why is this inconsistent?
+
+def test_fail_plots_anneal_melt():
+    exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
+    with pytest.raises(DataNotAvailableError): # FIXME: why is this inconsistent?
         exp.plot_anneal_melt()
 
 

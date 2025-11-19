@@ -181,6 +181,24 @@ class AlreadyExistsCompleteError(AlreadyExistsError):
             "a failed previous run.  Start run with `overwrite=True` to overwrite."
         )
 
+@dataclass
+class DataNotAvailableError(Exception):
+    """The data is not available."""
+    name: str
+    message: str
+
+    def __str__(self) -> str:
+        return f"{self.name} is not available: {self.message}"
+
+@dataclass
+class DataLoadingError(Exception):
+    """The data could not be loaded."""
+    name: str
+    message: str
+    cause: Exception
+
+    def __str__(self) -> str:
+        return f"{self.name} could not be loaded: {self.message}. Cause: {self.cause}"
 
 def _find_or_raise(e: ET.ElementTree | ET.Element, path: str) -> ET.Element:
     "Find an element at path and return it, or raise an error."
@@ -379,9 +397,9 @@ class Experiment:
             return self.filter_data
         except Exception:
             if self.runstate == "INIT":
-                raise ValueError("Run hasn't started yet: no data available.")
+                raise DataNotAvailableError("welldata", "Run hasn't started yet: no data available.")
             else:
-                raise ValueError("Experiment data is not available")
+                raise DataNotAvailableError("welldata", "Experiment data is not available")
 
 
     def summary(self, format: str = "markdown", plate: str = "list") -> str:
@@ -428,27 +446,27 @@ class Experiment:
         try:
             self.filter_data_polars
             d.append("filter_data")
-        except Exception:
+        except DataNotAvailableError:
             pass
         try:
             self.multicomponent_data
             d.append("multicomponent_data")
-        except Exception:
+        except DataNotAvailableError:
             pass
         try:
             self.amplification_data
             d.append("amplification_data")
-        except Exception:
+        except DataNotAvailableError:
             pass
         try:
             self.analysis_result
             d.append("analysis_result")
-        except Exception:
+        except DataNotAvailableError:
             pass
         try:
             self.temperatures
             d.append("temperatures")
-        except Exception:
+        except DataNotAvailableError:
             pass
         return d
 
@@ -1033,7 +1051,7 @@ table, th, td {{
     @cached_method
     def temperature_ramps_polars(self) -> pl.DataFrame:
         m = self._msglog_path().read_bytes()
-        r = re.compile(rb"Info (?P<timestamp>[\d.]+)(?:TBC:SETTing)? [rR]amping \"Zone(?P<zone>\d+)\" from (?P<from>[\d.]+) to (?P<to>[\d.]+) \(rate=(?P<rate>[\d.]+), timeout=(?P<timeout>[\d.]+), msgid=0x(?P<msgid>\w+)\)")
+        r = re.compile(rb"Info (?P<timestamp>[\d.]+)(?: TBC:SETTing)? [rR]amping \"Zone(?P<zone>\d+)\" from (?P<from>[\d.]+) to (?P<to>[\d.]+) \(rate=(?P<rate>[\d.]+), timeout=(?P<timeout>[\d.]+), msgid=0x(?P<msgid>\w+)\)")
 
         tbc_events = pl.from_records(
             [
@@ -1597,9 +1615,9 @@ table, th, td {{
         self.plate_setup = PlateSetup.from_platesetup_xml(x)
 
     @cached_method
-    def _get_filterdatareadings(self) -> list[FilterDataReading]:
+    def _get_filterdatareadings_v1(self) -> list[FilterDataReading]:
         if self.spec_major_version != 1:
-            raise ValueError("Filterdata is only supported for spec version 1")
+            raise DataLoadingError("filterdata", "v2 file in v1 method.")
         fdp = os.path.join(self._dir_eds, "filterdata.xml")
         all_quant_files = [tuple(int(y[1:]) for y in x.stem.split("_")) for x in (Path(self._dir_eds) / "quant").glob("*_E*.quant")]
         all_quant_files.sort(key = lambda x: x[-1]) # use longest exposure (it is last, which will mean it remains in the dict)
@@ -1627,13 +1645,14 @@ table, th, td {{
             ]
             return fdrs
         else:
-            raise ValueError("No filterdata found")
+            raise DataNotAvailableError("filterdata", "No filterdata found")
 
 
     def filter_data_polars_lazy(self) -> 'pl.LazyFrame':
         from .processors import polars_from_filterdata
         start_time = self.activestarttime.timestamp() if self.activestarttime else None
-        d = pl.concat(polars_from_filterdata(x, start_time=start_time) for x in self._get_filterdatareadings()).sort("timestamp")
+        fdr = self._get_filterdatareadings_v1()
+        d = pl.concat(polars_from_filterdata(x, start_time=start_time) for x in fdr).sort("timestamp")
         duration = (1000 * (pl.col("from") - pl.col("to")).abs() / pl.col("rate")).alias("duration").cast(pl.Duration(time_unit="ms"))
         time_since_ramp = (pl.col("timestamp") - pl.col("timestamp_ramp")).alias("time_since_ramp")
 
@@ -1655,13 +1674,10 @@ table, th, td {{
     @cached_method
     def filter_data(self) -> pd.DataFrame:
         if self.spec_major_version == 1:
-            try:
-                return df_from_readings(
-                    self._get_filterdatareadings(),
-                    self.activestarttime.timestamp() if self.activestarttime else None,
-                )
-            except ValueError:
-                raise ValueError("Could not load filter data")
+            return df_from_readings(
+                self._get_filterdatareadings_v1(),
+                self.activestarttime.timestamp() if self.activestarttime else None,
+            )
         else:
             fdp = os.path.join(self._dir_base, "run/filter_data.json")
             if self.plate_type is None:
@@ -1681,20 +1697,19 @@ table, th, td {{
 
     @property
     def multicomponent_data(self) -> pd.DataFrame:
-        try:
-            if self.spec_major_version == 1:
-                mdp = os.path.join(self._dir_eds, "multicomponentdata.xml")
-                fdx = ET.parse(mdp)
-                return _parse_multicomponent_data_v1(fdx)
-            else:
-                mdp = os.path.join(self._dir_base, "primary/multicomponent_data.json")
-                with open(mdp, "r") as f:
-                    return _parse_multicomponent_data_v2(json.load(f), self.plate_type)
-        except Exception as e:
-            if self.runstate == "INIT":
-                raise ValueError("Run hasn't started yet: no data available.")
-            else:
-                raise ValueError("Multicomponent data is not available")
+        if self.spec_major_version == 1:
+            mdp = os.path.join(self._dir_eds, "multicomponentdata.xml")
+            if not os.path.isfile(mdp):
+                raise DataNotAvailableError("multicomponentdata", "No multicomponentdata found")
+            fdx = ET.parse(mdp)
+            return _parse_multicomponent_data_v1(fdx)
+        else:
+            mdp = os.path.join(self._dir_base, "primary/multicomponent_data.json")
+            if not os.path.isfile(mdp):
+                raise DataNotAvailableError("multicomponentdata", "No multicomponentdata found")
+            with open(mdp, "r") as f:
+                return _parse_multicomponent_data_v2(json.load(f), self.plate_type)
+
 
     @property
     @cached_method
@@ -1703,14 +1718,14 @@ table, th, td {{
             adp = os.path.join(self._dir_eds, "analysis_result.txt")
             if not os.path.isfile(adp):
                 if self.runstate == "INIT":
-                    raise ValueError("Run hasn't started yet: no data available.")
+                    raise DataNotAvailableError("analysis_result", "Run hasn't started yet: no data available.")
                 else:
-                    raise ValueError("Analysis result is not available")
+                    raise DataNotAvailableError("analysis_result", "Analysis result is not available")
             else:
                 with open(adp, "r") as f:
                     return _parse_analysis_result(f.read(), plate_type=self.plate_type)[0]
         else:
-            raise NotImplementedError("Analysis result is not available for spec version 2. You might find data in _analysis_dict_v2")
+            raise DataNotAvailableError("analysis_result", "Analysis result is not available for spec version 2. You might find data in _analysis_dict_v2")
 
     @property
     @cached_method
@@ -1719,21 +1734,19 @@ table, th, td {{
             adp = os.path.join(self._dir_eds, "analysis_result.txt")
             if not os.path.isfile(adp):
                 if self.runstate == "INIT":
-                    raise ValueError("Run hasn't started yet: no data available.")
-                raise ValueError("Amplification data is not available")
+                    raise DataNotAvailableError("amplification_data", "Run hasn't started yet: no data available.")
+                raise DataNotAvailableError("amplification_data", "Amplification data is not available")
             with open(adp, "r") as f:
                 return _parse_analysis_result(f.read(), plate_type=self.plate_type)[1]
         else:
-            raise NotImplementedError("Amplification data is not available for spec version 2. You might find data in _analysis_dict_v2")
+            raise DataNotAvailableError("amplification_data", "Amplification data is not available for spec version 2. You might find data in _analysis_dict_v2")
 
     @property
     @cached_method
     def _analysis_dict_v2(self) -> dict:
-        if self.spec_major_version != 2:
-            raise ValueError("Analysis dict is only available for spec version 2")
         adp = os.path.join(self.root_dir, "primary/analysis_result.json")
         if not os.path.isfile(adp):
-            raise ValueError("Analysis result is not available")
+            raise DataNotAvailableError("analysis_result", "Analysis result is not available")
         else:
             return json.load(open(adp, "r"))
 
@@ -1941,11 +1954,11 @@ table, th, td {{
         try:
             b = self._msglog_path().read_bytes()
         except FileNotFoundError:
-            raise ValueError("no temperature data")
+            raise DataNotAvailableError("temperatures", "no temperature data")
         try:
             n_zones = get_n_zones(b)
         except Exception:
-            raise ValueError("no temperature data")
+            raise DataNotAvailableError("temperatures", "no temperature data")
         tl = TemperatureLog.parse_to_polars(b)
         return tl, n_zones
 
@@ -2165,7 +2178,7 @@ table, th, td {{
                 )
             ).add_subplot()
 
-        data = self.welldata
+        data = self.filter_data
 
         for processor in process:
             data = processor.process_scoped(data, "all")
