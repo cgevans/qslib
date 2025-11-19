@@ -110,6 +110,12 @@ download = "https://github.com/cgevans/qslib/releases"
 qs-monitor = "qslib.monitor_cli:run"
 qslib = "qslib.cli:cli"
 
+[dependency-groups]
+test = [
+    "pytest>=8.4.2",
+    "pytest-cov>=6.2.1",
+]
+
 [tool.pytest.ini_options]
 addopts = "--cov qslib --cov-report term-missing --verbose"
 norecursedirs = ["dist", "build", ".tox"]

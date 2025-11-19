@@ -1821,6 +1821,8 @@ table, th, td {{
                 re.DOTALL | re.MULTILINE,
             ):
                 prot_u = m[1].decode("utf-8")
+                # Remove extraneous blank lines that can cause parsing failures
+                prot_u = re.sub(r'\n\s*\n', '\n', prot_u)
                 # We can get the prot name too, and sample volume! FIXME: not from qslib runs!
                 rp = re.search(
                     rb"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?"
@@ -1847,8 +1849,11 @@ table, th, td {{
                     msglog,
                     re.MULTILINE,
                 ):
+                    prot_text = mm[1].decode("utf-8").replace("\nc:", "\n")
+                    # Remove extraneous blank lines that can cause parsing failures
+                    prot_text = re.sub(r'\n\s*\n', '\n', prot_text)
                     newprot = Protocol.from_scpicommand(
-                        SCPICommand.from_string(mm[1].decode("utf-8").replace("\nc:", "\n"))
+                        SCPICommand.from_string(prot_text)
                     )
                     # if newprot.name == prot.name:
                     self._protocol_from_log = newprot
