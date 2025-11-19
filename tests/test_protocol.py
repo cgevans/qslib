@@ -6,7 +6,7 @@ import pathlib
 import numpy as np
 
 from qslib import Experiment
-from qslib.protocol import Q_, UR, Exposure, FilterSet, Protocol, Stage, Step
+from qslib.protocol import Q_, UR, Exposure, FilterSet, Protocol, Stage, Step, _durformat
 from qslib.scpi_commands import SCPICommand  # noqa
 
 PROTSTRING = """PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
@@ -309,3 +309,101 @@ def test_protocol_equality():
 
     prot2.volume = 40
     assert prot != prot2
+
+
+def test_durformat_basic_units():
+    """Test _durformat with basic time units"""
+    # Seconds
+    assert _durformat(Q_(1, "seconds")) == "1s"
+    assert _durformat(Q_(30, "seconds")) == "30s"
+    assert _durformat(Q_(59, "seconds")) == "59s"
+    assert _durformat(Q_(120, "seconds")) == "120s"  # 2 minutes, stays as seconds
+    
+    # Minutes (> 2 minutes)
+    assert _durformat(Q_(180, "seconds")) == "3m"  # 3 minutes
+    assert _durformat(Q_(3600, "seconds")) == "60m"  # 1 hour
+    assert _durformat(Q_(7200, "seconds")) == "120m"  # 2 hours, stays as minutes
+    
+    # Hours (> 2 hours, <= 3 days)
+    assert _durformat(Q_(10800, "seconds")) == "3h"  # 3 hours
+    assert _durformat(Q_(86400, "seconds")) == "24h"  # 1 day exactly
+    assert _durformat(Q_(172800, "seconds")) == "48h"  # 2 days exactly
+    assert _durformat(Q_(259200, "seconds")) == "72h"  # 3 days exactly
+
+
+def test_durformat_exact_day_durations():
+    """Test _durformat with exact day durations that were previously broken"""
+    # These were returning empty strings before the fix
+    assert _durformat(Q_(86400, "seconds")) == "24h"  # 1 day
+    assert _durformat(Q_(172800, "seconds")) == "48h"  # 2 days
+    assert _durformat(Q_(259200, "seconds")) == "72h"  # 3 days
+    
+    # Days > 3 days should show in days format
+    assert _durformat(Q_(345600, "seconds")) == "4d"  # 4 days
+    assert _durformat(Q_(432000, "seconds")) == "5d"  # 5 days
+    assert _durformat(Q_(604800, "seconds")) == "7d"  # 1 week
+
+
+def test_durformat_mixed_durations():
+    """Test _durformat with mixed time components"""
+    # Seconds + minutes
+    assert _durformat(Q_(61, "seconds")) == "61s"  # 1m1s, but <= 2 minutes
+    assert _durformat(Q_(181, "seconds")) == "3m1s"  # 3m1s
+    
+    # Minutes + hours
+    assert _durformat(Q_(3661, "seconds")) == "61m1s"  # 1h1m1s, but <= 2 hours
+    assert _durformat(Q_(10861, "seconds")) == "3h1m1s"  # 3h1m1s
+    
+    # Hours + days (> 3 days)
+    assert _durformat(Q_(349200, "seconds")) == "4d1h"  # 4d1h
+    assert _durformat(Q_(349260, "seconds")) == "4d1h1m"  # 4d1h1m
+    assert _durformat(Q_(349261, "seconds")) == "4d1h1m1s"  # 4d1h1m1s
+
+
+def test_durformat_boundary_conditions():
+    """Test _durformat at boundary conditions"""
+    # Exactly at boundaries
+    assert _durformat(Q_(120, "seconds")) == "120s"  # Exactly 2 minutes
+    assert _durformat(Q_(121, "seconds")) == "2m1s"  # Just over 2 minutes
+    
+    assert _durformat(Q_(7200, "seconds")) == "120m"  # Exactly 2 hours
+    assert _durformat(Q_(7201, "seconds")) == "2h1s"  # Just over 2 hours
+    
+    assert _durformat(Q_(259200, "seconds")) == "72h"  # Exactly 3 days
+    assert _durformat(Q_(259201, "seconds")) == "3d1s"  # Just over 3 days
+
+
+def test_durformat_no_empty_strings():
+    """Test that _durformat never returns empty strings"""
+    # Test a range of values that could potentially cause issues
+    test_values = [
+        1, 60, 120, 3600, 7200, 86400, 172800, 259200, 345600, 432000,
+        86401, 90000, 349200, 349261  # Mixed values
+    ]
+    
+    for seconds in test_values:
+        result = _durformat(Q_(seconds, "seconds"))
+        assert result != "", f"Empty string returned for {seconds} seconds"
+        assert len(result.strip()) > 0, f"Whitespace-only string for {seconds} seconds"
+        assert result.replace("d", "").replace("h", "").replace("m", "").replace("s", "").isdigit() or \
+               any(c.isdigit() for c in result), f"No digits in result '{result}' for {seconds} seconds"
+
+
+def test_durformat_stage_integration():
+    """Test _durformat integration with Stage.info_str()"""
+    # Test that stages with exact day durations show proper total duration
+    step_1day = Step(temperature=95.0, time=86400, repeat=1)  # 1 day
+    stage_1day = Stage([step_1day], repeat=1)
+    info_1day = stage_1day.info_str(1)
+    assert "total duration 24h" in info_1day
+    assert "total duration )" not in info_1day  # No empty duration
+    
+    step_2day = Step(temperature=95.0, time=172800, repeat=1)  # 2 days
+    stage_2day = Stage([step_2day], repeat=1)
+    info_2day = stage_2day.info_str(1)
+    assert "total duration 48h" in info_2day
+    
+    step_4day = Step(temperature=95.0, time=345600, repeat=1)  # 4 days
+    stage_4day = Stage([step_4day], repeat=1)
+    info_4day = stage_4day.info_str(1)
+    assert "total duration 4d" in info_4day
