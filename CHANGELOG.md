@@ -8,11 +8,13 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Version 0.14.0
 
-- Reimplement core communication and parsing code in Rust.
-- Improve cli commands, in particular, `list-stored` and `get-eds`.
-- Add more parsing and typing to `Machine.list_runs_in_storage` and `Machine.list_files` (breaking change if relying on atime/mtime/ctime being floats instead of datetime objects).
-- Use setuptools_scm to write version number.
-- Fix loading of EDS files when there are blank lines in the logged protocol, which can happen when run directly from the touchscreen. (closes #36, thanks to @TBWarrington)
+A significant reorganization:
+
+- Core communication and parsing code in Rust.
+- Polars dataframe support, in addition to pandas.
+- A new, rust-based qs-monitor with improved reliability and a matrix bot with commands.
+- Altair plotting support.
+- Numerous bug fixes and improvements.
 
 ## Version 0.13.0
 
