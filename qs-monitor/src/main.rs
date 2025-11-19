@@ -4,9 +4,9 @@ use dashmap::DashMap;
 use env_logger::Env;
 use futures::stream;
 use influxdb2::Client;
-use influxdb2::models::{DataPoint, FieldValue};
+use influxdb2::models::DataPoint;
 use log::{debug, error, info, warn};
-use qslib::parser::{OkResponse, Value};
+use qslib::parser::OkResponse;
 use qslib::{
     com::FilterDataFilename,
     com::QSConnection,
@@ -14,7 +14,6 @@ use qslib::{
     parser::LogMessage,
 };
 use serde_derive::Deserialize;
-use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
@@ -44,6 +43,7 @@ struct Config {
     machines: Vec<MachineConfig>,
     matrix: Option<matrix::MatrixSettings>,
     influxdb: Option<InfluxDBConfig>,
+    #[allow(dead_code)] // currently ignoring this option, but may exist
     stdout: Option<()>,
 }
 
@@ -100,16 +100,16 @@ fn load_config(path: PathBuf) -> Result<Config> {
     Ok(settings.try_deserialize()?)
 }
 
-fn value_to_influxvalue(value: Value) -> FieldValue {
-    match value {
-        Value::String(s) => FieldValue::String(s),
-        Value::Int(i) => FieldValue::I64(i),
-        Value::Float(f) => FieldValue::F64(f),
-        Value::Bool(b) => FieldValue::Bool(b),
-        Value::QuotedString(s) => FieldValue::String(s),
-        Value::XmlString { value, tag: _ } => FieldValue::String(value.to_string()),
-    }
-}
+// fn value_to_influxvalue(value: Value) -> FieldValue {
+//     match value {
+//         Value::String(s) => FieldValue::String(s),
+//         Value::Int(i) => FieldValue::I64(i),
+//         Value::Float(f) => FieldValue::F64(f),
+//         Value::Bool(b) => FieldValue::Bool(b),
+//         Value::QuotedString(s) => FieldValue::String(s),
+//         Value::XmlString { value, tag: _ } => FieldValue::String(value.to_string()),
+//     }
+// }
 
 async fn write_points_to_influx(
     mut rx: mpsc::Receiver<(String, DataPoint)>,
@@ -354,7 +354,7 @@ async fn log_machine(
     log_tasks: &mut JoinSet<()>,
 ) -> Result<Id> {
     let access = AccessLevelSet::level(AccessLevel::Observer);
-    access.send(&con).await?.receive_response().await?;
+    access.send(&con).await?.receive_response().await??;
     Subscribe::topic("Temperature").send(&con).await?;
     Subscribe::topic("Time").send(&con).await?;
     Subscribe::topic("Run").send(&con).await?;

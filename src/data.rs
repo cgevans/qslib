@@ -8,21 +8,21 @@ use pyo3::prelude::*;
 #[cfg(feature = "python")]
 use pyo3_polars::PyDataFrame;
 
-use once_cell::sync::Lazy;
+// use once_cell::sync::Lazy;
 
-static WELL_DATA_SCHEMA: Lazy<Schema> = Lazy::new(|| {
-    Schema::from_iter(vec![
-        Field::new("filter_set".into(), DataType::String),
-        Field::new("stage".into(), DataType::UInt32),
-        Field::new("cycle".into(), DataType::UInt32),
-        Field::new("step".into(), DataType::UInt32),
-        Field::new("point".into(), DataType::UInt32),
-        Field::new("well".into(), DataType::String),
-        Field::new("row".into(), DataType::UInt32),
-        Field::new("column".into(), DataType::UInt32),
-        Field::new("fluorescence".into(), DataType::Float64),
-    ])
-});
+// static WELL_DATA_SCHEMA: Lazy<Schema> = Lazy::new(|| {
+//     Schema::from_iter(vec![
+//         Field::new("filter_set".into(), DataType::String),
+//         Field::new("stage".into(), DataType::UInt32),
+//         Field::new("cycle".into(), DataType::UInt32),
+//         Field::new("step".into(), DataType::UInt32),
+//         Field::new("point".into(), DataType::UInt32),
+//         Field::new("well".into(), DataType::String),
+//         Field::new("row".into(), DataType::UInt32),
+//         Field::new("column".into(), DataType::UInt32),
+//         Field::new("fluorescence".into(), DataType::Float64),
+//     ])
+// });
 
 fn parse_well_data<'de, D>(deserializer: D) -> Result<Vec<f64>, D::Error>
 where

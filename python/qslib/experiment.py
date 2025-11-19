@@ -18,14 +18,13 @@ import polars as pl
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import InitVar, dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
 from typing import (
     IO,
     TYPE_CHECKING,
     Any,
-    Callable,
     Collection,
     List,
     Literal,
@@ -1386,7 +1385,7 @@ table, th, td {{
         machine = cls._ensure_machine(machine)
         try:
             return Experiment.from_running(machine)
-        except:
+        except ValueError:
             m = machine.list_runs_in_storage(verbose=True)
             m.sort(key = lambda k: k['mtime'])
             return Experiment.from_machine_storage(machine, m[-1]['path'])
@@ -1887,7 +1886,7 @@ table, th, td {{
     def _events_from_log(self) -> pl.DataFrame:
         try:
             msglog = self._msglog_path().read_bytes()
-        except FileNotFoundError as e:
+        except FileNotFoundError:
             raise ValueError("no events data")
         
         events = []
@@ -2331,7 +2330,6 @@ table, th, td {{
         annotate_events: bool = True,
         figure_kw: dict[str, Any] | None = None,
         line_kw: dict[str, Any] | None = None,
-        start_time=None,
         time_units: Literal["h", "m", "s"] = "h",
     ) -> "Sequence[Axes]":
         """
@@ -2474,12 +2472,6 @@ table, th, td {{
 
         print(ylabel)
 
-        if start_time is None:
-            start_time_value = 0.0
-        elif isinstance(start_time, (int, float)):
-            start_time_value = start_time
-        else:
-            raise TypeError("start_time invalid type")
 
         lines = []
         reduceddata = reduceddata.collect()
