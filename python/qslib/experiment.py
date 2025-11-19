@@ -61,7 +61,6 @@ from .data import (
 )
 from .machine import Machine
 from .processors import NormRaw
-from .pandas_processors import PandasProcessor
 from .protocol import Protocol, Stage, Step
 from .version import __version__
 
@@ -1824,7 +1823,7 @@ table, th, td {{
         self.stages = pl.DataFrame({
             "stage": ms.stage_names,
             "start_time": [datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_start_times],
-            "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_end_times] + ([None] if len(ms.stage_end_times) > len(ms.stage_start_times) else []), # FIXME
+            "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_end_times] + ([None] if len(ms.stage_end_times) < len(ms.stage_start_times) else []), # FIXME
         }).with_row_index("stage_index")
 
         if self.activestarttime:
@@ -2061,8 +2060,8 @@ table, th, td {{
         anneal_stages: int | Sequence[int] | None = None,
         melt_stages: int | Sequence[int] | None = None,
         between_stages: int | Sequence[int] | None = None,
-        process: Sequence[PandasProcessor] | PandasProcessor | None = None,
-        normalization: PandasProcessor | None = None,
+        process: Sequence[PolarsProcessor] | PolarsProcessor | None = None,
+        normalization: PolarsProcessor | None = None,
         ax: "Axes | None" = None,
         marker: str | None = None,
         legend: bool | Literal["inset", "right"] = True,
@@ -2140,15 +2139,15 @@ table, th, td {{
         """
 
         import matplotlib.pyplot as plt
-        from .pandas_processors import NormRaw as PandasNormRaw
+        from .processors import NormRaw
 
         if process is None:
-            process = [normalization or PandasNormRaw()]
+            process = [normalization or NormRaw()]
         elif normalization:
             raise ValueError(
                 "Can't specify both process and normalization (include normalization in process list)."
             )
-        if isinstance(process, PandasProcessor):
+        if isinstance(process, PolarsProcessor):
             process = [process]
 
         if filters is None:
@@ -2187,37 +2186,43 @@ table, th, td {{
                 )
             ).add_subplot()
 
-        data = self.filter_data
-
-        for processor in process:
-            data = processor.process_scoped(data, "all")
+        data = self.filter_data_polars.lazy()
 
         all_wells = self.plate_setup.get_wells(samples)
 
-        reduceddata = data.loc[[f.lowerform for f in filters], all_wells]
+        reduceddata = data.filter(
+            pl.col("filter_set").is_in([f.lowerform for f in filters]) &
+            pl.col("well").is_in(all_wells)
+        )
+
+        reduceddata, ylabel = polars_process(reduceddata, process, ylabel="fluorescence")
 
         anneallines: "list[list[Line2D]]" = []
         meltlines: "list[list[Line2D]]" = []
         betweenlines: "list[list[Line2D]]" = []
 
-        for processor in process:
-            reduceddata = processor.process_scoped(reduceddata, "limited")
+        reduceddata = reduceddata.collect()
 
         for filter in filters:
-            filterdat: pd.DataFrame = reduceddata.loc[filter.lowerform, :]  # type: ignore
-
-            annealdat: pd.DataFrame = filterdat.loc[anneal_stages, :]  # type: ignore
-            meltdat: pd.DataFrame = filterdat.loc[melt_stages, :]  # type: ignore
-
-            if len(between_stages) > 0:
-                betweendat: pd.DataFrame | None = filterdat.loc[between_stages, :]  # type: ignore
-            else:
-                betweendat = None
-
             for sample in samples:
                 wells = self.plate_setup.get_wells(sample)
 
                 for well in wells:
+                    # Filter data for this specific filter, sample, and well
+                    well_data = reduceddata.filter(
+                        (pl.col("filter_set") == filter.lowerform) &
+                        (pl.col("well") == well)
+                    )
+
+                    # Separate data by stage type
+                    annealdat = well_data.filter(pl.col("stage").is_in(anneal_stages))
+                    meltdat = well_data.filter(pl.col("stage").is_in(melt_stages))
+                    
+                    if len(between_stages) > 0:
+                        betweendat = well_data.filter(pl.col("stage").is_in(between_stages))
+                    else:
+                        betweendat = None
+
                     label = _gen_label(
                         self.plate_setup.get_descriptive_string(sample),
                         well,
@@ -2229,8 +2234,8 @@ table, th, td {{
 
                     anneallines.append(
                         ax.plot(
-                            annealdat.loc[:, (well, "st")],
-                            annealdat.loc[:, (well, "fl")],
+                            annealdat["sample_temperature"],
+                            annealdat["processed_fluorescence"],
                             label=label,
                             marker=marker,
                             **(line_kw if line_kw is not None else {}),
@@ -2241,8 +2246,8 @@ table, th, td {{
 
                     meltlines.append(
                         ax.plot(
-                            meltdat.loc[:, (well, "st")],
-                            meltdat.loc[:, (well, "fl")],
+                            meltdat["sample_temperature"],
+                            meltdat["processed_fluorescence"],
                             color=color,
                             linestyle="dashed",
                             marker=marker,
@@ -2253,8 +2258,8 @@ table, th, td {{
                     if betweendat is not None:
                         betweenlines.append(
                             ax.plot(
-                                betweendat.loc[:, (well, "st")],
-                                betweendat.loc[:, (well, "fl")],
+                                betweendat["sample_temperature"],
+                                betweendat["processed_fluorescence"],
                                 color=color,
                                 linestyle="dotted",
                                 marker=marker,
@@ -2264,10 +2269,7 @@ table, th, td {{
 
         ax.set_xlabel("temperature (°C)")
 
-        ylabel: str | None = None
-        for processor in process:
-            ylabel = processor.ylabel(ylabel)
-        ax.set_ylabel(ylabel or "fluorescence")
+        ax.set_ylabel(ylabel)
 
         if legend is True:
             if len(anneallines) < 6:
