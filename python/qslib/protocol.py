@@ -209,11 +209,11 @@ def _durformat(time: PlainQuantity) -> str:
     rtime = rtime // 60
     # <= 3 days: stay as hours
     if time_s <= 3 * 24 * 3600:
-        if (rtime % 24) != 0:
-            s = "{}h".format(rtime) + s
+        s = "{}h".format(rtime) + s
         return s
 
-    s = "{}h".format(rtime % 24) + s
+    if (rtime % 24) != 0:
+        s = "{}h".format(rtime % 24) + s
     rtime = rtime // 24
     # days without bound
     s = "{}d".format(rtime) + s

@@ -2620,7 +2620,7 @@ table, th, td {{
 
         times
             Constructs a selector to show temperatures for a time range (after activestarttime).
-            :param:`sel` should not be set.
+            :param:`sel` should not be set.  Time is in the units of :param:`time_units`.
 
         time_units
             The units of the time range, and units to plot.  "h" for hours, "m" for minutes, "s" for seconds.
