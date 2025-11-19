@@ -88,7 +88,6 @@ pub struct FeatureValue {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[cfg_attr(feature = "python", pyclass(get_all, set_all))]
-
 #[serde(untagged)]
 pub enum MapOrString {
     Map(HashMap<String, MapOrString>),

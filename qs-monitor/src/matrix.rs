@@ -348,9 +348,21 @@ async fn handle_message(
                 Some(x) => {
                     let (conn, _) = x.value();
                     // Close drawer
-                    conn.send_command("CLOSE").await?.get_response().await?;
+                    match conn.send_command("CLOSE").await?.get_response().await? {
+                        Ok(_) => (),
+                        Err(e) => {
+                            error!("Error closing drawer: {}", e);
+                            return Ok(());
+                        }
+                    }
                     // Lower cover
-                    conn.send_command("COVerDOWN").await?.get_response().await?;
+                    match conn.send_command("COVerDOWN").await?.get_response().await? {
+                        Ok(_) => (),
+                        Err(e) => {
+                            error!("Drawer closed, but error lowering cover: {}", e);
+                            return Ok(());
+                        }
+                    }
                     send_matrix_message(&room, "Drawer closed and cover lowered", false).await?;
                 }
                 None => error!("Machine {} not found", machine),
@@ -366,7 +378,13 @@ async fn handle_message(
             match qs.get(machine) {
                 Some(x) => {
                     let (conn, _) = x.value();
-                    conn.send_command("OPEN").await?.get_response().await?;
+                    match conn.send_command("OPEN").await?.get_response().await? {
+                        Ok(_) => (),
+                        Err(e) => {
+                            error!("Error opening drawer: {}", e);
+                            return Ok(());
+                        }
+                    }
                     send_matrix_message(&room, "Drawer opened", false).await?;
                 }
                 None => error!("Machine {} not found", machine),
@@ -730,7 +748,7 @@ pub async fn setup_matrix(
     // sync_settings = sync_settings.token(response.next_batch.clone());
 
     debug!("Persisting sync token");
-    persist_sync_token(&settings.session_file, response.next_batch.clone()).await;
+    persist_sync_token(&settings.session_file, response.next_batch.clone()).await?;
 
     for room in settings.rooms.iter() {
         debug!("Joining room {}", room);

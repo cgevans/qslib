@@ -541,7 +541,7 @@ impl TryFrom<OkResponse> for DrawerStatus {
 }
 
 #[derive(Debug, Clone)]
-struct DrawerStatusQuery;
+pub struct DrawerStatusQuery;
 
 impl CommandBuilder for DrawerStatusQuery {
     type Response = DrawerStatus;
@@ -572,7 +572,7 @@ impl TryFrom<OkResponse> for CoverHeatStatus {
 }
 
 #[derive(Debug, Clone)]
-struct CoverHeatStatusQuery;
+pub struct CoverHeatStatusQuery;
 
 impl CommandBuilder for CoverHeatStatusQuery {
     type Response = CoverHeatStatus;
@@ -845,7 +845,7 @@ impl TryFrom<OkResponse> for TemperatureControlStatus {
 }
 
 #[derive(Debug, Clone)]
-struct TemperatureControlStatusQuery;
+pub struct TemperatureControlStatusQuery;
 
 impl CommandBuilder for TemperatureControlStatusQuery {
     type Response = TemperatureControlStatus;
