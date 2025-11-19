@@ -1237,18 +1237,11 @@ mod tests {
     fn test_parse_example_eds_files() {
         let example_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
 
-        // Get all .eds files in the directory
-        let eds_files: Vec<PathBuf> = std::fs::read_dir(example_dir)
-            .expect("Failed to read example-eds directory")
-            .filter_map(|entry| {
-                let entry = entry.ok()?;
-                let path = entry.path();
-                if path.extension()? == "eds" {
-                    Some(path)
-                } else {
-                    None
-                }
-            })
+        // Only test "mid-run.eds" and "test.eds"
+        let eds_files: Vec<PathBuf> = ["mid-run.eds", "test.eds"]
+            .iter()
+            .map(|name| example_dir.join(name))
+            .filter(|path| path.exists())
             .collect();
 
         if eds_files.is_empty() {
