@@ -1033,7 +1033,7 @@ table, th, td {{
     @cached_method
     def temperature_ramps_polars(self) -> pl.DataFrame:
         m = self._msglog_path().read_bytes()
-        r = re.compile(rb"Info (?P<timestamp>[\d.]+) TBC:SETTing ramping \"Zone(?P<zone>\d+)\" from (?P<from>[\d.]+) to (?P<to>[\d.]+) \(rate=(?P<rate>[\d.]+), timeout=(?P<timeout>[\d.]+), msgid=0x(?P<msgid>\w+)\)")
+        r = re.compile(rb"Info (?P<timestamp>[\d.]+)(?:TBC:SETTing)? [rR]amping \"Zone(?P<zone>\d+)\" from (?P<from>[\d.]+) to (?P<to>[\d.]+) \(rate=(?P<rate>[\d.]+), timeout=(?P<timeout>[\d.]+), msgid=0x(?P<msgid>\w+)\)")
 
         tbc_events = pl.from_records(
             [
