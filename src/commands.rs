@@ -31,6 +31,8 @@ pub enum ReceiveOkResponseError {
     ResponseParsingError(#[from] OkParseError),
     #[error("Unexpected message response: {0:?}")]
     UnexpectedMessage(crate::parser::LogMessage),
+    #[error("Timeout waiting for response")]
+    Timeout,
 }
 
 #[derive(Debug, Error)]

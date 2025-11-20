@@ -13,6 +13,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 use tokio::{net::TcpStream, select};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::{
@@ -222,42 +223,61 @@ impl QSConnectionInner {
                             }
                         }
                         Ok(MessageResponse::Next { ident }) => {
+                            let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
                                 match channel.send(MessageResponse::Next { ident }).await {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        trace!("Error sending message: {:?}", e);
+                                    Ok(_) => {
+                                        // Next is intermediate, keep channel for future responses
+                                    }
+                                    Err(_) => {
+                                        // Receiver dropped, remove from HashMap to prevent leak
+                                        self.messagechannels.remove(&ident_clone);
+                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
                                     }
                                 }
                             } else {
-                                trace!("No channel for message ident: {:?}", ident);
+                                trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
                         Ok(MessageResponse::CommandError { ident, error }) => {
+                            // CommandError is final response, always remove channel
+                            let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
                                 match channel
                                     .send(MessageResponse::CommandError { ident, error })
                                     .await
                                 {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        trace!("Error sending message: {:?}", e);
+                                    Ok(_) => {
+                                        // Successfully sent, remove channel
+                                        self.messagechannels.remove(&ident_clone);
+                                    }
+                                    Err(_) => {
+                                        // Receiver dropped, remove channel anyway
+                                        self.messagechannels.remove(&ident_clone);
+                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
                                     }
                                 }
                             } else {
-                                trace!("No channel for message ident: {:?}", ident);
+                                trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
                         Ok(MessageResponse::Ok { ident, message }) => {
+                            // OK is final response, always remove channel
+                            let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
                                 match channel.send(MessageResponse::Ok { ident, message }).await {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        trace!("Error sending message: {:?}", e);
+                                    Ok(_) => {
+                                        // Successfully sent, remove channel
+                                        self.messagechannels.remove(&ident_clone);
+                                    }
+                                    Err(_) => {
+                                        // Receiver dropped, remove channel anyway
+                                        self.messagechannels.remove(&ident_clone);
+                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
                                     }
                                 }
                             } else {
-                                trace!("No channel for message ident: {:?}", ident);
+                                trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
                         Err(e) => {
@@ -371,33 +391,137 @@ pub struct QSConnection {
     pub port: u16,
     pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
     pub ready_message: Ready,
+    pub initial_timeout: Duration,
+    pub next_to_ok_timeout: Duration,
 }
 
-pub struct ResponseReceiver(mpsc::Receiver<MessageResponse>);
+pub struct ResponseReceiver {
+    receiver: mpsc::Receiver<MessageResponse>,
+    initial_timeout: Option<Duration>,
+    next_to_ok_timeout: Option<Duration>,
+}
 
 impl ResponseReceiver {
     pub async fn recv(&mut self) -> Option<MessageResponse> {
-        self.0.recv().await
+        self.receiver.recv().await
     }
 
     /// Get the OK or error response from the machine, ignoring NEXT messages.
+    /// Uses connection's default timeouts: initial_timeout for first response, next_to_ok_timeout after NEXT.
     pub async fn get_response(
         &mut self,
     ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
-        loop {
-            let msg = self
-                .recv()
-                .await
-                .ok_or(ReceiveOkResponseError::ConnectionClosed)?;
-            match msg {
-                MessageResponse::Ok { ident: _, message } => {
-                    return Ok(Ok(message));
+        let initial = self.initial_timeout.ok_or(ReceiveOkResponseError::ConnectionClosed)?;
+        let next_to_ok = self.next_to_ok_timeout.ok_or(ReceiveOkResponseError::ConnectionClosed)?;
+        
+        // Wait for first message (NEXT or OK/Error) with initial timeout
+        let first_msg = match timeout(initial, self.recv()).await {
+            Ok(Some(msg)) => msg,
+            Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+            Err(_) => return Err(ReceiveOkResponseError::Timeout),
+        };
+
+        match first_msg {
+            MessageResponse::Ok { ident: _, message } => Ok(Ok(message)),
+            MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
+            MessageResponse::Next { .. } => {
+                // Received NEXT, now wait for OK/Error with next_to_ok_timeout
+                loop {
+                    match timeout(next_to_ok, self.recv()).await {
+                        Ok(Some(msg)) => {
+                            match msg {
+                                MessageResponse::Ok { ident: _, message } => {
+                                    return Ok(Ok(message));
+                                }
+                                MessageResponse::CommandError { ident: _, error } => {
+                                    return Ok(Err(error));
+                                }
+                                MessageResponse::Next { .. } => {
+                                    // Another NEXT, continue waiting with same timeout
+                                    continue;
+                                }
+                                MessageResponse::Message(message) => {
+                                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
+                                }
+                            }
+                        }
+                        Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+                        Err(_) => return Err(ReceiveOkResponseError::Timeout),
+                    }
                 }
-                MessageResponse::CommandError { ident: _, error } => {
-                    return Ok(Err(error));
-                }
-                _ => {}
             }
+            MessageResponse::Message(message) => Err(ReceiveOkResponseError::UnexpectedMessage(message)),
+        }
+    }
+
+    /// Get the OK or error response with a single timeout, ignoring connection defaults.
+    /// Times out if OK/Error is not received within the specified timeout.
+    pub async fn get_response_with_timeout(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
+        loop {
+            match timeout(timeout_duration, self.recv()).await {
+                Ok(Some(msg)) => {
+                    match msg {
+                        MessageResponse::Ok { ident: _, message } => return Ok(Ok(message)),
+                        MessageResponse::CommandError { ident: _, error } => return Ok(Err(error)),
+                        MessageResponse::Next { .. } => {
+                            // Continue waiting with same timeout
+                            continue;
+                        }
+                        MessageResponse::Message(message) => return Err(ReceiveOkResponseError::UnexpectedMessage(message)),
+                    }
+                }
+                Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+                Err(_) => return Err(ReceiveOkResponseError::Timeout),
+            }
+        }
+    }
+
+    /// Get the OK or error response with custom timeouts for initial wait and post-NEXT wait.
+    pub async fn get_response_with_next_and_ok_timeout(
+        &mut self,
+        initial: Duration,
+        next_to_ok: Duration,
+    ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
+        // Wait for first message (NEXT or OK/Error) with initial timeout
+        let first_msg = match timeout(initial, self.recv()).await {
+            Ok(Some(msg)) => msg,
+            Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+            Err(_) => return Err(ReceiveOkResponseError::Timeout),
+        };
+
+        match first_msg {
+            MessageResponse::Ok { ident: _, message } => Ok(Ok(message)),
+            MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
+            MessageResponse::Next { .. } => {
+                // Received NEXT, now wait for OK/Error with next_to_ok timeout
+                loop {
+                    match timeout(next_to_ok, self.recv()).await {
+                        Ok(Some(msg)) => {
+                            match msg {
+                                MessageResponse::Ok { ident: _, message } => {
+                                    return Ok(Ok(message));
+                                }
+                                MessageResponse::CommandError { ident: _, error } => {
+                                    return Ok(Err(error));
+                                }
+                                MessageResponse::Next { .. } => {
+                                    // Another NEXT, continue waiting with same timeout
+                                    continue;
+                                }
+                                MessageResponse::Message(message) => {
+                                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
+                                }
+                            }
+                        }
+                        Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+                        Err(_) => return Err(ReceiveOkResponseError::Timeout),
+                    }
+                }
+            }
+            MessageResponse::Message(message) => Err(ReceiveOkResponseError::UnexpectedMessage(message)),
         }
     }
 }
@@ -461,7 +585,11 @@ impl QSConnection {
             .send((msg, tx))
             .await
             .map_err(|e| SendCommandError::ConnectionClosed(format!("{:?}", e)))?;
-        Ok(ResponseReceiver(rx))
+        Ok(ResponseReceiver {
+            receiver: rx,
+            initial_timeout: Some(self.initial_timeout),
+            next_to_ok_timeout: Some(self.next_to_ok_timeout),
+        })
     }
 
     pub async fn expect_ident(
@@ -477,7 +605,11 @@ impl QSConnection {
             .send((msg, tx))
             .await
             .map_err(|e| SendCommandError::ConnectionClosed(format!("{:?}", e)))?;
-        Ok(ResponseReceiver(rx))
+        Ok(ResponseReceiver {
+            receiver: rx,
+            initial_timeout: Some(self.initial_timeout),
+            next_to_ok_timeout: Some(self.next_to_ok_timeout),
+        })
     }
 
     pub async fn send_command_bytes(
@@ -493,7 +625,11 @@ impl QSConnection {
             .send((msg, tx))
             .await
             .map_err(|e| SendCommandError::ConnectionClosed(format!("{:?}", e)))?;
-        Ok(ResponseReceiver(rx))
+        Ok(ResponseReceiver {
+            receiver: rx,
+            initial_timeout: Some(self.initial_timeout),
+            next_to_ok_timeout: Some(self.next_to_ok_timeout),
+        })
     }
 
     pub async fn connect(
@@ -593,6 +729,8 @@ impl QSConnection {
             connection_type: ConnectionType::SSL,
             host: host.to_string(),
             port,
+            initial_timeout: Duration::from_secs(30),
+            next_to_ok_timeout: Duration::from_secs(600),
         })
     }
 
@@ -639,6 +777,8 @@ impl QSConnection {
             connection_type: ConnectionType::TCP,
             host: host.to_string(),
             port,
+            initial_timeout: Duration::from_secs(30),
+            next_to_ok_timeout: Duration::from_secs(600),
         })
     }
 
