@@ -76,10 +76,10 @@ pub struct PlatePointData {
 }
 
 impl PlatePointData {
-    pub fn to_polars(&self) -> LazyFrame {
-        let lfs = self.plate_data.iter().map(|pd| pd.to_polars().unwrap()).collect::<Vec<_>>();
-        
-        concat(lfs, UnionArgs::default()).unwrap()
+    pub fn to_polars(&self) -> Result<LazyFrame, PolarsError> {
+        let lfs: Result<Vec<_>, _> = self.plate_data.iter().map(|pd| pd.to_polars()).collect();
+        let lfs = lfs?;
+        concat(lfs, UnionArgs::default())
     }
 }
 
@@ -87,8 +87,8 @@ impl PlatePointData {
 #[pymethods]
 impl PlatePointData {
     #[pyo3(name = "to_polars")]
-    fn py_to_polars(&self) -> PyDataFrame {
-        PyDataFrame(self.to_polars().collect().unwrap())
+    fn py_to_polars(&self) -> PyResult<PyDataFrame> {
+        Ok(PyDataFrame(self.to_polars()?.collect()?))
     }
 }
 
@@ -253,7 +253,12 @@ impl PlateData {
     }
 
     pub fn get_temperatures(&self) -> Option<Vec<f64>> {
-        self.get_attribute("TEMPERATURE").map(|t| t.split(',').map(|t| t.parse::<f64>().unwrap()).collect())
+        self.get_attribute("TEMPERATURE").and_then(|t| {
+            t.split(',')
+                .map(|t| t.parse::<f64>())
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+        })
     }
 
     pub fn get_exposure(&self) -> Option<i32> {
@@ -279,9 +284,23 @@ impl PlateData {
     pub fn to_polars(&self) -> Result<LazyFrame, PolarsError> {
         let well_names = self.well_names();
         let c = self.col_indices();
-        let templist = self.get_temperatures().unwrap();
+        let templist = self.get_temperatures()
+            .ok_or_else(|| PolarsError::ComputeError("Missing TEMPERATURE attribute".into()))?;
+        if templist.is_empty() {
+            return Err(PolarsError::ComputeError("TEMPERATURE attribute is empty".into()));
+        }
         let zone_size = self.cols / templist.len() as u32;
-        let sts = self.col_indices().iter().map(|c| templist[(c / zone_size) as usize]).collect::<Vec<_>>();
+        if zone_size == 0 {
+            return Err(PolarsError::ComputeError("Invalid zone size calculation".into()));
+        }
+        let sts = self.col_indices().iter().map(|c| {
+            let idx = (c / zone_size) as usize;
+            if idx >= templist.len() {
+                templist[templist.len() - 1] // Use last temperature if out of bounds
+            } else {
+                templist[idx]
+            }
+        }).collect::<Vec<_>>();
         let zone = self.col_indices().iter().map(|c| c / zone_size).collect::<Vec<_>>();
         let df = df![
             "well" => well_names.iter().map(|(row, col)| format!("{row}{col}")).collect::<Vec<String>>(),
@@ -291,12 +310,13 @@ impl PlateData {
             "sample_temperature" => sts,
             "zone" => zone,
         ]?;
-        Ok(df.lazy().with_columns([lit(self.filter_set().unwrap().to_string()).alias("filter_set"),
-            lit(self.get_stage().unwrap()).alias("stage"),
-            lit(self.get_cycle().unwrap()).alias("cycle"),
-            lit(self.get_step().unwrap()).alias("step"),
-            lit(self.get_point().unwrap()).alias("point"),
-            lit(self.get_exposure().unwrap()).alias("exposure"),
+        Ok(df.lazy().with_columns([
+            lit(self.filter_set().map_err(|e| PolarsError::ComputeError(e.to_string().into()))?.to_string()).alias("filter_set"),
+            lit(self.get_stage().ok_or_else(|| PolarsError::ComputeError("Missing STAGE attribute".into()))?).alias("stage"),
+            lit(self.get_cycle().ok_or_else(|| PolarsError::ComputeError("Missing CYCLE attribute".into()))?).alias("cycle"),
+            lit(self.get_step().ok_or_else(|| PolarsError::ComputeError("Missing STEP attribute".into()))?).alias("step"),
+            lit(self.get_point().ok_or_else(|| PolarsError::ComputeError("Missing POINT attribute".into()))?).alias("point"),
+            lit(self.get_exposure().ok_or_else(|| PolarsError::ComputeError("Missing EXPOSURE attribute".into()))?).alias("exposure"),
         ]))
     }
 }
@@ -305,8 +325,8 @@ impl PlateData {
 #[pymethods]
 impl PlateData {
     #[pyo3(name = "to_polars")]
-    fn py_to_polars(&self) -> PyDataFrame {
-        PyDataFrame(self.to_polars().unwrap().collect().unwrap())
+    fn py_to_polars(&self) -> PyResult<PyDataFrame> {
+        Ok(PyDataFrame(self.to_polars()?.collect()?))
     }
 }
 
@@ -335,17 +355,20 @@ impl FilterDataCollection {
 
     #[staticmethod]
     #[pyo3(name = "read_file")]
-    pub fn py_read_file(path: &str) -> Self {
-        let xml_str = std::fs::read_to_string(path).unwrap();
-        let data: FilterDataCollection = quick_xml::de::from_str(&xml_str).unwrap();
-        data
+    pub fn py_read_file(path: &str) -> PyResult<Self> {
+        let xml_str = std::fs::read_to_string(path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read file {}: {}", path, e)))?;
+        let data: FilterDataCollection = quick_xml::de::from_str(&xml_str)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse XML: {}", e)))?;
+        Ok(data)
     }
 
     #[pyo3(name = "to_polars")]
     pub fn py_to_polars(&self) -> PyResult<PyDataFrame> {
-        let lfs = self.plate_point_data.iter().map(|pd| pd.to_polars()).collect::<Vec<_>>();
-        let lf = concat(lfs, UnionArgs::default()).unwrap();
-        Ok(PyDataFrame(lf.collect().unwrap()))
+        let lfs: Result<Vec<_>, _> = self.plate_point_data.iter().map(|pd| pd.to_polars()).collect();
+        let lfs = lfs?;
+        let lf = concat(lfs, UnionArgs::default())?;
+        Ok(PyDataFrame(lf.collect()?))
     }
 }
 

@@ -1,5 +1,6 @@
 use crate::parser::{ArgMap, Command, ParseError, Value};
 use std::any::Any;
+use std::convert::TryInto;
 use std::fmt;
 use thiserror::Error;
 
@@ -124,8 +125,8 @@ fn get_option_string(opts: &ArgMap, key: &str) -> Option<String> {
 pub struct Ramp {
     pub temperature: Vec<f64>,
     pub increment: f64,
-    pub incrementcycle: i32,
-    pub incrementstep: i32,
+    pub incrementcycle: i64,
+    pub incrementstep: i64,
     pub rate: f64,
     pub cover: Option<f64>,
 }
@@ -150,8 +151,8 @@ impl ProtoCommand for Ramp {
         };
 
         let increment = get_option_f64(&cmd.options, "increment", 0.0);
-        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1) as i32;
-        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1) as i32;
+        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1);
+        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1);
         let rate = get_option_f64(&cmd.options, "rate", 100.0);
         let cover = get_option_string(&cmd.options, "cover")
             .and_then(|s| s.parse::<f64>().ok());
@@ -171,8 +172,8 @@ impl ProtoCommand for Ramp {
 pub struct Hold {
     pub time: Option<i64>,
     pub increment: i64,
-    pub incrementcycle: i32,
-    pub incrementstep: i32,
+    pub incrementcycle: i64,
+    pub incrementstep: i64,
 }
 
 impl ProtoCommand for Hold {
@@ -195,8 +196,8 @@ impl ProtoCommand for Hold {
         };
 
         let increment = get_option_i64(&cmd.options, "increment", 0);
-        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1) as i32;
-        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1) as i32;
+        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1);
+        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1);
 
         Ok(Box::new(Hold {
             time,
@@ -211,8 +212,8 @@ impl ProtoCommand for Hold {
 pub struct HoldAndCollect {
     pub time: i64,
     pub increment: i64,
-    pub incrementcycle: i32,
-    pub incrementstep: i32,
+    pub incrementcycle: i64,
+    pub incrementstep: i64,
     pub tiff: bool,
     pub quant: bool,
     pub pcr: bool,
@@ -238,8 +239,8 @@ impl ProtoCommand for HoldAndCollect {
         };
 
         let increment = get_option_i64(&cmd.options, "increment", 0);
-        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1) as i32;
-        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1) as i32;
+        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1);
+        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1);
         let tiff = get_option_bool(&cmd.options, "tiff", false);
         let quant = get_option_bool(&cmd.options, "quant", true);
         let pcr = get_option_bool(&cmd.options, "pcr", false);
@@ -294,7 +295,7 @@ impl ProtoCommand for HACFILT {
 
 #[derive(Debug, Clone)]
 pub struct Exposure {
-    pub settings: Vec<(String, Vec<i32>)>,
+    pub settings: Vec<(String, Vec<i64>)>,
     pub state: String,
 }
 
@@ -318,9 +319,9 @@ impl ProtoCommand for Exposure {
                 let parts: Vec<&str> = s.split(',').collect();
                 if parts.len() >= 3 {
                     let filter_str = format!("{},{},{}", parts[1], parts[0], parts[2]);
-                    let exposures: Result<Vec<i32>, _> = parts[3..]
+                    let exposures: Result<Vec<i64>, _> = parts[3..]
                         .iter()
-                        .map(|x| x.trim().parse::<i32>())
+                        .map(|x| x.trim().parse::<i64>())
                         .collect();
                     if let Ok(expos) = exposures {
                         settings.push((filter_str, expos));
@@ -440,7 +441,7 @@ fn extract_commands_from_value(value: &Value) -> Result<Vec<Command>, ProtocolPa
 pub struct CustomStep {
     pub body: Vec<Box<dyn ProtoCommand>>,
     pub identifier: Option<Value>,
-    pub repeat: i32,
+    pub repeat: i64,
 }
 
 impl ProtoCommand for CustomStep {
@@ -469,7 +470,7 @@ impl ProtoCommand for CustomStep {
             body.push(specialize_command(nested_cmd)?);
         }
 
-        let repeat = get_option_i64(&cmd.options, "repeat", 1) as i32;
+        let repeat = get_option_i64(&cmd.options, "repeat", 1);
 
         Ok(Box::new(CustomStep {
             body,
@@ -485,16 +486,16 @@ pub struct Step {
     pub temperature: Vec<f64>,
     pub collect: Option<bool>,
     pub temp_increment: f64,
-    pub temp_incrementcycle: i32,
-    pub temp_incrementpoint: Option<i32>,
+    pub temp_incrementcycle: i64,
+    pub temp_incrementpoint: Option<i64>,
     pub time_increment: i64,
-    pub time_incrementcycle: i32,
-    pub time_incrementpoint: Option<i32>,
+    pub time_incrementcycle: i64,
+    pub time_incrementpoint: Option<i64>,
     pub filters: Vec<String>,
     pub pcr: bool,
     pub quant: bool,
     pub tiff: bool,
-    pub repeat: i32,
+    pub repeat: i64,
     pub default_filters: Vec<String>,
 }
 
@@ -524,7 +525,7 @@ impl ProtoCommand for Step {
             ));
         }
 
-        let repeat = get_option_i64(&cmd.options, "repeat", 1) as i32;
+        let repeat = get_option_i64(&cmd.options, "repeat", 1);
 
         if nested_commands.len() == 3 {
             let cmd1_name = get_command_name(&nested_commands[0]);
@@ -534,8 +535,8 @@ impl ProtoCommand for Step {
             if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
                 let r_temp = extract_temperature_list(&nested_commands[0].args[0])?;
                 let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0);
-                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1) as i32;
-                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1) as i32;
+                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1);
+                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1);
 
                 let hf_filters: Result<Vec<String>, ProtocolParseError> = nested_commands[1]
                     .args
@@ -547,8 +548,8 @@ impl ProtoCommand for Step {
 
                 let h_time = extract_i64(&nested_commands[2].args[0])?;
                 let h_increment = get_option_i64(&nested_commands[2].options, "increment", 0);
-                let h_incrementcycle = get_option_i64(&nested_commands[2].options, "incrementcycle", 1) as i32;
-                let h_incrementstep = get_option_i64(&nested_commands[2].options, "incrementstep", 1) as i32;
+                let h_incrementcycle = get_option_i64(&nested_commands[2].options, "incrementcycle", 1);
+                let h_incrementstep = get_option_i64(&nested_commands[2].options, "incrementstep", 1);
                 let h_tiff = get_option_bool(&nested_commands[2].options, "tiff", false);
                 let h_quant = get_option_bool(&nested_commands[2].options, "quant", true);
                 let h_pcr = get_option_bool(&nested_commands[2].options, "pcr", false);
@@ -597,16 +598,16 @@ impl ProtoCommand for Step {
             if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
                 let r_temp = extract_temperature_list(&nested_commands[0].args[0])?;
                 let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0);
-                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1) as i32;
-                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1) as i32;
+                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1);
+                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1);
 
                 let h_time = extract_i64_option(&nested_commands[1].args[0])?;
                 if h_time.is_none() {
                     return Err(ProtocolParseError::MissingField("hold time".to_string()));
                 }
                 let h_increment = get_option_i64(&nested_commands[1].options, "increment", 0);
-                let h_incrementcycle = get_option_i64(&nested_commands[1].options, "incrementcycle", 1) as i32;
-                let h_incrementstep = get_option_i64(&nested_commands[1].options, "incrementstep", 1) as i32;
+                let h_incrementcycle = get_option_i64(&nested_commands[1].options, "incrementcycle", 1);
+                let h_incrementstep = get_option_i64(&nested_commands[1].options, "incrementstep", 1);
 
                 let time_incrementpoint = if h_incrementstep <= repeat {
                     Some(h_incrementstep)
@@ -649,8 +650,8 @@ impl ProtoCommand for Step {
 #[derive(Debug, Clone)]
 pub struct Stage {
     pub steps: Vec<Step>,
-    pub repeat: i32,
-    pub index: Option<i32>,
+    pub repeat: i64,
+    pub index: Option<i64>,
     pub label: Option<String>,
     pub default_filters: Vec<String>,
 }
@@ -669,7 +670,9 @@ impl Stage {
             return Err(ProtocolParseError::MissingField("stage args".to_string()));
         }
 
-        let index = extract_i64(&cmd.args[0]).ok().map(|i| i as i32);
+        let index = extract_i64(&cmd.args[0])
+            .ok()
+            .and_then(|i| i.try_into().ok());
         let label = extract_string(&cmd.args[1]).ok();
         let steps_value = &cmd.args[2];
         let nested_commands = extract_commands_from_value(steps_value)?;
@@ -682,7 +685,7 @@ impl Stage {
                 }
                 let commands_value = &step_cmd.args[1];
                 let nested_step_commands = extract_commands_from_value(commands_value)?;
-                let repeat = get_option_i64(&step_cmd.options, "repeat", 1) as i32;
+                let repeat = get_option_i64(&step_cmd.options, "repeat", 1);
 
                 if nested_step_commands.len() == 3 {
                     let cmd1_name = get_command_name(&nested_step_commands[0]);
@@ -692,8 +695,8 @@ impl Stage {
                     if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
                         let r_temp = extract_temperature_list(&nested_step_commands[0].args[0])?;
                         let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0);
-                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1) as i32;
-                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1) as i32;
+                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1);
+                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1);
 
                         let hf_filters: Result<Vec<String>, ProtocolParseError> = nested_step_commands[1]
                             .args
@@ -705,8 +708,8 @@ impl Stage {
 
                         let h_time = extract_i64(&nested_step_commands[2].args[0])?;
                         let h_increment = get_option_i64(&nested_step_commands[2].options, "increment", 0);
-                        let h_incrementcycle = get_option_i64(&nested_step_commands[2].options, "incrementcycle", 1) as i32;
-                        let h_incrementstep = get_option_i64(&nested_step_commands[2].options, "incrementstep", 1) as i32;
+                        let h_incrementcycle = get_option_i64(&nested_step_commands[2].options, "incrementcycle", 1);
+                        let h_incrementstep = get_option_i64(&nested_step_commands[2].options, "incrementstep", 1);
                         let h_tiff = get_option_bool(&nested_step_commands[2].options, "tiff", false);
                         let h_quant = get_option_bool(&nested_step_commands[2].options, "quant", true);
                         let h_pcr = get_option_bool(&nested_step_commands[2].options, "pcr", false);
@@ -756,16 +759,16 @@ impl Stage {
                     if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
                         let r_temp = extract_temperature_list(&nested_step_commands[0].args[0])?;
                         let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0);
-                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1) as i32;
-                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1) as i32;
+                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1) as i64;
+                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1) as i64;
 
                         let h_time = extract_i64_option(&nested_step_commands[1].args[0])?;
                         if h_time.is_none() {
                             continue;
                         }
                         let h_increment = get_option_i64(&nested_step_commands[1].options, "increment", 0);
-                        let h_incrementcycle = get_option_i64(&nested_step_commands[1].options, "incrementcycle", 1) as i32;
-                        let h_incrementstep = get_option_i64(&nested_step_commands[1].options, "incrementstep", 1) as i32;
+                        let h_incrementcycle = get_option_i64(&nested_step_commands[1].options, "incrementcycle", 1) as i64;
+                        let h_incrementstep = get_option_i64(&nested_step_commands[1].options, "incrementstep", 1) as i64;
 
                         let time_incrementpoint = if h_incrementstep <= repeat {
                             Some(h_incrementstep)
@@ -805,7 +808,7 @@ impl Stage {
             ));
         }
 
-        let repeat = get_option_i64(&cmd.options, "repeat", 1) as i32;
+        let repeat = get_option_i64(&cmd.options, "repeat", 1) as i64;
 
         let mut default_filters = Vec::new();
         for step in &steps {

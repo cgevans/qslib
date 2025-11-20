@@ -24,7 +24,7 @@ use tokio_stream::StreamMap;
 
 use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError};
 use crate::data::{FilterDataCollection, PlateData};
-use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
+use crate::message_receiver::{MsgReceiveError, MsgRecv};
 use crate::plate_setup::PlateSetup;
 use crate::protocol::Protocol;
 use crate::parser::Command;
@@ -42,7 +42,7 @@ lazy_static! {
     static ref BASE64: data_encoding::Encoding = {
         let mut dec = data_encoding::BASE64.specification();
         dec.ignore.push('\n');
-        dec.encoding().unwrap()
+        dec.encoding().expect("Failed to create BASE64 encoding - this should never happen")
     };
     static ref FILTER_DATA_FILENAME_RE: regex::Regex =
         regex::Regex::new(r"S(\d+)_C(\d+)_T(\d+)_P(\d+)_M(\d)_X(\d)_filterdata\.xml$")
@@ -169,8 +169,6 @@ pub enum QSConnectionError {
     MessageReceiveError(MsgReceiveError),
     #[error("IO error: {0}")]
     IOError(#[from] std::io::Error),
-    #[error("Message push error: {0}")]
-    MessagePushError(MsgPushError),
     #[error("QS error: {0}")]
     QS(String),
     #[error("Command error: {0}")]
@@ -196,7 +194,8 @@ impl QSConnectionInner {
         if n == 0 {
             return;
         }
-        self.receiver.push_data(&self.buf[..n]).unwrap();
+        // push_data returns true if a message is ready, false otherwise
+        let _ = self.receiver.push_data(&self.buf[..n]);
         'inner: loop {
             let msg = self.receiver.try_get_msg();
             match msg {
@@ -301,10 +300,16 @@ impl QSConnectionInner {
                     };
                     let mut bytes = Vec::new();
                     if msg.content.is_some() {
-                        msg.write_bytes(&mut bytes).unwrap();
+                        msg.write_bytes(&mut bytes)?;
                         self.stream_write.write_all(&bytes).await?;
                     }
-                    self.messagechannels.insert(msg.ident.unwrap(), tx);
+                    let ident = msg.ident.ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "Message ident is None"
+                        )
+                    })?;
+                    self.messagechannels.insert(ident, tx);
                 }
                 n = f_data_to_receive => {
                     let n = n?;
@@ -553,10 +558,14 @@ impl QSConnection {
         let mut b = [0; 1024];
         let m = c.read(&mut b).await?;
         if m == 0 {
-            return Err(ConnectionError::Timeout); // FIXME: handle error
+            return Err(ConnectionError::Timeout);
         }
-        trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..]));
-        let msg = parser::Ready::parse(&mut &b[..]).unwrap(); // FIXME: handle error
+        trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..m]));
+        let msg = parser::Ready::parse(&mut &b[..m])
+            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to parse ready message: {}", e)
+            )))?;
         trace!("Ready message: {:?}", msg);
 
         let (r, w) = tokio::io::split(c);
@@ -598,7 +607,11 @@ impl QSConnection {
         stream.readable().await?;
         let n = stream.try_read(&mut b)?;
         trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..n]));
-        let msg = parser::Ready::parse(&mut &b[..]).unwrap(); // FIXME: handle error
+        let msg = parser::Ready::parse(&mut &b[..n])
+            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to parse ready message: {}", e)
+            )))?;
         trace!("Ready message: {:?}", msg);
 
         let (r, w) = tokio::io::split(stream);
@@ -817,10 +830,21 @@ impl QSConnection {
         let mut response = self.send_command_bytes(b"TBC:SETT?".as_bstr()).await?;
         let response = response.get_response().await??;
         let setpoints = response.options;
-        let zones = setpoints.iter().filter(|(s, _v)| s.starts_with("Zone")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).collect();
-        let fans = setpoints.iter().filter(|(s, _v)| s.starts_with("Fan")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).collect();
-        let cover = setpoints.iter().filter(|(s, _v)| s.starts_with("Cover")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).next().unwrap();
-        Ok((zones, fans, cover))
+        let zones: Result<Vec<f64>, _> = setpoints.iter()
+            .filter(|(s, _v)| s.starts_with("Zone"))
+            .map(|(_s, v)| v.clone().try_into_f64().map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse zone temperature: {}", e))))
+            .collect();
+        let fans: Result<Vec<f64>, _> = setpoints.iter()
+            .filter(|(s, _v)| s.starts_with("Fan"))
+            .map(|(_s, v)| v.clone().try_into_f64().map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse fan temperature: {}", e))))
+            .collect();
+        let cover = setpoints.iter()
+            .filter(|(s, _v)| s.starts_with("Cover"))
+            .map(|(_s, v)| v.clone().try_into_f64())
+            .next()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No Cover temperature found in response")))?
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse cover temperature: {}", e)))?;
+        Ok((zones?, fans?, cover))
     }
 
     pub async fn get_filterdata_one(
