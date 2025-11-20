@@ -60,6 +60,13 @@ impl ArgMap {
         self.insert(key, value);
         self
     }
+
+    pub fn extract_with_default<'a, T>(&'a self, key: &str, default: T) -> Result<T, ParseError> where T: TryFrom<&'a Value, Error = ParseError> {
+        match self.get(key) {
+            Some(v) => Ok(v.try_into()?),
+            None => Ok(default),
+        }
+    }
 }
 
 impl IntoIterator for ArgMap {
@@ -371,6 +378,47 @@ impl Value {
         match self {
             Value::Int(i) => Ok(i),
             _ => Err(ParseError::ParseError("int".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&Value> for i64 {
+    type Error = ParseError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Int(i) => Ok(*i),
+            _ => Err(ParseError::ParseError("int".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&Value> for f64 {
+    type Error = ParseError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Float(f) => Ok(*f),
+            _ => Err(ParseError::ParseError("float".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&Value> for bool {
+    type Error = ParseError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Bool(b) => Ok(*b),
+            _ => Err(ParseError::ParseError("bool".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&Value> for String {
+
+    type Error = ParseError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(s) => Ok(s.clone()),
+            _ => Err(ParseError::ParseError("string".to_string())),
         }
     }
 }
