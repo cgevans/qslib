@@ -26,6 +26,8 @@ use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError}
 use crate::data::{FilterDataCollection, PlateData};
 use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
 use crate::plate_setup::PlateSetup;
+use crate::protocol::Protocol;
+use crate::parser::Command;
 
 use lazy_static::lazy_static;
 
@@ -756,6 +758,56 @@ impl QSConnection {
         } else {
             Ok(Some(title.to_string().trim_matches('"').to_string()))
         }
+    }
+
+    pub async fn get_running_protocol(&self) -> Result<Protocol, CommandError<ErrorResponse>> {
+        // Get protocol content
+        let mut response = self.send_command_bytes(b"PROT? ${Protocol}".as_bstr()).await?;
+        let response = response.get_response().await??;
+        let protocol_content = response
+            .args
+            .first()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No protocol content returned")))?
+            .to_string();
+        
+        // Unwrap XML tags (e.g., <quote>content</quote> -> content)
+        let protocol_content = regex::Regex::new(r"^<[^>]+?>\n?(.*)\n?</[^>]+?>$")
+            .unwrap()
+            .replace(&protocol_content, "$1")
+            .to_string();
+
+        // Get protocol name, volume, and runmode
+        let mut response = self.send_command_bytes(b"RET ${Protocol} ${SampleVolume} ${RunMode}".as_bstr()).await?;
+        let response = response.get_response().await??;
+        let parts: Vec<String> = response
+            .args
+            .iter()
+            .map(|v| v.to_string())
+            .collect();
+        
+        if parts.len() < 3 {
+            return Err(CommandError::InternalError(anyhow::anyhow!(
+                "Expected 3 values from RET command, got {}",
+                parts.len()
+            )));
+        }
+
+        let protocol_name = parts[0].clone();
+        let sample_volume = parts[1].clone();
+        let run_mode = parts[2].clone();
+
+        // Construct full PROT command string
+        let prot_command = format!(
+            "PROT -volume={} -runmode={} {} {}",
+            sample_volume, run_mode, protocol_name, protocol_content
+        );
+
+        // Parse into Command and then Protocol
+        let cmd = Command::try_from(prot_command)
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol command: {}", e)))?;
+        
+        Protocol::from_scpicommand(&cmd)
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol: {}", e)))
     }
 
 

@@ -5,6 +5,7 @@ pub mod message_receiver;
 pub mod parser;
 pub mod plate_setup;
 pub mod message_log;
+pub mod protocol;
 
 #[cfg(feature = "python")]
 pub mod python;
