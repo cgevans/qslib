@@ -919,6 +919,14 @@ impl QSConnection {
     }
 
     pub async fn get_running_protocol(&self) -> Result<Protocol, CommandError<ErrorResponse>> {
+        // Check if there's an active run
+        let run_name = self.get_current_run_name().await?;
+        if run_name.is_none() {
+            return Err(CommandError::InternalError(anyhow::anyhow!(
+                "No protocol is currently running"
+            )));
+        }
+
         // Get protocol content
         let mut response = self.send_command_bytes(b"PROT? ${Protocol}".as_bstr()).await?;
         let response = response.get_response().await??;
@@ -945,7 +953,7 @@ impl QSConnection {
         
         if parts.len() < 3 {
             return Err(CommandError::InternalError(anyhow::anyhow!(
-                "Expected 3 values from RET command, got {}",
+                "No protocol is currently running (RET command returned {} values instead of 3)",
                 parts.len()
             )));
         }

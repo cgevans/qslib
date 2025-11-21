@@ -26,14 +26,12 @@ use qslib::{
         AccessLevel, CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery,
         ReceiveOkResponseError,
     },
-    parser::{ErrorResponse, LogMessage},
-    protocol::Protocol,
+    parser::{ErrorResponse, LogMessage}
 };
 use serde::{Deserialize, Serialize};
 use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-
 use crate::MachineConfig;
 
 /// The data needed to re-build a client.
@@ -466,7 +464,14 @@ async fn handle_message(
             Ok(())
         }
         "!protocol" => {
-            let machine = parts.next().unwrap_or("");
+            let machine = match parts.next() {
+                Some(m) => m,
+                None => {
+                    error!("No machine specified");
+                    send_matrix_message(&room, "No machine specified", true).await?;
+                    return Ok(());
+                }
+            };
             match qs.get(machine) {
                 Some(x) => {
                     let (conn, _) = x.value();
@@ -515,7 +520,7 @@ async fn handle_message(
                 }
                 None => {
                     error!("Machine {} not found", machine);
-                    send_matrix_message(&room, &format!("Machine {} not found", machine), true).await?;
+                    send_matrix_message(&room, &format!("Machine {} not found.", machine), true).await?;
                 }
             }
             Ok(())

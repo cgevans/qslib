@@ -678,9 +678,7 @@ impl Stage {
             return Err(ProtocolParseError::MissingField("stage args".to_string()));
         }
 
-        let index = extract_i64(&cmd.args[0])
-            .ok()
-            .and_then(|i| i.try_into().ok());
+        let index = extract_i64(&cmd.args[0]).ok();
         let label = extract_string(&cmd.args[1]).ok();
         let steps_value = &cmd.args[2];
         let nested_commands = extract_commands_from_value(steps_value)?;
@@ -709,7 +707,7 @@ impl Stage {
                         let hf_filters: Result<Vec<String>, ProtocolParseError> = nested_step_commands[1]
                             .args
                             .iter()
-                            .map(|v| extract_string(v))
+                            .map(extract_string)
                             .collect();
                         let mut filters = hf_filters?;
                         let mut default_filters = Vec::new();
@@ -880,7 +878,7 @@ impl Protocol {
         if !stage_commands.is_empty() {
             let first_cmd_name = get_command_name(&stage_commands[0]);
             if first_cmd_name == "PRERUN" {
-                if let Some(Value::XmlString { value, tag: _ }) = stage_commands[0].args.get(0) {
+                if let Some(Value::XmlString { value, tag: _ }) = stage_commands[0].args.first() {
                     let s = String::from_utf8(value.to_vec())
                         .map_err(|_| ProtocolParseError::InvalidValueType("prerun commands".to_string()))?;
                     let mut input = s.as_bytes();
@@ -897,7 +895,7 @@ impl Protocol {
             if !stage_commands.is_empty() {
                 let last_cmd_name = get_command_name(&stage_commands[stage_commands.len() - 1]);
                 if last_cmd_name == "POSTRUN" {
-                    if let Some(Value::XmlString { value, tag: _ }) = stage_commands[stage_commands.len() - 1].args.get(0) {
+                    if let Some(Value::XmlString { value, tag: _ }) = stage_commands[stage_commands.len() - 1].args.first() {
                         let s = String::from_utf8(value.to_vec())
                             .map_err(|_| ProtocolParseError::InvalidValueType("postrun commands".to_string()))?;
                         let mut input = s.as_bytes();
@@ -988,8 +986,8 @@ mod tests {
         let hac_box = HoldAndCollect::from_scpicommand(&cmd).unwrap();
         let hac = hac_box.as_any().downcast_ref::<HoldAndCollect>().unwrap();
         assert_eq!(hac.time, 30);
-        assert_eq!(hac.tiff, true);
-        assert_eq!(hac.quant, false);
+        assert!(hac.tiff);
+        assert!(!hac.quant);
     }
 
     #[test]
@@ -1008,9 +1006,7 @@ mod tests {
     #[test]
     fn test_step_parsing_ramp_hold() {
         // Format matches Python test: commands inside <multiline.step>...</multiline.step>
-        let nested_commands_xml = format!(
-            "\t\tRAMP -incrementcycle=2 -incrementstep=2 80 80 80 80 80 80\n\t\tHOLD -incrementcycle=2 -incrementstep=2 300"
-        );
+        let nested_commands_xml = "\t\tRAMP -incrementcycle=2 -incrementstep=2 80 80 80 80 80 80\n\t\tHOLD -incrementcycle=2 -incrementstep=2 300".to_string();
 
         let mut step_cmd = Command::new("STEP");
         step_cmd.args.push(Value::Int(1));
@@ -1133,9 +1129,9 @@ mod tests {
         assert_eq!(step2.filters.len(), 10);
         assert_eq!(step2.filters[0], "m1,x1,quant");
         assert_eq!(step2.filters[9], "m6,x5,quant");
-        assert_eq!(step2.quant, true);
-        assert_eq!(step2.tiff, false);
-        assert_eq!(step2.pcr, false);
+        assert!(step2.quant);
+        assert!(!step2.tiff);
+        assert!(!step2.pcr);
     }
 }
 
