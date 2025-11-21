@@ -308,7 +308,7 @@ impl QSConnectionInner {
                         trace!("Outer channel is closed.");
                         break Ok(());
                     };
-                    // FIXME: check for collisions
+                    // Assign ident if not provided
                     msg.ident = match msg.ident {
                         Some(MessageIdent::Number(n)) => Some(MessageIdent::Number(n)),
                         Some(MessageIdent::String(s)) => Some(MessageIdent::String(s)),
@@ -318,18 +318,23 @@ impl QSConnectionInner {
                             i
                         }
                     };
+                    let ident = msg.ident.as_ref().ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "Message ident is None"
+                        )
+                    })?.clone();
+                    
+                    if self.messagechannels.contains_key(&ident) {
+                        error!("Message ident collision detected: {:?}. This should not happen with auto-generated idents.", ident);
+                    }
+                    self.messagechannels.insert(ident, tx);
+                    
                     let mut bytes = Vec::new();
                     if msg.content.is_some() {
                         msg.write_bytes(&mut bytes)?;
                         self.stream_write.write_all(&bytes).await?;
                     }
-                    let ident = msg.ident.ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::InvalidInput,
-                            "Message ident is None"
-                        )
-                    })?;
-                    self.messagechannels.insert(ident, tx);
                 }
                 n = f_data_to_receive => {
                     let n = n?;
