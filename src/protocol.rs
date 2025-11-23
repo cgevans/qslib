@@ -6,18 +6,35 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ProtocolParseError {
-    #[error("Parse error: {0}")]
-    ParseError(#[from] ParseError),
-    #[error("Invalid command: expected {expected}, got {got}")]
-    InvalidCommand { expected: String, got: String },
-    #[error("Missing required field: {0}")]
-    MissingField(String),
-    #[error("Invalid value type: {0}")]
-    InvalidValueType(String),
-    #[error("Inconsistent default filters")]
-    InconsistentDefaultFilters,
-    #[error("Unexpected command structure: {0}")]
-    UnexpectedStructure(String),
+    #[error("Parse error: {source}\nProtocol string: {protocol_string}")]
+    ParseError {
+        #[source]
+        source: ParseError,
+        protocol_string: String,
+    },
+    #[error("Invalid command: expected {expected}, got {got}\nProtocol string: {protocol_string}")]
+    InvalidCommand {
+        expected: String,
+        got: String,
+        protocol_string: String,
+    },
+    #[error("Missing required field: {field}\nProtocol string: {protocol_string}")]
+    MissingField {
+        field: String,
+        protocol_string: String,
+    },
+    #[error("Invalid value type: {value_type}\nProtocol string: {protocol_string}")]
+    InvalidValueType {
+        value_type: String,
+        protocol_string: String,
+    },
+    #[error("Inconsistent default filters\nProtocol string: {protocol_string}")]
+    InconsistentDefaultFilters { protocol_string: String },
+    #[error("Unexpected command structure: {message}\nProtocol string: {protocol_string}")]
+    UnexpectedStructure {
+        message: String,
+        protocol_string: String,
+    },
 }
 
 pub trait ProtoCommand: fmt::Debug + Any {
@@ -32,7 +49,23 @@ fn get_command_name(cmd: &Command) -> String {
     String::from_utf8_lossy(&cmd.command).to_string().to_uppercase()
 }
 
-fn extract_temperature_list(value: &Value) -> Result<Vec<f64>, ProtocolParseError> {
+fn command_to_string(cmd: &Command) -> String {
+    let mut bytes = Vec::new();
+    if cmd.write_bytes(&mut bytes).is_ok() {
+        String::from_utf8_lossy(&bytes).to_string()
+    } else {
+        format!("<failed to serialize command: {}>", get_command_name(cmd))
+    }
+}
+
+fn parse_error_to_protocol_error(e: ParseError, cmd: &Command) -> ProtocolParseError {
+    ProtocolParseError::ParseError {
+        source: e,
+        protocol_string: command_to_string(cmd),
+    }
+}
+
+fn extract_temperature_list(value: &Value, cmd: &Command) -> Result<Vec<f64>, ProtocolParseError> {
     match value {
         Value::Float(f) => Ok(vec![*f; 6]),
         Value::Int(i) => Ok(vec![*i as f64; 6]),
@@ -41,88 +74,121 @@ fn extract_temperature_list(value: &Value) -> Result<Vec<f64>, ProtocolParseErro
                 .split(',')
                 .map(|x| x.trim().parse::<f64>())
                 .collect();
-            temps.map_err(|_| ProtocolParseError::InvalidValueType("temperature".to_string()))
+            temps.map_err(|_| ProtocolParseError::InvalidValueType {
+                value_type: "temperature".to_string(),
+                protocol_string: command_to_string(cmd),
+            })
         }
-        _ => Err(ProtocolParseError::InvalidValueType("temperature".to_string())),
+        _ => Err(ProtocolParseError::InvalidValueType {
+            value_type: "temperature".to_string(),
+            protocol_string: command_to_string(cmd),
+        }),
     }
 }
 
-fn extract_i64_option(value: &Value) -> Result<Option<i64>, ProtocolParseError> {
+fn extract_i64_option(value: &Value, cmd: &Command) -> Result<Option<i64>, ProtocolParseError> {
     match value {
         Value::Int(i) => Ok(Some(*i)),
         Value::String(s) if s.is_empty() => Ok(None),
         Value::String(s) => s
             .parse::<i64>()
             .map(Some)
-            .map_err(|_| ProtocolParseError::InvalidValueType("i64".to_string())),
-        _ => Err(ProtocolParseError::InvalidValueType("i64".to_string())),
+            .map_err(|_| ProtocolParseError::InvalidValueType {
+                value_type: "i64".to_string(),
+                protocol_string: command_to_string(cmd),
+            }),
+        _ => Err(ProtocolParseError::InvalidValueType {
+            value_type: "i64".to_string(),
+            protocol_string: command_to_string(cmd),
+        }),
     }
 }
 
-fn extract_i64(value: &Value) -> Result<i64, ProtocolParseError> {
+fn extract_i64(value: &Value, cmd: &Command) -> Result<i64, ProtocolParseError> {
     match value {
         Value::Int(i) => Ok(*i),
         Value::String(s) => s
             .parse::<i64>()
-            .map_err(|_| ProtocolParseError::InvalidValueType("i64".to_string())),
-        _ => Err(ProtocolParseError::InvalidValueType("i64".to_string())),
+            .map_err(|_| ProtocolParseError::InvalidValueType {
+                value_type: "i64".to_string(),
+                protocol_string: command_to_string(cmd),
+            }),
+        _ => Err(ProtocolParseError::InvalidValueType {
+            value_type: "i64".to_string(),
+            protocol_string: command_to_string(cmd),
+        }),
     }
 }
 
-fn extract_f64(value: &Value) -> Result<f64, ProtocolParseError> {
+fn extract_f64(value: &Value, cmd: &Command) -> Result<f64, ProtocolParseError> {
     match value {
         Value::Float(f) => Ok(*f),
         Value::Int(i) => Ok(*i as f64),
         Value::String(s) => s
             .parse::<f64>()
-            .map_err(|_| ProtocolParseError::InvalidValueType("f64".to_string())),
-        _ => Err(ProtocolParseError::InvalidValueType("f64".to_string())),
+            .map_err(|_| ProtocolParseError::InvalidValueType {
+                value_type: "f64".to_string(),
+                protocol_string: command_to_string(cmd),
+            }),
+        _ => Err(ProtocolParseError::InvalidValueType {
+            value_type: "f64".to_string(),
+            protocol_string: command_to_string(cmd),
+        }),
     }
 }
 
-fn extract_bool(value: &Value) -> Result<bool, ProtocolParseError> {
+fn extract_bool(value: &Value, cmd: &Command) -> Result<bool, ProtocolParseError> {
     match value {
         Value::Bool(b) => Ok(*b),
         Value::String(s) => match s.to_lowercase().as_str() {
             "true" => Ok(true),
             "false" => Ok(false),
-            _ => Err(ProtocolParseError::InvalidValueType("bool".to_string())),
+            _ => Err(ProtocolParseError::InvalidValueType {
+                value_type: "bool".to_string(),
+                protocol_string: command_to_string(cmd),
+            }),
         },
         Value::Int(i) => Ok(*i != 0),
-        _ => Err(ProtocolParseError::InvalidValueType("bool".to_string())),
+        _ => Err(ProtocolParseError::InvalidValueType {
+            value_type: "bool".to_string(),
+            protocol_string: command_to_string(cmd),
+        }),
     }
 }
 
-fn extract_string(value: &Value) -> Result<String, ProtocolParseError> {
+fn extract_string(value: &Value, cmd: &Command) -> Result<String, ProtocolParseError> {
     value.clone().try_into_string().map_err(|_| {
-        ProtocolParseError::InvalidValueType("string".to_string())
+        ProtocolParseError::InvalidValueType {
+            value_type: "string".to_string(),
+            protocol_string: command_to_string(cmd),
+        }
     })
 }
 
-fn get_option_i64(opts: &ArgMap, key: &str, default: i64) -> Result<i64, ProtocolParseError> {
+fn get_option_i64(opts: &ArgMap, key: &str, default: i64, cmd: &Command) -> Result<i64, ProtocolParseError> {
     match opts.get(key) {
-        Some(v) => extract_i64(v),
+        Some(v) => extract_i64(v, cmd),
         None => Ok(default),
     }
 }
 
-fn get_option_f64(opts: &ArgMap, key: &str, default: f64) -> Result<f64, ProtocolParseError> {
+fn get_option_f64(opts: &ArgMap, key: &str, default: f64, cmd: &Command) -> Result<f64, ProtocolParseError> {
     match opts.get(key) {
-        Some(v) => extract_f64(v),
+        Some(v) => extract_f64(v, cmd),
         None => Ok(default),
     }
 }
 
-fn get_option_bool(opts: &ArgMap, key: &str, default: bool) -> Result<bool, ProtocolParseError> {
+fn get_option_bool(opts: &ArgMap, key: &str, default: bool, cmd: &Command) -> Result<bool, ProtocolParseError> {
     match opts.get(key) {
-        Some(v) => extract_bool(v),
+        Some(v) => extract_bool(v, cmd),
         None => Ok(default),
     }
 }
 
-fn get_option_string(opts: &ArgMap, key: &str) -> Result<Option<String>, ProtocolParseError> {
+fn get_option_string(opts: &ArgMap, key: &str, cmd: &Command) -> Result<Option<String>, ProtocolParseError> {
     match opts.get(key) {
-        Some(v) => extract_string(v).map(Some),
+        Some(v) => extract_string(v, cmd).map(Some),
         None => Ok(None),
     }
 }
@@ -143,25 +209,49 @@ impl ProtoCommand for Ramp {
     }
 
     fn from_scpicommand(cmd: &Command) -> Result<Box<dyn ProtoCommand>, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         if get_command_name(cmd) != "RAMP" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "RAMP".to_string(),
                 got: get_command_name(cmd),
+                protocol_string,
             });
         }
 
         let temperature = if cmd.args.is_empty() {
-            return Err(ProtocolParseError::MissingField("temperature".to_string()));
+            return Err(ProtocolParseError::MissingField {
+                field: "temperature".to_string(),
+                protocol_string,
+            });
         } else {
-            extract_temperature_list(&cmd.args[0])?
+            extract_temperature_list(&cmd.args[0], cmd)?
         };
 
-        let increment  = cmd.options.extract_with_default("increment", 0.0)?;
-        let incrementcycle = cmd.options.extract_with_default("incrementcycle", 1)?;
-        let incrementstep = cmd.options.extract_with_default("incrementstep", 1)?;
-        let rate = cmd.options.extract_with_default("rate", 100.0)?;
+        let increment  = cmd.options.extract_with_default("increment", 0.0)
+            .map_err(|e| ProtocolParseError::ParseError {
+                source: e,
+                protocol_string: protocol_string.clone(),
+            })?;
+        let incrementcycle = cmd.options.extract_with_default("incrementcycle", 1)
+            .map_err(|e| ProtocolParseError::ParseError {
+                source: e,
+                protocol_string: protocol_string.clone(),
+            })?;
+        let incrementstep = cmd.options.extract_with_default("incrementstep", 1)
+            .map_err(|e| ProtocolParseError::ParseError {
+                source: e,
+                protocol_string: protocol_string.clone(),
+            })?;
+        let rate = cmd.options.extract_with_default("rate", 100.0)
+            .map_err(|e| ProtocolParseError::ParseError {
+                source: e,
+                protocol_string: protocol_string.clone(),
+            })?;
         let cover = match cmd.options.get("cover") {
-            Some(v) => Some(v.try_into()?),
+            Some(v) => Some(v.try_into().map_err(|e: ParseError| ProtocolParseError::ParseError {
+                source: e,
+                protocol_string: protocol_string.clone(),
+            })?),
             None => None,
         };
 
@@ -190,22 +280,27 @@ impl ProtoCommand for Hold {
     }
 
     fn from_scpicommand(cmd: &Command) -> Result<Box<dyn ProtoCommand>, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         if get_command_name(cmd) != "HOLD" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "HOLD".to_string(),
                 got: get_command_name(cmd),
+                protocol_string,
             });
         }
 
         let time = if cmd.args.is_empty() {
             None
         } else {
-            extract_i64_option(&cmd.args[0])?
+            extract_i64_option(&cmd.args[0], cmd)?
         };
 
-        let increment = cmd.options.extract_with_default("increment", 0)?;
-        let incrementcycle = cmd.options.extract_with_default("incrementcycle", 1)?;
-        let incrementstep = cmd.options.extract_with_default("incrementstep", 1)?;
+        let increment = cmd.options.extract_with_default("increment", 0)
+            .map_err(|e| parse_error_to_protocol_error(e, cmd))?;
+        let incrementcycle = cmd.options.extract_with_default("incrementcycle", 1)
+            .map_err(|e| parse_error_to_protocol_error(e, cmd))?;
+        let incrementstep = cmd.options.extract_with_default("incrementstep", 1)
+            .map_err(|e| parse_error_to_protocol_error(e, cmd))?;
 
         Ok(Box::new(Hold {
             time,
@@ -233,25 +328,30 @@ impl ProtoCommand for HoldAndCollect {
     }
 
     fn from_scpicommand(cmd: &Command) -> Result<Box<dyn ProtoCommand>, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         if get_command_name(cmd) != "HOLDANDCOLLECT" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "HOLDANDCOLLECT".to_string(),
                 got: get_command_name(cmd),
+                protocol_string,
             });
         }
 
         let time = if cmd.args.is_empty() {
-            return Err(ProtocolParseError::MissingField("time".to_string()));
+            return Err(ProtocolParseError::MissingField {
+                field: "time".to_string(),
+                protocol_string,
+            });
         } else {
-            extract_i64(&cmd.args[0])?
+            extract_i64(&cmd.args[0], cmd)?
         };
 
-        let increment = get_option_i64(&cmd.options, "increment", 0)?;
-        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1)?;
-        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1)?;
-        let tiff = get_option_bool(&cmd.options, "tiff", false)?;
-        let quant = get_option_bool(&cmd.options, "quant", true)?;
-        let pcr = get_option_bool(&cmd.options, "pcr", false)?;
+        let increment = get_option_i64(&cmd.options, "increment", 0, cmd)?;
+        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1, cmd)?;
+        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1, cmd)?;
+        let tiff = get_option_bool(&cmd.options, "tiff", false, cmd)?;
+        let quant = get_option_bool(&cmd.options, "quant", true, cmd)?;
+        let pcr = get_option_bool(&cmd.options, "pcr", false, cmd)?;
 
         Ok(Box::new(HoldAndCollect {
             time,
@@ -277,11 +377,13 @@ impl ProtoCommand for HACFILT {
     }
 
     fn from_scpicommand(cmd: &Command) -> Result<Box<dyn ProtoCommand>, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         let cmd_name = get_command_name(cmd);
         if cmd_name != "HACFILT" && cmd_name != "HOLDANDCOLLECTFILTER" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "HACFILT or HOLDANDCOLLECTFILTER".to_string(),
                 got: cmd_name,
+                protocol_string,
             });
         }
 
@@ -291,7 +393,7 @@ impl ProtoCommand for HACFILT {
             .map(|v| v.try_into())
             .collect();
 
-        let filters = filters?;
+        let filters = filters.map_err(|e| parse_error_to_protocol_error(e, cmd))?;
         let default_filters = Vec::new();
 
         Ok(Box::new(HACFILT {
@@ -313,11 +415,13 @@ impl ProtoCommand for Exposure {
     }
 
     fn from_scpicommand(cmd: &Command) -> Result<Box<dyn ProtoCommand>, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         let cmd_name = get_command_name(cmd);
         if cmd_name != "EXP" && cmd_name != "EXPOSURE" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "EXP or EXPOSURE".to_string(),
                 got: cmd_name,
+                protocol_string,
             });
         }
 
@@ -338,7 +442,7 @@ impl ProtoCommand for Exposure {
             }
         }
 
-        let state = get_option_string(&cmd.options, "state")?
+        let state = get_option_string(&cmd.options, "state", cmd)?
             .unwrap_or_else(|| "HoldAndCollect".to_string());
 
         Ok(Box::new(Exposure { settings, state }))
@@ -346,6 +450,7 @@ impl ProtoCommand for Exposure {
 }
 
 pub fn specialize_command(cmd: &Command) -> Result<Box<dyn ProtoCommand>, ProtocolParseError> {
+    let protocol_string = command_to_string(cmd);
     let cmd_name = get_command_name(cmd);
     match cmd_name.as_str() {
         "RAMP" => Ramp::from_scpicommand(cmd),
@@ -358,27 +463,35 @@ pub fn specialize_command(cmd: &Command) -> Result<Box<dyn ProtoCommand>, Protoc
                 .or_else(|_| CustomStep::from_scpicommand(cmd))
         }
         "STAGE" | "STAGe" => {
-            Err(ProtocolParseError::UnexpectedStructure(
-                "Stage should be parsed directly, not through specialize".to_string(),
-            ))
+            Err(ProtocolParseError::UnexpectedStructure {
+                message: "Stage should be parsed directly, not through specialize".to_string(),
+                protocol_string,
+            })
         }
         "PROTOCOL" | "PROT" => {
-            Err(ProtocolParseError::UnexpectedStructure(
-                "Protocol should be parsed directly, not through specialize".to_string(),
-            ))
+            Err(ProtocolParseError::UnexpectedStructure {
+                message: "Protocol should be parsed directly, not through specialize".to_string(),
+                protocol_string,
+            })
         }
         _ => Err(ProtocolParseError::InvalidCommand {
             expected: "known command".to_string(),
             got: cmd_name,
+            protocol_string,
         }),
     }
 }
 
-fn extract_commands_from_value(value: &Value) -> Result<Vec<Command>, ProtocolParseError> {
+fn extract_commands_from_value(value: &Value, parent_cmd: Option<&Command>) -> Result<Vec<Command>, ProtocolParseError> {
+    let protocol_string = parent_cmd.map(command_to_string)
+        .unwrap_or_else(|| "<nested command>".to_string());
     match value {
         Value::XmlString { value, tag: _ } => {
             let s = String::from_utf8(value.to_vec())
-                .map_err(|_| ProtocolParseError::InvalidValueType("xml string".to_string()))?;
+                .map_err(|_| ProtocolParseError::InvalidValueType {
+                    value_type: "xml string".to_string(),
+                    protocol_string: protocol_string.clone(),
+                })?;
             
             // Parse commands from the XML content
             // Commands are separated by newlines, but XML values can span multiple lines
@@ -439,9 +552,10 @@ fn extract_commands_from_value(value: &Value) -> Result<Vec<Command>, ProtocolPa
             
             Ok(commands)
         }
-        _ => Err(ProtocolParseError::InvalidValueType(
-            "nested commands".to_string(),
-        )),
+        _ => Err(ProtocolParseError::InvalidValueType {
+            value_type: "nested commands".to_string(),
+            protocol_string,
+        }),
     }
 }
 
@@ -458,27 +572,32 @@ impl ProtoCommand for CustomStep {
     }
 
     fn from_scpicommand(cmd: &Command) -> Result<Box<dyn ProtoCommand>, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         if get_command_name(cmd) != "STEP" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "STEP".to_string(),
                 got: get_command_name(cmd),
+                protocol_string,
             });
         }
 
         if cmd.args.len() < 2 {
-            return Err(ProtocolParseError::MissingField("step args".to_string()));
+            return Err(ProtocolParseError::MissingField {
+                field: "step args".to_string(),
+                protocol_string,
+            });
         }
 
         let identifier = Some(cmd.args[0].clone());
         let commands_value = &cmd.args[1];
-        let nested_commands = extract_commands_from_value(commands_value)?;
+        let nested_commands = extract_commands_from_value(commands_value, Some(cmd))?;
 
         let mut body = Vec::new();
         for nested_cmd in &nested_commands {
             body.push(specialize_command(nested_cmd)?);
         }
 
-        let repeat = get_option_i64(&cmd.options, "repeat", 1)?;
+        let repeat = get_option_i64(&cmd.options, "repeat", 1, cmd)?;
 
         Ok(Box::new(CustomStep {
             body,
@@ -513,27 +632,33 @@ impl ProtoCommand for Step {
     }
 
     fn from_scpicommand(cmd: &Command) -> Result<Box<dyn ProtoCommand>, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         if get_command_name(cmd) != "STEP" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "STEP".to_string(),
                 got: get_command_name(cmd),
+                protocol_string,
             });
         }
 
         if cmd.args.len() < 2 {
-            return Err(ProtocolParseError::MissingField("step args".to_string()));
+            return Err(ProtocolParseError::MissingField {
+                field: "step args".to_string(),
+                protocol_string,
+            });
         }
 
         let commands_value = &cmd.args[1];
-        let nested_commands = extract_commands_from_value(commands_value)?;
+        let nested_commands = extract_commands_from_value(commands_value, Some(cmd))?;
 
         if nested_commands.is_empty() {
-            return Err(ProtocolParseError::UnexpectedStructure(
-                "Step must have nested commands".to_string(),
-            ));
+            return Err(ProtocolParseError::UnexpectedStructure {
+                message: "Step must have nested commands".to_string(),
+                protocol_string,
+            });
         }
 
-        let repeat = get_option_i64(&cmd.options, "repeat", 1)?;
+        let repeat = get_option_i64(&cmd.options, "repeat", 1, cmd)?;
 
         if nested_commands.len() == 3 {
             let cmd1_name = get_command_name(&nested_commands[0]);
@@ -541,26 +666,26 @@ impl ProtoCommand for Step {
             let cmd3_name = get_command_name(&nested_commands[2]);
 
             if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
-                let r_temp = extract_temperature_list(&nested_commands[0].args[0])?;
-                let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0)?;
-                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1)?;
-                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1)?;
+                let r_temp = extract_temperature_list(&nested_commands[0].args[0], cmd)?;
+                let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0, cmd)?;
+                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1, cmd)?;
+                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1, cmd)?;
 
                 let hf_filters: Result<Vec<String>, ParseError> = nested_commands[1]
                     .args
                     .iter()
                     .map(|v| v.try_into())
                     .collect();
-                let mut filters = hf_filters?;
+                let mut filters = hf_filters.map_err(|e| parse_error_to_protocol_error(e, cmd))?;
                 let mut default_filters = Vec::new();
 
-                let h_time = extract_i64(&nested_commands[2].args[0])?;
-                let h_increment = get_option_i64(&nested_commands[2].options, "increment", 0)?;
-                let h_incrementcycle = get_option_i64(&nested_commands[2].options, "incrementcycle", 1)?;
-                let h_incrementstep = get_option_i64(&nested_commands[2].options, "incrementstep", 1)?;
-                let h_tiff = get_option_bool(&nested_commands[2].options, "tiff", false)?;
-                let h_quant = get_option_bool(&nested_commands[2].options, "quant", true)?;
-                let h_pcr = get_option_bool(&nested_commands[2].options, "pcr", false)?;
+                let h_time = extract_i64(&nested_commands[2].args[0], cmd)?;
+                let h_increment = get_option_i64(&nested_commands[2].options, "increment", 0, cmd)?;
+                let h_incrementcycle = get_option_i64(&nested_commands[2].options, "incrementcycle", 1, cmd)?;
+                let h_incrementstep = get_option_i64(&nested_commands[2].options, "incrementstep", 1, cmd)?;
+                let h_tiff = get_option_bool(&nested_commands[2].options, "tiff", false, cmd)?;
+                let h_quant = get_option_bool(&nested_commands[2].options, "quant", true, cmd)?;
+                let h_pcr = get_option_bool(&nested_commands[2].options, "pcr", false, cmd)?;
 
                 let mut collect = !filters.is_empty();
                 if filters.is_empty() && !default_filters.is_empty() {
@@ -604,18 +729,21 @@ impl ProtoCommand for Step {
             let cmd2_name = get_command_name(&nested_commands[1]);
 
             if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
-                let r_temp = extract_temperature_list(&nested_commands[0].args[0])?;
-                let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0)?;
-                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1)?;
-                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1)?;
+                let r_temp = extract_temperature_list(&nested_commands[0].args[0], cmd)?;
+                let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0, cmd)?;
+                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1, cmd)?;
+                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1, cmd)?;
 
-                let h_time = extract_i64_option(&nested_commands[1].args[0])?;
+                let h_time = extract_i64_option(&nested_commands[1].args[0], cmd)?;
                 if h_time.is_none() {
-                    return Err(ProtocolParseError::MissingField("hold time".to_string()));
+                    return Err(ProtocolParseError::MissingField {
+                        field: "hold time".to_string(),
+                        protocol_string: protocol_string.clone(),
+                    });
                 }
-                let h_increment = get_option_i64(&nested_commands[1].options, "increment", 0)?;
-                let h_incrementcycle = get_option_i64(&nested_commands[1].options, "incrementcycle", 1)?;
-                let h_incrementstep = get_option_i64(&nested_commands[1].options, "incrementstep", 1)?;
+                let h_increment = get_option_i64(&nested_commands[1].options, "increment", 0, cmd)?;
+                let h_incrementcycle = get_option_i64(&nested_commands[1].options, "incrementcycle", 1, cmd)?;
+                let h_incrementstep = get_option_i64(&nested_commands[1].options, "incrementstep", 1, cmd)?;
 
                 let time_incrementpoint = if h_incrementstep <= repeat {
                     Some(h_incrementstep)
@@ -649,9 +777,10 @@ impl ProtoCommand for Step {
             }
         }
 
-        Err(ProtocolParseError::UnexpectedStructure(
-            "Step must have [Ramp, HACFILT, HoldAndCollect] or [Ramp, Hold] pattern".to_string(),
-        ))
+        Err(ProtocolParseError::UnexpectedStructure {
+            message: "Step must have [Ramp, HACFILT, HoldAndCollect] or [Ramp, Hold] pattern".to_string(),
+            protocol_string,
+        })
     }
 }
 
@@ -666,22 +795,27 @@ pub struct Stage {
 
 impl Stage {
     pub fn from_scpicommand(cmd: &Command) -> Result<Stage, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         let cmd_name = get_command_name(cmd);
         if cmd_name != "STAGE" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "STAGE".to_string(),
                 got: cmd_name,
+                protocol_string,
             });
         }
 
         if cmd.args.len() < 3 {
-            return Err(ProtocolParseError::MissingField("stage args".to_string()));
+            return Err(ProtocolParseError::MissingField {
+                field: "stage args".to_string(),
+                protocol_string,
+            });
         }
 
-        let index = extract_i64(&cmd.args[0]).ok();
-        let label = extract_string(&cmd.args[1]).ok();
+        let index = extract_i64(&cmd.args[0], cmd).ok();
+        let label = extract_string(&cmd.args[1], cmd).ok();
         let steps_value = &cmd.args[2];
-        let nested_commands = extract_commands_from_value(steps_value)?;
+        let nested_commands = extract_commands_from_value(steps_value, Some(cmd))?;
 
         let mut steps = Vec::new();
         for step_cmd in &nested_commands {
@@ -690,8 +824,8 @@ impl Stage {
                     continue;
                 }
                 let commands_value = &step_cmd.args[1];
-                let nested_step_commands = extract_commands_from_value(commands_value)?;
-                let repeat = get_option_i64(&step_cmd.options, "repeat", 1)?;
+                let nested_step_commands = extract_commands_from_value(commands_value, Some(cmd))?;
+                let repeat = get_option_i64(&step_cmd.options, "repeat", 1, cmd)?;
 
                 if nested_step_commands.len() == 3 {
                     let cmd1_name = get_command_name(&nested_step_commands[0]);
@@ -699,26 +833,26 @@ impl Stage {
                     let cmd3_name = get_command_name(&nested_step_commands[2]);
 
                     if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
-                        let r_temp = extract_temperature_list(&nested_step_commands[0].args[0])?;
-                        let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0)?;
-                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1)?;
-                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1)?;
+                        let r_temp = extract_temperature_list(&nested_step_commands[0].args[0], cmd)?;
+                        let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0, cmd)?;
+                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1, cmd)?;
+                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1, cmd)?;
 
                         let hf_filters: Result<Vec<String>, ProtocolParseError> = nested_step_commands[1]
                             .args
                             .iter()
-                            .map(extract_string)
+                            .map(|v| extract_string(v, cmd))
                             .collect();
                         let mut filters = hf_filters?;
                         let mut default_filters = Vec::new();
 
-                        let h_time = extract_i64(&nested_step_commands[2].args[0])?;
-                        let h_increment = get_option_i64(&nested_step_commands[2].options, "increment", 0)?;
-                        let h_incrementcycle = get_option_i64(&nested_step_commands[2].options, "incrementcycle", 1)?;
-                        let h_incrementstep = get_option_i64(&nested_step_commands[2].options, "incrementstep", 1)?;
-                        let h_tiff = get_option_bool(&nested_step_commands[2].options, "tiff", false)?;
-                        let h_quant = get_option_bool(&nested_step_commands[2].options, "quant", true)?;
-                        let h_pcr = get_option_bool(&nested_step_commands[2].options, "pcr", false)?;
+                        let h_time = extract_i64(&nested_step_commands[2].args[0], cmd)?;
+                        let h_increment = get_option_i64(&nested_step_commands[2].options, "increment", 0, cmd)?;
+                        let h_incrementcycle = get_option_i64(&nested_step_commands[2].options, "incrementcycle", 1, cmd)?;
+                        let h_incrementstep = get_option_i64(&nested_step_commands[2].options, "incrementstep", 1, cmd)?;
+                        let h_tiff = get_option_bool(&nested_step_commands[2].options, "tiff", false, cmd)?;
+                        let h_quant = get_option_bool(&nested_step_commands[2].options, "quant", true, cmd)?;
+                        let h_pcr = get_option_bool(&nested_step_commands[2].options, "pcr", false, cmd)?;
 
                         let mut collect = !filters.is_empty();
                         if filters.is_empty() && !default_filters.is_empty() {
@@ -763,18 +897,18 @@ impl Stage {
                     let cmd2_name = get_command_name(&nested_step_commands[1]);
 
                     if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
-                        let r_temp = extract_temperature_list(&nested_step_commands[0].args[0])?;
-                        let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0)?;
-                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1)? as i64;
-                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1)? as i64;
+                        let r_temp = extract_temperature_list(&nested_step_commands[0].args[0], cmd)?;
+                        let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0, cmd)?;
+                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1, cmd)? as i64;
+                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1, cmd)? as i64;
 
-                        let h_time = extract_i64_option(&nested_step_commands[1].args[0])?;
+                        let h_time = extract_i64_option(&nested_step_commands[1].args[0], cmd)?;
                         if h_time.is_none() {
                             continue;
                         }
-                        let h_increment = get_option_i64(&nested_step_commands[1].options, "increment", 0)?;
-                        let h_incrementcycle = get_option_i64(&nested_step_commands[1].options, "incrementcycle", 1)? as i64;
-                        let h_incrementstep = get_option_i64(&nested_step_commands[1].options, "incrementstep", 1)? as i64;
+                        let h_increment = get_option_i64(&nested_step_commands[1].options, "increment", 0, cmd)?;
+                        let h_incrementcycle = get_option_i64(&nested_step_commands[1].options, "incrementcycle", 1, cmd)? as i64;
+                        let h_incrementstep = get_option_i64(&nested_step_commands[1].options, "incrementstep", 1, cmd)? as i64;
 
                         let time_incrementpoint = if h_incrementstep <= repeat {
                             Some(h_incrementstep)
@@ -809,12 +943,13 @@ impl Stage {
                     }
                 }
             }
-            return Err(ProtocolParseError::UnexpectedStructure(
-                format!("Stage step must be a valid Step, got: {}", get_command_name(step_cmd)),
-            ));
+            return Err(ProtocolParseError::UnexpectedStructure {
+                message: format!("Stage step must be a valid Step, got: {}", get_command_name(step_cmd)),
+                protocol_string: protocol_string.clone(),
+            });
         }
 
-        let repeat = get_option_i64(&cmd.options, "repeat", 1)? as i64;
+        let repeat = get_option_i64(&cmd.options, "repeat", 1, cmd)? as i64;
 
         let mut default_filters = Vec::new();
         for step in &steps {
@@ -822,7 +957,9 @@ impl Stage {
                 if default_filters.is_empty() {
                     default_filters = step.default_filters.clone();
                 } else if default_filters != step.default_filters {
-                    return Err(ProtocolParseError::InconsistentDefaultFilters);
+                    return Err(ProtocolParseError::InconsistentDefaultFilters {
+                        protocol_string: protocol_string.clone(),
+                    });
                 }
             }
         }
@@ -851,26 +988,34 @@ pub struct Protocol {
 
 impl Protocol {
     pub fn from_scpicommand(cmd: &Command) -> Result<Protocol, ProtocolParseError> {
+        let protocol_string = command_to_string(cmd);
         let cmd_name = get_command_name(cmd);
         if cmd_name != "PROTOCOL" && cmd_name != "PROT" {
             return Err(ProtocolParseError::InvalidCommand {
                 expected: "PROTOCOL or PROT".to_string(),
                 got: cmd_name,
+                protocol_string,
             });
         }
 
         if cmd.args.is_empty() {
-            return Err(ProtocolParseError::MissingField("protocol name".to_string()));
+            return Err(ProtocolParseError::MissingField {
+                field: "protocol name".to_string(),
+                protocol_string: protocol_string.clone(),
+            });
         }
 
-        let name = extract_string(&cmd.args[0])?;
+        let name = extract_string(&cmd.args[0], cmd)?;
 
         if cmd.args.len() < 2 {
-            return Err(ProtocolParseError::MissingField("protocol stages".to_string()));
+            return Err(ProtocolParseError::MissingField {
+                field: "protocol stages".to_string(),
+                protocol_string: protocol_string.clone(),
+            });
         }
 
         let stages_value = &cmd.args[1];
-        let mut stage_commands = extract_commands_from_value(stages_value)?;
+        let mut stage_commands = extract_commands_from_value(stages_value, Some(cmd))?;
 
         let mut prerun = Vec::new();
         let mut postrun = Vec::new();
@@ -880,7 +1025,10 @@ impl Protocol {
             if first_cmd_name == "PRERUN" {
                 if let Some(Value::XmlString { value, tag: _ }) = stage_commands[0].args.first() {
                     let s = String::from_utf8(value.to_vec())
-                        .map_err(|_| ProtocolParseError::InvalidValueType("prerun commands".to_string()))?;
+                        .map_err(|_| ProtocolParseError::InvalidValueType {
+                            value_type: "prerun commands".to_string(),
+                            protocol_string: protocol_string.clone(),
+                        })?;
                     let mut input = s.as_bytes();
                     while !input.is_empty() {
                         match Command::parse(&mut input) {
@@ -897,7 +1045,10 @@ impl Protocol {
                 if last_cmd_name == "POSTRUN" {
                     if let Some(Value::XmlString { value, tag: _ }) = stage_commands[stage_commands.len() - 1].args.first() {
                         let s = String::from_utf8(value.to_vec())
-                            .map_err(|_| ProtocolParseError::InvalidValueType("postrun commands".to_string()))?;
+                            .map_err(|_| ProtocolParseError::InvalidValueType {
+                                value_type: "postrun commands".to_string(),
+                                protocol_string: protocol_string.clone(),
+                            })?;
                         let mut input = s.as_bytes();
                         while !input.is_empty() {
                             match Command::parse(&mut input) {
@@ -916,10 +1067,10 @@ impl Protocol {
             stages.push(Stage::from_scpicommand(stage_cmd)?);
         }
 
-        let volume = get_option_f64(&cmd.options, "volume", 50.0)?;
-        let runmode = get_option_string(&cmd.options, "runmode")?
+        let volume = get_option_f64(&cmd.options, "volume", 50.0, cmd)?;
+        let runmode = get_option_string(&cmd.options, "runmode", cmd)?
             .unwrap_or_else(|| "standard".to_string());
-        let covertemperature = get_option_f64(&cmd.options, "covertemperature", 105.0)?;
+        let covertemperature = get_option_f64(&cmd.options, "covertemperature", 105.0, cmd)?;
 
         let mut filters = Vec::new();
         for stage in &stages {
@@ -927,7 +1078,9 @@ impl Protocol {
                 if filters.is_empty() {
                     filters = stage.default_filters.clone();
                 } else if filters != stage.default_filters {
-                    return Err(ProtocolParseError::InconsistentDefaultFilters);
+                    return Err(ProtocolParseError::InconsistentDefaultFilters {
+                        protocol_string: protocol_string.clone(),
+                    });
                 }
             }
         }

@@ -9,7 +9,7 @@ fn bench_msg_recv(c: &mut Criterion) {
     group.bench_function("simple_message", |b| {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
-            receiver.push_data(black_box(simple_msg)).unwrap();
+            receiver.push_data(black_box(simple_msg));
             receiver.try_get_msg().unwrap()
         })
     });
@@ -20,8 +20,8 @@ fn bench_msg_recv(c: &mut Criterion) {
     group.bench_function("chunked_message", |b| {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
-            receiver.push_data(black_box(chunk1)).unwrap();
-            receiver.push_data(black_box(chunk2)).unwrap();
+            receiver.push_data(black_box(chunk1));
+            receiver.push_data(black_box(chunk2));
             receiver.try_get_msg().unwrap()
         })
     });
@@ -31,7 +31,7 @@ fn bench_msg_recv(c: &mut Criterion) {
     group.bench_function("xml_message", |b| {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
-            receiver.push_data(black_box(xml_msg)).unwrap();
+            receiver.push_data(black_box(xml_msg));
             receiver.try_get_msg().unwrap()
         })
     });
@@ -48,7 +48,7 @@ fn bench_msg_recv(c: &mut Criterion) {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
             for chunk in xml_chunks.iter() {
-                receiver.push_data(black_box(*chunk)).unwrap();
+                receiver.push_data(black_box(*chunk));
             }
             receiver.try_get_msg().unwrap()
         })
@@ -59,7 +59,7 @@ fn bench_msg_recv(c: &mut Criterion) {
     group.bench_function("multiple_messages", |b| {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
-            receiver.push_data(black_box(multiple_msgs)).unwrap();
+            receiver.push_data(black_box(multiple_msgs));
             let msg1 = receiver.try_get_msg().unwrap();
             let msg2 = receiver.try_get_msg().unwrap();
             let msg3 = receiver.try_get_msg().unwrap();
@@ -72,7 +72,7 @@ fn bench_msg_recv(c: &mut Criterion) {
     group.bench_function("nested_xml", |b| {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
-            receiver.push_data(black_box(nested_xml)).unwrap();
+            receiver.push_data(black_box(nested_xml));
             receiver.try_get_msg().unwrap()
         })
     });
@@ -90,7 +90,7 @@ fn bench_msg_recv(c: &mut Criterion) {
         b.iter(|| {
             let mut receiver = MsgRecv::new();
             for chunk in large_chunks.iter() {
-                receiver.push_data(black_box(chunk)).unwrap();
+                receiver.push_data(black_box(chunk));
             }
             receiver.try_get_msg().unwrap()
         })
