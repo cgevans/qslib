@@ -936,11 +936,11 @@ impl QSConnection {
             .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No protocol content returned")))?
             .to_string();
         
-        // Unwrap XML tags (e.g., <quote>content</quote> -> content)
-        let protocol_content = regex::Regex::new(r"^<[^>]+?>\n?(.*)\n?</[^>]+?>$")
-            .unwrap()
-            .replace(&protocol_content, "$1")
-            .to_string();
+        // // Unwrap XML tags (e.g., <quote>content</quote> -> content)
+        // let protocol_content = regex::Regex::new(r"^<[^>]+?>\n?(.*)\n?</[^>]+?>$")
+        //     .unwrap()
+        //     .replace(&protocol_content, "$1")
+        //     .to_string();
 
         // Get protocol name, volume, and runmode
         let mut response = self.send_command_bytes(b"RET ${Protocol} ${SampleVolume} ${RunMode}".as_bstr()).await?;
@@ -961,6 +961,10 @@ impl QSConnection {
         let protocol_name = parts[0].clone();
         let sample_volume = parts[1].clone();
         let run_mode = parts[2].clone();
+
+        println!("response: {:?}", response);
+
+        println!("protocol_content: {}", protocol_content);
 
         // Construct full PROT command string
         let prot_command = format!(
