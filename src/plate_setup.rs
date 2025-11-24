@@ -1,7 +1,5 @@
 use std::collections::HashMap;
 
-#[cfg(feature = "python")]
-use polars::frame::DataFrame;
 use quick_xml::{de::from_str, se::to_string};
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
@@ -276,7 +274,7 @@ impl Sample {
     }
 
     #[pyo3(name = "to_record")]
-    fn to_record(&self, py: pyo3::Python<'_>) -> pyo3::PyObject {
+    fn to_record(&self, py: pyo3::Python<'_>) -> pyo3::Py<pyo3::PyAny> {
         use pyo3::types::{PyDict};
         let record = PyDict::new(py);
 

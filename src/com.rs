@@ -32,12 +32,6 @@ use crate::parser::Command;
 
 use lazy_static::lazy_static;
 
-#[cfg(feature = "python")]
-use pyo3::exceptions::PyValueError;
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-#[cfg(feature = "python")]
-use pyo3::ToPyErr;
 
 lazy_static! {
     static ref BASE64: data_encoding::Encoding = {

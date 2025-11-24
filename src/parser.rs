@@ -898,9 +898,6 @@ impl Ready {
     }
 }
 
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
 use crate::com::QSConnectionError;
 use crate::commands::CommandBuilder;
 

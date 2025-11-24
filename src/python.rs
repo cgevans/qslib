@@ -321,7 +321,7 @@ impl PyQSConnection {
     ///
     /// Raises:
     ///     CommandError: If authentication fails
-    fn authenticate(&mut self, password: &str) -> PyResult<()> {
+    fn authenticate(&mut self, py: Python<'_>, password: &str) -> PyResult<()> {
         use crate::parser::Value;
         use bstr::ByteSlice;
         
@@ -336,16 +336,14 @@ impl PyQSConnection {
         let challenge = challenge_response.get_response()?;
         
         // Generate auth response using Python's hmac module
-        let auth_response = Python::with_gil(|py| -> PyResult<String> {
-            let hmac_module = PyModule::import(py, "hmac")?;
-            let digest_func = hmac_module.getattr("digest")?;
-            let password_bytes = password.as_bytes();
-            let challenge_bytes = challenge.as_bytes();
-            let auth_response_bytes: Vec<u8> = digest_func
-                .call1((password_bytes, challenge_bytes, "md5"))?
-                .extract()?;
-            Ok(hex::encode(auth_response_bytes))
-        })?;
+        let hmac_module = PyModule::import(py, "hmac")?;
+        let digest_func = hmac_module.getattr("digest")?;
+        let password_bytes = password.as_bytes();
+        let challenge_bytes = challenge.as_bytes();
+        let auth_response_bytes: Vec<u8> = digest_func
+            .call1((password_bytes, challenge_bytes, "md5"))?
+            .extract()?;
+        let auth_response = hex::encode(auth_response_bytes);
         
         // Send authentication
         let mut auth_cmd = Command::new("AUTH");
