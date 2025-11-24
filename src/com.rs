@@ -918,7 +918,7 @@ impl QSConnection {
         }
     }
 
-    pub async fn get_running_protocol(&self) -> Result<Protocol, CommandError<ErrorResponse>> {
+    pub async fn get_running_protocol_string(&self) -> Result<String, CommandError<ErrorResponse>> {
         // Check if there's an active run
         let run_name = self.get_current_run_name().await?;
         if run_name.is_none() {
@@ -935,12 +935,6 @@ impl QSConnection {
             .first()
             .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No protocol content returned")))?
             .to_string();
-        
-        // // Unwrap XML tags (e.g., <quote>content</quote> -> content)
-        // let protocol_content = regex::Regex::new(r"^<[^>]+?>\n?(.*)\n?</[^>]+?>$")
-        //     .unwrap()
-        //     .replace(&protocol_content, "$1")
-        //     .to_string();
 
         // Get protocol name, volume, and runmode
         let mut response = self.send_command_bytes(b"RET ${Protocol} ${SampleVolume} ${RunMode}".as_bstr()).await?;
@@ -962,18 +956,25 @@ impl QSConnection {
         let sample_volume = parts[1].clone();
         let run_mode = parts[2].clone();
 
-        println!("response: {:?}", response);
 
         println!("protocol_content: {}", protocol_content);
 
         // Construct full PROT command string
         let prot_command = format!(
-            "PROT -volume={} -runmode={} {} {}",
+            "PROT -volume={} -runmode={} {} <multiline.protocol>\n{}\n</multiline.protocol>",
             sample_volume, run_mode, protocol_name, protocol_content
         );
 
+        Ok(prot_command)
+    }
+
+    pub async fn get_running_protocol(&self) -> Result<Protocol, CommandError<ErrorResponse>> {
+        let prot_command = self.get_running_protocol_string().await?;
+
+        println!("prot_command: {}", prot_command);
+
         // Parse into Command and then Protocol
-        let cmd = Command::try_from(prot_command)
+        let cmd = Command::try_from(prot_command.clone())
             .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol command: {}", e)))?;
         
         Protocol::from_scpicommand(&cmd)

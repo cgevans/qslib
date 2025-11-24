@@ -6,6 +6,9 @@ use thiserror::Error;
 use pyo3::prelude::*;
 
 #[cfg(feature = "python")]
+use pyo3::exceptions::PyValueError;
+
+#[cfg(feature = "python")]
 use pyo3_polars::PyDataFrame;
 
 // use once_cell::sync::Lazy;
@@ -88,7 +91,12 @@ impl PlatePointData {
 impl PlatePointData {
     #[pyo3(name = "to_polars")]
     fn py_to_polars(&self) -> PyResult<PyDataFrame> {
-        Ok(PyDataFrame(self.to_polars()?.collect()?))
+        Ok(PyDataFrame(
+            self.to_polars()
+                .map_err(|e| PyValueError::new_err(format!("Failed to convert to Polars: {}", e)))?
+                .collect()
+                .map_err(|e| PyValueError::new_err(format!("Failed to collect Polars DataFrame: {}", e)))?
+        ))
     }
 }
 
@@ -326,7 +334,12 @@ impl PlateData {
 impl PlateData {
     #[pyo3(name = "to_polars")]
     fn py_to_polars(&self) -> PyResult<PyDataFrame> {
-        Ok(PyDataFrame(self.to_polars()?.collect()?))
+        Ok(PyDataFrame(
+            self.to_polars()
+                .map_err(|e| PyValueError::new_err(format!("Failed to convert to Polars: {}", e)))?
+                .collect()
+                .map_err(|e| PyValueError::new_err(format!("Failed to collect Polars DataFrame: {}", e)))?
+        ))
     }
 }
 
@@ -366,9 +379,13 @@ impl FilterDataCollection {
     #[pyo3(name = "to_polars")]
     pub fn py_to_polars(&self) -> PyResult<PyDataFrame> {
         let lfs: Result<Vec<_>, _> = self.plate_point_data.iter().map(|pd| pd.to_polars()).collect();
-        let lfs = lfs?;
-        let lf = concat(lfs, UnionArgs::default())?;
-        Ok(PyDataFrame(lf.collect()?))
+        let lfs = lfs.map_err(|e| PyValueError::new_err(format!("Failed to convert plate point data to Polars: {}", e)))?;
+        let lf = concat(lfs, UnionArgs::default())
+            .map_err(|e| PyValueError::new_err(format!("Failed to concat Polars DataFrames: {}", e)))?;
+        Ok(PyDataFrame(
+            lf.collect()
+                .map_err(|e| PyValueError::new_err(format!("Failed to collect Polars DataFrame: {}", e)))?
+        ))
     }
 }
 

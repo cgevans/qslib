@@ -1,6 +1,7 @@
 use crate::com::{QSConnection, ConnectionType, ResponseReceiver};
 use crate::parser::Command;
 use crate::parser::{LogMessage, MessageResponse, MessageIdent};
+use crate::protocol::Protocol;
 use pyo3::exceptions::{PyTimeoutError, PyValueError, PyException};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -18,6 +19,43 @@ pyo3::create_exception!(qslib, CommandResponseError, QslibException);
 pyo3::create_exception!(qslib, CommandError, CommandResponseError);
 pyo3::create_exception!(qslib, UnexpectedMessageResponse, CommandResponseError);
 pyo3::create_exception!(qslib, DisconnectedBeforeResponse, CommandResponseError);
+
+#[pyclass]
+pub struct PyProtocol {
+    protocol: Protocol,
+}
+
+#[pymethods]
+impl PyProtocol {
+    fn __str__(&self) -> String {
+        format!("{}", self.protocol)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Protocol(name='{}', volume={}, runmode='{}', stages={})",
+                self.protocol.name, self.protocol.volume, self.protocol.runmode, self.protocol.stages.len())
+    }
+
+    #[getter]
+    fn name(&self) -> String {
+        self.protocol.name.clone()
+    }
+
+    #[getter]
+    fn volume(&self) -> f64 {
+        self.protocol.volume
+    }
+
+    #[getter]
+    fn runmode(&self) -> String {
+        self.protocol.runmode.clone()
+    }
+
+    #[getter]
+    fn stages(&self) -> usize {
+        self.protocol.stages.len()
+    }
+}
 
 #[pyclass]
 #[pyo3(name = "QSConnection")]
@@ -274,6 +312,91 @@ impl PyQSConnection {
     ///     bool: True if connected, False otherwise
     fn connected(&self) -> bool {
         self.rt.block_on(self.conn.is_connected())
+    }
+
+    /// Authenticate with a password
+    ///
+    /// Args:
+    ///     password: Password string
+    ///
+    /// Raises:
+    ///     CommandError: If authentication fails
+    fn authenticate(&mut self, password: &str) -> PyResult<()> {
+        use crate::parser::Value;
+        use bstr::ByteSlice;
+        
+        // Get challenge
+        let rx = self.rt.block_on(
+            self.conn.send_command_bytes(b"CHAL?".as_bstr())
+        )?;
+        let mut challenge_response = PyMessageResponse {
+            rx,
+            rt: self.rt.clone(),
+        };
+        let challenge = challenge_response.get_response()?;
+        
+        // Generate auth response using Python's hmac module
+        let auth_response = Python::with_gil(|py| -> PyResult<String> {
+            let hmac_module = PyModule::import(py, "hmac")?;
+            let digest_func = hmac_module.getattr("digest")?;
+            let password_bytes = password.as_bytes();
+            let challenge_bytes = challenge.as_bytes();
+            let auth_response_bytes: Vec<u8> = digest_func
+                .call1((password_bytes, challenge_bytes, "md5"))?
+                .extract()?;
+            Ok(hex::encode(auth_response_bytes))
+        })?;
+        
+        // Send authentication
+        let mut auth_cmd = Command::new("AUTH");
+        auth_cmd.args.push(Value::String(auth_response));
+        let rx = self.rt.block_on(self.conn.send_command(auth_cmd))?;
+        let mut auth_response_recv = PyMessageResponse {
+            rx,
+            rt: self.rt.clone(),
+        };
+        auth_response_recv.get_response()?;
+        
+        Ok(())
+    }
+
+    /// Set access level
+    ///
+    /// Args:
+    ///     level: Access level string ("Guest", "Observer", "Controller", "Administrator", "Full")
+    ///
+    /// Raises:
+    ///     CommandError: If setting access level fails
+    fn set_access_level(&mut self, level: &str) -> PyResult<()> {
+        use crate::commands::AccessLevel;
+        let access_level = match level {
+            "Guest" => AccessLevel::Guest,
+            "Observer" => AccessLevel::Observer,
+            "Controller" => AccessLevel::Controller,
+            "Administrator" => AccessLevel::Administrator,
+            "Full" => AccessLevel::Full,
+            _ => return Err(PyValueError::new_err(format!("Invalid access level: {}", level))),
+        };
+        let result = self.rt.block_on(self.conn.set_access_level(access_level));
+        match result {
+            Ok(()) => Ok(()),
+            Err(e) => Err(CommandError::new_err(e.to_string())),
+        }
+    }
+
+    /// Get the currently running protocol (parsed by Rust)
+    ///
+    /// Returns:
+    ///     PyProtocol: Parsed protocol object
+    ///
+    /// Raises:
+    ///     CommandError: If no protocol is running or if an error occurs
+    fn get_running_protocol(&mut self) -> PyResult<PyProtocol> {
+        let result = self.rt.block_on(self.conn.get_running_protocol());
+        match result {
+            Ok(protocol) => Ok(PyProtocol { protocol }),
+            Err(e) => Err(CommandError::new_err(e.to_string())),
+        }
     }
 }
 

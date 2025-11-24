@@ -487,11 +487,45 @@ fn extract_commands_from_value(value: &Value, parent_cmd: Option<&Command>) -> R
         .unwrap_or_else(|| "<nested command>".to_string());
     match value {
         Value::XmlString { value, tag: _ } => {
-            let s = String::from_utf8(value.to_vec())
+            let mut s = String::from_utf8(value.to_vec())
                 .map_err(|_| ProtocolParseError::InvalidValueType {
                     value_type: "xml string".to_string(),
                     protocol_string: protocol_string.clone(),
                 })?;
+            
+            // Strip inline comments from the string
+            // Comments start with # and continue to end of line, but not if inside quotes or XML tags
+            let mut result = String::with_capacity(s.len());
+            let bytes = s.as_bytes();
+            let mut i = 0;
+            let mut in_quotes = false;
+            let mut in_xml_tag = false;
+            
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'"' && (i == 0 || bytes[i-1] != b'\\') {
+                    in_quotes = !in_quotes;
+                    result.push(b as char);
+                } else if b == b'<' && !in_quotes {
+                    in_xml_tag = true;
+                    result.push(b as char);
+                } else if b == b'>' && !in_quotes {
+                    in_xml_tag = false;
+                    result.push(b as char);
+                } else if b == b'#' && !in_quotes && !in_xml_tag {
+                    // Found inline comment, skip to end of line
+                    while i < bytes.len() && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                    if i < bytes.len() {
+                        result.push('\n');
+                    }
+                } else {
+                    result.push(b as char);
+                }
+                i += 1;
+            }
+            s = result;
             
             // Parse commands from the XML content
             // Commands are separated by newlines, but XML values can span multiple lines
@@ -522,7 +556,7 @@ fn extract_commands_from_value(value: &Value, parent_cmd: Option<&Command>) -> R
                     continue;
                 }
                 
-                // Skip comment lines
+                // Skip comment lines (full-line comments)
                 if input.starts_with(b"#") {
                     while !input.is_empty() && input[0] != b'\n' {
                         input = &input[1..];
@@ -986,6 +1020,59 @@ pub struct Protocol {
     pub postrun: Vec<Command>,
 }
 
+impl fmt::Display for Protocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Run Protocol {}", self.name)?;
+        let mut extras = Vec::new();
+        if self.volume != 0.0 {
+            extras.push(format!("sample volume {} µL", self.volume));
+        }
+        if !self.runmode.is_empty() && self.runmode != "standard" {
+            extras.push(format!("run mode {}", self.runmode));
+        }
+        if !extras.is_empty() {
+            write!(f, " with {}", extras.join(", "))?;
+        }
+        writeln!(f, ":")?;
+        
+        if !self.filters.is_empty() {
+            write!(f, "(default filters {})\n\n", self.filters.join(", "))?;
+        } else {
+            writeln!(f)?;
+        }
+        
+        for (i, stage) in self.stages.iter().enumerate() {
+            let stage_num = stage.index.unwrap_or((i + 1) as i64);
+            let cycles = if stage.repeat > 1 {
+                format!("{} cycles", stage.repeat)
+            } else {
+                "1 cycle".to_string()
+            };
+            write!(f, "  {}. Stage with {}:", stage_num, cycles)?;
+            if let Some(ref label) = stage.label {
+                write!(f, " {}", label)?;
+            }
+            writeln!(f)?;
+            
+            for (j, step) in stage.steps.iter().enumerate() {
+                write!(f, "    Step {}: ", j + 1)?;
+                if !step.temperature.is_empty() {
+                    let temps: Vec<String> = step.temperature.iter().map(|t| format!("{:.1}", t)).collect();
+                    write!(f, "RAMP to [{}]", temps.join(", "))?;
+                }
+                if step.time > 0 {
+                    write!(f, " HOLD {}s", step.time)?;
+                }
+                if step.collect == Some(true) {
+                    write!(f, " COLLECT")?;
+                }
+                writeln!(f)?;
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Protocol {
     pub fn from_scpicommand(cmd: &Command) -> Result<Protocol, ProtocolParseError> {
         let protocol_string = command_to_string(cmd);
@@ -1285,6 +1372,136 @@ mod tests {
         assert!(step2.quant);
         assert!(!step2.tiff);
         assert!(!step2.pcr);
+    }
+
+    #[test]
+    fn test_protocol_parsing_with_inline_comments() {
+        // Test parsing the actual return string from PROT? ${Protocol} command
+        // This is wrapped in <quote.reply> tags
+        let protocol_content = r#"<quote.reply>
+        STAGE 1 STAGE_1 <multiline.stage>
+                STEP 1 <multiline.step>
+                        RAMP -incrementcycle=2 -incrementstep=2 90 90 90 90 90 90
+                        HOLD -incrementcycle=2 -incrementstep=2 600
+                </multiline.step>
+        </multiline.stage>
+        STAGE -repeat=30 2 STAGE_2 <multiline.stage>
+                STEP 1 <multiline.step>
+                        RAMP -increment=-0.3448 -incrementcycle=2 -incrementstep=2 90 90 90 90 90 90
+                        HACFILT m4,x4,quant # qslib:default_filters
+                        HOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 20
+                </multiline.step>
+        </multiline.stage>
+        STAGE -repeat=5 3 STAGE_3 <multiline.stage>
+                STEP 1 <multiline.step>
+                        RAMP -incrementcycle=2 -incrementstep=2 80 80 80 80 80 80
+                        HACFILT m4,x4,quant # qslib:default_filters
+                        HOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 60
+                </multiline.step>
+        </multiline.stage>
+        STAGE -repeat=550 4 STAGE_4 <multiline.stage>
+                STEP 1 <multiline.step>
+                        RAMP -increment=-0.1002 -incrementcycle=2 -incrementstep=2 80 80 80 80 80 80
+                        HACFILT m4,x4,quant # qslib:default_filters
+                        HOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 26
+                </multiline.step>
+        </multiline.stage>
+        STAGE -repeat=4 5 STAGE_5 <multiline.stage>
+                STEP 1 <multiline.step>
+                        RAMP -incrementcycle=2 -incrementstep=2 25 25 25 25 25 25
+                        HACFILT m4,x4,quant # qslib:default_filters
+                        HOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 1800
+                </multiline.step>
+        </multiline.stage>
+</quote.reply>"#;
+
+        // When the response comes back, it's parsed as an XmlString Value
+        // We need to simulate how get_running_protocol processes it
+        // The Value::to_string() should extract the content from <quote.reply>
+        let protocol_value = Value::XmlString {
+            value: protocol_content.into(),
+            tag: "quote.reply".to_string(),
+        };
+        
+        // Extract the content (this is what Value::to_string() does)
+        let extracted_content = protocol_value.try_into_string()
+            .expect("Failed to extract string from XmlString");
+        
+        // Now construct the full PROT command
+        let prot_command = format!(
+            "PROT -volume=50.0 -runmode=standard test_protocol <multiline.protocol>{}</multiline.protocol>",
+            extracted_content
+        );
+
+        let cmd = Command::try_from(prot_command).expect("Failed to parse protocol command");
+        let protocol = Protocol::from_scpicommand(&cmd);
+
+        if let Err(e) = &protocol {
+            eprintln!("Protocol parsing error: {:?}", e);
+        }
+        assert!(protocol.is_ok(), "Protocol should parse successfully with inline comments");
+
+        let prot = protocol.unwrap();
+        assert_eq!(prot.name, "test_protocol");
+        assert_eq!(prot.volume, 50.0);
+        assert_eq!(prot.runmode, "standard");
+        assert_eq!(prot.stages.len(), 5);
+
+        // Check first stage
+        let stage1 = &prot.stages[0];
+        assert_eq!(stage1.index, Some(1));
+        assert_eq!(stage1.label, Some("STAGE_1".to_string()));
+        assert_eq!(stage1.repeat, 1);
+        assert_eq!(stage1.steps.len(), 1);
+        let step1 = &stage1.steps[0];
+        assert_eq!(step1.temperature, vec![90.0; 6]);
+        assert_eq!(step1.time, 600);
+        assert_eq!(step1.collect, Some(false));
+
+        // Check second stage (with inline comment)
+        let stage2 = &prot.stages[1];
+        assert_eq!(stage2.index, Some(2));
+        assert_eq!(stage2.label, Some("STAGE_2".to_string()));
+        assert_eq!(stage2.repeat, 30);
+        assert_eq!(stage2.steps.len(), 1);
+        let step2 = &stage2.steps[0];
+        assert_eq!(step2.temperature, vec![90.0; 6]);
+        assert_eq!(step2.temp_increment, -0.3448);
+        assert_eq!(step2.time, 20);
+        assert_eq!(step2.collect, Some(true));
+        assert_eq!(step2.filters.len(), 1);
+        assert_eq!(step2.filters[0], "m4,x4,quant");
+        assert!(step2.quant);
+        assert!(!step2.tiff);
+        assert!(!step2.pcr);
+
+        // Check third stage
+        let stage3 = &prot.stages[2];
+        assert_eq!(stage3.index, Some(3));
+        assert_eq!(stage3.label, Some("STAGE_3".to_string()));
+        assert_eq!(stage3.repeat, 5);
+        let step3 = &stage3.steps[0];
+        assert_eq!(step3.temperature, vec![80.0; 6]);
+        assert_eq!(step3.time, 60);
+
+        // Check fourth stage
+        let stage4 = &prot.stages[3];
+        assert_eq!(stage4.index, Some(4));
+        assert_eq!(stage4.label, Some("STAGE_4".to_string()));
+        assert_eq!(stage4.repeat, 550);
+        let step4 = &stage4.steps[0];
+        assert_eq!(step4.temperature, vec![80.0; 6]);
+        assert_eq!(step4.temp_increment, -0.1002);
+        assert_eq!(step4.time, 26);
+
+        // Check fifth stage
+        let stage5 = &prot.stages[4];
+        assert_eq!(stage5.index, Some(5));
+        assert_eq!(stage5.label, Some("STAGE_5".to_string()));
+        assert_eq!(stage5.repeat, 4);
+        let step5 = &stage5.steps[0];
+        assert_eq!(step5.temperature, vec![25.0; 6]);
+        assert_eq!(step5.time, 1800);
     }
 }
 

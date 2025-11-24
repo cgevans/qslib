@@ -21,6 +21,9 @@ mod qslib {
     use crate::python::PyQSConnection;
 
     #[pymodule_export]
+    use crate::python::PyProtocol;
+
+    #[pymodule_export]
     use crate::python::PyMessageResponse;
 
     #[pymodule_export]
