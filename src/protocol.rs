@@ -660,6 +660,91 @@ pub struct Step {
     pub default_filters: Vec<String>,
 }
 
+impl Step {
+    pub fn info_str(&self, index: Option<i64>, repeats: i64) -> String {
+        let mut tempstr = format_temperature(&self.temperature);
+        
+        if self.time > 0 {
+            if !tempstr.is_empty() {
+                tempstr.push_str(&format!(" for {}/cycle", format_duration(self.time)));
+            } else {
+                tempstr = format!("for {}/cycle", format_duration(self.time));
+            }
+        }
+        
+        let mut elems = if tempstr.is_empty() {
+            Vec::new()
+        } else {
+            vec![tempstr]
+        };
+        
+        if self.temp_increment != 0.0 {
+            if self.repeat > 1 && matches!(self.temp_incrementpoint, Some(p) if p < self.repeat) {
+                let mut inc_str = format!("{:+}°C/point", self.temp_increment);
+                if let Some(p) = self.temp_incrementpoint {
+                    if p != 2 {
+                        inc_str.push_str(&format!(" from point {}", p));
+                    }
+                }
+                elems.push(inc_str);
+            }
+            if repeats > 1 && self.temp_incrementcycle < repeats {
+                let mut inc_str = format!("{:+}°C/cycle", self.temp_increment);
+                if self.temp_incrementcycle != 2 {
+                    inc_str.push_str(&format!(" from cycle {}", self.temp_incrementcycle));
+                }
+                elems.push(inc_str);
+            }
+        }
+        
+        if self.time_increment != 0 {
+            if self.repeat > 1 && matches!(self.time_incrementpoint, Some(p) if p < self.repeat) {
+                let mut inc_str = format!("{}/point", format_duration(self.time_increment));
+                if let Some(p) = self.time_incrementpoint {
+                    if p != 2 {
+                        inc_str.push_str(&format!(" from point {}", p));
+                    }
+                }
+                elems.push(inc_str);
+            }
+            if repeats > 1 && self.time_incrementcycle < repeats {
+                let mut inc_str = format!("{}/cycle", format_duration(self.time_increment));
+                if self.time_incrementcycle != 2 {
+                    inc_str.push_str(&format!(" from cycle {}", self.time_incrementcycle));
+                }
+                elems.push(inc_str);
+            }
+        }
+        
+        let mut result = if let Some(idx) = index {
+            format!("{}. {}", idx, elems.join(", "))
+        } else {
+            elems.join(", ")
+        };
+        
+        if self.collect == Some(true) {
+            result.push_str(" (collects ");
+            if !self.filters.is_empty() {
+                let filter_strs: Vec<String> = self.filters.iter()
+                    .map(|f| filter_to_lowerform(f))
+                    .collect();
+                result.push_str(&filter_strs.join(", "));
+            } else {
+                result.push_str("default");
+            }
+            if self.pcr {
+                result.push_str(", pcr on");
+            }
+            if !self.quant {
+                result.push_str(", quant off");
+            }
+            result.push(')');
+        }
+        
+        result
+    }
+}
+
 impl ProtoCommand for Step {
     fn as_any(&self) -> &dyn Any {
         self
@@ -1006,6 +1091,121 @@ impl Stage {
             default_filters,
         })
     }
+    
+    pub fn info_str(&self, index: Option<i64>) -> String {
+        let adds = if self.repeat > 1 { "s" } else { "" };
+        let mut stagestr = if let Some(idx) = index {
+            format!("{}. Stage with {} cycle{}", idx, self.repeat, adds)
+        } else {
+            format!("Stage with {} cycle{}", self.repeat, adds)
+        };
+        
+        let stepstrs: Vec<String> = self.steps.iter()
+            .enumerate()
+            .map(|(i, step)| {
+                let step_info = step.info_str(Some((i + 1) as i64), self.repeat);
+                step_info.lines()
+                    .map(|line| format!("    {}", line))
+                    .collect::<Vec<String>>()
+                    .join("\n")
+            })
+            .collect();
+        
+        let total_duration: i64 = self.steps.iter()
+            .map(|s| s.time * self.repeat)
+            .sum();
+        if total_duration > 0 {
+            stagestr.push_str(&format!(" (total duration {})", format_duration(total_duration)));
+        }
+        
+        if stepstrs.len() > 1 {
+            stagestr.push_str(" of:\n");
+            stagestr.push_str(&stepstrs.join("\n"));
+        } else if !stepstrs.is_empty() {
+            stagestr.push_str(" of ");
+            let step_words: Vec<&str> = stepstrs[0].split_whitespace().collect();
+            if step_words.len() > 1 {
+                stagestr.push_str(&step_words[1..].join(" "));
+            } else {
+                stagestr.push_str(&stepstrs[0]);
+            }
+        }
+        
+        stagestr
+    }
+}
+
+fn oxford_list(items: &[String]) -> String {
+    match items.len() {
+        0 => String::new(),
+        1 => items[0].clone(),
+        2 => format!("{} and {}", items[0], items[1]),
+        _ => {
+            let mut result = items[0].clone();
+            for item in &items[1..items.len() - 1] {
+                result.push_str(", ");
+                result.push_str(item);
+            }
+            result.push_str(", and ");
+            result.push_str(&items[items.len() - 1]);
+            result
+        }
+    }
+}
+
+fn filter_to_lowerform(filter: &str) -> String {
+    if filter.starts_with("x") && filter.contains("-m") {
+        return filter.to_string();
+    }
+    if filter.starts_with("m") && filter.contains(",x") {
+        let parts: Vec<&str> = filter.split(',').collect();
+        if parts.len() >= 2 {
+            let m_part = parts[0].trim_start_matches("m");
+            let x_part = parts[1].trim_start_matches("x");
+            if let (Ok(em), Ok(ex)) = (m_part.parse::<i32>(), x_part.parse::<i32>()) {
+                return format!("x{}-m{}", ex, em);
+            }
+        }
+    }
+    filter.to_string()
+}
+
+fn format_duration(seconds: i64) -> String {
+    if seconds <= 2 * 60 {
+        format!("{}s", seconds)
+    } else if seconds <= 2 * 60 * 60 {
+        let minutes = seconds / 60;
+        let secs = seconds % 60;
+        if secs == 0 {
+            format!("{}m", minutes)
+        } else {
+            format!("{}m{}s", minutes, secs)
+        }
+    } else {
+        let hours = seconds / 3600;
+        let minutes = (seconds % 3600) / 60;
+        let secs = seconds % 60;
+        let mut result = format!("{}h", hours);
+        if minutes > 0 {
+            result.push_str(&format!("{}m", minutes));
+        }
+        if secs > 0 {
+            result.push_str(&format!("{}s", secs));
+        }
+        result
+    }
+}
+
+fn format_temperature(temps: &[f64]) -> String {
+    if temps.is_empty() {
+        return String::new();
+    }
+    if temps.len() == 1 || temps.iter().all(|&t| (t - temps[0]).abs() < 0.01) {
+        format!("{:.2}°C", temps[0])
+    } else {
+        let temp_strs: Vec<String> = temps.iter().map(|t| format!("{:.2}", t)).collect();
+        format!("[{}]°C", temp_strs.join(", "))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1027,48 +1227,36 @@ impl fmt::Display for Protocol {
         if self.volume != 0.0 {
             extras.push(format!("sample volume {} µL", self.volume));
         }
-        if !self.runmode.is_empty() && self.runmode != "standard" {
+        if !self.runmode.is_empty() {
             extras.push(format!("run mode {}", self.runmode));
         }
         if !extras.is_empty() {
-            write!(f, " with {}", extras.join(", "))?;
+            write!(f, " with {}", oxford_list(&extras))?;
         }
         writeln!(f, ":")?;
         
         if !self.filters.is_empty() {
-            write!(f, "(default filters {})\n\n", self.filters.join(", "))?;
+            let filter_strs: Vec<String> = self.filters.iter()
+                .map(|filter| filter_to_lowerform(filter))
+                .collect();
+            write!(f, "(default filters {})\n\n", oxford_list(&filter_strs))?;
         } else {
             writeln!(f)?;
         }
         
-        for (i, stage) in self.stages.iter().enumerate() {
-            let stage_num = stage.index.unwrap_or((i + 1) as i64);
-            let cycles = if stage.repeat > 1 {
-                format!("{} cycles", stage.repeat)
-            } else {
-                "1 cycle".to_string()
-            };
-            write!(f, "  {}. Stage with {}:", stage_num, cycles)?;
-            if let Some(ref label) = stage.label {
-                write!(f, " {}", label)?;
-            }
-            writeln!(f)?;
-            
-            for (j, step) in stage.steps.iter().enumerate() {
-                write!(f, "    Step {}: ", j + 1)?;
-                if !step.temperature.is_empty() {
-                    let temps: Vec<String> = step.temperature.iter().map(|t| format!("{:.1}", t)).collect();
-                    write!(f, "RAMP to [{}]", temps.join(", "))?;
-                }
-                if step.time > 0 {
-                    write!(f, " HOLD {}s", step.time)?;
-                }
-                if step.collect == Some(true) {
-                    write!(f, " COLLECT")?;
-                }
-                writeln!(f)?;
-            }
-        }
+        let stagestrs: Vec<String> = self.stages.iter()
+            .enumerate()
+            .map(|(i, stage)| {
+                let stage_num = stage.index.unwrap_or((i + 1) as i64);
+                let stage_info = stage.info_str(Some(stage_num));
+                stage_info.lines()
+                    .map(|line| format!("  {}", line))
+                    .collect::<Vec<String>>()
+                    .join("\n")
+            })
+            .collect();
+        
+        write!(f, "{}", stagestrs.join("\n"))?;
         Ok(())
     }
 }
