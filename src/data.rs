@@ -475,4 +475,225 @@ mod tests {
         assert!(lines[0].contains("temperature_read=25"));
         assert!(lines[0].contains("temperature_set=25"));
     }
+
+    // =====================================================================
+    // Additional data module tests
+    // =====================================================================
+
+    #[test]
+    fn test_plate_data_get_attribute() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![
+                Attribute { key: "KEY1".to_string(), value: "value1".to_string() },
+                Attribute { key: "KEY2".to_string(), value: "value2".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        assert_eq!(plate_data.get_attribute("KEY1"), Some("value1"));
+        assert_eq!(plate_data.get_attribute("KEY2"), Some("value2"));
+        assert_eq!(plate_data.get_attribute("NONEXISTENT"), None);
+    }
+
+    #[test]
+    fn test_plate_data_filter_set() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![
+                Attribute { key: "FILTER_SET".to_string(), value: "x1-m4".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        assert_eq!(plate_data.filter_set().unwrap(), "x1-m4");
+    }
+
+    #[test]
+    fn test_plate_data_filter_set_missing() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        assert!(plate_data.filter_set().is_err());
+    }
+
+    #[test]
+    fn test_plate_data_get_temperatures() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![
+                Attribute { key: "TEMPERATURE".to_string(), value: "25.0,26.5,27.0".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        let temps = plate_data.get_temperatures().unwrap();
+        assert_eq!(temps.len(), 3);
+        assert!((temps[0] - 25.0).abs() < 0.001);
+        assert!((temps[1] - 26.5).abs() < 0.001);
+        assert!((temps[2] - 27.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_plate_data_get_numeric_attributes() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![
+                Attribute { key: "STAGE".to_string(), value: "2".to_string() },
+                Attribute { key: "CYCLE".to_string(), value: "5".to_string() },
+                Attribute { key: "STEP".to_string(), value: "1".to_string() },
+                Attribute { key: "POINT".to_string(), value: "10".to_string() },
+                Attribute { key: "EXPOSURE".to_string(), value: "500".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        assert_eq!(plate_data.get_stage(), Some(2));
+        assert_eq!(plate_data.get_cycle(), Some(5));
+        assert_eq!(plate_data.get_step(), Some(1));
+        assert_eq!(plate_data.get_point(), Some(10));
+        assert_eq!(plate_data.get_exposure(), Some(500));
+    }
+
+    #[test]
+    fn test_plate_point_data_fields() {
+        let ppd = PlatePointData {
+            stage: 1,
+            cycle: 2,
+            step: 3,
+            point: 4,
+            plate_data: vec![],
+        };
+
+        assert_eq!(ppd.stage, 1);
+        assert_eq!(ppd.cycle, 2);
+        assert_eq!(ppd.step, 3);
+        assert_eq!(ppd.point, 4);
+    }
+
+    #[test]
+    fn test_filter_data_collection_parse_multiple_plates() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <PlatePointDataCollection>
+            <Name>MultiPlateData</Name>
+            <PlatePointData>
+                <Stage>1</Stage>
+                <Cycle>1</Cycle>
+                <Step>1</Step>
+                <Point>1</Point>
+                <PlateData>
+                    <Rows>8</Rows>
+                    <Cols>12</Cols>
+                    <WellData>1.0 2.0 3.0</WellData>
+                    <Attribute>
+                        <key>FILTER_SET</key>
+                        <value>x1-m1</value>
+                    </Attribute>
+                </PlateData>
+                <PlateData>
+                    <Rows>8</Rows>
+                    <Cols>12</Cols>
+                    <WellData>4.0 5.0 6.0</WellData>
+                    <Attribute>
+                        <key>FILTER_SET</key>
+                        <value>x1-m2</value>
+                    </Attribute>
+                </PlateData>
+            </PlatePointData>
+        </PlatePointDataCollection>"#;
+
+        let data: FilterDataCollection = quick_xml::de::from_str(xml).unwrap();
+        assert_eq!(data.name, "MultiPlateData");
+        assert_eq!(data.plate_point_data.len(), 1);
+        assert_eq!(data.plate_point_data[0].plate_data.len(), 2);
+        assert_eq!(data.plate_point_data[0].plate_data[0].get_attribute("FILTER_SET"), Some("x1-m1"));
+        assert_eq!(data.plate_point_data[0].plate_data[1].get_attribute("FILTER_SET"), Some("x1-m2"));
+    }
+
+    #[test]
+    fn test_well_data_parsing() {
+        let xml = r#"<?xml version="1.0"?>
+        <PlatePointDataCollection>
+            <Name>Test</Name>
+            <PlatePointData>
+                <Stage>1</Stage>
+                <Cycle>1</Cycle>
+                <Step>1</Step>
+                <Point>1</Point>
+                <PlateData>
+                    <Rows>2</Rows>
+                    <Cols>3</Cols>
+                    <WellData>1.5 2.5 3.5 4.5 5.5 6.5</WellData>
+                    <Attribute>
+                        <key>FILTER_SET</key>
+                        <value>test</value>
+                    </Attribute>
+                </PlateData>
+            </PlatePointData>
+        </PlatePointDataCollection>"#;
+
+        let data: FilterDataCollection = quick_xml::de::from_str(xml).unwrap();
+        let plate = &data.plate_point_data[0].plate_data[0];
+        assert_eq!(plate.well_data, vec![1.5, 2.5, 3.5, 4.5, 5.5, 6.5]);
+    }
+
+    #[test]
+    fn test_lineprotocol_with_additional_tags() {
+        let plate_data = PlateData {
+            rows: 1,
+            cols: 2,
+            well_data: vec![1.0, 2.0],
+            attributes: vec![
+                Attribute { key: "FILTER_SET".to_string(), value: "x1-m1".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        let lines = plate_data
+            .to_lineprotocol(None, None, None, Some(&[("machine", "QS5")]))
+            .unwrap();
+
+        assert!(lines[0].contains("machine=\"QS5\""));
+    }
+
+    #[test]
+    fn test_lineprotocol_with_samples() {
+        let plate_data = PlateData {
+            rows: 1,
+            cols: 2,
+            well_data: vec![1.0, 2.0],
+            attributes: vec![
+                Attribute { key: "FILTER_SET".to_string(), value: "x1-m1".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        let samples = vec!["sample1".to_string(), "sample2".to_string()];
+        let lines = plate_data
+            .to_lineprotocol(None, Some(&samples), None, None)
+            .unwrap();
+
+        assert!(lines[0].contains("sample=\"sample1\""));
+        assert!(lines[1].contains("sample=\"sample2\""));
+    }
 }

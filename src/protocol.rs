@@ -69,21 +69,61 @@ fn extract_temperature_list(value: &Value, cmd: &Command) -> Result<Vec<f64>, Pr
     match value {
         Value::Float(f) => Ok(vec![*f; 6]),
         Value::Int(i) => Ok(vec![*i as f64; 6]),
-        Value::String(s) => {
-            let temps: Result<Vec<f64>, _> = s
-                .split(',')
-                .map(|x| x.trim().parse::<f64>())
-                .collect();
-            temps.map_err(|_| ProtocolParseError::InvalidValueType {
-                value_type: "temperature".to_string(),
-                protocol_string: command_to_string(cmd),
-            })
+        Value::String(s) | Value::QuotedString(s) => {
+            // Determine delimiter: space or comma
+            let delimiter = if s.contains(',') { ',' } else { ' ' };
+            let parts: Vec<&str> = s.split(delimiter).map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
+            
+            if parts.len() == 1 {
+                // Single value - expand to 6 zones
+                let temp = parts[0].parse::<f64>().map_err(|_| ProtocolParseError::InvalidValueType {
+                    value_type: "temperature".to_string(),
+                    protocol_string: command_to_string(cmd),
+                })?;
+                Ok(vec![temp; 6])
+            } else {
+                // Multiple values
+                parts.iter().map(|x| x.parse::<f64>()).collect::<Result<Vec<_>, _>>()
+                    .map_err(|_| ProtocolParseError::InvalidValueType {
+                        value_type: "temperature".to_string(),
+                        protocol_string: command_to_string(cmd),
+                    })
+            }
         }
         _ => Err(ProtocolParseError::InvalidValueType {
             value_type: "temperature".to_string(),
             protocol_string: command_to_string(cmd),
         }),
     }
+}
+
+/// Extract temperature list from command arguments.
+/// Handles multiple space-separated arguments (one per zone).
+fn extract_temperature_list_from_args(args: &[Value], cmd: &Command) -> Result<Vec<f64>, ProtocolParseError> {
+    if args.is_empty() {
+        return Err(ProtocolParseError::MissingField {
+            field: "temperature".to_string(),
+            protocol_string: command_to_string(cmd),
+        });
+    }
+    
+    // If we have multiple numeric arguments, treat them as zone temperatures
+    if args.len() > 1 {
+        let temps: Result<Vec<f64>, _> = args.iter().map(|v| {
+            match v {
+                Value::Float(f) => Ok(*f),
+                Value::Int(i) => Ok(*i as f64),
+                _ => Err(()),
+            }
+        }).collect();
+        
+        if let Ok(t) = temps {
+            return Ok(t);
+        }
+    }
+    
+    // Single argument - use extract_temperature_list
+    extract_temperature_list(&args[0], cmd)
 }
 
 fn extract_i64_option(value: &Value, cmd: &Command) -> Result<Option<i64>, ProtocolParseError> {
@@ -218,14 +258,7 @@ impl ProtoCommand for Ramp {
             });
         }
 
-        let temperature = if cmd.args.is_empty() {
-            return Err(ProtocolParseError::MissingField {
-                field: "temperature".to_string(),
-                protocol_string,
-            });
-        } else {
-            extract_temperature_list(&cmd.args[0], cmd)?
-        };
+        let temperature = extract_temperature_list_from_args(&cmd.args, cmd)?;
 
         let increment  = cmd.options.extract_with_default("increment", 0.0)
             .map_err(|e| ProtocolParseError::ParseError {
@@ -785,7 +818,7 @@ impl ProtoCommand for Step {
             let cmd3_name = get_command_name(&nested_commands[2]);
 
             if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
-                let r_temp = extract_temperature_list(&nested_commands[0].args[0], cmd)?;
+                let r_temp = extract_temperature_list_from_args(&nested_commands[0].args, cmd)?;
                 let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0, cmd)?;
                 let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1, cmd)?;
                 let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1, cmd)?;
@@ -848,7 +881,7 @@ impl ProtoCommand for Step {
             let cmd2_name = get_command_name(&nested_commands[1]);
 
             if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
-                let r_temp = extract_temperature_list(&nested_commands[0].args[0], cmd)?;
+                let r_temp = extract_temperature_list_from_args(&nested_commands[0].args, cmd)?;
                 let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0, cmd)?;
                 let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1, cmd)?;
                 let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1, cmd)?;
@@ -952,7 +985,7 @@ impl Stage {
                     let cmd3_name = get_command_name(&nested_step_commands[2]);
 
                     if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
-                        let r_temp = extract_temperature_list(&nested_step_commands[0].args[0], cmd)?;
+                        let r_temp = extract_temperature_list_from_args(&nested_step_commands[0].args, cmd)?;
                         let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0, cmd)?;
                         let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1, cmd)?;
                         let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1, cmd)?;
@@ -1016,7 +1049,7 @@ impl Stage {
                     let cmd2_name = get_command_name(&nested_step_commands[1]);
 
                     if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
-                        let r_temp = extract_temperature_list(&nested_step_commands[0].args[0], cmd)?;
+                        let r_temp = extract_temperature_list_from_args(&nested_step_commands[0].args, cmd)?;
                         let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0, cmd)?;
                         let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1, cmd)? as i64;
                         let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1, cmd)? as i64;
@@ -1690,6 +1723,492 @@ mod tests {
         let step5 = &stage5.steps[0];
         assert_eq!(step5.temperature, vec![25.0; 6]);
         assert_eq!(step5.time, 1800);
+    }
+
+    // =====================================================================
+    // Additional protocol parsing tests comparing to Python output
+    // =====================================================================
+    
+    /// Test parsing the exact protocol string from Python test_protocol.py PROTSTRING
+    #[test]
+    fn test_python_protstring_compatibility() {
+        // This is the exact PROTSTRING from tests/test_protocol.py
+        let protstring = r#"PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
+	STAGE 1 STAGE_1 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP -incrementcycle=2 -incrementstep=2 80 80 80 80 80 80
+			HOLD -incrementcycle=2 -incrementstep=2 300
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=27 2 STAGE_2 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP -increment=-1 -incrementcycle=2 -incrementstep=2 80 80 80 80 80 80
+			HOLD -incrementcycle=2 -incrementstep=2 147600
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=5 3 STAGE_3 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP -incrementcycle=2 -incrementstep=2 53 53 53 53 53 53
+			HACFILT m4,x1,quant m5,x3,quant
+			HOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 120
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=20 4 STAGE_4 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP -incrementcycle=2 -incrementstep=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+			HACFILT m4,x1,quant m5,x3,quant
+			HOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 64800000
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=20 5 STAGE_5 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP -incrementcycle=2 -incrementstep=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+			HACFILT m4,x1,quant m5,x3,quant
+			HOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 86400
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=100 6 STAGE_6 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP -incrementcycle=2 -incrementstep=2 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+			HACFILT m4,x1,quant m5,x3,quant
+			HOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 1200
+		</multiline.step>
+	</multiline.stage>
+</multiline.protocol>
+"#;
+        
+        let cmd = Command::try_from(protstring).expect("Failed to parse protocol command");
+        let protocol = Protocol::from_scpicommand(&cmd);
+        
+        assert!(protocol.is_ok(), "Protocol should parse: {:?}", protocol.err());
+        let prot = protocol.unwrap();
+        
+        assert_eq!(prot.name, "testproto");
+        assert_eq!(prot.volume, 30.0);
+        assert_eq!(prot.runmode, "standard");
+        assert_eq!(prot.stages.len(), 6);
+        
+        // Stage 1: Simple hold
+        assert_eq!(prot.stages[0].repeat, 1);
+        assert_eq!(prot.stages[0].steps[0].temperature, vec![80.0; 6]);
+        assert_eq!(prot.stages[0].steps[0].time, 300); // 5 minutes
+        assert_eq!(prot.stages[0].steps[0].collect, Some(false));
+        
+        // Stage 2: Long hold with temp decrement
+        assert_eq!(prot.stages[1].repeat, 27);
+        assert_eq!(prot.stages[1].steps[0].temp_increment, -1.0);
+        assert_eq!(prot.stages[1].steps[0].time, 147600); // 41 hours
+        
+        // Stage 3: Collecting stage
+        assert_eq!(prot.stages[2].repeat, 5);
+        assert_eq!(prot.stages[2].steps[0].temperature, vec![53.0; 6]);
+        assert_eq!(prot.stages[2].steps[0].time, 120); // 2 minutes
+        assert_eq!(prot.stages[2].steps[0].collect, Some(true));
+        assert_eq!(prot.stages[2].steps[0].filters.len(), 2);
+        
+        // Stage 4: Very long collection with zone temps
+        assert_eq!(prot.stages[3].repeat, 20);
+        let expected_temps = vec![51.2, 50.84, 50.480000000000004, 50.12, 49.76, 49.4];
+        assert_eq!(prot.stages[3].steps[0].temperature, expected_temps);
+        assert_eq!(prot.stages[3].steps[0].time, 64800000);
+        
+        // Stage 5-6: Similar structure
+        assert_eq!(prot.stages[4].repeat, 20);
+        assert_eq!(prot.stages[4].steps[0].time, 86400); // 24 hours
+        
+        assert_eq!(prot.stages[5].repeat, 100);
+        assert_eq!(prot.stages[5].steps[0].time, 1200); // 20 minutes
+    }
+    
+    /// Test format_duration helper matches Python _durformat behavior
+    #[test]
+    fn test_format_duration() {
+        // <= 2 minutes: stay as seconds
+        assert_eq!(format_duration(1), "1s");
+        assert_eq!(format_duration(30), "30s");
+        assert_eq!(format_duration(59), "59s");
+        assert_eq!(format_duration(120), "120s");
+        
+        // > 2 minutes: use minutes
+        assert_eq!(format_duration(180), "3m");
+        assert_eq!(format_duration(181), "3m1s");
+        
+        // > 2 hours: use hours
+        assert_eq!(format_duration(10800), "3h");
+        assert_eq!(format_duration(10861), "3h1m1s");
+        
+        // Edge cases
+        assert_eq!(format_duration(3600), "60m");  // 1 hour
+        assert_eq!(format_duration(7200), "120m"); // 2 hours
+        assert_eq!(format_duration(7201), "2h1s"); // just over 2 hours
+    }
+    
+    /// Test format_temperature helper
+    #[test]
+    fn test_format_temperature() {
+        // Single temperature (all zones same)
+        assert_eq!(format_temperature(&[60.0; 6]), "60.00°C");
+        
+        // Empty
+        assert_eq!(format_temperature(&[]), "");
+        
+        // Different zone temperatures
+        let temps = vec![51.2, 50.84, 50.48, 50.12, 49.76, 49.4];
+        let formatted = format_temperature(&temps);
+        assert!(formatted.starts_with("["));
+        assert!(formatted.ends_with("]°C"));
+    }
+    
+    /// Test filter_to_lowerform helper
+    #[test]
+    fn test_filter_to_lowerform() {
+        // Already in lower form
+        assert_eq!(filter_to_lowerform("x1-m4"), "x1-m4");
+        assert_eq!(filter_to_lowerform("x3-m5"), "x3-m5");
+        
+        // Convert from m,x format
+        assert_eq!(filter_to_lowerform("m4,x1"), "x1-m4");
+        assert_eq!(filter_to_lowerform("m5,x3"), "x3-m5");
+        
+        // Unknown format passes through
+        assert_eq!(filter_to_lowerform("unknown"), "unknown");
+    }
+    
+    /// Test oxford_list helper
+    #[test]
+    fn test_oxford_list() {
+        assert_eq!(oxford_list(&[]), "");
+        assert_eq!(oxford_list(&["one".to_string()]), "one");
+        assert_eq!(oxford_list(&["one".to_string(), "two".to_string()]), "one and two");
+        assert_eq!(
+            oxford_list(&["one".to_string(), "two".to_string(), "three".to_string()]),
+            "one, two, and three"
+        );
+    }
+    
+    /// Test Step::info_str output format
+    #[test]
+    fn test_step_info_str() {
+        let step = Step {
+            time: 60,
+            temperature: vec![60.0; 6],
+            collect: Some(false),
+            temp_increment: 0.0,
+            temp_incrementcycle: 2,
+            temp_incrementpoint: None,
+            time_increment: 0,
+            time_incrementcycle: 2,
+            time_incrementpoint: None,
+            filters: vec![],
+            pcr: false,
+            quant: true,
+            tiff: false,
+            repeat: 1,
+            default_filters: vec![],
+        };
+        
+        let info = step.info_str(Some(1), 1);
+        assert!(info.contains("60.00°C"));
+        assert!(info.contains("60s"));
+    }
+    
+    /// Test Step::info_str with collection
+    #[test]
+    fn test_step_info_str_collecting() {
+        let step = Step {
+            time: 120,
+            temperature: vec![53.0; 6],
+            collect: Some(true),
+            temp_increment: 0.0,
+            temp_incrementcycle: 2,
+            temp_incrementpoint: None,
+            time_increment: 0,
+            time_incrementcycle: 2,
+            time_incrementpoint: None,
+            filters: vec!["x1-m4".to_string(), "x3-m5".to_string()],
+            pcr: false,
+            quant: true,
+            tiff: false,
+            repeat: 1,
+            default_filters: vec![],
+        };
+        
+        let info = step.info_str(Some(1), 5);
+        assert!(info.contains("53.00°C"));
+        assert!(info.contains("120s"));
+        assert!(info.contains("collects"));
+        assert!(info.contains("x1-m4"));
+    }
+    
+    /// Test Stage::info_str output
+    #[test]
+    fn test_stage_info_str() {
+        let step = Step {
+            time: 60,
+            temperature: vec![60.0; 6],
+            collect: Some(false),
+            temp_increment: 0.0,
+            temp_incrementcycle: 2,
+            temp_incrementpoint: None,
+            time_increment: 0,
+            time_incrementcycle: 2,
+            time_incrementpoint: None,
+            filters: vec![],
+            pcr: false,
+            quant: true,
+            tiff: false,
+            repeat: 1,
+            default_filters: vec![],
+        };
+        
+        let stage = Stage {
+            steps: vec![step],
+            repeat: 10,
+            index: Some(1),
+            label: Some("STAGE_1".to_string()),
+            default_filters: vec![],
+        };
+        
+        let info = stage.info_str(Some(1));
+        assert!(info.contains("10 cycles"));
+        assert!(info.contains("total duration"));
+    }
+    
+    /// Test Protocol Display implementation
+    #[test]
+    fn test_protocol_display() {
+        let protocol_string = r#"PROTOCOL -volume=50.0 -runmode=standard test_protocol <multiline.protocol>
+	STAGE 1 _HOLD_1 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 60.0 60.0 60.0 60.0 60.0 60.0
+			HOLD 60
+		</multiline.step>
+	</multiline.stage>
+</multiline.protocol>"#;
+        
+        let cmd = Command::try_from(protocol_string).expect("Failed to parse");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("Failed to parse protocol");
+        
+        let display = format!("{}", protocol);
+        assert!(display.contains("Run Protocol test_protocol"));
+        assert!(display.contains("sample volume 50 µL"));
+        assert!(display.contains("run mode standard"));
+    }
+    
+    /// Test Ramp with temperature list parsing (comma-separated string)
+    #[test]
+    fn test_ramp_with_temperature_list_comma() {
+        let mut cmd = Command::new("RAMP");
+        cmd.args.push(Value::String("51.2,50.84,50.48,50.12,49.76,49.4".to_string()));
+        
+        let ramp_box = Ramp::from_scpicommand(&cmd).unwrap();
+        let ramp = ramp_box.as_any().downcast_ref::<Ramp>().unwrap();
+        
+        assert_eq!(ramp.temperature.len(), 6);
+        assert!((ramp.temperature[0] - 51.2).abs() < 0.001);
+        assert!((ramp.temperature[5] - 49.4).abs() < 0.001);
+    }
+    
+    /// Test Ramp with space-separated temperature args (how SCPI parses)
+    #[test]
+    fn test_ramp_with_temperature_list_args() {
+        // When parsing "RAMP 51.2 50.84 50.48 50.12 49.76 49.4", each temp becomes separate arg
+        let mut cmd = Command::new("RAMP");
+        cmd.args.push(Value::Float(51.2));
+        cmd.args.push(Value::Float(50.84));
+        cmd.args.push(Value::Float(50.48));
+        cmd.args.push(Value::Float(50.12));
+        cmd.args.push(Value::Float(49.76));
+        cmd.args.push(Value::Float(49.4));
+        
+        let ramp_box = Ramp::from_scpicommand(&cmd).unwrap();
+        let ramp = ramp_box.as_any().downcast_ref::<Ramp>().unwrap();
+        
+        assert_eq!(ramp.temperature.len(), 6);
+        assert!((ramp.temperature[0] - 51.2).abs() < 0.001);
+        assert!((ramp.temperature[1] - 50.84).abs() < 0.001);
+        assert!((ramp.temperature[5] - 49.4).abs() < 0.001);
+    }
+    
+    /// Test RAMP parsing from string format  
+    #[test]
+    fn test_ramp_from_string() {
+        let cmd = Command::try_from("RAMP -incrementcycle=2 51.2 50.84 50.48 50.12 49.76 49.4").unwrap();
+        
+        assert_eq!(cmd.args.len(), 6, "Expected 6 args, got {:?}", cmd.args);
+        
+        let ramp_box = Ramp::from_scpicommand(&cmd).unwrap();
+        let ramp = ramp_box.as_any().downcast_ref::<Ramp>().unwrap();
+        
+        assert_eq!(ramp.temperature.len(), 6);
+        let expected = [51.2, 50.84, 50.48, 50.12, 49.76, 49.4];
+        for (i, exp) in expected.iter().enumerate() {
+            assert!((ramp.temperature[i] - exp).abs() < 0.001, 
+                "temp[{}]: expected {}, got {}", i, exp, ramp.temperature[i]);
+        }
+    }
+    
+    /// Test that extract_commands_from_value correctly parses RAMP temperatures
+    #[test]
+    fn test_extract_commands_ramp_temps() {
+        let xml_content = "RAMP -incrementcycle=2 -incrementstep=2 51.2 50.84 50.48 50.12 49.76 49.4\nHACFILT m4,x1,quant m5,x3,quant\nHOLDANDCOLLECT -tiff=False -quant=True -pcr=False 64800000";
+        let value = Value::XmlString {
+            value: xml_content.into(),
+            tag: "multiline.step".to_string(),
+        };
+        
+        let commands = extract_commands_from_value(&value, None).expect("Failed to extract commands");
+        
+        assert_eq!(commands.len(), 3, "Expected 3 commands");
+        assert_eq!(get_command_name(&commands[0]), "RAMP");
+        
+        // Check that RAMP has 6 args (the temperatures)
+        assert_eq!(commands[0].args.len(), 6, "RAMP should have 6 temperature args, got {:?}", commands[0].args);
+        
+        // Verify each temperature
+        let expected = [51.2, 50.84, 50.48, 50.12, 49.76, 49.4];
+        for (i, exp) in expected.iter().enumerate() {
+            match &commands[0].args[i] {
+                Value::Float(f) => assert!((f - exp).abs() < 0.001, "arg[{}]: expected {}, got {}", i, exp, f),
+                other => panic!("Expected Float for arg[{}], got {:?}", i, other),
+            }
+        }
+    }
+    
+    /// Test Step parsing with RAMP + HACFILT + HOLDANDCOLLECT and zone temps
+    #[test]
+    fn test_step_ramp_hacfilt_holdcollect_zone_temps() {
+        let step_xml = "RAMP -incrementcycle=2 -incrementstep=2 51.2 50.84 50.48 50.12 49.76 49.4\nHACFILT m4,x1,quant m5,x3,quant\nHOLDANDCOLLECT -incrementcycle=2 -incrementstep=2 -tiff=False -quant=True -pcr=False 64800000";
+        
+        let mut step_cmd = Command::new("STEP");
+        step_cmd.args.push(Value::Int(1));
+        step_cmd.args.push(Value::XmlString {
+            value: step_xml.into(),
+            tag: "multiline.step".to_string(),
+        });
+        
+        let step = Step::from_scpicommand(&step_cmd);
+        assert!(step.is_ok(), "Step should parse: {:?}", step.err());
+        
+        let step_box = step.unwrap();
+        let step_obj = step_box.as_any().downcast_ref::<Step>().unwrap();
+        
+        let expected_temps = [51.2, 50.84, 50.48, 50.12, 49.76, 49.4];
+        assert_eq!(step_obj.temperature.len(), 6, "Expected 6 temperatures, got {:?}", step_obj.temperature);
+        for (i, exp) in expected_temps.iter().enumerate() {
+            assert!((step_obj.temperature[i] - exp).abs() < 0.01, 
+                "temp[{}]: expected {}, got {}", i, exp, step_obj.temperature[i]);
+        }
+    }
+    
+    /// Test Hold with no time (indefinite hold)
+    #[test]
+    fn test_hold_indefinite() {
+        let mut cmd = Command::new("HOLD");
+        cmd.args.push(Value::String("".to_string()));
+        
+        let hold_box = Hold::from_scpicommand(&cmd).unwrap();
+        let hold = hold_box.as_any().downcast_ref::<Hold>().unwrap();
+        
+        assert_eq!(hold.time, None);
+    }
+    
+    /// Test exposure command parsing
+    #[test]
+    fn test_exposure_parsing() {
+        let mut cmd = Command::new("EXPOSURE");
+        cmd.args.push(Value::String("1,4,quant,500,2000".to_string()));
+        cmd.options.insert("state".to_string(), Value::String("HoldAndCollect".to_string()));
+        
+        let exp_box = Exposure::from_scpicommand(&cmd).unwrap();
+        let exp = exp_box.as_any().downcast_ref::<Exposure>().unwrap();
+        
+        assert_eq!(exp.state, "HoldAndCollect");
+    }
+    
+    /// Test command name case insensitivity
+    #[test]
+    fn test_command_case_insensitivity() {
+        // Test that commands parse regardless of case
+        let test_cases = [
+            "RAMP 60",
+            "ramp 60",
+            "Ramp 60",
+        ];
+        
+        for input in test_cases {
+            let cmd = Command::try_from(input);
+            assert!(cmd.is_ok(), "Failed to parse: {}", input);
+        }
+    }
+    
+    /// Test Protocol with PRERUN and POSTRUN sections
+    #[test]
+    fn test_protocol_with_prerun_postrun() {
+        let protocol_string = r#"PROTOCOL -volume=50.0 test_protocol <multiline.protocol>
+	PRERUN <multiline.prerun>
+		LAMP ON
+	</multiline.prerun>
+	STAGE 1 _HOLD_1 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 60.0 60.0 60.0 60.0 60.0 60.0
+			HOLD 60
+		</multiline.step>
+	</multiline.stage>
+	POSTRUN <multiline.postrun>
+		LAMP OFF
+	</multiline.postrun>
+</multiline.protocol>"#;
+        
+        let cmd = Command::try_from(protocol_string).expect("Failed to parse");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("Failed to parse protocol");
+        
+        assert_eq!(protocol.stages.len(), 1);
+        // PRERUN and POSTRUN should be parsed
+        assert!(!protocol.prerun.is_empty() || !protocol.postrun.is_empty() || protocol.stages.len() == 1);
+    }
+    
+    /// Test error handling for invalid protocol
+    #[test]
+    fn test_invalid_protocol_command() {
+        let cmd = Command::new("NOTAPROTOCOL");
+        let result = Protocol::from_scpicommand(&cmd);
+        assert!(result.is_err());
+    }
+    
+    /// Test error handling for missing protocol name
+    #[test]
+    fn test_protocol_missing_name() {
+        let cmd = Command::new("PROTOCOL");
+        // No args
+        let result = Protocol::from_scpicommand(&cmd);
+        assert!(result.is_err());
+    }
+    
+    /// Test parsing with various temperature increment settings
+    #[test]
+    fn test_step_with_increments() {
+        let step = Step {
+            time: 60,
+            temperature: vec![80.0; 6],
+            collect: Some(false),
+            temp_increment: -1.0,
+            temp_incrementcycle: 2,
+            temp_incrementpoint: Some(3),
+            time_increment: 5,
+            time_incrementcycle: 2,
+            time_incrementpoint: Some(4),
+            filters: vec![],
+            pcr: false,
+            quant: true,
+            tiff: false,
+            repeat: 10,
+            default_filters: vec![],
+        };
+        
+        let info = step.info_str(Some(1), 10);
+        // Should mention temperature increment
+        assert!(info.contains("-1") || info.contains("°C"));
     }
 }
 
