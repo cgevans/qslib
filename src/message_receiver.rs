@@ -209,7 +209,7 @@ impl MsgRecv {
     /// # Examples
     ///
     /// ```
-    /// use crate::message_receiver::MsgRecv;
+    /// use qslib::message_receiver::MsgRecv;
     ///
     /// let mut receiver = MsgRecv::new();
     /// let ready = receiver.push_data(b"OK 1 success\n");
