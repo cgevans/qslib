@@ -244,8 +244,10 @@ async fn test_simulator_controller_access() {
 async fn test_simulator_log_subscription() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
+    Subscribe::topic("Temperature").send(&connection).await.unwrap();
+
     // Subscribe to all messages
-    let mut stream = connection.subscribe_log(&["*"]).await;
+    let mut stream = connection.subscribe_log(&["Temperature"]).await;
     
     // Wait for at least one message (with timeout)
     let timeout = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
