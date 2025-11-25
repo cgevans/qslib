@@ -306,10 +306,13 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   python_tests_real:
-    name: Python Tests with Real Machine Tests
+    name: Python tests with machine
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -333,7 +336,7 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
 
   rust_integration_tests:
-    name: Rust Integration Tests with Simulator
+    name: Rust tests with machine
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
