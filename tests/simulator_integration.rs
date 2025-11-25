@@ -18,6 +18,21 @@ const TCP_HOST: &str = "localhost";
 const TCP_PORT: u16 = 7000;
 const SSL_HOST: &str = "localhost";
 const SSL_PORT: u16 = 7443;
+const TEST_PASSWORD: &str = "correctpassword";
+
+/// Helper to connect and authenticate with Observer access level.
+async fn connect_authenticated(host: &str, port: u16, conn_type: ConnectionType) -> QSConnection {
+    let conn = QSConnection::connect(host, port, conn_type)
+        .await
+        .expect("Failed to connect");
+    conn.authenticate(TEST_PASSWORD)
+        .await
+        .expect("Failed to authenticate");
+    conn.set_access_level(AccessLevel::Observer)
+        .await
+        .expect("Failed to set access level");
+    conn
+}
 
 /// Test TCP connection to the simulator
 #[tokio::test]
@@ -106,9 +121,7 @@ async fn test_simulator_help_command() {
 #[tokio::test]
 #[ignore]
 async fn test_simulator_power_query() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
-        .await
-        .expect("Failed to connect");
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     let response = PowerQuery
         .send(&connection)
@@ -139,6 +152,38 @@ async fn test_simulator_access_level_query() {
         .await;
     
     assert!(response.is_ok(), "Access level query failed: {:?}", response.err());
+}
+
+/// Test authentication
+#[tokio::test]
+#[ignore]
+async fn test_simulator_authentication() {
+    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+        .await
+        .expect("Failed to connect");
+    
+    // Authenticate
+    let auth_result = connection.authenticate(TEST_PASSWORD).await;
+    assert!(auth_result.is_ok(), "Authentication failed: {:?}", auth_result.err());
+    
+    // Verify we can now set higher access levels
+    let set_result = connection.set_access_level(AccessLevel::Controller).await;
+    assert!(set_result.is_ok(), "Failed to set Controller after auth: {:?}", set_result.err());
+    
+    let level = connection.get_access_level().await.expect("Failed to get access level");
+    assert!(matches!(level, AccessLevel::Controller), "Expected Controller, got {:?}", level);
+}
+
+/// Test authentication with wrong password fails
+#[tokio::test]
+#[ignore]
+async fn test_simulator_authentication_wrong_password() {
+    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+        .await
+        .expect("Failed to connect");
+    
+    let auth_result = connection.authenticate("wrongpassword").await;
+    assert!(auth_result.is_err(), "Authentication with wrong password should fail");
 }
 
 /// Test setting access level (without password - basic level)
@@ -179,20 +224,25 @@ async fn test_simulator_controller_access() {
         .await
         .expect("Failed to connect");
     
-    // Use QSConnection's set_access_level which handles password
-    let result = connection.set_access_level(AccessLevel::Controller).await;
+    // Authenticate first
+    connection.authenticate(TEST_PASSWORD)
+        .await
+        .expect("Failed to authenticate");
     
-    // This may fail without proper authentication setup
-    println!("Set controller access result: {:?}", result);
+    // Now set controller access level
+    let result = connection.set_access_level(AccessLevel::Controller).await;
+    assert!(result.is_ok(), "Failed to set Controller access: {:?}", result.err());
+    
+    // Verify
+    let level = connection.get_access_level().await.expect("Failed to get access level");
+    assert!(matches!(level, AccessLevel::Controller), "Expected Controller, got {:?}", level);
 }
 
 /// Test subscribing to log messages
 #[tokio::test]
 #[ignore]
 async fn test_simulator_log_subscription() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
-        .await
-        .expect("Failed to connect");
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     // Subscribe to all messages
     let mut stream = connection.subscribe_log(&["*"]).await;
@@ -209,9 +259,7 @@ async fn test_simulator_log_subscription() {
 #[tokio::test]
 #[ignore]
 async fn test_simulator_run_title_no_run() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
-        .await
-        .expect("Failed to connect");
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     let result = connection.get_current_run_name().await;
     
@@ -226,9 +274,7 @@ async fn test_simulator_run_title_no_run() {
 #[tokio::test]
 #[ignore]
 async fn test_simulator_temperature_setpoints() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
-        .await
-        .expect("Failed to connect");
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     let result = connection.get_current_temperature_setpoints().await;
     
@@ -247,9 +293,7 @@ async fn test_simulator_temperature_setpoints() {
 #[tokio::test]
 #[ignore]
 async fn test_simulator_file_list() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
-        .await
-        .expect("Failed to connect");
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     let result = connection.get_expfile_list("*").await;
     
@@ -262,9 +306,7 @@ async fn test_simulator_file_list() {
 #[tokio::test]
 #[ignore]
 async fn test_simulator_concurrent_commands() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
-        .await
-        .expect("Failed to connect");
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     // Send multiple commands concurrently
     let power_fut = PowerQuery.send(&connection);
@@ -288,9 +330,7 @@ async fn test_simulator_concurrent_commands() {
 #[tokio::test]
 #[ignore]
 async fn test_simulator_raw_command() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
-        .await
-        .expect("Failed to connect");
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     // Send a raw RUNTitle? command
     let mut response = connection
@@ -306,9 +346,7 @@ async fn test_simulator_raw_command() {
 #[tokio::test]
 #[ignore]
 async fn test_simulator_ssl_commands() {
-    let connection = QSConnection::connect(SSL_HOST, SSL_PORT, ConnectionType::SSL)
-        .await
-        .expect("Failed to connect via SSL");
+    let connection = connect_authenticated(SSL_HOST, SSL_PORT, ConnectionType::SSL).await;
     
     // Test a simple command over SSL
     let response = PowerQuery

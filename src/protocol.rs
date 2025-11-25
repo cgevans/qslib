@@ -4,6 +4,11 @@ use std::convert::TryInto;
 use std::fmt;
 use thiserror::Error;
 
+/// Default number of temperature zones for QuantStudio machines.
+/// Different models have different zone counts (1, 2, 3, or 6).
+/// Default is 6 for backward compatibility with QuantStudio 5.
+pub const DEFAULT_NUM_ZONES: usize = 6;
+
 #[derive(Debug, Error)]
 pub enum ProtocolParseError {
     #[error("Parse error: {source}\nProtocol string: {protocol_string}")]
@@ -65,24 +70,27 @@ fn parse_error_to_protocol_error(e: ParseError, cmd: &Command) -> ProtocolParseE
     }
 }
 
-fn extract_temperature_list(value: &Value, cmd: &Command) -> Result<Vec<f64>, ProtocolParseError> {
+/// Extract temperature list from a Value.
+/// When a single temperature is provided, it is expanded to `num_zones` zones.
+/// When multiple temperatures are provided (comma or space separated), they are used as-is.
+fn extract_temperature_list(value: &Value, cmd: &Command, num_zones: usize) -> Result<Vec<f64>, ProtocolParseError> {
     match value {
-        Value::Float(f) => Ok(vec![*f; 6]),
-        Value::Int(i) => Ok(vec![*i as f64; 6]),
+        Value::Float(f) => Ok(vec![*f; num_zones]),
+        Value::Int(i) => Ok(vec![*i as f64; num_zones]),
         Value::String(s) | Value::QuotedString(s) => {
             // Determine delimiter: space or comma
             let delimiter = if s.contains(',') { ',' } else { ' ' };
             let parts: Vec<&str> = s.split(delimiter).map(|x| x.trim()).filter(|x| !x.is_empty()).collect();
             
             if parts.len() == 1 {
-                // Single value - expand to 6 zones
+                // Single value - expand to num_zones zones
                 let temp = parts[0].parse::<f64>().map_err(|_| ProtocolParseError::InvalidValueType {
                     value_type: "temperature".to_string(),
                     protocol_string: command_to_string(cmd),
                 })?;
-                Ok(vec![temp; 6])
+                Ok(vec![temp; num_zones])
             } else {
-                // Multiple values
+                // Multiple values - use as-is (auto-detected zone count)
                 parts.iter().map(|x| x.parse::<f64>()).collect::<Result<Vec<_>, _>>()
                     .map_err(|_| ProtocolParseError::InvalidValueType {
                         value_type: "temperature".to_string(),
@@ -99,7 +107,9 @@ fn extract_temperature_list(value: &Value, cmd: &Command) -> Result<Vec<f64>, Pr
 
 /// Extract temperature list from command arguments.
 /// Handles multiple space-separated arguments (one per zone).
-fn extract_temperature_list_from_args(args: &[Value], cmd: &Command) -> Result<Vec<f64>, ProtocolParseError> {
+/// When a single temperature is provided, it is expanded to `num_zones` zones.
+/// When multiple temperatures are provided as separate args, they are used as-is (auto-detected zone count).
+fn extract_temperature_list_from_args(args: &[Value], cmd: &Command, num_zones: usize) -> Result<Vec<f64>, ProtocolParseError> {
     if args.is_empty() {
         return Err(ProtocolParseError::MissingField {
             field: "temperature".to_string(),
@@ -107,7 +117,7 @@ fn extract_temperature_list_from_args(args: &[Value], cmd: &Command) -> Result<V
         });
     }
     
-    // If we have multiple numeric arguments, treat them as zone temperatures
+    // If we have multiple numeric arguments, treat them as zone temperatures (auto-detected count)
     if args.len() > 1 {
         let temps: Result<Vec<f64>, _> = args.iter().map(|v| {
             match v {
@@ -122,8 +132,8 @@ fn extract_temperature_list_from_args(args: &[Value], cmd: &Command) -> Result<V
         }
     }
     
-    // Single argument - use extract_temperature_list
-    extract_temperature_list(&args[0], cmd)
+    // Single argument - use extract_temperature_list with num_zones for expansion
+    extract_temperature_list(&args[0], cmd, num_zones)
 }
 
 fn extract_i64_option(value: &Value, cmd: &Command) -> Result<Option<i64>, ProtocolParseError> {
@@ -258,7 +268,7 @@ impl ProtoCommand for Ramp {
             });
         }
 
-        let temperature = extract_temperature_list_from_args(&cmd.args, cmd)?;
+        let temperature = extract_temperature_list_from_args(&cmd.args, cmd, DEFAULT_NUM_ZONES)?;
 
         let increment  = cmd.options.extract_with_default("increment", 0.0)
             .map_err(|e| ProtocolParseError::ParseError {
@@ -818,7 +828,7 @@ impl ProtoCommand for Step {
             let cmd3_name = get_command_name(&nested_commands[2]);
 
             if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
-                let r_temp = extract_temperature_list_from_args(&nested_commands[0].args, cmd)?;
+                let r_temp = extract_temperature_list_from_args(&nested_commands[0].args, cmd, DEFAULT_NUM_ZONES)?;
                 let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0, cmd)?;
                 let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1, cmd)?;
                 let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1, cmd)?;
@@ -881,7 +891,7 @@ impl ProtoCommand for Step {
             let cmd2_name = get_command_name(&nested_commands[1]);
 
             if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
-                let r_temp = extract_temperature_list_from_args(&nested_commands[0].args, cmd)?;
+                let r_temp = extract_temperature_list_from_args(&nested_commands[0].args, cmd, DEFAULT_NUM_ZONES)?;
                 let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0, cmd)?;
                 let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1, cmd)?;
                 let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1, cmd)?;
@@ -985,7 +995,7 @@ impl Stage {
                     let cmd3_name = get_command_name(&nested_step_commands[2]);
 
                     if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
-                        let r_temp = extract_temperature_list_from_args(&nested_step_commands[0].args, cmd)?;
+                        let r_temp = extract_temperature_list_from_args(&nested_step_commands[0].args, cmd, DEFAULT_NUM_ZONES)?;
                         let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0, cmd)?;
                         let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1, cmd)?;
                         let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1, cmd)?;
@@ -1049,7 +1059,7 @@ impl Stage {
                     let cmd2_name = get_command_name(&nested_step_commands[1]);
 
                     if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
-                        let r_temp = extract_temperature_list_from_args(&nested_step_commands[0].args, cmd)?;
+                        let r_temp = extract_temperature_list_from_args(&nested_step_commands[0].args, cmd, DEFAULT_NUM_ZONES)?;
                         let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0, cmd)?;
                         let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1, cmd)? as i64;
                         let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1, cmd)? as i64;
@@ -2209,6 +2219,124 @@ mod tests {
         let info = step.info_str(Some(1), 10);
         // Should mention temperature increment
         assert!(info.contains("-1") || info.contains("°C"));
+    }
+
+    /// Test extract_temperature_list with single value expanded to 1 zone
+    #[test]
+    fn test_extract_temperature_list_single_zone() {
+        let cmd = Command::new("RAMP");
+        let value = Value::Float(60.0);
+        
+        let temps = extract_temperature_list(&value, &cmd, 1).unwrap();
+        assert_eq!(temps.len(), 1);
+        assert!((temps[0] - 60.0).abs() < 0.001);
+    }
+
+    /// Test extract_temperature_list with single value expanded to 3 zones
+    #[test]
+    fn test_extract_temperature_list_three_zones() {
+        let cmd = Command::new("RAMP");
+        let value = Value::Float(60.0);
+        
+        let temps = extract_temperature_list(&value, &cmd, 3).unwrap();
+        assert_eq!(temps.len(), 3);
+        for t in &temps {
+            assert!((t - 60.0).abs() < 0.001);
+        }
+    }
+
+    /// Test extract_temperature_list with comma-separated string (auto-detect 3 zones)
+    #[test]
+    fn test_extract_temperature_list_comma_three_zones() {
+        let cmd = Command::new("RAMP");
+        let value = Value::String("60.0,61.0,62.0".to_string());
+        
+        // num_zones parameter is ignored when multiple values are provided
+        let temps = extract_temperature_list(&value, &cmd, 6).unwrap();
+        assert_eq!(temps.len(), 3, "Should auto-detect 3 zones from comma-separated string");
+        assert!((temps[0] - 60.0).abs() < 0.001);
+        assert!((temps[1] - 61.0).abs() < 0.001);
+        assert!((temps[2] - 62.0).abs() < 0.001);
+    }
+
+    /// Test extract_temperature_list_from_args with single arg expanded to 1 zone
+    #[test]
+    fn test_extract_temperature_list_from_args_single_zone() {
+        let cmd = Command::new("RAMP");
+        let args = vec![Value::Float(60.0)];
+        
+        let temps = extract_temperature_list_from_args(&args, &cmd, 1).unwrap();
+        assert_eq!(temps.len(), 1);
+        assert!((temps[0] - 60.0).abs() < 0.001);
+    }
+
+    /// Test extract_temperature_list_from_args with 3 args (auto-detect)
+    #[test]
+    fn test_extract_temperature_list_from_args_three_zones() {
+        let cmd = Command::new("RAMP");
+        let args = vec![Value::Float(60.0), Value::Float(61.0), Value::Float(62.0)];
+        
+        // num_zones is ignored when multiple args are provided (auto-detect)
+        let temps = extract_temperature_list_from_args(&args, &cmd, 6).unwrap();
+        assert_eq!(temps.len(), 3, "Should auto-detect 3 zones from args");
+        assert!((temps[0] - 60.0).abs() < 0.001);
+        assert!((temps[1] - 61.0).abs() < 0.001);
+        assert!((temps[2] - 62.0).abs() < 0.001);
+    }
+
+    /// Test Ramp parsing with 1-zone (single temperature)
+    #[test]
+    fn test_ramp_single_temperature_expansion() {
+        let mut cmd = Command::new("RAMP");
+        cmd.args.push(Value::Float(60.0));
+        
+        let ramp_box = Ramp::from_scpicommand(&cmd).unwrap();
+        let ramp = ramp_box.as_any().downcast_ref::<Ramp>().unwrap();
+        
+        // With DEFAULT_NUM_ZONES=6, single temp expands to 6
+        assert_eq!(ramp.temperature.len(), DEFAULT_NUM_ZONES);
+        for t in &ramp.temperature {
+            assert!((t - 60.0).abs() < 0.001);
+        }
+    }
+
+    /// Test Ramp parsing with 3-zone comma-separated temperatures
+    #[test]
+    fn test_ramp_with_three_zone_temps() {
+        let mut cmd = Command::new("RAMP");
+        cmd.args.push(Value::String("60.0,61.0,62.0".to_string()));
+        
+        let ramp_box = Ramp::from_scpicommand(&cmd).unwrap();
+        let ramp = ramp_box.as_any().downcast_ref::<Ramp>().unwrap();
+        
+        // Auto-detect 3 zones from the values
+        assert_eq!(ramp.temperature.len(), 3);
+        assert!((ramp.temperature[0] - 60.0).abs() < 0.001);
+        assert!((ramp.temperature[1] - 61.0).abs() < 0.001);
+        assert!((ramp.temperature[2] - 62.0).abs() < 0.001);
+    }
+
+    /// Test Ramp parsing with 3 separate args (auto-detect zones)
+    #[test]
+    fn test_ramp_with_three_zone_args() {
+        let mut cmd = Command::new("RAMP");
+        cmd.args.push(Value::Float(60.0));
+        cmd.args.push(Value::Float(61.0));
+        cmd.args.push(Value::Float(62.0));
+        
+        let ramp_box = Ramp::from_scpicommand(&cmd).unwrap();
+        let ramp = ramp_box.as_any().downcast_ref::<Ramp>().unwrap();
+        
+        assert_eq!(ramp.temperature.len(), 3);
+        assert!((ramp.temperature[0] - 60.0).abs() < 0.001);
+        assert!((ramp.temperature[1] - 61.0).abs() < 0.001);
+        assert!((ramp.temperature[2] - 62.0).abs() < 0.001);
+    }
+
+    /// Test DEFAULT_NUM_ZONES constant is accessible
+    #[test]
+    fn test_default_num_zones_constant() {
+        assert_eq!(DEFAULT_NUM_ZONES, 6);
     }
 }
 

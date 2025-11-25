@@ -181,6 +181,12 @@ impl PlateData {
         } else {
             self.set_temperatures.as_deref()
         };
+
+        // Parse read temperatures for zone mapping (auto-detect zone count)
+        let read_temperatures = self.get_temperatures();
+        let num_zones = read_temperatures.as_ref().map(|t| t.len()).unwrap_or(1);
+        let zone_size = if num_zones > 0 { self.cols / num_zones as u32 } else { self.cols };
+
         // Generate a line for each well
         for ((row_letter, col), &fluorescence) in well_names.iter().zip(self.well_data.iter()) {
             let mut line = format!(
@@ -214,13 +220,12 @@ impl PlateData {
                 line.push_str(&format!(",point={:04}i", point));
             }
 
-            // Add temperature if available
-            if let Some(temp) = self
-                .get_attribute("TEMPERATURE")
-                .and_then(|t| t.split(',').nth(((col - 1) / (self.cols / 6)) as usize))
-                .and_then(|t| t.parse::<f64>().ok())
-            {
-                line.push_str(&format!(",temperature_read={}", temp));
+            // Add temperature if available (using auto-detected zone count)
+            if let Some(ref temps) = read_temperatures {
+                let zone_idx = ((col - 1) / zone_size) as usize;
+                if let Some(&temp) = temps.get(zone_idx) {
+                    line.push_str(&format!(",temperature_read={}", temp));
+                }
             }
 
             // Add sample if provided

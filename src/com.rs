@@ -1,7 +1,10 @@
 use anyhow::Context;
 use bstr::{BString, ByteSlice};
 use dashmap::DashMap;
+use hmac::{Hmac, Mac};
 use log::{error, trace};
+use md5::Md5;
+type HmacMd5 = Hmac<Md5>;
 use rustls::{
     client::danger::HandshakeSignatureValid, client::danger::ServerCertVerified,
     client::danger::ServerCertVerifier, DigitallySignedStruct, Error as TLSError, SignatureScheme,
@@ -1034,6 +1037,59 @@ impl QSConnection {
             .await?
             .receive_response()
             .await??;
+        Ok(())
+    }
+
+    /// Authenticate with the machine using HMAC-MD5 challenge-response.
+    pub async fn authenticate(
+        &self,
+        password: &str,
+    ) -> Result<(), CommandError<ErrorResponse>> {
+        // Get challenge
+        let mut challenge_recv = self.send_command_bytes(b"CHAL?").await?;
+        let challenge_result = challenge_recv
+            .get_response()
+            .await
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to get challenge: {}", e)))?;
+        
+        let challenge_response = challenge_result
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Challenge command failed: {}", e)))?;
+        
+        let challenge_str = challenge_response
+            .args
+            .first()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No challenge in response")))?
+            .clone()
+            .try_into_string()
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Challenge is not a string: {:?}", e)))?;
+
+        // Compute HMAC-MD5
+        let mut mac = HmacMd5::new_from_slice(password.as_bytes())
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("HMAC error: {}", e)))?;
+        mac.update(challenge_str.as_bytes());
+        let auth_response = hex::encode(mac.finalize().into_bytes());
+
+        // Send AUTH command
+        let auth_cmd = Command::new("AUTH").with_arg(auth_response);
+        let mut auth_recv = self.send_command(auth_cmd).await?;
+        let auth_result = auth_recv
+            .get_response()
+            .await
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Auth recv error: {}", e)))?;
+        
+        auth_result.map_err(|e| CommandError::InternalError(anyhow::anyhow!("Authentication failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Authenticate and set access level in one call.
+    pub async fn authenticate_and_set_access_level(
+        &self,
+        password: &str,
+        level: AccessLevel,
+    ) -> Result<(), CommandError<ErrorResponse>> {
+        self.authenticate(password).await?;
+        self.set_access_level(level).await?;
         Ok(())
     }
 
