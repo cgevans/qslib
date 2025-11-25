@@ -60,6 +60,13 @@ impl ArgMap {
         self.insert(key, value);
         self
     }
+
+    pub fn extract_with_default<'a, T>(&'a self, key: &str, default: T) -> Result<T, ParseError> where T: TryFrom<&'a Value, Error = ParseError> {
+        match self.get(key) {
+            Some(v) => Ok(v.try_into()?),
+            None => Ok(default),
+        }
+    }
 }
 
 impl IntoIterator for ArgMap {
@@ -371,6 +378,47 @@ impl Value {
         match self {
             Value::Int(i) => Ok(i),
             _ => Err(ParseError::ParseError("int".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&Value> for i64 {
+    type Error = ParseError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Int(i) => Ok(*i),
+            _ => Err(ParseError::ParseError("int".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&Value> for f64 {
+    type Error = ParseError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Float(f) => Ok(*f),
+            _ => Err(ParseError::ParseError("float".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&Value> for bool {
+    type Error = ParseError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::Bool(b) => Ok(*b),
+            _ => Err(ParseError::ParseError("bool".to_string())),
+        }
+    }
+}
+
+impl TryFrom<&Value> for String {
+
+    type Error = ParseError;
+    fn try_from(value: &Value) -> Result<Self, Self::Error> {
+        match value {
+            Value::String(s) => Ok(s.clone()),
+            _ => Err(ParseError::ParseError("string".to_string())),
         }
     }
 }
@@ -850,9 +898,6 @@ impl Ready {
     }
 }
 
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-
 use crate::com::QSConnectionError;
 use crate::commands::CommandBuilder;
 
@@ -1026,5 +1071,311 @@ mod tests {
 
         let result = Value::parse(&mut &output[..]).unwrap();
         assert_eq!(result, value);
+    }
+
+    // =====================================================================
+    // Additional parser tests
+    // =====================================================================
+
+    #[test]
+    fn test_parse_value_types() {
+        // Integer
+        let result = Value::parse(&mut b"42"[..].as_ref()).unwrap();
+        assert!(matches!(result, Value::Int(42)));
+
+        // Negative integer
+        let result = Value::parse(&mut b"-10"[..].as_ref()).unwrap();
+        assert!(matches!(result, Value::Int(-10)));
+
+        // Float
+        let result = Value::parse(&mut b"3.24"[..].as_ref()).unwrap();
+        match result {
+            Value::Float(f) => assert!((f - 3.24).abs() < 0.001),
+            _ => panic!("Expected Float"),
+        }
+
+        // Negative float
+        let result = Value::parse(&mut b"-3.24"[..].as_ref()).unwrap();
+        match result {
+            Value::Float(f) => assert!((f + 3.24).abs() < 0.001),
+            _ => panic!("Expected Float"),
+        }
+
+        // Boolean true
+        let result = Value::parse(&mut b"true"[..].as_ref()).unwrap();
+        assert!(matches!(result, Value::Bool(true)));
+
+        // Boolean false (case insensitive)
+        let result = Value::parse(&mut b"False"[..].as_ref()).unwrap();
+        assert!(matches!(result, Value::Bool(false)));
+
+        // String
+        let result = Value::parse(&mut b"hello"[..].as_ref()).unwrap();
+        assert!(matches!(result, Value::String(s) if s == "hello"));
+    }
+
+    #[test]
+    fn test_parse_quoted_string() {
+        let result = Value::parse(&mut b"\"hello world\""[..].as_ref()).unwrap();
+        assert!(matches!(result, Value::QuotedString(s) if s == "hello world"));
+    }
+
+    #[test]
+    fn test_parse_command_simple() {
+        let input = b"HELP?";
+        let result = Command::parse(&mut &input[..]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.command), "HELP?");
+        assert!(result.options.is_empty());
+        assert!(result.args.is_empty());
+    }
+
+    #[test]
+    fn test_parse_command_with_options() {
+        let input = b"CMD -opt1=value1 -opt2=42";
+        let result = Command::parse(&mut &input[..]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.command), "CMD");
+        assert_eq!(result.options.get("opt1").unwrap().to_string(), "value1");
+        assert!(matches!(result.options.get("opt2").unwrap(), Value::Int(42)));
+    }
+
+    #[test]
+    fn test_parse_command_with_args() {
+        let input = b"CMD arg1 arg2 42";
+        let result = Command::parse(&mut &input[..]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.command), "CMD");
+        assert_eq!(result.args.len(), 3);
+        assert_eq!(result.args[0].to_string(), "arg1");
+        assert_eq!(result.args[1].to_string(), "arg2");
+        assert!(matches!(result.args[2], Value::Int(42)));
+    }
+
+    #[test]
+    fn test_parse_command_mixed() {
+        let input = b"POW -zone=1 ON";
+        let result = Command::parse(&mut &input[..]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.command), "POW");
+        assert!(matches!(result.options.get("zone").unwrap(), Value::Int(1)));
+        assert_eq!(result.args[0].to_string(), "ON");
+    }
+
+    #[test]
+    fn test_command_write_bytes() {
+        let cmd = Command::new("TEST")
+            .with_option("opt", Value::Int(42))
+            .with_arg("arg1");
+        
+        let mut output = Vec::new();
+        cmd.write_bytes(&mut output).unwrap();
+        
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(output_str.contains("TEST"));
+        assert!(output_str.contains("-opt=42"));
+        assert!(output_str.contains("arg1"));
+    }
+
+    #[test]
+    fn test_command_roundtrip() {
+        let original = "CMD -opt1=value -opt2=3.14 arg1 arg2";
+        let cmd = Command::try_from(original).unwrap();
+        
+        let mut output = Vec::new();
+        cmd.write_bytes(&mut output).unwrap();
+        
+        let reparsed = Command::parse(&mut &output[..]).unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&cmd.command),
+            String::from_utf8_lossy(&reparsed.command)
+        );
+    }
+
+    #[test]
+    fn test_parse_ok_response() {
+        let input = b"OK 123 -opt=val arg1\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        
+        match result {
+            MessageResponse::Ok { ident, message } => {
+                assert!(matches!(ident, MessageIdent::Number(123)));
+                assert_eq!(message.options.get("opt").unwrap().to_string(), "val");
+                assert_eq!(message.args[0].to_string(), "arg1");
+            }
+            _ => panic!("Expected Ok response"),
+        }
+    }
+
+    #[test]
+    fn test_parse_error_response() {
+        let input = b"ERRor 456 [AuthenticationError] Invalid password\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        
+        match result {
+            MessageResponse::CommandError { ident, error } => {
+                assert!(matches!(ident, MessageIdent::Number(456)));
+                assert_eq!(error.error, "AuthenticationError");
+            }
+            _ => panic!("Expected CommandError response"),
+        }
+    }
+
+    #[test]
+    fn test_parse_next_response() {
+        let input = b"NEXT 789\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        
+        match result {
+            MessageResponse::Next { ident } => {
+                assert!(matches!(ident, MessageIdent::Number(789)));
+            }
+            _ => panic!("Expected Next response"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ready_message() {
+        let input = b"READy -session=474800 -product=QuantStudio3_5 -version=1.3.0 -build=001\n";
+        let result = Ready::parse(&mut &input[..]).unwrap();
+        
+        assert_eq!(result.args.get("session").unwrap().to_string(), "474800");
+        assert_eq!(result.args.get("product").unwrap().to_string(), "QuantStudio3_5");
+        assert_eq!(result.args.get("version").unwrap().to_string(), "1.3.0");
+        assert_eq!(result.args.get("build").unwrap().to_string(), "1");
+    }
+
+    #[test]
+    fn test_message_ident_number() {
+        let result = MessageIdent::parse(&mut b"12345"[..].as_ref()).unwrap();
+        assert!(matches!(result, MessageIdent::Number(12345)));
+    }
+
+    #[test]
+    fn test_value_conversions() {
+        // From i64
+        let v: Value = 42i64.into();
+        assert!(matches!(v, Value::Int(42)));
+
+        // From f64
+        let v: Value = 3.24f64.into();
+        match v {
+            Value::Float(f) => assert!((f - 3.24).abs() < 0.001),
+            _ => panic!("Expected Float"),
+        }
+
+        // From bool
+        let v: Value = true.into();
+        assert!(matches!(v, Value::Bool(true)));
+
+        // From &str
+        let v: Value = "hello".into();
+        assert!(matches!(v, Value::String(s) if s == "hello"));
+
+        // From String with space
+        let v: Value = "hello world".to_string().into();
+        assert!(matches!(v, Value::QuotedString(s) if s == "hello world"));
+
+        // From String with newline
+        let v: Value = "hello\nworld".to_string().into();
+        assert!(matches!(v, Value::XmlString { .. }));
+    }
+
+    #[test]
+    fn test_value_try_into() {
+        let v = Value::Int(42);
+        assert_eq!(v.try_into_i64().unwrap(), 42);
+
+        let v = Value::Float(3.2);
+        assert!((v.try_into_f64().unwrap() - 3.2).abs() < 0.001);
+
+        let v = Value::Bool(true);
+        assert!(v.try_into_bool().unwrap());
+
+        let v = Value::String("hello".to_string());
+        assert_eq!(v.try_into_string().unwrap(), "hello");
+
+        let v = Value::QuotedString("hello world".to_string());
+        assert_eq!(v.try_into_string().unwrap(), "hello world");
+    }
+
+    #[test]
+    fn test_argmap_operations() {
+        let mut map = ArgMap::new();
+        assert!(map.is_empty());
+        
+        map.insert("key1", Value::Int(42));
+        assert_eq!(map.len(), 1);
+        assert!(!map.is_empty());
+        
+        assert!(matches!(map.get("key1").unwrap(), Value::Int(42)));
+        assert!(map.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_argmap_extract_with_default() {
+        let map = ArgMap::new()
+            .with("existing", Value::Int(42));
+        
+        let result: i64 = map.extract_with_default("existing", 0).unwrap();
+        assert_eq!(result, 42);
+        
+        let result: i64 = map.extract_with_default("missing", 99).unwrap();
+        assert_eq!(result, 99);
+    }
+
+    #[test]
+    fn test_ok_response_roundtrip() {
+        let response = OkResponse {
+            options: ArgMap::new()
+                .with("opt1", Value::Int(42))
+                .with("opt2", Value::String("val".to_string())),
+            args: vec![Value::String("arg1".to_string()), Value::Float(3.2)],
+        };
+        
+        let bytes = response.to_bytes();
+        let reparsed = OkResponse::parse(&mut &bytes[..]).unwrap();
+        
+        assert_eq!(
+            reparsed.options.get("opt1").unwrap().to_string(),
+            response.options.get("opt1").unwrap().to_string()
+        );
+    }
+
+    #[test]
+    fn test_command_with_xml_arg() {
+        let cmd = Command::new("PROT")
+            .with_arg(Value::XmlString {
+                value: "STAGE 1\nTEST".into(),
+                tag: "multiline.protocol".to_string(),
+            });
+        
+        let mut output = Vec::new();
+        cmd.write_bytes(&mut output).unwrap();
+        
+        let output_str = String::from_utf8_lossy(&output);
+        assert!(output_str.contains("<multiline.protocol>"));
+        assert!(output_str.contains("</multiline.protocol>"));
+        assert!(output_str.contains("STAGE 1\nTEST"));
+    }
+
+    #[test]
+    fn test_parse_special_command_names() {
+        // Commands with dots
+        let cmd = Command::try_from("TBC:SETT?").unwrap();
+        assert_eq!(String::from_utf8_lossy(&cmd.command), "TBC:SETT?");
+        
+        // Commands with asterisks
+        let cmd = Command::try_from("IDN*").unwrap();
+        assert_eq!(String::from_utf8_lossy(&cmd.command), "IDN*");
+    }
+
+    #[test]
+    fn test_value_display() {
+        assert_eq!(Value::Int(42).to_string(), "42");
+        assert_eq!(Value::String("hello".to_string()).to_string(), "hello");
+        assert_eq!(Value::Bool(true).to_string(), "true");
+        
+        let xml = Value::XmlString { 
+            value: "content".into(), 
+            tag: "tag".to_string() 
+        };
+        assert_eq!(xml.to_string(), "content");
     }
 }

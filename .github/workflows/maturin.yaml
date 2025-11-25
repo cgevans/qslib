@@ -61,8 +61,15 @@ jobs:
           python3 -m venv .venv
           source .venv/bin/activate
           pip install .[testing] --find-links dist --force-reinstall
-          pip install pytest
-          pytest -k 'not test_real'
+          pip install pytest pytest-cov
+          pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
+      - name: Upload coverage
+        if: ${{ startsWith(matrix.platform.target, 'x86_64') }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          name: python-linux-${{ matrix.platform.target }}
+          token: ${{ secrets.CODECOV_TOKEN }}
       - name: pytest
         if: ${{ !startsWith(matrix.platform.target, 'x86') && matrix.platform.target != 'ppc64' }}
         uses: uraimo/run-on-arch-action@v2
@@ -174,8 +181,15 @@ jobs:
           python3 -m venv .venv
           source .venv/Scripts/activate
           pip install .[testing] --find-links dist --force-reinstall
-          pip install pytest
-          pytest -k 'not test_real'
+          pip install pytest pytest-cov
+          pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
+      - name: Upload coverage
+        if: ${{ !startsWith(matrix.platform.target, 'aarch64') }}
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          name: python-windows-${{ matrix.platform.target }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   macos:
     runs-on: ${{ matrix.platform.runner }}
@@ -208,8 +222,14 @@ jobs:
           python3 -m venv .venv
           source .venv/bin/activate
           pip install .[testing] --find-links dist --force-reinstall
-          pip install pytest
-          pytest -k 'not test_real'
+          pip install pytest pytest-cov
+          pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
+      - name: Upload coverage
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          name: python-macos-${{ matrix.platform.target }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   sdist:
     runs-on: ubuntu-24.04
@@ -279,10 +299,71 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo test
           cargo llvm-cov --no-run --lcov --output-path coverage.lcov
-      - uses: codecov/codecov-action@v3
+      - uses: codecov/codecov-action@v5
         with:
           files: coverage.lcov
           name: rust-linux # ${{ matrix.os }}
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  python_tests_real:
+    name: Python tests with machine
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+      - name: Create virtual environment
+        run: |
+          uv venv -p 3.13
+      - name: Install maturin
+        run: |
+          uv pip install maturin
+      - name: Build package
+        run: |
+          uv run maturin develop --release --uv -E testing
+      - name: Run pytest with coverage
+        run: |
+          uv run pytest --cov qslib --cov-report xml --cov-report term
+      - uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          name: python-self-hosted
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  rust_integration_tests:
+    name: Rust tests with machine
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: llvm-tools
+      - name: Set up cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: integration-tests
+        continue-on-error: true
+      - name: Install cargo-llvm-cov
+        run: cargo install cargo-llvm-cov
+      - name: Run integration tests with coverage
+        run: |
+          source <(cargo llvm-cov show-env --export-prefix)
+          export CARGO_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR
+          export CARGO_INCREMENTAL=1
+          cargo llvm-cov clean --workspace
+          cargo test --test simulator_integration -- --ignored
+          cargo llvm-cov --no-run --lcov --output-path coverage-integration.lcov
+      - uses: codecov/codecov-action@v5
+        with:
+          files: coverage-integration.lcov
+          name: rust-integration
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   rust_release:
     name: Rust Crates.io Release

@@ -1,7 +1,10 @@
 use anyhow::Context;
 use bstr::{BString, ByteSlice};
 use dashmap::DashMap;
+use hmac::{Hmac, Mac};
 use log::{error, trace};
+use md5::Md5;
+type HmacMd5 = Hmac<Md5>;
 use rustls::{
     client::danger::HandshakeSignatureValid, client::danger::ServerCertVerified,
     client::danger::ServerCertVerifier, DigitallySignedStruct, Error as TLSError, SignatureScheme,
@@ -13,6 +16,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::task::JoinHandle;
+use tokio::time::timeout;
 use tokio::{net::TcpStream, select};
 use tokio_rustls::TlsConnector;
 use tokio_rustls::{
@@ -24,23 +28,19 @@ use tokio_stream::StreamMap;
 
 use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError};
 use crate::data::{FilterDataCollection, PlateData};
-use crate::message_receiver::{MsgPushError, MsgReceiveError, MsgRecv};
+use crate::message_receiver::{MsgReceiveError, MsgRecv};
 use crate::plate_setup::PlateSetup;
+use crate::protocol::Protocol;
+use crate::parser::Command;
 
 use lazy_static::lazy_static;
 
-#[cfg(feature = "python")]
-use pyo3::exceptions::PyValueError;
-#[cfg(feature = "python")]
-use pyo3::prelude::*;
-#[cfg(feature = "python")]
-use pyo3::ToPyErr;
 
 lazy_static! {
     static ref BASE64: data_encoding::Encoding = {
         let mut dec = data_encoding::BASE64.specification();
         dec.ignore.push('\n');
-        dec.encoding().unwrap()
+        dec.encoding().expect("Failed to create BASE64 encoding - this should never happen")
     };
     static ref FILTER_DATA_FILENAME_RE: regex::Regex =
         regex::Regex::new(r"S(\d+)_C(\d+)_T(\d+)_P(\d+)_M(\d)_X(\d)_filterdata\.xml$")
@@ -167,8 +167,6 @@ pub enum QSConnectionError {
     MessageReceiveError(MsgReceiveError),
     #[error("IO error: {0}")]
     IOError(#[from] std::io::Error),
-    #[error("Message push error: {0}")]
-    MessagePushError(MsgPushError),
     #[error("QS error: {0}")]
     QS(String),
     #[error("Command error: {0}")]
@@ -194,7 +192,8 @@ impl QSConnectionInner {
         if n == 0 {
             return;
         }
-        self.receiver.push_data(&self.buf[..n]).unwrap();
+        // push_data returns true if a message is ready, false otherwise
+        let _ = self.receiver.push_data(&self.buf[..n]);
         'inner: loop {
             let msg = self.receiver.try_get_msg();
             match msg {
@@ -221,42 +220,61 @@ impl QSConnectionInner {
                             }
                         }
                         Ok(MessageResponse::Next { ident }) => {
+                            let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
                                 match channel.send(MessageResponse::Next { ident }).await {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        trace!("Error sending message: {:?}", e);
+                                    Ok(_) => {
+                                        // Next is intermediate, keep channel for future responses
+                                    }
+                                    Err(_) => {
+                                        // Receiver dropped, remove from HashMap to prevent leak
+                                        self.messagechannels.remove(&ident_clone);
+                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
                                     }
                                 }
                             } else {
-                                trace!("No channel for message ident: {:?}", ident);
+                                trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
                         Ok(MessageResponse::CommandError { ident, error }) => {
+                            // CommandError is final response, always remove channel
+                            let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
                                 match channel
                                     .send(MessageResponse::CommandError { ident, error })
                                     .await
                                 {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        trace!("Error sending message: {:?}", e);
+                                    Ok(_) => {
+                                        // Successfully sent, remove channel
+                                        self.messagechannels.remove(&ident_clone);
+                                    }
+                                    Err(_) => {
+                                        // Receiver dropped, remove channel anyway
+                                        self.messagechannels.remove(&ident_clone);
+                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
                                     }
                                 }
                             } else {
-                                trace!("No channel for message ident: {:?}", ident);
+                                trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
                         Ok(MessageResponse::Ok { ident, message }) => {
+                            // OK is final response, always remove channel
+                            let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
                                 match channel.send(MessageResponse::Ok { ident, message }).await {
-                                    Ok(_) => (),
-                                    Err(e) => {
-                                        trace!("Error sending message: {:?}", e);
+                                    Ok(_) => {
+                                        // Successfully sent, remove channel
+                                        self.messagechannels.remove(&ident_clone);
+                                    }
+                                    Err(_) => {
+                                        // Receiver dropped, remove channel anyway
+                                        self.messagechannels.remove(&ident_clone);
+                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
                                     }
                                 }
                             } else {
-                                trace!("No channel for message ident: {:?}", ident);
+                                trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
                         Err(e) => {
@@ -287,7 +305,7 @@ impl QSConnectionInner {
                         trace!("Outer channel is closed.");
                         break Ok(());
                     };
-                    // FIXME: check for collisions
+                    // Assign ident if not provided
                     msg.ident = match msg.ident {
                         Some(MessageIdent::Number(n)) => Some(MessageIdent::Number(n)),
                         Some(MessageIdent::String(s)) => Some(MessageIdent::String(s)),
@@ -297,12 +315,23 @@ impl QSConnectionInner {
                             i
                         }
                     };
+                    let ident = msg.ident.as_ref().ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "Message ident is None"
+                        )
+                    })?.clone();
+                    
+                    if self.messagechannels.contains_key(&ident) {
+                        error!("Message ident collision detected: {:?}. This should not happen with auto-generated idents.", ident);
+                    }
+                    self.messagechannels.insert(ident, tx);
+                    
                     let mut bytes = Vec::new();
                     if msg.content.is_some() {
-                        msg.write_bytes(&mut bytes).unwrap();
+                        msg.write_bytes(&mut bytes)?;
                         self.stream_write.write_all(&bytes).await?;
                     }
-                    self.messagechannels.insert(msg.ident.unwrap(), tx);
                 }
                 n = f_data_to_receive => {
                     let n = n?;
@@ -364,33 +393,137 @@ pub struct QSConnection {
     pub port: u16,
     pub logchannels: Arc<DashMap<String, broadcast::Sender<LogMessage>>>,
     pub ready_message: Ready,
+    pub initial_timeout: Duration,
+    pub next_to_ok_timeout: Duration,
 }
 
-pub struct ResponseReceiver(mpsc::Receiver<MessageResponse>);
+pub struct ResponseReceiver {
+    receiver: mpsc::Receiver<MessageResponse>,
+    initial_timeout: Option<Duration>,
+    next_to_ok_timeout: Option<Duration>,
+}
 
 impl ResponseReceiver {
     pub async fn recv(&mut self) -> Option<MessageResponse> {
-        self.0.recv().await
+        self.receiver.recv().await
     }
 
     /// Get the OK or error response from the machine, ignoring NEXT messages.
+    /// Uses connection's default timeouts: initial_timeout for first response, next_to_ok_timeout after NEXT.
     pub async fn get_response(
         &mut self,
     ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
-        loop {
-            let msg = self
-                .recv()
-                .await
-                .ok_or(ReceiveOkResponseError::ConnectionClosed)?;
-            match msg {
-                MessageResponse::Ok { ident: _, message } => {
-                    return Ok(Ok(message));
+        let initial = self.initial_timeout.ok_or(ReceiveOkResponseError::ConnectionClosed)?;
+        let next_to_ok = self.next_to_ok_timeout.ok_or(ReceiveOkResponseError::ConnectionClosed)?;
+        
+        // Wait for first message (NEXT or OK/Error) with initial timeout
+        let first_msg = match timeout(initial, self.recv()).await {
+            Ok(Some(msg)) => msg,
+            Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+            Err(_) => return Err(ReceiveOkResponseError::Timeout),
+        };
+
+        match first_msg {
+            MessageResponse::Ok { ident: _, message } => Ok(Ok(message)),
+            MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
+            MessageResponse::Next { .. } => {
+                // Received NEXT, now wait for OK/Error with next_to_ok_timeout
+                loop {
+                    match timeout(next_to_ok, self.recv()).await {
+                        Ok(Some(msg)) => {
+                            match msg {
+                                MessageResponse::Ok { ident: _, message } => {
+                                    return Ok(Ok(message));
+                                }
+                                MessageResponse::CommandError { ident: _, error } => {
+                                    return Ok(Err(error));
+                                }
+                                MessageResponse::Next { .. } => {
+                                    // Another NEXT, continue waiting with same timeout
+                                    continue;
+                                }
+                                MessageResponse::Message(message) => {
+                                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
+                                }
+                            }
+                        }
+                        Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+                        Err(_) => return Err(ReceiveOkResponseError::Timeout),
+                    }
                 }
-                MessageResponse::CommandError { ident: _, error } => {
-                    return Ok(Err(error));
-                }
-                _ => {}
             }
+            MessageResponse::Message(message) => Err(ReceiveOkResponseError::UnexpectedMessage(message)),
+        }
+    }
+
+    /// Get the OK or error response with a single timeout, ignoring connection defaults.
+    /// Times out if OK/Error is not received within the specified timeout.
+    pub async fn get_response_with_timeout(
+        &mut self,
+        timeout_duration: Duration,
+    ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
+        loop {
+            match timeout(timeout_duration, self.recv()).await {
+                Ok(Some(msg)) => {
+                    match msg {
+                        MessageResponse::Ok { ident: _, message } => return Ok(Ok(message)),
+                        MessageResponse::CommandError { ident: _, error } => return Ok(Err(error)),
+                        MessageResponse::Next { .. } => {
+                            // Continue waiting with same timeout
+                            continue;
+                        }
+                        MessageResponse::Message(message) => return Err(ReceiveOkResponseError::UnexpectedMessage(message)),
+                    }
+                }
+                Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+                Err(_) => return Err(ReceiveOkResponseError::Timeout),
+            }
+        }
+    }
+
+    /// Get the OK or error response with custom timeouts for initial wait and post-NEXT wait.
+    pub async fn get_response_with_next_and_ok_timeout(
+        &mut self,
+        initial: Duration,
+        next_to_ok: Duration,
+    ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
+        // Wait for first message (NEXT or OK/Error) with initial timeout
+        let first_msg = match timeout(initial, self.recv()).await {
+            Ok(Some(msg)) => msg,
+            Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+            Err(_) => return Err(ReceiveOkResponseError::Timeout),
+        };
+
+        match first_msg {
+            MessageResponse::Ok { ident: _, message } => Ok(Ok(message)),
+            MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
+            MessageResponse::Next { .. } => {
+                // Received NEXT, now wait for OK/Error with next_to_ok timeout
+                loop {
+                    match timeout(next_to_ok, self.recv()).await {
+                        Ok(Some(msg)) => {
+                            match msg {
+                                MessageResponse::Ok { ident: _, message } => {
+                                    return Ok(Ok(message));
+                                }
+                                MessageResponse::CommandError { ident: _, error } => {
+                                    return Ok(Err(error));
+                                }
+                                MessageResponse::Next { .. } => {
+                                    // Another NEXT, continue waiting with same timeout
+                                    continue;
+                                }
+                                MessageResponse::Message(message) => {
+                                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
+                                }
+                            }
+                        }
+                        Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
+                        Err(_) => return Err(ReceiveOkResponseError::Timeout),
+                    }
+                }
+            }
+            MessageResponse::Message(message) => Err(ReceiveOkResponseError::UnexpectedMessage(message)),
         }
     }
 }
@@ -454,7 +587,11 @@ impl QSConnection {
             .send((msg, tx))
             .await
             .map_err(|e| SendCommandError::ConnectionClosed(format!("{:?}", e)))?;
-        Ok(ResponseReceiver(rx))
+        Ok(ResponseReceiver {
+            receiver: rx,
+            initial_timeout: Some(self.initial_timeout),
+            next_to_ok_timeout: Some(self.next_to_ok_timeout),
+        })
     }
 
     pub async fn expect_ident(
@@ -470,7 +607,11 @@ impl QSConnection {
             .send((msg, tx))
             .await
             .map_err(|e| SendCommandError::ConnectionClosed(format!("{:?}", e)))?;
-        Ok(ResponseReceiver(rx))
+        Ok(ResponseReceiver {
+            receiver: rx,
+            initial_timeout: Some(self.initial_timeout),
+            next_to_ok_timeout: Some(self.next_to_ok_timeout),
+        })
     }
 
     pub async fn send_command_bytes(
@@ -486,7 +627,11 @@ impl QSConnection {
             .send((msg, tx))
             .await
             .map_err(|e| SendCommandError::ConnectionClosed(format!("{:?}", e)))?;
-        Ok(ResponseReceiver(rx))
+        Ok(ResponseReceiver {
+            receiver: rx,
+            initial_timeout: Some(self.initial_timeout),
+            next_to_ok_timeout: Some(self.next_to_ok_timeout),
+        })
     }
 
     pub async fn connect(
@@ -551,10 +696,14 @@ impl QSConnection {
         let mut b = [0; 1024];
         let m = c.read(&mut b).await?;
         if m == 0 {
-            return Err(ConnectionError::Timeout); // FIXME: handle error
+            return Err(ConnectionError::Timeout);
         }
-        trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..]));
-        let msg = parser::Ready::parse(&mut &b[..]).unwrap(); // FIXME: handle error
+        trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..m]));
+        let msg = parser::Ready::parse(&mut &b[..m])
+            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to parse ready message: {}", e)
+            )))?;
         trace!("Ready message: {:?}", msg);
 
         let (r, w) = tokio::io::split(c);
@@ -582,6 +731,8 @@ impl QSConnection {
             connection_type: ConnectionType::SSL,
             host: host.to_string(),
             port,
+            initial_timeout: Duration::from_secs(30),
+            next_to_ok_timeout: Duration::from_secs(600),
         })
     }
 
@@ -596,7 +747,11 @@ impl QSConnection {
         stream.readable().await?;
         let n = stream.try_read(&mut b)?;
         trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..n]));
-        let msg = parser::Ready::parse(&mut &b[..]).unwrap(); // FIXME: handle error
+        let msg = parser::Ready::parse(&mut &b[..n])
+            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to parse ready message: {}", e)
+            )))?;
         trace!("Ready message: {:?}", msg);
 
         let (r, w) = tokio::io::split(stream);
@@ -624,6 +779,8 @@ impl QSConnection {
             connection_type: ConnectionType::TCP,
             host: host.to_string(),
             port,
+            initial_timeout: Duration::from_secs(30),
+            next_to_ok_timeout: Duration::from_secs(600),
         })
     }
 
@@ -758,6 +915,69 @@ impl QSConnection {
         }
     }
 
+    pub async fn get_running_protocol_string(&self) -> Result<String, CommandError<ErrorResponse>> {
+        // Check if there's an active run
+        let run_name = self.get_current_run_name().await?;
+        if run_name.is_none() {
+            return Err(CommandError::InternalError(anyhow::anyhow!(
+                "No protocol is currently running"
+            )));
+        }
+
+        // Get protocol content
+        let mut response = self.send_command_bytes(b"PROT? ${Protocol}".as_bstr()).await?;
+        let response = response.get_response().await??;
+        let protocol_content = response
+            .args
+            .first()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No protocol content returned")))?
+            .to_string();
+
+        // Get protocol name, volume, and runmode
+        let mut response = self.send_command_bytes(b"RET ${Protocol} ${SampleVolume} ${RunMode}".as_bstr()).await?;
+        let response = response.get_response().await??;
+        let parts: Vec<String> = response
+            .args
+            .iter()
+            .map(|v| v.to_string())
+            .collect();
+        
+        if parts.len() < 3 {
+            return Err(CommandError::InternalError(anyhow::anyhow!(
+                "No protocol is currently running (RET command returned {} values instead of 3)",
+                parts.len()
+            )));
+        }
+
+        let protocol_name = parts[0].clone();
+        let sample_volume = parts[1].clone();
+        let run_mode = parts[2].clone();
+
+
+        println!("protocol_content: {}", protocol_content);
+
+        // Construct full PROT command string
+        let prot_command = format!(
+            "PROT -volume={} -runmode={} {} <multiline.protocol>\n{}\n</multiline.protocol>",
+            sample_volume, run_mode, protocol_name, protocol_content
+        );
+
+        Ok(prot_command)
+    }
+
+    pub async fn get_running_protocol(&self) -> Result<Protocol, CommandError<ErrorResponse>> {
+        let prot_command = self.get_running_protocol_string().await?;
+
+        println!("prot_command: {}", prot_command);
+
+        // Parse into Command and then Protocol
+        let cmd = Command::try_from(prot_command.clone())
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol command: {}", e)))?;
+        
+        Protocol::from_scpicommand(&cmd)
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol: {}", e)))
+    }
+
 
     // In [8]: m.run_command("TBC:SETT?")
     // Out[8]: '-Zone1=25 -Zone2=25 -Zone3=25 -Zone4=25 -Zone5=25 -Zone6=25 -Fan1=44 -Cover=105'
@@ -765,10 +985,21 @@ impl QSConnection {
         let mut response = self.send_command_bytes(b"TBC:SETT?".as_bstr()).await?;
         let response = response.get_response().await??;
         let setpoints = response.options;
-        let zones = setpoints.iter().filter(|(s, _v)| s.starts_with("Zone")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).collect();
-        let fans = setpoints.iter().filter(|(s, _v)| s.starts_with("Fan")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).collect();
-        let cover = setpoints.iter().filter(|(s, _v)| s.starts_with("Cover")).map(|(_s, v)| v.clone().try_into_f64().unwrap()).next().unwrap();
-        Ok((zones, fans, cover))
+        let zones: Result<Vec<f64>, _> = setpoints.iter()
+            .filter(|(s, _v)| s.starts_with("Zone"))
+            .map(|(_s, v)| v.clone().try_into_f64().map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse zone temperature: {}", e))))
+            .collect();
+        let fans: Result<Vec<f64>, _> = setpoints.iter()
+            .filter(|(s, _v)| s.starts_with("Fan"))
+            .map(|(_s, v)| v.clone().try_into_f64().map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse fan temperature: {}", e))))
+            .collect();
+        let cover = setpoints.iter()
+            .filter(|(s, _v)| s.starts_with("Cover"))
+            .map(|(_s, v)| v.clone().try_into_f64())
+            .next()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No Cover temperature found in response")))?
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse cover temperature: {}", e)))?;
+        Ok((zones?, fans?, cover))
     }
 
     pub async fn get_filterdata_one(
@@ -806,6 +1037,59 @@ impl QSConnection {
             .await?
             .receive_response()
             .await??;
+        Ok(())
+    }
+
+    /// Authenticate with the machine using HMAC-MD5 challenge-response.
+    pub async fn authenticate(
+        &self,
+        password: &str,
+    ) -> Result<(), CommandError<ErrorResponse>> {
+        // Get challenge
+        let mut challenge_recv = self.send_command_bytes(b"CHAL?").await?;
+        let challenge_result = challenge_recv
+            .get_response()
+            .await
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to get challenge: {}", e)))?;
+        
+        let challenge_response = challenge_result
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Challenge command failed: {}", e)))?;
+        
+        let challenge_str = challenge_response
+            .args
+            .first()
+            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No challenge in response")))?
+            .clone()
+            .try_into_string()
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Challenge is not a string: {:?}", e)))?;
+
+        // Compute HMAC-MD5
+        let mut mac = HmacMd5::new_from_slice(password.as_bytes())
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("HMAC error: {}", e)))?;
+        mac.update(challenge_str.as_bytes());
+        let auth_response = hex::encode(mac.finalize().into_bytes());
+
+        // Send AUTH command
+        let auth_cmd = Command::new("AUTH").with_arg(auth_response);
+        let mut auth_recv = self.send_command(auth_cmd).await?;
+        let auth_result = auth_recv
+            .get_response()
+            .await
+            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Auth recv error: {}", e)))?;
+        
+        auth_result.map_err(|e| CommandError::InternalError(anyhow::anyhow!("Authentication failed: {}", e)))?;
+
+        Ok(())
+    }
+
+    /// Authenticate and set access level in one call.
+    pub async fn authenticate_and_set_access_level(
+        &self,
+        password: &str,
+        level: AccessLevel,
+    ) -> Result<(), CommandError<ErrorResponse>> {
+        self.authenticate(password).await?;
+        self.set_access_level(level).await?;
         Ok(())
     }
 

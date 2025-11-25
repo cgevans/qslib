@@ -48,6 +48,10 @@ tracing = "0.1.41"
 polars = { version = "^0.52", features = ["lazy", "diagonal_concat", "timezones"] }
 pyo3-polars = { version = "^0.25", optional = true }
 once_cell = "1.21.3"
+hmac = "0.12"
+md-5 = "0.10"
+hex = "0.4"
+digest = { version = "0.10.7", default-features = false }
 
 [features]
 debug = ["winnow/debug"]

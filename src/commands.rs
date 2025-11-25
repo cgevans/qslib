@@ -29,6 +29,10 @@ pub enum ReceiveOkResponseError {
     ConnectionClosed,
     #[error("OK response parsing error: {0:?}")]
     ResponseParsingError(#[from] OkParseError),
+    #[error("Unexpected message response: {0:?}")]
+    UnexpectedMessage(crate::parser::LogMessage),
+    #[error("Timeout waiting for response")]
+    Timeout,
 }
 
 #[derive(Debug, Error)]
@@ -39,6 +43,8 @@ pub enum ReceiveNextResponseError {
     UnexpectedOk(OkResponse),
     #[error("Unexpected error response.")]
     UnexpectedError(ErrorResponse),
+    #[error("Unexpected message response: {0:?}")]
+    UnexpectedMessage(crate::parser::LogMessage),
 }
 
 impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> CommandReceiver<T, E> {
@@ -49,10 +55,9 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> Comma
                 Some(MessageResponse::Ok { message, .. }) => return Ok(Ok(message.try_into()?)),
                 Some(MessageResponse::CommandError { error, .. }) => return Ok(Err(error.into())),
                 Some(MessageResponse::Next { .. }) => (),
-                Some(MessageResponse::Message(message)) => panic!(
-                    "Message response to command should not be possible: {:?}",
-                    message
-                ),
+                Some(MessageResponse::Message(message)) => {
+                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
+                }
             }
         }
     }
@@ -66,10 +71,7 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> Comma
                 Err(ReceiveNextResponseError::UnexpectedOk(message))
             }
             Some(MessageResponse::Message(message)) => {
-                panic!(
-                    "Message response to command should not be possible: {:?}",
-                    message
-                )
+                Err(ReceiveNextResponseError::UnexpectedMessage(message))
             }
         }
     }
@@ -216,7 +218,10 @@ impl TryFrom<String> for AccessLevel {
 impl TryFrom<OkResponse> for AccessLevel {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        let level = value.args.first().unwrap().clone().try_into_string()?;
+        let level = value.args.first()
+            .ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing access level argument".to_string()))?
+            .clone()
+            .try_into_string()?;
         AccessLevel::try_from(level).map_err(|_| {
             OkParseError::UnexpectedValues(value, "unexpected access level".to_string())
         })
@@ -495,22 +500,17 @@ impl CommandBuilder for CoverPositionQuery {
 impl TryFrom<OkResponse> for CoverPosition {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        match value
+        let position_str = value
             .args
             .first()
-            .unwrap()
+            .ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing cover position argument".to_string()))?
             .clone()
-            .try_into_string()?
-            .to_lowercase()
-            .as_str()
-        {
+            .try_into_string()?;
+        match position_str.to_lowercase().as_str() {
             "up" => Ok(CoverPosition::Up),
             "down" => Ok(CoverPosition::Down),
             _ => {
-                warn!(
-                    "Unexpected cover position: {}",
-                    value.args.first().unwrap().clone().try_into_string()?
-                );
+                warn!("Unexpected cover position: {}", position_str);
                 Ok(CoverPosition::Unknown)
             }
         }
@@ -555,7 +555,10 @@ impl CommandBuilder for DrawerStatusQuery {
 impl TryFrom<OkResponse> for CoverHeatStatus {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        let position = value.args.first().unwrap().clone().try_into_string()?;
+        let position = value.args.first()
+            .ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing cover position argument".to_string()))?
+            .clone()
+            .try_into_string()?;
         let on = match position.to_lowercase().as_str() {
             "up" | "on" | "true" => true, // FIXME
             "down" | "off" | "false" => false,
@@ -566,7 +569,10 @@ impl TryFrom<OkResponse> for CoverHeatStatus {
                 ))
             }
         };
-        let temperature = value.args.get(1).unwrap().clone().try_into_f64()?;
+        let temperature = value.args.get(1)
+            .ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing temperature argument".to_string()))?
+            .clone()
+            .try_into_f64()?;
         Ok(CoverHeatStatus { on, temperature })
     }
 }
@@ -594,6 +600,15 @@ pub struct QuickStatus {
 impl TryFrom<OkResponse> for QuickStatus {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        const REQUIRED_ARGS: usize = 8;
+        let args_len = value.args.len();
+        if args_len < REQUIRED_ARGS {
+            return Err(OkParseError::UnexpectedValues(
+                value,
+                format!("expected {} arguments, got {}", REQUIRED_ARGS, args_len)
+            ));
+        }
+
         let args = value.args.into_iter();
         let mut args_deque = args.into_iter().collect::<VecDeque<_>>();
         info!("args_deque: {:?}", args_deque);
@@ -603,6 +618,7 @@ impl TryFrom<OkResponse> for QuickStatus {
             Ok(x)
         }
 
+        // We've already verified we have enough args, so these unwraps are safe
         let power = into_okresponse(args_deque.pop_front().unwrap())?.try_into()?;
         let drawer = into_okresponse(args_deque.pop_front().unwrap())?.try_into()?;
         let cover = into_okresponse(args_deque.pop_front().unwrap())?.try_into()?;
@@ -756,25 +772,30 @@ impl TryFrom<OkResponse> for SetTemperatures {
 
         for (key, value) in resp.options.iter() {
             if let Some(zone_num) = key.strip_prefix("Zone") {
-                let zone_num = zone_num.parse::<usize>().unwrap();
+                let zone_num = zone_num.parse::<usize>()
+                    .map_err(|_| OkParseError::UnexpectedValues(resp.clone(), format!("Invalid zone number: {}", zone_num)))?;
                 if zone_num != zones.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
                         format!("Zone {} is out of range", zone_num),
                     ));
                 }
-                zones.push(value.clone().try_into_f64().unwrap());
+                zones.push(value.clone().try_into_f64()
+                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse zone temperature: {}", e)))?);
             } else if let Some(fan_num) = key.strip_prefix("Fan") {
-                let fan_num = fan_num.parse::<usize>().unwrap();
+                let fan_num = fan_num.parse::<usize>()
+                    .map_err(|_| OkParseError::UnexpectedValues(resp.clone(), format!("Invalid fan number: {}", fan_num)))?;
                 if fan_num != fans.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
                         format!("Fan {} is out of range", fan_num),
                     ));
                 }
-                fans.push(value.clone().try_into_f64().unwrap());
+                fans.push(value.clone().try_into_f64()
+                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse fan temperature: {}", e)))?);
             } else if key == "Cover" {
-                cover = value.clone().try_into_f64().unwrap();
+                cover = value.clone().try_into_f64()
+                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse cover temperature: {}", e)))?;
             }
         }
 
@@ -818,25 +839,30 @@ impl TryFrom<OkResponse> for TemperatureControlStatus {
 
         for (key, value) in resp.options.iter() {
             if let Some(zone_num) = key.strip_prefix("Zone") {
-                let zone_num = zone_num.parse::<usize>().unwrap();
+                let zone_num = zone_num.parse::<usize>()
+                    .map_err(|_| OkParseError::UnexpectedValues(resp.clone(), format!("Invalid zone number: {}", zone_num)))?;
                 if zone_num != zones.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
                         format!("Zone {} is out of range", zone_num),
                     ));
                 }
-                zones.push(value.clone().try_into_bool().unwrap());
+                zones.push(value.clone().try_into_bool()
+                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse zone control: {}", e)))?);
             } else if let Some(fan_num) = key.strip_prefix("Fan") {
-                let fan_num = fan_num.parse::<usize>().unwrap();
+                let fan_num = fan_num.parse::<usize>()
+                    .map_err(|_| OkParseError::UnexpectedValues(resp.clone(), format!("Invalid fan number: {}", fan_num)))?;
                 if fan_num != fans.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
                         format!("Fan {} is out of range", fan_num),
                     ));
                 }
-                fans.push(value.clone().try_into_bool().unwrap());
+                fans.push(value.clone().try_into_bool()
+                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse fan control: {}", e)))?);
             } else if key == "Cover" {
-                cover = value.clone().try_into_bool().unwrap();
+                cover = value.clone().try_into_bool()
+                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse cover control: {}", e)))?;
             }
         }
 

@@ -5,6 +5,7 @@ pub mod message_receiver;
 pub mod parser;
 pub mod plate_setup;
 pub mod message_log;
+pub mod protocol;
 
 #[cfg(feature = "python")]
 pub mod python;
@@ -18,6 +19,9 @@ mod qslib {
 
     #[pymodule_export]
     use crate::python::PyQSConnection;
+
+    #[pymodule_export]
+    use crate::python::PyProtocol;
 
     #[pymodule_export]
     use crate::python::PyMessageResponse;

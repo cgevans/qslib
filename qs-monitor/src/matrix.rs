@@ -26,13 +26,12 @@ use qslib::{
         AccessLevel, CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery,
         ReceiveOkResponseError,
     },
-    parser::{ErrorResponse, LogMessage},
+    parser::{ErrorResponse, LogMessage}
 };
 use serde::{Deserialize, Serialize};
 use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-
 use crate::MachineConfig;
 
 /// The data needed to re-build a client.
@@ -81,6 +80,7 @@ pub struct MatrixSettings {
 fn get_commands_list() -> String {
     "<b>Available commands:</b><ul>\
     <li><code>!status [machine]</code> - Show status of machine(s)</li>\
+    <li><code>!protocol &lt;machine&gt;</code> - Show currently running protocol</li>\
     <li><code>!command &lt;machine&gt; &lt;command&gt;</code> - Send a command to a machine</li>\
     <li><code>!close &lt;machine&gt;</code> - Close drawer and lower cover (requires control)</li>\
     <li><code>!open &lt;machine&gt;</code> - Open drawer (requires control)</li>\
@@ -156,6 +156,18 @@ fn get_command_help(command: &str) -> String {
             <br>\
             <b>Note:</b> This command requires control permissions to be enabled. \
             The access level is temporarily elevated to Controller for the operation.".to_string()
+        }
+        "protocol" => {
+            "<b>!protocol &lt;machine&gt;</b><br>\
+            Shows the currently running protocol for the specified machine.<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            <code>!protocol &lt;machine&gt;</code><br>\
+            <br>\
+            <b>Example:</b><br>\
+            <code>!protocol qs1</code><br>\
+            <br>\
+            Displays the protocol name, volume, run mode, and stage structure.".to_string()
         }
         "help" => {
             "<b>!help [command]</b><br>\
@@ -447,6 +459,68 @@ async fn handle_message(
                     error!("Machine {} not found", machine);
                     send_matrix_message(&room, &format!("Machine {} not found", machine), true)
                         .await?;
+                }
+            }
+            Ok(())
+        }
+        "!protocol" => {
+            let machine = match parts.next() {
+                Some(m) => m,
+                None => {
+                    error!("No machine specified");
+                    send_matrix_message(&room, "No machine specified", true).await?;
+                    return Ok(());
+                }
+            };
+            match qs.get(machine) {
+                Some(x) => {
+                    let (conn, _) = x.value();
+                    match conn.get_running_protocol().await {
+                        Ok(protocol) => {
+                            let mut output = format!(
+                                "<b>Protocol: {}</b><br>\
+                                Volume: {} µL<br>\
+                                Run Mode: {}<br>",
+                                protocol.name, protocol.volume, protocol.runmode
+                            );
+                            if !protocol.filters.is_empty() {
+                                output.push_str(&format!("Default Filters: {}<br>", protocol.filters.join(", ")));
+                            }
+                            output.push_str("<br><b>Stages:</b><br>");
+                            for (i, stage) in protocol.stages.iter().enumerate() {
+                                output.push_str(&format!(
+                                    "Stage {}: {} (repeat: {})<br>",
+                                    i + 1,
+                                    stage.label.as_ref().unwrap_or(&format!("Stage {}", i + 1)),
+                                    stage.repeat
+                                ));
+                                for (j, step) in stage.steps.iter().enumerate() {
+                                    let temp_str = if step.temperature.len() == 6 && step.temperature.iter().all(|&t| t == step.temperature[0]) {
+                                        format!("{}°C", step.temperature[0])
+                                    } else {
+                                        format!("{:?}°C", step.temperature)
+                                    };
+                                    output.push_str(&format!(
+                                        "  Step {}: {}s at {}",
+                                        j + 1, step.time, temp_str
+                                    ));
+                                    if step.collect == Some(true) {
+                                        output.push_str(" (collect)");
+                                    }
+                                    output.push_str("<br>");
+                                }
+                            }
+                            send_matrix_message(&room, &output, false).await?;
+                        }
+                        Err(e) => {
+                            error!("Error getting protocol: {}", e);
+                            send_matrix_message(&room, &format!("Error getting protocol: {}", e), true).await?;
+                        }
+                    }
+                }
+                None => {
+                    error!("Machine {} not found", machine);
+                    send_matrix_message(&room, &format!("Machine {} not found.", machine), true).await?;
                 }
             }
             Ok(())

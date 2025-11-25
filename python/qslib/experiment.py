@@ -1382,7 +1382,6 @@ table, th, td {{
 
     @classmethod
     def latest_from_machine(cls, machine: MachineReference) -> Experiment:
-        machine = cls._ensure_machine(machine)
         try:
             return Experiment.from_running(machine)
         except ValueError:

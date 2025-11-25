@@ -6,7 +6,7 @@ use thiserror::Error;
 use memchr::memchr3;
 
 static TAG_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^<(/?)([A-Za-z0-9_.-]*)(>|$)").unwrap());
+    LazyLock::new(|| Regex::new(r"^<(/?)([A-Za-z0-9_.-]*)(>|$)").expect("Invalid TAG_REGEX pattern"));
 
 /*
 This isn't quite right: the quote mismatchees for InstrumentServer appear to be at a line level.
@@ -18,12 +18,6 @@ pub enum MsgReceiveError {
     UnexpectedCloseTag(usize, String),
     #[error("Mismatched close tag: </{2}> at {1} closes <{3}> at {0}.")]
     MismatchedCloseTag(usize, usize, String, String),
-}
-
-#[derive(Error, Debug)]
-pub enum MsgPushError {
-    #[error("Message waiting.")]
-    MessageWaiting,
 }
 
 pub struct MsgRecv {
@@ -66,7 +60,7 @@ impl MsgRecv {
                 let cur_error = self.msg_error.take();
                 self.tagstack.clear();
                 self.parttag = None;
-                let _another = self.check_from_pos(0).unwrap(); // We know no message is waiting now.
+                let _another = self.check_from_pos(0); // We know no message is waiting now.
                 if let Some(err) = cur_error {
                     return Err(err);
                 }
@@ -76,36 +70,41 @@ impl MsgRecv {
         }
     }
 
-    fn check_from_pos(&mut self, start_pos: usize) -> Result<bool, MsgPushError> {
+    fn check_from_pos(&mut self, start_pos: usize) -> bool {
         if self.msg_error.is_some() || self.msg_end.is_some() {
-            return Ok(true);
+            return true;
         }
         self.parttag = None;
         let mut pos = start_pos;
 
         #[cfg(feature = "simd")]
         while let Some(offset) = memchr3(b'<', b'\n', b'>', &self.buf[pos..]) {
-            let c = self.buf[pos + offset];
+            // Defensive check: ensure we don't index out of bounds
+            let idx = pos + offset;
+            if idx >= self.buf.len() {
+                break;
+            }
+            let c = self.buf[idx];
             if c == b'\n' {
                 if self.tagstack.len() == 0 {
-                    self.msg_end = Some(pos + offset + 1);
-                    return Ok(true);
+                    self.msg_end = Some(idx + 1);
+                    return true;
                 }
             } else if c == b'<' {
-                match TAG_REGEX.captures(&self.buf[pos + offset..]) {
+                match TAG_REGEX.captures(&self.buf[idx..]) {
                     Some(captures) => {
                         let (_a, [close, tag, end]) = captures.extract();
                         match (end, close) {
                             (b"", _) => {
-                                self.parttag = Some(pos + offset);
-                                return Ok(false);
+                                self.parttag = Some(idx);
+                                return false;
                             }
                             (_, b"/") => match self.tagstack.pop() {
                                 Some(old_tag) => {
                                     if old_tag.0 != tag {
                                         self.msg_error = Some(MsgReceiveError::MismatchedCloseTag(
                                             old_tag.1,
-                                            pos + offset,
+                                            idx,
                                             String::from_utf8_lossy(&old_tag.0).to_string(),
                                             String::from_utf8_lossy(&tag).to_string(),
                                         ));
@@ -114,7 +113,7 @@ impl MsgRecv {
                                 }
                                 None => {
                                     self.msg_error = Some(MsgReceiveError::UnexpectedCloseTag(
-                                        pos + offset,
+                                        idx,
                                         String::from_utf8_lossy(&tag).to_string(),
                                     ));
                                     self.tagstack.clear();
@@ -122,7 +121,7 @@ impl MsgRecv {
                             },
                             (_, _) => {
                                 // if self.msg_error.is_none() {
-                                self.tagstack.push((tag.to_vec(), pos + offset));
+                                self.tagstack.push((tag.to_vec(), idx));
                                 // }
                             }
                         }
@@ -138,26 +137,31 @@ impl MsgRecv {
             .iter()
             .position(|&c| c == b'<' || c == b'\n' || c == b'>')
         {
-            let c = self.buf[pos + offset];
+            // Defensive check: ensure we don't index out of bounds
+            let idx = pos + offset;
+            if idx >= self.buf.len() {
+                break;
+            }
+            let c = self.buf[idx];
             if c == b'\n' {
                 if self.tagstack.is_empty() {
-                    self.msg_end = Some(pos + offset + 1);
-                    return Ok(true);
+                    self.msg_end = Some(idx + 1);
+                    return true;
                 }
             } else if c == b'<' {
-                if let Some(captures) = TAG_REGEX.captures(&self.buf[pos + offset..]) {
+                if let Some(captures) = TAG_REGEX.captures(&self.buf[idx..]) {
                     let (_a, [close, tag, end]) = captures.extract();
                     match (end, close) {
                         (b"", _) => {
-                            self.parttag = Some(pos + offset);
-                            return Ok(false);
+                            self.parttag = Some(idx);
+                            return false;
                         }
                         (_, b"/") => match self.tagstack.pop() {
                             Some(old_tag) => {
                                 if old_tag.0 != tag {
                                     self.msg_error = Some(MsgReceiveError::MismatchedCloseTag(
                                         old_tag.1,
-                                        pos + offset,
+                                        idx,
                                         String::from_utf8_lossy(&old_tag.0).to_string(),
                                         String::from_utf8_lossy(tag).to_string(),
                                     ));
@@ -166,7 +170,7 @@ impl MsgRecv {
                             }
                             None => {
                                 self.msg_error = Some(MsgReceiveError::UnexpectedCloseTag(
-                                    pos + offset,
+                                    idx,
                                     String::from_utf8_lossy(tag).to_string(),
                                 ));
                                 self.tagstack.clear();
@@ -174,7 +178,7 @@ impl MsgRecv {
                         },
                         (_, _) => {
                             // if self.msg_error.is_none() {
-                            self.tagstack.push((tag.to_vec(), pos + offset));
+                            self.tagstack.push((tag.to_vec(), idx));
                             // }
                         }
                     }
@@ -183,10 +187,35 @@ impl MsgRecv {
             pos += offset + 1;
         }
 
-        Ok(false)
+        false
     }
 
-    pub fn push_data(&mut self, data: &[u8]) -> Result<bool, MsgPushError> {
+    /// Push data into the message receiver buffer.
+    ///
+    /// This function appends the provided data to the internal buffer and checks
+    /// if a complete message is available. A complete message is determined by
+    /// finding a newline character when the XML tag stack is empty.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - The byte slice to append to the buffer
+    ///
+    /// # Returns
+    ///
+    /// Returns `true` if a complete message is ready to be retrieved (via `try_get_msg`),
+    /// or if there's a message error. Returns `false` if more data is needed or if
+    /// parsing encountered a partial XML-like tag.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use qslib::message_receiver::MsgRecv;
+    ///
+    /// let mut receiver = MsgRecv::new();
+    /// let ready = receiver.push_data(b"OK 1 success\n");
+    /// assert!(ready);
+    /// ```
+    pub fn push_data(&mut self, data: &[u8]) -> bool {
         let last_pos = self.parttag.unwrap_or(self.buf.len());
         self.buf.extend_from_slice(data);
         self.check_from_pos(last_pos)
@@ -202,10 +231,10 @@ mod tests {
         let mut receiver = MsgRecv::new();
 
         // Push first complete message
-        receiver.push_data(b"OK 1 success\n").unwrap();
+        receiver.push_data(b"OK 1 success\n");
 
         // Push second message while first is still waiting
-        receiver.push_data(b"OK 2 also success\n").unwrap();
+        receiver.push_data(b"OK 2 also success\n");
 
         // Now retrieve both messages
         let msg1 = receiver.try_get_msg().unwrap().unwrap();
@@ -221,9 +250,9 @@ mod tests {
     #[test]
     fn test_push_partial_while_message_waiting() {
         let mut receiver = MsgRecv::new();
-        receiver.push_data(b"OK 1 success\n").unwrap();
-        receiver.push_data(b"OK 2 ").unwrap();
-        receiver.push_data(b"also success\n").unwrap();
+        receiver.push_data(b"OK 1 success\n");
+        receiver.push_data(b"OK 2 ");
+        receiver.push_data(b"also success\n");
         let msg1 = receiver.try_get_msg().unwrap().unwrap();
         assert_eq!(&msg1, b"OK 1 success\n");
         let msg2 = receiver.try_get_msg().unwrap().unwrap();
@@ -233,14 +262,12 @@ mod tests {
     #[test]
     fn test_push_partial_xml_tag() {
         let mut receiver = MsgRecv::new();
-        receiver.push_data(b"<test").unwrap();
-        receiver.push_data(b">OK 2 \n").unwrap();
-        receiver
-            .push_data(b"also <another>\n\n\r\n</another> success</te")
-            .unwrap();
+        receiver.push_data(b"<test");
+        receiver.push_data(b">OK 2 \n");
+        receiver.push_data(b"also <another>\n\n\r\n</another> success</te");
 
         // Push the closing tag
-        receiver.push_data(b"st>\n").unwrap();
+        receiver.push_data(b"st>\n");
 
         let msg = receiver.try_get_msg();
 
@@ -248,5 +275,132 @@ mod tests {
             String::from_utf8_lossy(&msg.unwrap().unwrap()),
             "<test>OK 2 \nalso <another>\n\n\r\n</another> success</test>\n"
         );
+    }
+
+    // =====================================================================
+    // Additional message receiver tests
+    // =====================================================================
+
+    #[test]
+    fn test_simple_message() {
+        let mut receiver = MsgRecv::new();
+        let ready = receiver.push_data(b"OK 1 success\n");
+        assert!(ready, "Should signal message ready");
+        
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg, b"OK 1 success\n");
+    }
+
+    #[test]
+    fn test_no_message_without_newline() {
+        let mut receiver = MsgRecv::new();
+        let ready = receiver.push_data(b"OK 1 success");
+        assert!(!ready, "Should not signal ready without newline");
+        
+        let msg = receiver.try_get_msg().unwrap();
+        assert!(msg.is_none(), "Should not have a message yet");
+    }
+
+    #[test]
+    fn test_empty_message() {
+        let mut receiver = MsgRecv::new();
+        let ready = receiver.push_data(b"\n");
+        assert!(ready, "Empty line is still a complete message");
+        
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg, b"\n");
+    }
+
+    #[test]
+    fn test_xml_preserves_internal_newlines() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"OK 1 <quote>line1\nline2\nline3</quote>\n");
+        
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&msg).contains("line1\nline2\nline3"));
+    }
+
+    #[test]
+    fn test_nested_xml_tags() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"OK 1 <outer><inner>content\nwith\nnewlines</inner></outer>\n");
+        
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&msg).contains("<outer><inner>content\nwith\nnewlines</inner></outer>"));
+    }
+
+    #[test]
+    fn test_mismatched_close_tag_error() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"<tag1>content</tag2>\n");
+        
+        let result = receiver.try_get_msg();
+        assert!(result.is_err(), "Mismatched tags should produce an error");
+    }
+
+    #[test]
+    fn test_unexpected_close_tag_error() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"</unexpected>content\n");
+        
+        let result = receiver.try_get_msg();
+        assert!(result.is_err(), "Unexpected close tag should produce an error");
+    }
+
+    #[test]
+    fn test_multiple_messages_in_one_push() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"msg1\nmsg2\nmsg3\n");
+        
+        let msg1 = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg1, b"msg1\n");
+        
+        let msg2 = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg2, b"msg2\n");
+        
+        let msg3 = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg3, b"msg3\n");
+        
+        assert!(receiver.try_get_msg().unwrap().is_none());
+    }
+
+    #[test]
+    fn test_very_long_xml_content() {
+        let mut receiver = MsgRecv::new();
+        let long_content = "x".repeat(10000);
+        let input = format!("OK 1 <data>{}</data>\n", long_content);
+        receiver.push_data(input.as_bytes());
+        
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert!(msg.len() > 10000);
+    }
+
+    #[test]
+    fn test_receiver_reset_after_error() {
+        let mut receiver = MsgRecv::new();
+        
+        // First, cause an error
+        receiver.push_data(b"</unexpected>error\n");
+        let _ = receiver.try_get_msg(); // Consume the error
+        
+        // Should work normally after
+        receiver.push_data(b"OK 1 success\n");
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg, b"OK 1 success\n");
+    }
+
+    #[test]
+    fn test_special_xml_tag_names() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"OK 1 <multiline.protocol>content</multiline.protocol>\n");
+        
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&msg).contains("multiline.protocol"));
+    }
+
+    #[test]
+    fn test_default_impl() {
+        let mut receiver: MsgRecv = Default::default();
+        assert!(receiver.try_get_msg().is_ok());
     }
 }

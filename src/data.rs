@@ -6,6 +6,9 @@ use thiserror::Error;
 use pyo3::prelude::*;
 
 #[cfg(feature = "python")]
+use pyo3::exceptions::PyValueError;
+
+#[cfg(feature = "python")]
 use pyo3_polars::PyDataFrame;
 
 // use once_cell::sync::Lazy;
@@ -76,10 +79,10 @@ pub struct PlatePointData {
 }
 
 impl PlatePointData {
-    pub fn to_polars(&self) -> LazyFrame {
-        let lfs = self.plate_data.iter().map(|pd| pd.to_polars().unwrap()).collect::<Vec<_>>();
-        
-        concat(lfs, UnionArgs::default()).unwrap()
+    pub fn to_polars(&self) -> Result<LazyFrame, PolarsError> {
+        let lfs: Result<Vec<_>, _> = self.plate_data.iter().map(|pd| pd.to_polars()).collect();
+        let lfs = lfs?;
+        concat(lfs, UnionArgs::default())
     }
 }
 
@@ -87,8 +90,13 @@ impl PlatePointData {
 #[pymethods]
 impl PlatePointData {
     #[pyo3(name = "to_polars")]
-    fn py_to_polars(&self) -> PyDataFrame {
-        PyDataFrame(self.to_polars().collect().unwrap())
+    fn py_to_polars(&self) -> PyResult<PyDataFrame> {
+        Ok(PyDataFrame(
+            self.to_polars()
+                .map_err(|e| PyValueError::new_err(format!("Failed to convert to Polars: {}", e)))?
+                .collect()
+                .map_err(|e| PyValueError::new_err(format!("Failed to collect Polars DataFrame: {}", e)))?
+        ))
     }
 }
 
@@ -173,6 +181,12 @@ impl PlateData {
         } else {
             self.set_temperatures.as_deref()
         };
+
+        // Parse read temperatures for zone mapping (auto-detect zone count)
+        let read_temperatures = self.get_temperatures();
+        let num_zones = read_temperatures.as_ref().map(|t| t.len()).unwrap_or(1);
+        let zone_size = if num_zones > 0 { self.cols / num_zones as u32 } else { self.cols };
+
         // Generate a line for each well
         for ((row_letter, col), &fluorescence) in well_names.iter().zip(self.well_data.iter()) {
             let mut line = format!(
@@ -206,13 +220,12 @@ impl PlateData {
                 line.push_str(&format!(",point={:04}i", point));
             }
 
-            // Add temperature if available
-            if let Some(temp) = self
-                .get_attribute("TEMPERATURE")
-                .and_then(|t| t.split(',').nth(((col - 1) / (self.cols / 6)) as usize))
-                .and_then(|t| t.parse::<f64>().ok())
-            {
-                line.push_str(&format!(",temperature_read={}", temp));
+            // Add temperature if available (using auto-detected zone count)
+            if let Some(ref temps) = read_temperatures {
+                let zone_idx = ((col - 1) / zone_size) as usize;
+                if let Some(&temp) = temps.get(zone_idx) {
+                    line.push_str(&format!(",temperature_read={}", temp));
+                }
             }
 
             // Add sample if provided
@@ -253,7 +266,12 @@ impl PlateData {
     }
 
     pub fn get_temperatures(&self) -> Option<Vec<f64>> {
-        self.get_attribute("TEMPERATURE").map(|t| t.split(',').map(|t| t.parse::<f64>().unwrap()).collect())
+        self.get_attribute("TEMPERATURE").and_then(|t| {
+            t.split(',')
+                .map(|t| t.parse::<f64>())
+                .collect::<Result<Vec<_>, _>>()
+                .ok()
+        })
     }
 
     pub fn get_exposure(&self) -> Option<i32> {
@@ -279,9 +297,23 @@ impl PlateData {
     pub fn to_polars(&self) -> Result<LazyFrame, PolarsError> {
         let well_names = self.well_names();
         let c = self.col_indices();
-        let templist = self.get_temperatures().unwrap();
+        let templist = self.get_temperatures()
+            .ok_or_else(|| PolarsError::ComputeError("Missing TEMPERATURE attribute".into()))?;
+        if templist.is_empty() {
+            return Err(PolarsError::ComputeError("TEMPERATURE attribute is empty".into()));
+        }
         let zone_size = self.cols / templist.len() as u32;
-        let sts = self.col_indices().iter().map(|c| templist[(c / zone_size) as usize]).collect::<Vec<_>>();
+        if zone_size == 0 {
+            return Err(PolarsError::ComputeError("Invalid zone size calculation".into()));
+        }
+        let sts = self.col_indices().iter().map(|c| {
+            let idx = (c / zone_size) as usize;
+            if idx >= templist.len() {
+                templist[templist.len() - 1] // Use last temperature if out of bounds
+            } else {
+                templist[idx]
+            }
+        }).collect::<Vec<_>>();
         let zone = self.col_indices().iter().map(|c| c / zone_size).collect::<Vec<_>>();
         let df = df![
             "well" => well_names.iter().map(|(row, col)| format!("{row}{col}")).collect::<Vec<String>>(),
@@ -291,12 +323,13 @@ impl PlateData {
             "sample_temperature" => sts,
             "zone" => zone,
         ]?;
-        Ok(df.lazy().with_columns([lit(self.filter_set().unwrap().to_string()).alias("filter_set"),
-            lit(self.get_stage().unwrap()).alias("stage"),
-            lit(self.get_cycle().unwrap()).alias("cycle"),
-            lit(self.get_step().unwrap()).alias("step"),
-            lit(self.get_point().unwrap()).alias("point"),
-            lit(self.get_exposure().unwrap()).alias("exposure"),
+        Ok(df.lazy().with_columns([
+            lit(self.filter_set().map_err(|e| PolarsError::ComputeError(e.to_string().into()))?.to_string()).alias("filter_set"),
+            lit(self.get_stage().ok_or_else(|| PolarsError::ComputeError("Missing STAGE attribute".into()))?).alias("stage"),
+            lit(self.get_cycle().ok_or_else(|| PolarsError::ComputeError("Missing CYCLE attribute".into()))?).alias("cycle"),
+            lit(self.get_step().ok_or_else(|| PolarsError::ComputeError("Missing STEP attribute".into()))?).alias("step"),
+            lit(self.get_point().ok_or_else(|| PolarsError::ComputeError("Missing POINT attribute".into()))?).alias("point"),
+            lit(self.get_exposure().ok_or_else(|| PolarsError::ComputeError("Missing EXPOSURE attribute".into()))?).alias("exposure"),
         ]))
     }
 }
@@ -305,8 +338,13 @@ impl PlateData {
 #[pymethods]
 impl PlateData {
     #[pyo3(name = "to_polars")]
-    fn py_to_polars(&self) -> PyDataFrame {
-        PyDataFrame(self.to_polars().unwrap().collect().unwrap())
+    fn py_to_polars(&self) -> PyResult<PyDataFrame> {
+        Ok(PyDataFrame(
+            self.to_polars()
+                .map_err(|e| PyValueError::new_err(format!("Failed to convert to Polars: {}", e)))?
+                .collect()
+                .map_err(|e| PyValueError::new_err(format!("Failed to collect Polars DataFrame: {}", e)))?
+        ))
     }
 }
 
@@ -335,17 +373,24 @@ impl FilterDataCollection {
 
     #[staticmethod]
     #[pyo3(name = "read_file")]
-    pub fn py_read_file(path: &str) -> Self {
-        let xml_str = std::fs::read_to_string(path).unwrap();
-        let data: FilterDataCollection = quick_xml::de::from_str(&xml_str).unwrap();
-        data
+    pub fn py_read_file(path: &str) -> PyResult<Self> {
+        let xml_str = std::fs::read_to_string(path)
+            .map_err(|e| PyValueError::new_err(format!("Failed to read file {}: {}", path, e)))?;
+        let data: FilterDataCollection = quick_xml::de::from_str(&xml_str)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse XML: {}", e)))?;
+        Ok(data)
     }
 
     #[pyo3(name = "to_polars")]
     pub fn py_to_polars(&self) -> PyResult<PyDataFrame> {
-        let lfs = self.plate_point_data.iter().map(|pd| pd.to_polars()).collect::<Vec<_>>();
-        let lf = concat(lfs, UnionArgs::default()).unwrap();
-        Ok(PyDataFrame(lf.collect().unwrap()))
+        let lfs: Result<Vec<_>, _> = self.plate_point_data.iter().map(|pd| pd.to_polars()).collect();
+        let lfs = lfs.map_err(|e| PyValueError::new_err(format!("Failed to convert plate point data to Polars: {}", e)))?;
+        let lf = concat(lfs, UnionArgs::default())
+            .map_err(|e| PyValueError::new_err(format!("Failed to concat Polars DataFrames: {}", e)))?;
+        Ok(PyDataFrame(
+            lf.collect()
+                .map_err(|e| PyValueError::new_err(format!("Failed to collect Polars DataFrame: {}", e)))?
+        ))
     }
 }
 
@@ -434,5 +479,226 @@ mod tests {
         assert!(lines[0].contains("run_name=\"test_run\""));
         assert!(lines[0].contains("temperature_read=25"));
         assert!(lines[0].contains("temperature_set=25"));
+    }
+
+    // =====================================================================
+    // Additional data module tests
+    // =====================================================================
+
+    #[test]
+    fn test_plate_data_get_attribute() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![
+                Attribute { key: "KEY1".to_string(), value: "value1".to_string() },
+                Attribute { key: "KEY2".to_string(), value: "value2".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        assert_eq!(plate_data.get_attribute("KEY1"), Some("value1"));
+        assert_eq!(plate_data.get_attribute("KEY2"), Some("value2"));
+        assert_eq!(plate_data.get_attribute("NONEXISTENT"), None);
+    }
+
+    #[test]
+    fn test_plate_data_filter_set() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![
+                Attribute { key: "FILTER_SET".to_string(), value: "x1-m4".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        assert_eq!(plate_data.filter_set().unwrap(), "x1-m4");
+    }
+
+    #[test]
+    fn test_plate_data_filter_set_missing() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        assert!(plate_data.filter_set().is_err());
+    }
+
+    #[test]
+    fn test_plate_data_get_temperatures() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![
+                Attribute { key: "TEMPERATURE".to_string(), value: "25.0,26.5,27.0".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        let temps = plate_data.get_temperatures().unwrap();
+        assert_eq!(temps.len(), 3);
+        assert!((temps[0] - 25.0).abs() < 0.001);
+        assert!((temps[1] - 26.5).abs() < 0.001);
+        assert!((temps[2] - 27.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_plate_data_get_numeric_attributes() {
+        let plate_data = PlateData {
+            rows: 8,
+            cols: 12,
+            well_data: vec![],
+            attributes: vec![
+                Attribute { key: "STAGE".to_string(), value: "2".to_string() },
+                Attribute { key: "CYCLE".to_string(), value: "5".to_string() },
+                Attribute { key: "STEP".to_string(), value: "1".to_string() },
+                Attribute { key: "POINT".to_string(), value: "10".to_string() },
+                Attribute { key: "EXPOSURE".to_string(), value: "500".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        assert_eq!(plate_data.get_stage(), Some(2));
+        assert_eq!(plate_data.get_cycle(), Some(5));
+        assert_eq!(plate_data.get_step(), Some(1));
+        assert_eq!(plate_data.get_point(), Some(10));
+        assert_eq!(plate_data.get_exposure(), Some(500));
+    }
+
+    #[test]
+    fn test_plate_point_data_fields() {
+        let ppd = PlatePointData {
+            stage: 1,
+            cycle: 2,
+            step: 3,
+            point: 4,
+            plate_data: vec![],
+        };
+
+        assert_eq!(ppd.stage, 1);
+        assert_eq!(ppd.cycle, 2);
+        assert_eq!(ppd.step, 3);
+        assert_eq!(ppd.point, 4);
+    }
+
+    #[test]
+    fn test_filter_data_collection_parse_multiple_plates() {
+        let xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+        <PlatePointDataCollection>
+            <Name>MultiPlateData</Name>
+            <PlatePointData>
+                <Stage>1</Stage>
+                <Cycle>1</Cycle>
+                <Step>1</Step>
+                <Point>1</Point>
+                <PlateData>
+                    <Rows>8</Rows>
+                    <Cols>12</Cols>
+                    <WellData>1.0 2.0 3.0</WellData>
+                    <Attribute>
+                        <key>FILTER_SET</key>
+                        <value>x1-m1</value>
+                    </Attribute>
+                </PlateData>
+                <PlateData>
+                    <Rows>8</Rows>
+                    <Cols>12</Cols>
+                    <WellData>4.0 5.0 6.0</WellData>
+                    <Attribute>
+                        <key>FILTER_SET</key>
+                        <value>x1-m2</value>
+                    </Attribute>
+                </PlateData>
+            </PlatePointData>
+        </PlatePointDataCollection>"#;
+
+        let data: FilterDataCollection = quick_xml::de::from_str(xml).unwrap();
+        assert_eq!(data.name, "MultiPlateData");
+        assert_eq!(data.plate_point_data.len(), 1);
+        assert_eq!(data.plate_point_data[0].plate_data.len(), 2);
+        assert_eq!(data.plate_point_data[0].plate_data[0].get_attribute("FILTER_SET"), Some("x1-m1"));
+        assert_eq!(data.plate_point_data[0].plate_data[1].get_attribute("FILTER_SET"), Some("x1-m2"));
+    }
+
+    #[test]
+    fn test_well_data_parsing() {
+        let xml = r#"<?xml version="1.0"?>
+        <PlatePointDataCollection>
+            <Name>Test</Name>
+            <PlatePointData>
+                <Stage>1</Stage>
+                <Cycle>1</Cycle>
+                <Step>1</Step>
+                <Point>1</Point>
+                <PlateData>
+                    <Rows>2</Rows>
+                    <Cols>3</Cols>
+                    <WellData>1.5 2.5 3.5 4.5 5.5 6.5</WellData>
+                    <Attribute>
+                        <key>FILTER_SET</key>
+                        <value>test</value>
+                    </Attribute>
+                </PlateData>
+            </PlatePointData>
+        </PlatePointDataCollection>"#;
+
+        let data: FilterDataCollection = quick_xml::de::from_str(xml).unwrap();
+        let plate = &data.plate_point_data[0].plate_data[0];
+        assert_eq!(plate.well_data, vec![1.5, 2.5, 3.5, 4.5, 5.5, 6.5]);
+    }
+
+    #[test]
+    fn test_lineprotocol_with_additional_tags() {
+        let plate_data = PlateData {
+            rows: 1,
+            cols: 2,
+            well_data: vec![1.0, 2.0],
+            attributes: vec![
+                Attribute { key: "FILTER_SET".to_string(), value: "x1-m1".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        let lines = plate_data
+            .to_lineprotocol(None, None, None, Some(&[("machine", "QS5")]))
+            .unwrap();
+
+        assert!(lines[0].contains("machine=\"QS5\""));
+    }
+
+    #[test]
+    fn test_lineprotocol_with_samples() {
+        let plate_data = PlateData {
+            rows: 1,
+            cols: 2,
+            well_data: vec![1.0, 2.0],
+            attributes: vec![
+                Attribute { key: "FILTER_SET".to_string(), value: "x1-m1".to_string() },
+            ],
+            timestamp: None,
+            set_temperatures: None,
+        };
+
+        let samples = vec!["sample1".to_string(), "sample2".to_string()];
+        let lines = plate_data
+            .to_lineprotocol(None, Some(&samples), None, None)
+            .unwrap();
+
+        assert!(lines[0].contains("sample=\"sample1\""));
+        assert!(lines[1].contains("sample=\"sample2\""));
     }
 }
