@@ -289,25 +289,19 @@ jobs:
     runs-on: self-hosted
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: 3.x
       - name: Install uv
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - name: Create virtual environment
         run: |
-          uv venv
+          uv venv -p 3.13
       - name: Install maturin
         run: |
           uv pip install maturin
       - name: Build package
         run: |
-          uv run maturin build --release --out dist
-      - name: Install package and dependencies
-        run: |
-          uv pip install .[testing] --find-links dist --force-reinstall
+          uv run maturin develop --release --uv -E testing
       - name: Run pytest with coverage
         run: |
           uv run pytest --cov qslib --cov-report xml --cov-report term
