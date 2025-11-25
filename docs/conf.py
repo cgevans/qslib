@@ -37,7 +37,7 @@ __location__ = os.path.join(
 from sphinx.ext import apidoc
 
 output_dir = os.path.join(__location__, "api")
-module_dir = os.path.join(__location__, "../src/qslib")
+module_dir = os.path.join(__location__, "../python/qslib")
 try:
     shutil.rmtree(output_dir)
 except FileNotFoundError:

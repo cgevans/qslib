@@ -63,7 +63,7 @@ Or, for the current Github version:
 
     pip3 install -U --pre git+https://github.com/cgevans/qslib
 
-It requires at least version 3.9 of Python. While it uses async code at
+It requires at least version 3.10 of Python. While it uses async code at
 its core for communication, it can be used conveniently in Jupyter or
 IPython.
 
