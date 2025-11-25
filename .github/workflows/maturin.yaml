@@ -279,10 +279,11 @@ jobs:
           cargo llvm-cov clean --workspace
           cargo test
           cargo llvm-cov --no-run --lcov --output-path coverage.lcov
-      - uses: codecov/codecov-action@v3
+      - uses: codecov/codecov-action@v5
         with:
           files: coverage.lcov
           name: rust-linux # ${{ matrix.os }}
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   python_tests_real:
     name: Python Tests with Real Machine Tests
@@ -305,10 +306,11 @@ jobs:
       - name: Run pytest with coverage
         run: |
           uv run pytest --cov qslib --cov-report xml --cov-report term
-      - uses: codecov/codecov-action@v3
+      - uses: codecov/codecov-action@v5
         with:
           files: coverage.xml
           name: python-self-hosted
+          token: ${{ secrets.CODECOV_TOKEN }}
 
   rust_release:
     name: Rust Crates.io Release
