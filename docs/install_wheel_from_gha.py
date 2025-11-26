@@ -18,7 +18,7 @@ def get_artifact_download_url(commit_sha: str, token: str | None = None) -> str:
     """Find artifact download URL for a commit."""
     headers = {"Accept": "application/vnd.github+json"}
     if token:
-        headers["Authorization"] = f"Bearer {token}"
+        headers["Authorization"] = f"token {token}"
 
     # Find workflow runs for this commit
     url = f"https://api.github.com/repos/{REPO}/actions/runs?head_sha={commit_sha}"
@@ -50,7 +50,7 @@ def download_and_extract_wheel(download_url: str, token: str) -> str:
     """Download artifact zip and extract wheel, return wheel path."""
     headers = {
         "Accept": "application/vnd.github+json",
-        "Authorization": f"Bearer {token}",
+        "Authorization": f"token {token}",
     }
     req = Request(download_url, headers=headers)
     with urlopen(req) as resp:
