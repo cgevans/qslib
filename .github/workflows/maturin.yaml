@@ -26,16 +26,6 @@ jobs:
         platform:
           - runner: ubuntu-24.04
             target: x86_64
-          # - runner: ubuntu-22.04
-          #   target: x86
-          # - runner: ubuntu-22.04
-          #   target: aarch64
-          # - runner: ubuntu-22.04
-          #   target: armv7
-          # - runner: ubuntu-22.04
-          #   target: s390x
-          # - runner: ubuntu-22.04
-          #   target: ppc64le
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -85,6 +75,13 @@ jobs:
             set -e
             pip3 install qslib[testing] --find-links dist --force-reinstall
             pytest -k 'not test_real'
+      - name: Trigger RTDs build
+        uses: dfm/rtds-action@v1
+        if: ${{ startsWith(matrix.platform.target, 'x86_64') }}
+        with:
+          webhook_url: ${{ secrets.RTDS_WEBHOOK_URL }}
+          webhook_token: ${{ secrets.RTDS_WEBHOOK_TOKEN }}
+          commit_ref: ${{ github.ref }}
 
   # musllinux:
   #   runs-on: ${{ matrix.platform.runner }}

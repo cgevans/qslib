@@ -1,15 +1,10 @@
-# SPDX-FileCopyrightText: 2021-2023 Constantine Evans <qslib@mb.costi.net>
+# SPDX-FileCopyrightText: 2021-2025 Constantine Evans <qslib@mb.costi.net>
 # SPDX-License-Identifier: EUPL-1.2
 version: 2
-sphinx:
-  configuration: docs/conf.py
 build:
-    os: ubuntu-20.04
-    tools:
-        python: "3.10"
-python:
-  install:
-    - method: pip
-      path: .
-      extra_requirements:
-        - docs
+  os: ubuntu-24.04
+  tools:
+    python: "3.13"
+  commands:
+    - python docs/install_wheel_from_gha.py
+    - python -m sphinx -T -b html -d docs/_build/doctrees -D language=en docs $READTHEDOCS_OUTPUT/html
