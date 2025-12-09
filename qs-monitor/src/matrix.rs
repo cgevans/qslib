@@ -86,6 +86,7 @@ fn get_commands_list() -> String {
     <li><code>!open &lt;machine&gt;</code> - Open drawer (requires control)</li>\
     <li><code>!abort &lt;machine&gt;</code> - Abort current run (requires control)</li>\
     <li><code>!stop &lt;machine&gt;</code> - Stop current run (requires control)</li>\
+    <li><code>!power &lt;machine&gt; [on|off]</code> - Show or set machine power (control required for on/off)</li>\
     <li><code>!help [command]</code> - Show this help or detailed help for a command</li>\
     </ul>Use <code>!help &lt;command&gt;</code> for detailed documentation."
         .to_string()
@@ -168,6 +169,25 @@ fn get_command_help(command: &str) -> String {
             <code>!protocol qs1</code><br>\
             <br>\
             Displays the protocol name, volume, run mode, and stage structure.".to_string()
+        }
+        "power" => {
+            "<b>!power &lt;machine&gt; [on|off]</b><br>\
+            Shows or controls the machine's operational power (lamp, temperature control, etc.).<br>\
+            <br>\
+            <b>Usage:</b><br>\
+            • <code>!power &lt;machine&gt;</code> - Show current power status<br>\
+            • <code>!power &lt;machine&gt; on</code> - Turn power on<br>\
+            • <code>!power &lt;machine&gt; off</code> - Turn power off<br>\
+            <br>\
+            <b>Examples:</b><br>\
+            <code>!power qs1</code> - Check power status<br>\
+            <code>!power qs1 on</code> - Turn power on<br>\
+            <code>!power qs1 off</code> - Turn power off<br>\
+            <br>\
+            <b>Note:</b> Changing power (on/off) requires control permissions to be enabled. \
+            Turning power off does not turn off the machine itself, just powers down the lamp and \
+            temperature control systems. It will do so even if there is currently a run. \
+            The access level is temporarily elevated to Controller for the operation.".to_string()
         }
         "help" => {
             "<b>!help [command]</b><br>\
@@ -452,6 +472,81 @@ async fn handle_message(
                         Err(e) => {
                             send_matrix_message(&room, &format!("Error stopping run: {}", e), true)
                                 .await?;
+                        }
+                    }
+                }
+                None => {
+                    error!("Machine {} not found", machine);
+                    send_matrix_message(&room, &format!("Machine {} not found", machine), true)
+                        .await?;
+                }
+            }
+            Ok(())
+        }
+        "!power" => {
+            let machine = parts.next().unwrap_or("");
+            let action = parts.next();
+
+            match qs.get(machine) {
+                Some(x) => {
+                    let (conn, _) = x.value();
+                    match action {
+                        None => {
+                            // Query power status
+                            let response = conn.send_command("POW?").await?.get_response().await?;
+                            match response {
+                                Ok(resp) => {
+                                    send_matrix_message(
+                                        &room,
+                                        &format!("Power status for {}: {}", machine, resp),
+                                        false
+                                    ).await?;
+                                }
+                                Err(e) => {
+                                    send_matrix_message(
+                                        &room,
+                                        &format!("Error getting power status: {}", e),
+                                        true
+                                    ).await?;
+                                }
+                            }
+                        }
+                        Some("on") | Some("off") => {
+                            if !settings.allow_control {
+                                error!("Control commands not allowed");
+                                send_matrix_message(
+                                    &room,
+                                    "Control commands are not allowed",
+                                    true
+                                ).await?;
+                                return Ok(());
+                            }
+                            conn.set_access_level(AccessLevel::Controller).await?;
+                            let response = conn.send_command(format!("POW {}", action.unwrap())).await?.get_response().await?;
+                            conn.set_access_level(AccessLevel::Observer).await?;
+                            match response {
+                                Ok(_) => {
+                                    send_matrix_message(
+                                        &room,
+                                        &format!("Power turned {} for {}", action.unwrap(), machine),
+                                        false
+                                    ).await?;
+                                }
+                                Err(e) => {
+                                    send_matrix_message(
+                                        &room,
+                                        &format!("Error changing power: {}", e),
+                                        true
+                                    ).await?;
+                                }
+                            }
+                        }
+                        Some(invalid) => {
+                            send_matrix_message(
+                                &room,
+                                &format!("Invalid power action: {}. Use 'on' or 'off'", invalid),
+                                true
+                            ).await?;
                         }
                     }
                 }
