@@ -76,23 +76,6 @@ monitor = [
     "matrix-nio",
     "influxdb_client",
     "lxml"]
-docs = [
-    "myst_parser",
-    "influxdb_client",
-    "lxml",
-    "sphinx-click",
-    "sphinx-autodoc-typehints",
-    "sphinx >= 2.4",
-    "qslib[monitor]"
-]
-testing = [
-    "setuptools",
-    "pytest",
-    "pytest-cov",
-    "pytest-asyncio",
-    "hypothesis",
-    "qslib[monitor]",
-]
 altair = [
     "vegafusion",
     "altair",
@@ -112,9 +95,24 @@ qs-monitor = "qslib.monitor_cli:run"
 qslib = "qslib.cli:cli"
 
 [dependency-groups]
-test = [
+dev = [
     "pytest>=8.4.2",
     "pytest-cov>=6.2.1",
+    "setuptools",
+    "pytest",
+    "pytest-cov",
+    "pytest-asyncio",
+    "hypothesis",
+    "qslib[monitor]",
+]
+docs = [
+    "myst_parser",
+    "influxdb_client",
+    "lxml",
+    "sphinx-click",
+    "sphinx-autodoc-typehints",
+    "sphinx >= 2.4",
+    "qslib[monitor]"
 ]
 
 [tool.pytest.ini_options]
