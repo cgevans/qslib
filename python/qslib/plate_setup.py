@@ -378,7 +378,7 @@ class PlateSetup:
 
     def to_table(
         self,
-        fmt: Literal["markdown", "orgtbl", "html"] = "markdown",
+        format: Literal["markdown", "orgtbl", "html"] = "markdown",
         showindex: Sequence[str] | None = None,
         showcolors: bool | Literal["auto"] = "auto",
     ) -> str:

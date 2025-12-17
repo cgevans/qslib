@@ -15,6 +15,7 @@ A significant reorganization:
 - A new, rust-based qs-monitor with improved reliability and a matrix bot with commands.
 - Altair plotting support.
 - Numerous bug fixes and improvements.
+- Python 3.10 is now the minimum supported Python.
 
 ## Version 0.13.0
 

@@ -1547,7 +1547,7 @@ class Stage(XMLable, ProtoCommand):
             if isinstance(s, XMLable):
                 e.append(s.to_xml())
         if len(scycle) > 1:
-            log.warn("Approx")
+            log.warning("XML-based protocols do not support time and temperature starting cycles being different, so XML protocol is an approximation.")
         if scycle:
             ET.SubElement(e, "StartingCycle").text = str(next(iter(scycle)))
         ET.SubElement(e, "AutoDeltaEnabled").text = "true"
@@ -2025,7 +2025,7 @@ class Protocol(ProtoCommand):
         for i, stage in enumerate(self.stages):
             if (stage.index is not None) and (stage.index != i + 1):
                 if fix:
-                    log.warn(
+                    log.warning(
                         "Stage %s is at index %d of protocol, but has set index %d. Fixing.",
                         stage,
                         i + 1,
@@ -2042,7 +2042,7 @@ class Protocol(ProtoCommand):
                 m = re.match(r"STAGE_(\d+)", stage.label)
                 if m and (int(m[1]) != i + 1):
                     if fix:
-                        log.warn(
+                        log.warning(
                             "Stage %s has label %s, which implies index %d, but is at index %d of protocol. Fixing.",
                             stage,
                             stage.label,

@@ -747,7 +747,7 @@ class Collector:
                 await self.monitor(connected_fut=connected_fut)
             except asyncio.exceptions.TimeoutError as e:
                 successive_failures = 0
-                log.warn(f"lost connection with timeout {e}", exc_info=True)
+                log.warning(f"lost connection with timeout {e}", exc_info=True)
             except OSError as e:
                 log.error(f"connection error {e}, retrying", exc_info=True)
             except Exception as e:

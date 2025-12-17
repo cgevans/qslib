@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 from . import protocol
+from ._qslib import CommandError
 from .experiment import Experiment
 from .machine import Machine, MachineStatus, RunStatus
 from .plate_setup import PlateSetup, Sample
@@ -22,6 +23,7 @@ from .scpi_commands import AccessLevel
 
 __all__ = (
     "AccessLevel",
+    "CommandError",
     "CustomStep",
     "Experiment",
     "Machine",
