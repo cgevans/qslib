@@ -1331,7 +1331,7 @@ class Stage(XMLable, ProtoCommand):
             )
 
         return cls(
-            [
+             [
                 Step(
                     step_time,
                     _wrapunitmaybelist_degC(temperature),

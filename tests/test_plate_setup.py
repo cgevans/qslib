@@ -1,4 +1,3 @@
-import pytest   
 
 from qslib import PlateSetup
 

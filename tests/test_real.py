@@ -6,7 +6,7 @@ import uuid
 
 import pytest
 
-from qslib import AccessLevel, Experiment, Machine, PlateSetup, Protocol, RunStatus, Stage
+from qslib import AccessLevel, Experiment, Machine, PlateSetup, Protocol, Stage
 from qslib.experiment import MachineBusyError
 from qslib.machine import AlreadyCollectedError
 

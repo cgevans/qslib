@@ -2,9 +2,6 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 import pytest
-import tempfile
-import warnings
-from pathlib import Path
 
 from qslib import Experiment, Protocol, Stage, Step
 from qslib.experiment import DataNotAvailableError

@@ -124,7 +124,6 @@ PandasProcessor = Processor
 
 def polars_from_filterdata(dr: "FilterDataReading", start_time: float | None = None) -> pl.LazyFrame:
     """Convert FilterDataReading to Polars LazyFrame."""
-    from .data import FilterDataReading
 
     d = pl.DataFrame(
         {

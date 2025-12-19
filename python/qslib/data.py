@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 import os
 import re
 import xml.etree.ElementTree as ET
@@ -21,7 +20,7 @@ import pandas as pd
 from .plate_setup import _WELLNAMES_96, _WELLNAMES_384
 
 if TYPE_CHECKING:
-    import polars as pl
+    pass
 
 _UPPERS = "ABCDEFGHIJKLMNOP"
 

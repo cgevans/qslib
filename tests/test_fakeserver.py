@@ -4,10 +4,7 @@
 import asyncio
 import re
 
-import pytest
 
-from qslib import Machine
-from qslib._qslib import QSConnection
 
 
 def crcb(crlist):

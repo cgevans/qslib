@@ -21,6 +21,7 @@ pyo3::create_exception!(qslib, UnexpectedMessageResponse, CommandResponseError);
 pyo3::create_exception!(qslib, DisconnectedBeforeResponse, CommandResponseError);
 
 #[pyclass]
+#[pyo3(name = "Protocol")]
 pub struct PyProtocol {
     protocol: Protocol,
 }
@@ -65,6 +66,7 @@ pub struct PyQSConnection {
 }
 
 #[pyclass]
+#[pyo3(name = "MessageResponse")]
 pub struct PyMessageResponse {
     rx: ResponseReceiver,
     rt: Arc<Runtime>,
@@ -164,6 +166,7 @@ impl PyMessageResponse {
 }
 
 #[pyclass]
+#[pyo3(name = "LogReceiver")]
 pub struct PyLogReceiver {
     rx: StreamMap<String, BroadcastStream<LogMessage>>,
     rt: Arc<Runtime>,

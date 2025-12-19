@@ -20,7 +20,6 @@ from typing import (
     Optional,
     Sequence,
     Tuple,
-    Union,
     TYPE_CHECKING
 )
 from uuid import uuid1
@@ -390,18 +389,18 @@ class PlateSetup:
         def fmt_header(x: str) -> str:
             if not x:
                 return ""
-            if fmt == "markdown":
+            if format == "markdown":
                 return f"**{x}**"
-            elif fmt == "orgtbl":
+            elif format == "orgtbl":
                 return f"{x}"
-            elif fmt == "html":
+            elif format == "html":
                 return f"<b>{x}</b>"
-        
-        if fmt == "markdown":   
+
+        if format == "markdown":
             ws = ws.with_columns(pl.when(pl.col("name").is_not_null()).then(pl.col("name").str.replace(".*", "`$0`")).otherwise(pl.lit("")).alias("name"))
             tablefmt = "pipe"
 
-        if fmt == "html" and (showcolors == "auto" or showcolors):
+        if format == "html" and (showcolors == "auto" or showcolors):
             def color_style(row):   
                 color = row["color"]
                 return f"color: {color};" if color else ""
