@@ -43,15 +43,18 @@ jobs:
         with:
           name: wheels-linux-${{ matrix.platform.target }}
           path: dist
+      - name: Install uv
+        if: ${{ startsWith(matrix.platform.target, 'x86_64') }}
+        uses: astral-sh/setup-uv@v4
       - name: pytest
         if: ${{ startsWith(matrix.platform.target, 'x86_64') }}
         shell: bash
         run: |
           set -e
-          python3 -m venv .venv
+          uv venv
           source .venv/bin/activate
-          pip install .[testing] --find-links dist --force-reinstall
-          pip install pytest pytest-cov
+          uv sync --group dev --no-install-project
+          uv pip install . --find-links dist --force-reinstall
           pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
       - name: Upload coverage
         if: ${{ startsWith(matrix.platform.target, 'x86_64') }}
@@ -70,10 +73,11 @@ jobs:
           install: |
             apt-get update
             apt-get install -y --no-install-recommends python3 python3-pip
-            pip3 install -U pip pytest
+            pip3 install -U pip
           run: |
             set -e
-            pip3 install qslib[testing] --find-links dist --force-reinstall
+            pip3 install qslib --find-links dist --force-reinstall
+            pip3 install pytest pytest-cov pytest-asyncio hypothesis setuptools
             pytest -k 'not test_real'
       - name: Trigger RTDs build
         uses: dfm/rtds-action@v1
@@ -170,15 +174,18 @@ jobs:
         with:
           name: wheels-windows-${{ matrix.platform.target }}
           path: dist
+      - name: Install uv
+        if: ${{ !startsWith(matrix.platform.target, 'aarch64') }}
+        uses: astral-sh/setup-uv@v4
       - name: pytest
         if: ${{ !startsWith(matrix.platform.target, 'aarch64') }}
         shell: bash
         run: |
           set -e
-          python3 -m venv .venv
+          uv venv
           source .venv/Scripts/activate
-          pip install .[testing] --find-links dist --force-reinstall
-          pip install pytest pytest-cov
+          uv sync --group dev --no-install-project
+          uv pip install . --find-links dist --force-reinstall
           pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
       - name: Upload coverage
         if: ${{ !startsWith(matrix.platform.target, 'aarch64') }}
@@ -213,13 +220,15 @@ jobs:
         with:
           name: wheels-macos-${{ matrix.platform.target }}
           path: dist
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
       - name: pytest
         run: |
           set -e
-          python3 -m venv .venv
+          uv venv
           source .venv/bin/activate
-          pip install .[testing] --find-links dist --force-reinstall
-          pip install pytest pytest-cov
+          uv sync --group dev --no-install-project
+          uv pip install . --find-links dist --force-reinstall
           pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
       - name: Upload coverage
         uses: codecov/codecov-action@v5
@@ -322,7 +331,10 @@ jobs:
           uv pip install maturin
       - name: Build package
         run: |
-          uv run maturin develop --release --uv -E testing
+          uv run maturin develop --release --uv
+      - name: Install dev dependencies
+        run: |
+          uv sync --group dev --no-install-project
       - name: Run pytest with coverage
         run: |
           uv run pytest --cov qslib --cov-report xml --cov-report term

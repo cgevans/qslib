@@ -403,4 +403,18 @@ mod tests {
         let mut receiver: MsgRecv = Default::default();
         assert!(receiver.try_get_msg().is_ok());
     }
+
+    #[test]
+    fn test_angle_brackets_in_content_not_tags() {
+        // This tests the case where angle brackets appear in content but are NOT
+        // valid XML-style tags (e.g., from `ip addr` output like <LOOPBACK,UP,LOWER_UP>)
+        let mut receiver = MsgRecv::new();
+        let ip_addr_output = b"OK 123 <quote.reply>1: lo: <LOOPBACK,UP,LOWER_UP> mtu 16436\n2: eth0: <BROADCAST,MULTICAST,UP> mtu 1500\n</quote.reply>\n";
+        receiver.push_data(ip_addr_output);
+
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        let msg_str = String::from_utf8_lossy(&msg);
+        assert!(msg_str.contains("<LOOPBACK,UP,LOWER_UP>"), "Should preserve angle brackets in content");
+        assert!(msg_str.contains("<BROADCAST,MULTICAST,UP>"), "Should preserve angle brackets in content");
+    }
 }

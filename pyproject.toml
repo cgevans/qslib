@@ -132,7 +132,13 @@ line-length = 120
 
 [tool.hatch.envs.hatch-test]
 skip-install = false
-features = ["testing"]
+dependencies = [
+    "pytest>=8.4.2",
+    "pytest-cov>=6.2.1",
+    "setuptools",
+    "pytest-asyncio",
+    "hypothesis",
+]
 pre-install-commands=["maturin develop --uv"]
 
 [[tool.hatch.envs.hatch-test.matrix]]

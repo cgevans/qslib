@@ -12,14 +12,13 @@ import click
 from click_aliases import ClickAliasedGroup
 
 from qslib.common import Experiment, Machine
-# from qslib.scpi_commands import (
-#     AccessLevelExceeded,
-#     AuthError,
-#     CommandError,
-#     InsufficientAccess,
-#     NoMatch,
-# )
-from qslib.scpi_commands import AccessLevel
+from qslib.scpi_commands import (
+    AccessLevel,
+    AccessLevelExceeded,
+    AuthError,
+    CommandError,
+    InsufficientAccess,
+)
 from .version import __version__
 
 
@@ -323,20 +322,20 @@ def list_stored(machine_path: tuple[str, ...], verbose: bool, sort: str, reverse
         with m:
             if len(machine_path) > 1:
                 click.echo(f"{machine}:")
-            try:
-                files = m.list_runs_in_storage(pattern, verbose=True)
-                
-                # Sort the files according to the specified criteria
-                if sort == 'name':
-                    files.sort(key=lambda x: x['path'], reverse=reverse)
-                elif sort == 'time':
-                    files.sort(key=lambda x: x['mtime'] if not created else x['ctime'], reverse=reverse)
-                elif sort == 'size':
-                    files.sort(key=lambda x: x['size'], reverse=reverse)
-                    
-            except NoMatch:
+            files = m.list_runs_in_storage(pattern, verbose=True)
+
+            if not files:
                 click.echo(f"No runs found matching {pattern}")
                 continue
+
+            # Sort the files according to the specified criteria
+            if sort == 'name':
+                files.sort(key=lambda x: x['path'], reverse=reverse)
+            elif sort == 'time':
+                files.sort(key=lambda x: x['mtime'] if not created else x['ctime'], reverse=reverse)
+            elif sort == 'size':
+                files.sort(key=lambda x: x['size'], reverse=reverse)
+
             for f in files:
                 if verbose:
                     size_str = f"{f['size']/1000/1000:.1f}M" if f['size'] > 1000*1000 else f"{f['size']/1000:.1f}k"
@@ -392,9 +391,9 @@ def get_eds(path: tuple[str, ...], force: bool, quiet: bool, output_dir: str | N
             continue
 
         m = Machine(machine, max_access_level="Observer")
-        try:
-            runs = m.list_runs_in_storage(name)
-        except NoMatch:
+        runs = m.list_runs_in_storage(name)
+
+        if not runs:
             click.echo(f"No runs found matching {name} on {machine}", err=True)
             continue
 

@@ -17,6 +17,28 @@ import pyparsing as pp
 from pyparsing import ParserElement
 from pyparsing import pyparsing_common as ppc
 
+from ._qslib import CommandError
+
+
+class NoMatch(CommandError):
+    """Raised when a file or pattern match finds no results."""
+    pass
+
+
+class AuthError(CommandError):
+    """Raised when authentication fails (wrong password)."""
+    pass
+
+
+class AccessLevelExceeded(CommandError):
+    """Raised when the requested access level exceeds what is allowed."""
+    pass
+
+
+class InsufficientAccess(CommandError):
+    """Raised when the current access level is insufficient for an operation."""
+    pass
+
 pp.ParserElement.setDefaultWhitespaceChars("")
 
 _ws_or_end = (
