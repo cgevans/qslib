@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 import asyncio
+import os
 import uuid
 
 import pytest
@@ -11,46 +12,66 @@ from qslib.experiment import MachineBusyError
 from qslib.machine import AlreadyCollectedError
 
 
+# Machine configuration from environment variables
+TEST_MACHINE = os.environ.get("QSLIB_TEST_MACHINE", "localhost")
+TEST_PORT = int(os.environ.get("QSLIB_TEST_PORT", "7443"))
+TEST_PASSWORD = os.environ.get("QSLIB_TEST_PASSWORD", "")
+TEST_SSL = os.environ.get("QSLIB_TEST_SSL", "true").lower() in ("true", "1", "yes")
 
+requires_machine = pytest.mark.skipif(
+    os.environ.get("QSLIB_TEST_MACHINE") is None,
+    reason="No test machine configured (set QSLIB_TEST_MACHINE env var)"
+)
+
+
+@requires_machine
 @pytest.mark.asyncio
 async def test_real_insufficientaccess():
-    m = Machine("localhost", password="correctpassword",  ssl=False)
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
     with m:
         with pytest.raises(Exception):
             m.run_command("MACRO USER?")
 
 
+@requires_machine
 @pytest.mark.asyncio
 async def test_real_accesslevelexceeded():
-    m = Machine("localhost", max_access_level="Full", password="correctpassword",  ssl=False)
+    m = Machine(TEST_MACHINE, port=TEST_PORT, max_access_level="Full", password=TEST_PASSWORD, ssl=TEST_SSL)
     with m:
         with pytest.raises(Exception):
             m.set_access_level(AccessLevel.Full)
 
 
+@requires_machine
 def test_above_self_access_limit():
-    m = Machine("localhost", max_access_level="Observer", password="correctpassword",  ssl=False)
+    m = Machine(TEST_MACHINE, port=TEST_PORT, max_access_level="Observer", password=TEST_PASSWORD, ssl=TEST_SSL)
     with pytest.raises(ValueError):
         m.set_access_level(AccessLevel.Controller)
     with m:
         assert m.access_level == AccessLevel.Observer
+
+
+@requires_machine
 @pytest.mark.asyncio
 async def test_real_autherror():
-    m = Machine("localhost", password="aninvalidpassword",  ssl=False)
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password="aninvalidpassword", ssl=TEST_SSL)
     with pytest.raises(Exception):
         with m:
             m.run_command("HELP?")
 
 
+@requires_machine
 def test_real_invocationerror():
-    m = Machine("localhost", password="correctpassword",  ssl=False)
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
     with m:
         with pytest.raises(Exception):
             m.run_command("HELP? A B")
 
+
+@requires_machine
 @pytest.mark.parametrize("encoding", ["base64", "plain"])
 def test_file_read_write_default(encoding):
-    m = Machine("localhost", password="correctpassword",  ssl=False)
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
 
     m.write_file("public_run_complete:test.txt", "Hello, world!")
 
@@ -76,21 +97,14 @@ def test_file_read_write_default(encoding):
 #     exp.sample_wells["Sample 2"] = ["A9", "A10"]
 #     exp.sample_wells["othersample"] = ["B7"]
 
-#     with Machine("localhost") as m:
+#     with Machine(TEST_MACHINE) as m:
 #         with m.at_access("Controller"):
 #             exp._populate_folder(m)
 
 
+@requires_machine
 @pytest.mark.asyncio
 async def test_real_experiment():
-    # mon = Collector(
-    #     Config(machine=MachineConfig(host="localhost", password="correctpassword"))
-    # )
-    # confut: Future[bool] = asyncio.Future()
-    # task = mon.monitor(confut)
-    # asyncio.tasks.create_task(task)
-    # await confut
-
     proto = Protocol(
         [
             Stage.stepped_ramp(
@@ -102,12 +116,12 @@ async def test_real_experiment():
 
     exp = Experiment(uuid.uuid1().hex, proto, PlateSetup({"s": "A1"}))
 
-    m = Machine("localhost", max_access_level="Controller", password="correctpassword", ssl=False)
+    m = Machine(TEST_MACHINE, port=TEST_PORT, max_access_level="Controller", password=TEST_PASSWORD, ssl=TEST_SSL)
 
     exp.run(m, require_drawer_check=False)
 
     with pytest.raises(
-        MachineBusyError, match=r"Machine localhost:[^ ]+ is currently busy: .*"
+        MachineBusyError, match=rf"Machine {TEST_MACHINE}:[^ ]+ is currently busy: .*"
     ):
         exp.run(m)
 
@@ -170,11 +184,9 @@ async def test_real_experiment():
     with pytest.raises(AlreadyCollectedError):
         m.compile_eds(exp.name)
 
-    # with pytest.raises(AlreadyExistsError, match=f"Run {exp.name} exists.*"):
-    #     exp.runstate = "INIT"
-    #     exp.run("localhost")
 
+@requires_machine
 def test_block_temp():
-    m = Machine("localhost", password="correctpassword",  ssl=False)
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
     with m:
         assert m.block == (False, 25.0)

@@ -123,7 +123,8 @@ def export_temperatures(experiment: str | Path) -> None:
 
     exp = Experiment.from_file(experiment)
 
-    assert exp.temperatures
+    if exp.temperatures is None or exp.temperatures.empty:
+        raise click.UsageError("Experiment does not contain temperature data.")
 
     exp.temperatures.to_csv(path_or_buf=click.get_binary_stream("stdout"))  # type: ignore
 

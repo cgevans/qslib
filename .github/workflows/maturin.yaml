@@ -314,6 +314,11 @@ jobs:
   python_tests_real:
     name: Python tests with machine
     runs-on: self-hosted
+    env:
+      QSLIB_TEST_MACHINE: localhost
+      QSLIB_TEST_PORT: "7000"
+      QSLIB_TEST_PASSWORD: correctpassword
+      QSLIB_TEST_SSL: "false"
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
