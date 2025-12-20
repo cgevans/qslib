@@ -165,6 +165,25 @@ class Machine:
 
     ssl
         Whether or not to use SSL.  If None, then SSL will be chosen based on the port number.
+
+    client_certificate_path
+        Path to a PEM file containing the client certificate for TLS client authentication.
+        The file may also contain the private key, or it can be provided separately via
+        client_key_path.
+
+    client_key_path
+        Path to a PEM file containing the client private key for TLS client authentication.
+        Only needed if the key is not included in client_certificate_path.
+
+    server_ca_file
+        Path to a PEM file containing CA certificate(s) for verifying the server's certificate.
+        If not provided, server certificate verification is disabled (default).
+
+    tls_server_name
+        Expected server name for TLS hostname verification. If server_ca_file is provided but
+        tls_server_name is None, certificate chain verification is performed but hostname
+        is not checked. This is useful when connecting through tunnels or port forwards where
+        the connection hostname differs from the certificate's CN/SAN.
     """
 
     host: str
@@ -224,7 +243,9 @@ class Machine:
         port: int | None = None,
         ssl: bool | None = None,
         client_certificate_path: str | None = None,
+        client_key_path: str | None = None,
         server_ca_file: str | None = None,
+        tls_server_name: str | None = None,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
@@ -243,19 +264,29 @@ class Machine:
         self._initial_access_level = AccessLevel(_initial_access_level)
         self._connection = None
         self.client_certificate_path = client_certificate_path
+        self.client_key_path = client_key_path
         self.server_ca_file = server_ca_file
+        self.tls_server_name = tls_server_name
 
     def connect(self) -> None:
         """Open the connection manually."""
 
+        # Determine connection type based on ssl parameter
+        if self.ssl is True:
+            connection_type = "SSL"
+        elif self.ssl is False:
+            connection_type = "TCP"
+        else:
+            connection_type = "Auto"
+
         self.connection = QSConnection(
             host=self.host,
             port=self.port,
-            # ssl=self.ssl,
-            #password=self.password,
-            #initial_access_level=self._initial_access_level,
-            #client_certificate_path=self.client_certificate_path,
-            #server_ca_file=self.server_ca_file,
+            connection_type=connection_type,
+            client_cert_path=self.client_certificate_path,
+            client_key_path=self.client_key_path,
+            server_ca_path=self.server_ca_file,
+            tls_server_name=self.tls_server_name,
         )
         if self.password is not None:
             self.authenticate(self.password)

@@ -9,7 +9,7 @@ use rustls::{
     client::danger::HandshakeSignatureValid, client::danger::ServerCertVerified,
     client::danger::ServerCertVerifier, DigitallySignedStruct, Error as TLSError, SignatureScheme,
 };
-use rustls_pki_types::{ServerName, UnixTime};
+use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,7 +34,45 @@ use crate::protocol::Protocol;
 use crate::parser::Command;
 
 use lazy_static::lazy_static;
+use std::fs::File;
+use std::io::BufReader;
 
+/// TLS configuration options for client certificate authentication
+#[derive(Debug, Clone, Default)]
+pub struct TlsConfig {
+    /// Path to PEM file containing client certificate chain
+    pub client_cert_path: Option<String>,
+    /// Path to PEM file containing client private key (if separate from cert)
+    pub client_key_path: Option<String>,
+    /// Path to PEM file containing CA certificate(s) for server verification
+    pub server_ca_path: Option<String>,
+    /// Expected server name for TLS SNI and hostname verification.
+    /// If None and server_ca_path is set, chain verification is performed but hostname is not checked.
+    /// If None and server_ca_path is not set, no verification is performed (legacy behavior).
+    pub tls_server_name: Option<String>,
+}
+
+impl TlsConfig {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_client_cert(mut self, cert_path: &str, key_path: Option<&str>) -> Self {
+        self.client_cert_path = Some(cert_path.to_string());
+        self.client_key_path = key_path.map(|s| s.to_string());
+        self
+    }
+
+    pub fn with_server_ca(mut self, ca_path: &str) -> Self {
+        self.server_ca_path = Some(ca_path.to_string());
+        self
+    }
+
+    pub fn with_server_name(mut self, name: &str) -> Self {
+        self.tls_server_name = Some(name.to_string());
+        self
+    }
+}
 
 lazy_static! {
     static ref BASE64: data_encoding::Encoding = {
@@ -98,6 +136,91 @@ impl ServerCertVerifier for NoVerifier {
             SignatureScheme::ED25519,
             SignatureScheme::ED448,
         ]
+    }
+}
+
+/// A certificate verifier that verifies the certificate chain against trusted roots
+/// but does not verify the server hostname.
+#[derive(Debug)]
+pub(crate) struct ChainOnlyVerifier {
+    roots: Arc<RootCertStore>,
+}
+
+impl ChainOnlyVerifier {
+    pub fn new(roots: Arc<RootCertStore>) -> Self {
+        Self { roots }
+    }
+}
+
+impl ServerCertVerifier for ChainOnlyVerifier {
+    fn verify_server_cert(
+        &self,
+        end_entity: &rustls_pki_types::CertificateDer,
+        intermediates: &[rustls_pki_types::CertificateDer],
+        _server_name: &ServerName,
+        _ocsp_response: &[u8],
+        now: UnixTime,
+    ) -> Result<ServerCertVerified, TLSError> {
+        // Parse the end entity certificate
+        let cert = webpki::EndEntityCert::try_from(end_entity).map_err(|_| {
+            TLSError::InvalidCertificate(rustls::CertificateError::BadEncoding)
+        })?;
+
+        // Verify the certificate chain against our trusted roots
+        cert.verify_for_usage(
+            webpki::ALL_VERIFICATION_ALGS,
+            &self.roots.roots,
+            intermediates,
+            now,
+            webpki::KeyUsage::server_auth(),
+            None, // No revocation checking
+            None, // No budget limit
+        )
+        .map_err(|e| {
+            TLSError::InvalidCertificate(match e {
+                webpki::Error::CertExpired => rustls::CertificateError::Expired,
+                webpki::Error::CertNotValidYet => rustls::CertificateError::NotValidYet,
+                webpki::Error::UnknownIssuer => rustls::CertificateError::UnknownIssuer,
+                webpki::Error::CertNotValidForName => rustls::CertificateError::NotValidForName,
+                _ => rustls::CertificateError::BadEncoding,
+            })
+        })?;
+
+        Ok(ServerCertVerified::assertion())
+    }
+
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TLSError> {
+        rustls::crypto::verify_tls12_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer,
+        dss: &DigitallySignedStruct,
+    ) -> Result<HandshakeSignatureValid, TLSError> {
+        rustls::crypto::verify_tls13_signature(
+            message,
+            cert,
+            dss,
+            &rustls::crypto::ring::default_provider().signature_verification_algorithms,
+        )
+    }
+
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+        rustls::crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
 
@@ -639,19 +762,28 @@ impl QSConnection {
         port: u16,
         connection_type: ConnectionType,
     ) -> Result<QSConnection, ConnectionError> {
+        Self::connect_with_config(host, port, connection_type, TlsConfig::default()).await
+    }
+
+    pub async fn connect_with_config(
+        host: &str,
+        port: u16,
+        connection_type: ConnectionType,
+        tls_config: TlsConfig,
+    ) -> Result<QSConnection, ConnectionError> {
         match connection_type {
-            ConnectionType::SSL => Self::connect_ssl(host, port).await,
+            ConnectionType::SSL => Self::connect_ssl_with_config(host, port, tls_config).await,
             ConnectionType::TCP => Self::connect_tcp(host, port).await,
             ConnectionType::Auto => {
                 // If port is 7443, use SSL
                 // If port is 7000, use TCP
                 // Otherwise, try an SSL connection first, then fall back to TCP
                 if port == 7443 {
-                    Self::connect_ssl(host, port).await
+                    Self::connect_ssl_with_config(host, port, tls_config).await
                 } else if port == 7000 {
                     Self::connect_tcp(host, port).await
                 } else {
-                    match Self::connect_ssl(host, port).await {
+                    match Self::connect_ssl_with_config(host, port, tls_config.clone()).await {
                         Ok(conn) => Ok(conn),
                         Err(_) => Self::connect_tcp(host, port).await,
                     }
@@ -666,27 +798,158 @@ impl QSConnection {
         connection_type: ConnectionType,
         timeout: Duration,
     ) -> Result<QSConnection, ConnectionError> {
+        Self::connect_with_timeout_and_config(host, port, connection_type, timeout, TlsConfig::default()).await
+    }
+
+    pub async fn connect_with_timeout_and_config(
+        host: &str,
+        port: u16,
+        connection_type: ConnectionType,
+        timeout: Duration,
+        tls_config: TlsConfig,
+    ) -> Result<QSConnection, ConnectionError> {
         select! {
-            conn = Self::connect(host, port, connection_type) => conn,
+            conn = Self::connect_with_config(host, port, connection_type, tls_config) => conn,
             _ = tokio::time::sleep(timeout) => Err(ConnectionError::Timeout),
         }
     }
 
     pub async fn connect_ssl(host: &str, port: u16) -> Result<QSConnection, ConnectionError> {
-        let root_cert_store = RootCertStore::empty();
-        let mut config = ClientConfig::builder()
-            .with_root_certificates(root_cert_store)
-            .with_no_client_auth();
+        Self::connect_ssl_with_config(host, port, TlsConfig::default()).await
+    }
 
-        config
-            .dangerous()
-            .set_certificate_verifier(Arc::new(NoVerifier));
+    pub async fn connect_ssl_with_config(
+        host: &str,
+        port: u16,
+        tls_config: TlsConfig,
+    ) -> Result<QSConnection, ConnectionError> {
+        // Build root certificate store
+        let root_cert_store = if let Some(ca_path) = &tls_config.server_ca_path {
+            let mut store = RootCertStore::empty();
+            let ca_file = File::open(ca_path).map_err(|e| {
+                ConnectionError::IOError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Failed to open CA file '{}': {}", ca_path, e),
+                ))
+            })?;
+            let mut ca_reader = BufReader::new(ca_file);
+            let certs = rustls_pemfile::certs(&mut ca_reader)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    ConnectionError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Failed to parse CA certificates: {}", e),
+                    ))
+                })?;
+            for cert in certs {
+                store.add(cert).map_err(|e| {
+                    ConnectionError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Failed to add CA certificate: {}", e),
+                    ))
+                })?;
+            }
+            Arc::new(store)
+        } else {
+            Arc::new(RootCertStore::empty())
+        };
+
+        // Build client config with or without client auth
+        let config = if let Some(cert_path) = &tls_config.client_cert_path {
+            // Load client certificate chain
+            let cert_file = File::open(cert_path).map_err(|e| {
+                ConnectionError::IOError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Failed to open client cert file '{}': {}", cert_path, e),
+                ))
+            })?;
+            let mut cert_reader = BufReader::new(cert_file);
+            let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_reader)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| {
+                    ConnectionError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Failed to parse client certificates: {}", e),
+                    ))
+                })?;
+
+            // Load private key - from separate file or same file as cert
+            let key_path = tls_config.client_key_path.as_ref().unwrap_or(cert_path);
+            let key_file = File::open(key_path).map_err(|e| {
+                ConnectionError::IOError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Failed to open key file '{}': {}", key_path, e),
+                ))
+            })?;
+            let mut key_reader = BufReader::new(key_file);
+            let key: PrivateKeyDer<'static> = rustls_pemfile::private_key(&mut key_reader)
+                .map_err(|e| {
+                    ConnectionError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Failed to parse private key: {}", e),
+                    ))
+                })?
+                .ok_or_else(|| {
+                    ConnectionError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("No private key found in '{}'", key_path),
+                    ))
+                })?;
+
+            ClientConfig::builder()
+                .with_root_certificates((*root_cert_store).clone())
+                .with_client_auth_cert(certs, key)
+                .map_err(|e| {
+                    ConnectionError::IOError(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("Failed to configure client auth: {}", e),
+                    ))
+                })?
+        } else {
+            ClientConfig::builder()
+                .with_root_certificates((*root_cert_store).clone())
+                .with_no_client_auth()
+        };
+
+        // Choose the appropriate certificate verifier:
+        // - No CA file: NoVerifier (legacy, no verification)
+        // - CA file + tls_server_name: default WebPki verification (chain + hostname)
+        // - CA file + no tls_server_name: ChainOnlyVerifier (chain verification, no hostname check)
+        let config = match (&tls_config.server_ca_path, &tls_config.tls_server_name) {
+            (None, _) => {
+                // No CA provided - disable all verification (legacy behavior)
+                let mut config = config;
+                config
+                    .dangerous()
+                    .set_certificate_verifier(Arc::new(NoVerifier));
+                config
+            }
+            (Some(_), None) => {
+                // CA provided but no server name - verify chain only, skip hostname
+                let mut config = config;
+                config
+                    .dangerous()
+                    .set_certificate_verifier(Arc::new(ChainOnlyVerifier::new(root_cert_store)));
+                config
+            }
+            (Some(_), Some(_)) => {
+                // CA and server name provided - use default verification (chain + hostname)
+                // The default verifier was already configured via with_root_certificates
+                config
+            }
+        };
+
+        // Determine the server name for SNI and (if applicable) hostname verification
+        let sni_server_name = tls_config
+            .tls_server_name
+            .as_deref()
+            .unwrap_or(host);
 
         let connector = TlsConnector::from(Arc::new(config));
         let stream = TcpStream::connect((host, port)).await?;
 
         let mut c = connector
-            .connect(ServerName::try_from(host.to_string())?, stream)
+            .connect(ServerName::try_from(sni_server_name.to_string())?, stream)
             .await?;
 
         let (com_tx, com_rx) = mpsc::channel(100);

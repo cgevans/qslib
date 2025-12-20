@@ -1,4 +1,4 @@
-use crate::com::{QSConnection, ConnectionType, ResponseReceiver};
+use crate::com::{QSConnection, ConnectionType, ResponseReceiver, TlsConfig};
 use crate::parser::Command;
 use crate::parser::{LogMessage, MessageResponse, MessageIdent};
 use crate::protocol::Protocol;
@@ -197,20 +197,36 @@ enum CommandInput {
 #[pymethods]
 impl PyQSConnection {
     /// Create a new QSConnection to communicate with a QuantStudio machine
-    /// 
+    ///
     /// Args:
     ///     host: Hostname or IP address to connect to
     ///     port: Port number (default: 7443)
     ///     connection_type: Connection type - "Auto", "SSL", or "TCP" (default: "Auto")
-    /// 
+    ///     timeout: Connection timeout in seconds (default: 10)
+    ///     client_cert_path: Path to PEM file containing client certificate (optional)
+    ///     client_key_path: Path to PEM file containing client private key, if separate from cert (optional)
+    ///     server_ca_path: Path to PEM file containing CA certificate(s) for server verification (optional)
+    ///     tls_server_name: Expected server name for TLS hostname verification (optional).
+    ///         If server_ca_path is set but tls_server_name is None, chain verification is
+    ///         performed but hostname is not checked (useful for tunneled connections).
+    ///
     /// Returns:
     ///     A new QSConnection instance
     ///
     /// Raises:
     ///     ValueError: If connection_type is invalid or connection fails
     #[new]
-    #[pyo3(signature = (host, port = 7443, connection_type = "Auto", timeout = 10))]
-    fn new(host: &str, port: u16, connection_type: &str, timeout: Option<u64>) -> PyResult<Self> {
+    #[pyo3(signature = (host, port = 7443, connection_type = "Auto", timeout = 10, client_cert_path = None, client_key_path = None, server_ca_path = None, tls_server_name = None))]
+    fn new(
+        host: &str,
+        port: u16,
+        connection_type: &str,
+        timeout: Option<u64>,
+        client_cert_path: Option<String>,
+        client_key_path: Option<String>,
+        server_ca_path: Option<String>,
+        tls_server_name: Option<String>,
+    ) -> PyResult<Self> {
         let rt = Runtime::new()?;
         let connection_type = match connection_type {
             "SSL" => ConnectionType::SSL,
@@ -218,9 +234,19 @@ impl PyQSConnection {
             "Auto" => ConnectionType::Auto,
             _ => return Err(PyValueError::new_err("Invalid connection type")),
         };
+
+        let tls_config = TlsConfig {
+            client_cert_path,
+            client_key_path,
+            server_ca_path,
+            tls_server_name,
+        };
+
         let conn = match timeout {
-            Some(timeout) => rt.block_on(QSConnection::connect_with_timeout(host, port, connection_type, Duration::from_secs(timeout)))?,
-            None => rt.block_on(QSConnection::connect(host, port, connection_type))?,
+            Some(timeout) => rt.block_on(QSConnection::connect_with_timeout_and_config(
+                host, port, connection_type, Duration::from_secs(timeout), tls_config
+            ))?,
+            None => rt.block_on(QSConnection::connect_with_config(host, port, connection_type, tls_config))?,
         };
         Ok(Self {
             conn,
