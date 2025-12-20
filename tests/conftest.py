@@ -10,4 +10,8 @@
     - https://docs.pytest.org/en/stable/writing_plugins.html
 """
 
+# Use non-GUI backend for matplotlib (needed for CI environments without display)
+import matplotlib
+matplotlib.use('Agg')
+
 # import pytest
