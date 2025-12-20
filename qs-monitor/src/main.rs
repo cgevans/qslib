@@ -53,9 +53,9 @@ struct GlobalConfig {
 }
 
 #[derive(Debug, Deserialize, Clone)]
-struct MachineConfig {
-    name: String,
-    host: String,
+pub(crate) struct MachineConfig {
+    pub(crate) name: String,
+    pub(crate) host: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -314,11 +314,12 @@ async fn main() -> Result<()> {
     let conns_clone = conns.clone();
     if let Some(matrix_config) = config.matrix.clone() {
         let _reconnect_wait_matrix = reconnect_wait;
+        let machines_for_matrix = config.machines.clone();
         tokio::spawn(async move {
             let mut backoff_secs = 1u64;
             const MAX_BACKOFF_SECS: u64 = 300;
             loop {
-                match matrix::setup_matrix(&matrix_config, conns_clone.clone()).await {
+                match matrix::setup_matrix(&matrix_config, conns_clone.clone(), machines_for_matrix.clone()).await {
                     Ok(()) => {
                         backoff_secs = 1;
                         warn!("Matrix connection ended, attempting to reconnect");

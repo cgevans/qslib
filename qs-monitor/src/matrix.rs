@@ -215,6 +215,7 @@ async fn handle_message(
     room: Room,
     qs: &Arc<DashMap<String, (Arc<QSConnection>, MachineConfig)>>,
     settings: &MatrixSettings,
+    all_machines: &[MachineConfig],
 ) -> Result<(), MatrixError> {
     let msg = event.content.body().to_lowercase();
     debug!("Received message: {}", msg);
@@ -267,67 +268,76 @@ async fn handle_message(
                     }
                 },
                 None => {
-                    let mut machines: Vec<_> = qs.iter().collect();
-                    machines.sort_by(|a, b| a.value().1.name.cmp(&b.value().1.name));
+                    // Get all configured machine names, sorted
+                    let mut all_machine_names: Vec<_> = all_machines.iter().map(|m| m.name.clone()).collect();
+                    all_machine_names.sort();
 
                     let mut statuses = "<ul>".to_string();
-                    for item in machines {
-                        let (conn, n) = item.value();
-                        statuses.push_str(&format!("<li><span>{}</span>: ", n.name));
-                        let mut v = match QuickStatusQuery.send(conn).await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                error!("error getting status: {}", e);
-                                continue;
-                            }
-                        };
+                    for machine_name in all_machine_names {
+                        statuses.push_str(&format!("<li><span>{}</span>: ", machine_name));
 
-                        let v = match v.receive_response().await {
-                            Ok(v) => v,
-                            Err(e) => {
-                                error!("error getting status: {}", e);
-                                continue;
+                        match qs.get(&machine_name) {
+                            Some(item) => {
+                                let (conn, _) = item.value();
+                                let mut v = match QuickStatusQuery.send(conn).await {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        error!("error getting status: {}", e);
+                                        statuses.push_str(&format!(
+                                            "<span style='color: red;'>error getting status: {}.</span>",
+                                            e
+                                        ));
+                                        statuses.push_str("</li>");
+                                        continue;
+                                    }
+                                };
+
+                                let v = match v.receive_response().await {
+                                    Ok(v) => v,
+                                    Err(e) => {
+                                        error!("error getting status: {}", e);
+                                        statuses.push_str(&format!(
+                                            "<span style='color: red;'>error getting status: {}.</span>",
+                                            e
+                                        ));
+                                        statuses.push_str("</li>");
+                                        continue;
+                                    }
+                                };
+                                match v {
+                                    Ok(v) => {
+                                        let runmsg = match v.runprogress {
+                                            PossibleRunProgress::Running(p) => format!(
+                                                "running {} (stage {}, cycle {}, step {}).",
+                                                p.run_title, p.stage, p.cycle, p.step
+                                            ),
+                                            PossibleRunProgress::NotRunning(_) => "idle.".to_string(),
+                                        };
+                                        statuses.push_str("power ");
+                                        match v.power {
+                                            PowerStatus::On => statuses.push_str("on"),
+                                            PowerStatus::Off => statuses.push_str("off"),
+                                        };
+                                        match v.cover.on && v.power == PowerStatus::On {
+                                            true => statuses.push_str(&format!(
+                                                ", cover heat on at {:.1}°C",
+                                                v.cover.temperature
+                                            )),
+                                            false => statuses.push_str(", cover heat off"),
+                                        };
+                                        statuses.push_str(&format!(", {}", runmsg));
+                                    }
+                                    Err(e) => {
+                                        error!("error getting status: {}", e);
+                                        statuses.push_str(&format!(
+                                            "<span style='color: red;'>error getting status: {}.</span>",
+                                            e
+                                        ));
+                                    }
+                                }
                             }
-                        };
-                        match v {
-                            Ok(v) => {
-                                let runmsg = match v.runprogress {
-                                    PossibleRunProgress::Running(p) => format!(
-                                        "running {} (stage {}, cycle {}, step {}).",
-                                        p.run_title, p.stage, p.cycle, p.step
-                                    ),
-                                    PossibleRunProgress::NotRunning(_) => "idle.".to_string(),
-                                };
-                                statuses.push_str("power ");
-                                match v.power {
-                                    PowerStatus::On => statuses.push_str("on"),
-                                    PowerStatus::Off => statuses.push_str("off"),
-                                };
-                                match v.cover.on && v.power == PowerStatus::On {
-                                    true => statuses.push_str(&format!(
-                                        ", cover heat on at {:.1}°C",
-                                        v.cover.temperature
-                                    )),
-                                    false => statuses.push_str(", cover heat off"),
-                                };
-                                // statuses.push_str(&format!("lamp "));
-                                // match v.lamp {
-                                //     LampStatus::On => statuses.push_str("on"),
-                                //     LampStatus::Off => statuses.push_str("off"),
-                                // }
-                                // statuses.push_str(&format!("cover "));
-                                // match v.cover {
-                                //     CoverStatus::Open => statuses.push_str("open"),
-                                //     CoverStatus::Closed => statuses.push_str("closed"),
-                                // }
-                                statuses.push_str(&format!(", {}", runmsg));
-                            }
-                            Err(e) => {
-                                error!("error getting status: {}", e);
-                                statuses.push_str(&format!(
-                                    "<span style='color: red;'>error getting status: {}.</span>",
-                                    e
-                                ));
+                            None => {
+                                statuses.push_str("<span style='color: orange;'>not connected.</span>");
                             }
                         }
                         statuses.push_str("</li>");
@@ -820,6 +830,7 @@ async fn persist_sync_token(
 pub async fn setup_matrix(
     settings: &MatrixSettings,
     qs_connections: Arc<DashMap<String, (Arc<QSConnection>, MachineConfig)>>,
+    all_machines: Vec<MachineConfig>,
 ) -> Result<(), MatrixError> {
     debug!(
         "Setting up Matrix client with homeserver: {}",
@@ -942,6 +953,7 @@ pub async fn setup_matrix(
     let qs_connections_message_handler = qs_connections.clone();
     if settings.allow_commands {
         let settings_clone = settings.clone();
+        let all_machines_clone = all_machines.clone();
         client.add_event_handler(
             move |event: OriginalSyncRoomMessageEvent, room: Room| async move {
                 if let Err(e) = handle_message(
@@ -949,6 +961,7 @@ pub async fn setup_matrix(
                     room,
                     &qs_connections_message_handler,
                     &settings_clone,
+                    &all_machines_clone,
                 )
                 .await
                 {
