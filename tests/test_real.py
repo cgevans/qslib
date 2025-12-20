@@ -108,7 +108,7 @@ async def test_real_experiment():
     proto = Protocol(
         [
             Stage.stepped_ramp(
-                50, [30, 31, 32, 33, 34, 35], 120, n_steps=5, collect=True
+                50, [30, 31, 32, 33, 34, 35], 120, n_steps=10, collect=True
             )
         ],
         filters=["x1-m4", "x3-m5"],
@@ -125,11 +125,11 @@ async def test_real_experiment():
     ):
         exp.run(m)
 
-    exp.sync_from_machine(m)
-
     exp.pause_now()
 
     await asyncio.sleep(3)
+
+    exp.sync_from_machine(m)
 
     proto2 = Protocol(
         [
