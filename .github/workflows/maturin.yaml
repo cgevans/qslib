@@ -54,7 +54,7 @@ jobs:
           uv venv
           source .venv/bin/activate
           uv sync --group dev --no-install-project
-          uv pip install qslib --no-index --find-links dist --force-reinstall
+          uv pip install qslib --find-links dist --force-reinstall
           pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
       - name: Upload coverage
         if: ${{ startsWith(matrix.platform.target, 'x86_64') }}
@@ -185,7 +185,7 @@ jobs:
           uv venv
           source .venv/Scripts/activate
           uv sync --group dev --no-install-project
-          uv pip install qslib --no-index --find-links dist --force-reinstall
+          uv pip install qslib --find-links dist --force-reinstall
           pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
       - name: Upload coverage
         if: ${{ !startsWith(matrix.platform.target, 'aarch64') }}
@@ -228,7 +228,7 @@ jobs:
           uv venv
           source .venv/bin/activate
           uv sync --group dev --no-install-project
-          uv pip install qslib --no-index --find-links dist --force-reinstall
+          uv pip install qslib --find-links dist --force-reinstall
           pytest -k 'not test_real' --cov qslib --cov-report xml --cov-report term
       - name: Upload coverage
         uses: codecov/codecov-action@v5
