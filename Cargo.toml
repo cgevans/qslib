@@ -52,6 +52,8 @@ hmac = "0.12"
 md-5 = "0.10"
 hex = "0.4"
 digest = { version = "0.10.7", default-features = false }
+rustls-pemfile = "2.2.0"
+webpki = { package = "rustls-webpki", version = "0.102" }
 
 [features]
 debug = ["winnow/debug"]
