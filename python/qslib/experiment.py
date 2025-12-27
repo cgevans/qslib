@@ -837,8 +837,12 @@ table, th, td {{
                     if not cp.exists():
                         cp.mkdir()
                 if log_method == "copy" or (not f["path"].endswith("messages.log")):
-                    with open(sdspath, "wb") as b:
-                        b.write(machine.read_file(f["path"]))
+                    try:
+                        with open(sdspath, "wb") as b:
+                            b.write(machine.read_file(f["path"]))
+                    except Exception as e:  # Handles race condition where file is deleted. TODO: improve handling.
+                        log.warning(f"Error copying {f['path']} to {sdspath}: {e}")
+                        continue
                 elif log_method == "eval":
                     with open(sdspath, "ab+") as b:
                         # Seeking to the end of the file gives us the size
