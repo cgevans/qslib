@@ -120,14 +120,14 @@ async def test_real_experiment():
 
     exp.run(m, require_drawer_check=False)
 
+
+    exp.pause_now()
+
     with pytest.raises(
         MachineBusyError, match=rf"Machine {TEST_MACHINE}:[^ ]+ is currently busy: .*"
     ):
         exp.run(m)
 
-    exp.pause_now()
-
-    await asyncio.sleep(3)
 
     exp.sync_from_machine(m)
 
@@ -159,10 +159,9 @@ async def test_real_experiment():
 
     rs = m.run_status()
     while rs.name != "-":
-        await asyncio.sleep(2)
+        await asyncio.sleep(1)
         rs = m.run_status()
 
-    await asyncio.sleep(2)
 
     exp.sync_from_machine(m)
 
