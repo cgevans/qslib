@@ -108,7 +108,7 @@ async def test_real_experiment():
     proto = Protocol(
         [
             Stage.stepped_ramp(
-                50, [30, 31, 32, 33, 34, 35], 120, n_steps=10, collect=True
+                50, [30, 31, 32, 33, 34, 35], 240, n_steps=10, collect=True
             )
         ],
         filters=["x1-m4", "x3-m5"],
@@ -134,7 +134,7 @@ async def test_real_experiment():
     proto2 = Protocol(
         [
             Stage.stepped_ramp(
-                50, [30, 31, 32, 33, 34, 35], 120, n_steps=5, collect=True
+                50, [30, 31, 32, 33, 34, 35], 240, n_steps=10, collect=True
             ),
             Stage.stepped_ramp(30, 50, 120, n_steps=5, collect=True),
         ],
