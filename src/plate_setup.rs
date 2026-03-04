@@ -4,12 +4,14 @@ use quick_xml::{de::from_str, se::to_string};
 use serde::de::Error;
 use serde::{Deserialize, Serialize};
 
+use crate::data::{escape_lp_tag, escape_lp_field};
+
 #[cfg(feature = "python")]
 use pyo3::prelude::*;
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename = "Plate", deny_unknown_fields)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct PlateSetup {
     #[serde(rename = "Name")]
     pub name: Option<String>,
@@ -38,14 +40,14 @@ pub struct PlateSetup {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct OtherTag {
     #[serde(flatten)]
     pub other: HashMap<String, MapOrString>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct PlateKind {
     #[serde(rename = "Name")]
     pub name: String,
@@ -58,7 +60,7 @@ pub struct PlateKind {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct FeatureMap {
     #[serde(rename = "Feature")]
     pub feature: Feature,
@@ -67,7 +69,7 @@ pub struct FeatureMap {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct Feature {
     #[serde(rename = "Id")]
     pub id: String,
@@ -76,7 +78,7 @@ pub struct Feature {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct FeatureValue {
     #[serde(rename = "Index")]
     pub index: u32,
@@ -85,7 +87,7 @@ pub struct FeatureValue {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 #[serde(untagged)]
 pub enum MapOrString {
     Map(HashMap<String, MapOrString>),
@@ -93,7 +95,7 @@ pub enum MapOrString {
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct FeatureItem {
     #[serde(rename = "Sample", skip_serializing_if = "Option::is_none")]
     pub sample: Option<Sample>,
@@ -102,13 +104,13 @@ pub struct FeatureItem {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[cfg_attr(feature = "python", pyclass)]
+#[cfg_attr(feature = "python", pyclass(module = "qslib._qslib"))]
 pub struct Sample {
     #[serde(rename = "Name")]
     pub name: String,
     #[serde(rename = "Color")]
     pub color: Color,
-    #[serde(rename = "Description")]
+    #[serde(rename = "Description", skip_serializing_if = "Option::is_none", default)]
     pub description: Option<String>,
     #[serde(rename = "CustomProperty")]
     custom_properties: Vec<CustomProperty>,
@@ -204,8 +206,9 @@ impl Sample {
     }
 
     #[setter]
-    fn set_color(&mut self, color: String) {
-        self.color = Color::try_from(color).unwrap();
+    fn set_color(&mut self, color: String) -> pyo3::PyResult<()> {
+        self.color = Color::try_from(color).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
+        Ok(())
     }
 
     /// Set color from RGBA tuple
@@ -339,7 +342,7 @@ impl Color {
     }
 
     pub fn to_hex(&self) -> String {
-        format!("#{:02X}{:02X}{:02X}{:02X}", self.r, self.g, self.b, self.a)
+        format!("#{:02x}{:02x}{:02x}{:02x}", self.r, self.g, self.b, self.a)
     }
 }
 
@@ -367,10 +370,21 @@ impl<'de> Deserialize<'de> for Color {
 impl TryFrom<String> for Color {
     type Error = String;
     fn try_from(color: String) -> Result<Self, Self::Error> {
-        if let [r, g, b, a] = color.as_bytes() {
-            Ok(Self { r: r.to_owned(), g: g.to_owned(), b: b.to_owned(), a: a.to_owned() })
+        let color = color.trim();
+        // Handle hex color strings: "#RRGGBB" or "#RRGGBBAA"
+        if let Some(hex) = color.strip_prefix('#') {
+            let bytes = hex::decode(hex).map_err(|e| format!("Invalid hex color: {e}"))?;
+            match bytes.len() {
+                3 => Ok(Self { r: bytes[0], g: bytes[1], b: bytes[2], a: 255 }),
+                4 => Ok(Self { r: bytes[0], g: bytes[1], b: bytes[2], a: bytes[3] }),
+                _ => Err(format!("Invalid color: expected #RRGGBB or #RRGGBBAA, got {color}")),
+            }
+        } else if color.len() == 4 {
+            // Legacy: 4 raw bytes as a string
+            let b = color.as_bytes();
+            Ok(Self { r: b[0], g: b[1], b: b[2], a: b[3] })
         } else {
-            Err(format!("Invalid color: {}", color))
+            Err(format!("Invalid color: {color}"))
         }
     }
 }
@@ -454,6 +468,91 @@ impl PlateSetup {
         sample_wells
     }
 
+    /// Set samples and wells from a HashMap of sample name -> (Sample, well names).
+    /// Clears existing sample FeatureMap entries and rebuilds from the provided data.
+    pub fn set_samples_and_wells(&mut self, samples: HashMap<String, (Sample, Vec<String>)>) {
+        let well_names = self.well_names();
+        let well_to_index: HashMap<String, u32> = well_names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| (name, i as u32))
+            .collect();
+
+        // Find or create the sample FeatureMap
+        let sample_fm = self.feature_maps.iter_mut().find(|fm| fm.feature.id == "sample");
+
+        if let Some(fm) = sample_fm {
+            fm.feature_values.clear();
+        } else {
+            self.feature_maps.push(FeatureMap {
+                feature: Feature {
+                    id: "sample".to_string(),
+                    name: "sample".to_string(),
+                },
+                feature_values: vec![],
+            });
+        }
+
+        let fm = self.feature_maps.iter_mut().find(|fm| fm.feature.id == "sample").unwrap();
+
+        for (_name, (sample, wells)) in &samples {
+            for well in wells {
+                if let Some(&index) = well_to_index.get(well) {
+                    fm.feature_values.push(FeatureValue {
+                        index,
+                        feature_item: FeatureItem {
+                            sample: Some(sample.clone()),
+                            other: HashMap::new(),
+                        },
+                    });
+                }
+            }
+        }
+
+        // Sort by index for consistent output
+        fm.feature_values.sort_by_key(|fv| fv.index);
+    }
+
+    /// Create a new PlateSetup from a plate type integer and samples/wells data.
+    pub fn from_plate_type_and_samples(plate_type_int: u32, samples: HashMap<String, (Sample, Vec<String>)>) -> Self {
+        let plate_type = if plate_type_int == 384 {
+            PlateType::Well384
+        } else {
+            PlateType::Well96
+        };
+
+        let (rows, columns) = match plate_type {
+            PlateType::Well96 => (8u32, 12u32),
+            PlateType::Well384 => (16, 24),
+        };
+
+        let mut ps = PlateSetup {
+            name: None,
+            barcode: None,
+            description: None,
+            rows,
+            columns,
+            plate_kinds: vec![PlateKind {
+                name: match plate_type {
+                    PlateType::Well96 => "96-Well Plate (8x12)".to_string(),
+                    PlateType::Well384 => "384-Well Plate (16x24)".to_string(),
+                },
+                kind_type: plate_type,
+                row_count: rows,
+                column_count: columns,
+            }],
+            feature_maps: vec![],
+            plate_type,
+            wells: vec![],
+            multi_zone_enabled: None,
+            logical_zones: vec![],
+            passive_reference_dye: None,
+        };
+
+        ps.set_samples_and_wells(samples);
+        ps
+    }
+
     /// Get the well sample names as a 1D array, row-major order (eg, A1, A2, ..., H12, A13, A14, ..., H24).
     /// Empty wells are empty strings.
     pub fn well_samples_as_array(&self) -> Vec<String> {
@@ -494,9 +593,9 @@ impl PlateSetup {
             PlateType::Well384 => ("ABCDEFGHIJKLMNOP", 24),
         };
 
-        let run_tag = run_name.map_or(String::new(), |name| format!(",run_name=\"{}\"", name));
+        let run_tag = run_name.map_or(String::new(), |name| format!(",run_name={}", escape_lp_tag(name)));
         let machine_tag =
-            machine_name.map_or(String::new(), |name| format!(",machine_name=\"{}\"", name));
+            machine_name.map_or(String::new(), |name| format!(",machine_name={}", escape_lp_tag(name)));
         let well_sample_ref = &well_sample;
 
         let run_tag_ref = &run_tag;
@@ -512,7 +611,7 @@ impl PlateSetup {
                         .to_string();
                     format!(
                         "platesetup,row={},col={:02}{}{} sample=\"{}\" {}",
-                        row, col, run_tag_ref, machine_tag_ref, sample, timestamp
+                        row, col, run_tag_ref, machine_tag_ref, escape_lp_field(&sample), timestamp
                     )
                 })
             })
@@ -521,7 +620,7 @@ impl PlateSetup {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[cfg_attr(feature = "python", pyclass)]
+#[cfg_attr(feature = "python", pyclass(module = "qslib._qslib"))]
 pub enum PlateType {
     #[default]
     Well96,
@@ -669,12 +768,30 @@ impl PlateSetup {
         Ok(())
     }
 
+    #[getter]
+    fn plate_type_int(&self) -> u32 {
+        match self.plate_type {
+            PlateType::Well96 => 96,
+            PlateType::Well384 => 384,
+        }
+    }
+
     fn get_well_names(&self) -> Vec<String> {
         self.well_names()
     }
 
     fn get_samples_and_wells(&self) -> std::collections::HashMap<String, (Sample, Vec<String>)> {
         self.get_sample_wells()
+    }
+
+    #[pyo3(name = "set_samples_and_wells")]
+    fn py_set_samples_and_wells(&mut self, samples: std::collections::HashMap<String, (Sample, Vec<String>)>) {
+        self.set_samples_and_wells(samples);
+    }
+
+    #[staticmethod]
+    fn from_samples_and_wells(plate_type: u32, samples: std::collections::HashMap<String, (Sample, Vec<String>)>) -> Self {
+        Self::from_plate_type_and_samples(plate_type, samples)
     }
 
     /// Get a specific sample by name
@@ -1122,7 +1239,7 @@ mod tests {
         let lines_with_run = plate.to_lineprotocol(1234567890, Some("Test Run"), None);
         assert_eq!(
             lines_with_run[0],
-            "platesetup,row=A,col=01,run_name=\"Test Run\" sample=\"Sample1\" 1234567890"
+            r#"platesetup,row=A,col=01,run_name=Test\ Run sample="Sample1" 1234567890"#
         );
     }
 
@@ -1618,5 +1735,96 @@ mod tests {
         assert_eq!(samples[11], "A12");
         assert_eq!(samples[12], "B1");
         assert_eq!(samples[95], "H12");
+    }
+
+    #[test]
+    fn test_set_samples_and_wells() {
+        let xml = r#"
+        <Plate>
+            <Name>Test Plate</Name>
+            <BarCode>BC123</BarCode>
+            <Description>Test Description</Description>
+            <Rows>8</Rows>
+            <Columns>12</Columns>
+            <PlateKind>
+                <Name>96-Well Plate (8x12)</Name>
+                <Type>TYPE_8X12</Type>
+                <RowCount>8</RowCount>
+                <ColumnCount>12</ColumnCount>
+            </PlateKind>
+            <FeatureMap>
+                <Feature>
+                    <Id>sample</Id>
+                    <Name>Sample</Name>
+                </Feature>
+                <FeatureValue>
+                    <Index>0</Index>
+                    <FeatureItem>
+                        <Sample>
+                            <Name>OldSample</Name>
+                            <Color>-16776961</Color>
+                            <CustomProperty>
+                                <Property>SP_UUID</Property>
+                                <Value>olduuid</Value>
+                            </CustomProperty>
+                        </Sample>
+                    </FeatureItem>
+                </FeatureValue>
+            </FeatureMap>
+        </Plate>
+        "#;
+
+        let mut plate = PlateSetup::from_xml(xml).unwrap();
+
+        let mut samples = HashMap::new();
+        let s1 = Sample::new("NewSample1".to_string())
+            .with_color(Color::rgb(255, 0, 0))
+            .with_property("SP_UUID", "uuid1".to_string());
+        let s2 = Sample::new("NewSample2".to_string())
+            .with_color(Color::rgb(0, 255, 0))
+            .with_property("SP_UUID", "uuid2".to_string());
+        samples.insert("NewSample1".to_string(), (s1, vec!["A1".to_string(), "A2".to_string()]));
+        samples.insert("NewSample2".to_string(), (s2, vec!["B1".to_string()]));
+
+        plate.set_samples_and_wells(samples);
+
+        let result = plate.get_sample_wells();
+        assert_eq!(result.len(), 2);
+        assert!(result.contains_key("NewSample1"));
+        assert!(result.contains_key("NewSample2"));
+        assert!(!result.contains_key("OldSample"));
+        assert_eq!(result["NewSample1"].1.len(), 2);
+        assert_eq!(result["NewSample2"].1.len(), 1);
+    }
+
+    #[test]
+    fn test_from_plate_type_and_samples() {
+        let mut samples = HashMap::new();
+        let s1 = Sample::new("Sample1".to_string())
+            .with_color(Color::rgb(255, 0, 0))
+            .with_property("SP_UUID", "uuid1".to_string());
+        samples.insert("Sample1".to_string(), (s1, vec!["A1".to_string(), "A2".to_string()]));
+
+        let plate = PlateSetup::from_plate_type_and_samples(96, samples);
+        assert_eq!(plate.plate_type, PlateType::Well96);
+        assert_eq!(plate.rows, 8);
+        assert_eq!(plate.columns, 12);
+
+        let result = plate.get_sample_wells();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result["Sample1"].1, vec!["A1", "A2"]);
+
+        // Verify roundtrip through XML
+        let xml = plate.to_xml().unwrap();
+        let reparsed = PlateSetup::from_xml(&xml).unwrap();
+        let reparsed_wells = reparsed.get_sample_wells();
+        assert_eq!(reparsed_wells.len(), 1);
+        assert_eq!(reparsed_wells["Sample1"].1, vec!["A1", "A2"]);
+    }
+
+    #[test]
+    fn test_color_to_hex_lowercase() {
+        let color = Color::rgb(255, 0, 128);
+        assert_eq!(color.to_hex(), "#ff0080ff");
     }
 }

@@ -23,7 +23,7 @@ pub const RUNSTATE_COMPLETE: &str = "COMPLETE";
 pub const RUNSTATE_ABORTED: &str = "ABORTED";
 pub const RUNSTATE_STOPPED: &str = "STOPPED";
 
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct RunLogInfo {
     pub runstarttime: Option<f64>,
     pub runendtime: Option<f64>,
@@ -141,7 +141,7 @@ impl RunLogInfo {
     }
 }
 
-#[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct TemperatureLog {
     pub timestamps: Vec<f64>,
     pub heatsink_temps: Vec<f64>,
@@ -329,7 +329,7 @@ impl TemperatureLog {
     #[staticmethod]
     #[pyo3(name = "parse_to_polars")]
     pub fn py_parse_to_polars(log: &[u8]) -> anyhow::Result<PyDataFrame> {
-        Self::parse(log).map(|log| PyDataFrame(log.to_polars().unwrap()))
+        Self::parse(log).and_then(|log| log.to_polars()).map(PyDataFrame)
     }
 }
 
@@ -423,5 +423,218 @@ Temperature 1739920069.921 -sample=36.6,35.9,36.0,36.1,35.9,36.5 -heatsink=35.7 
         let captures = LOG_TEMP_REGEX.captures(LOG).unwrap();
         log.add_line_from_capture(&captures).unwrap();
         assert_eq!(log.sample_temperatures[0], vec![36.4]);
+    }
+
+    // --- RunLogInfo::parse tests ---
+
+    #[test]
+    fn test_run_log_info_empty_log() {
+        let info = RunLogInfo::parse(b"").unwrap();
+        assert_eq!(info.runstate, RUNSTATE_INIT);
+        assert!(info.runstarttime.is_none());
+        assert!(info.runendtime.is_none());
+        assert!(info.prerunstart.is_none());
+        assert!(info.activestarttime.is_none());
+        assert!(info.activeendtime.is_none());
+        assert!(info.stage_names.is_empty());
+        assert!(info.stage_start_times.is_empty());
+        assert!(info.stage_end_times.is_empty());
+    }
+
+    #[test]
+    fn test_run_log_info_starting_only() {
+        let info = RunLogInfo::parse(b"Run 100.0 Starting").unwrap();
+        assert_eq!(info.runstarttime, Some(100.0));
+        assert!(info.runendtime.is_none());
+        assert_eq!(info.runstate, RUNSTATE_INIT);
+    }
+
+    #[test]
+    fn test_run_log_info_prerun() {
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.runstarttime, Some(100.0));
+        assert_eq!(info.prerunstart, Some(101.0));
+        assert_eq!(info.runstate, RUNSTATE_RUNNING);
+        assert!(info.activestarttime.is_none());
+        assert_eq!(info.stage_names, vec!["PRERUN"]);
+    }
+
+    #[test]
+    fn test_run_log_info_complete_run() {
+        let log = b"Run 100.0 Starting\n\
+                     Run 101.0 Stage PRERUN\n\
+                     Run 110.0 Stage Stage1\n\
+                     Run 200.0 Stage Stage2\n\
+                     Run 300.0 Stage POSTRun\n\
+                     Run 310.0 Ended";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.runstate, RUNSTATE_COMPLETE);
+        assert_eq!(info.runstarttime, Some(100.0));
+        assert_eq!(info.runendtime, Some(310.0));
+        assert_eq!(info.prerunstart, Some(101.0));
+        assert_eq!(info.activestarttime, Some(110.0));
+        assert_eq!(info.activeendtime, Some(300.0));
+        assert_eq!(info.stage_names, vec!["PRERUN", "Stage1", "Stage2", "POSTRun"]);
+        assert_eq!(info.stage_start_times, vec![101.0, 110.0, 200.0, 300.0]);
+        assert_eq!(
+            info.stage_end_times,
+            vec![Some(110.0), Some(200.0), Some(300.0), Some(310.0)]
+        );
+    }
+
+    #[test]
+    fn test_run_log_info_aborted() {
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1\nRun 150.0 Aborted";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.runstate, RUNSTATE_ABORTED);
+        assert_eq!(info.runendtime, Some(150.0));
+        assert_eq!(info.activeendtime, Some(150.0));
+    }
+
+    #[test]
+    fn test_run_log_info_stopped() {
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1\nRun 150.0 Stopped";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.runstate, RUNSTATE_STOPPED);
+        assert_eq!(info.runendtime, Some(150.0));
+        assert_eq!(info.activeendtime, Some(150.0));
+    }
+
+    #[test]
+    fn test_run_log_info_stage_end_times_padding() {
+        // A single stage with no termination: the end time should be None
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.stage_end_times.len(), info.stage_start_times.len());
+        // Last stage should have None end time since no Ended/Aborted/Stopped
+        assert_eq!(*info.stage_end_times.last().unwrap(), None);
+    }
+
+    #[test]
+    fn test_run_log_info_activestarttime_after_prerun() {
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 120.0 Stage Stage1";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.prerunstart, Some(101.0));
+        assert_eq!(info.activestarttime, Some(120.0));
+    }
+
+    #[test]
+    fn test_run_log_info_activestarttime_without_prerun() {
+        // Without PRERUN, activestarttime is not set even if there's a stage
+        let log = b"Run 100.0 Starting\nRun 110.0 Stage Stage1";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert!(info.prerunstart.is_none());
+        assert!(info.activestarttime.is_none());
+    }
+
+    #[test]
+    fn test_run_log_info_activeendtime_from_postrun() {
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1\nRun 200.0 Stage POSTRun\nRun 210.0 Ended";
+        let info = RunLogInfo::parse(log).unwrap();
+        // activeendtime should be the POSTRun start, not Ended
+        assert_eq!(info.activeendtime, Some(200.0));
+    }
+
+    #[test]
+    fn test_run_log_info_activeendtime_from_ended() {
+        // No POSTRun stage, activeendtime should come from Ended
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1\nRun 200.0 Ended";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.activeendtime, Some(200.0));
+    }
+
+    #[test]
+    fn test_run_log_info_mixed_log_content() {
+        // Non-Run lines should be ignored
+        let log = b"Temperature 100.0 -sample=36.4 -heatsink=35.7 -cover=104.7 -block=36.4\n\
+                     Debug 100.5 Something\n\
+                     Run 101.0 Starting\n\
+                     Temperature 101.5 -sample=36.4 -heatsink=35.7 -cover=104.7 -block=36.4\n\
+                     Run 102.0 Stage PRERUN\n\
+                     Run 110.0 Stage Stage1\n\
+                     Run 200.0 Ended";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.runstate, RUNSTATE_COMPLETE);
+        assert_eq!(info.runstarttime, Some(101.0));
+        assert_eq!(info.stage_names, vec!["PRERUN", "Stage1"]);
+    }
+
+    #[test]
+    fn test_run_log_info_unknown_message() {
+        let log = b"Run 100.0 SomeUnknownThing";
+        let info = RunLogInfo::parse(log).unwrap();
+        // Should be silently ignored, state stays INIT
+        assert_eq!(info.runstate, RUNSTATE_INIT);
+    }
+
+    #[test]
+    fn test_run_log_info_ended_stops_parsing() {
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1\nRun 200.0 Ended\nRun 300.0 Stage ShouldNotAppear";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.runstate, RUNSTATE_COMPLETE);
+        // The stage after Ended should NOT be included
+        assert!(!info.stage_names.contains(&"ShouldNotAppear".to_string()));
+        assert_eq!(info.stage_names, vec!["PRERUN", "Stage1"]);
+    }
+
+    #[test]
+    fn test_run_log_info_ext_missing_for_stage() {
+        // Stage without a name - should use empty string
+        let log = b"Run 100.0 Stage";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.stage_names, vec![""]);
+        assert_eq!(info.stage_start_times, vec![100.0]);
+    }
+
+    // --- TemperatureLog edge case tests ---
+
+    #[test]
+    fn test_temperature_log_empty() {
+        let log = TemperatureLog::empty(6);
+        assert_eq!(log.num_zones, 6);
+        assert!(log.timestamps.is_empty());
+        assert!(log.heatsink_temps.is_empty());
+        assert!(log.cover_temperatures.is_empty());
+        assert_eq!(log.block_temperatures.len(), 6);
+        assert_eq!(log.sample_temperatures.len(), 6);
+        for z in &log.block_temperatures {
+            assert!(z.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_temperature_log_single_zone() {
+        let log_data = b"Temperature 100.0 -sample=36.4 -heatsink=35.7 -cover=104.7 -block=36.4";
+        let parsed = TemperatureLog::parse(log_data).unwrap();
+        assert_eq!(parsed.num_zones, 1);
+        assert_eq!(parsed.timestamps, vec![100.0]);
+        assert_eq!(parsed.sample_temperatures.len(), 1);
+        assert_eq!(parsed.sample_temperatures[0], vec![36.4]);
+        assert_eq!(parsed.block_temperatures[0], vec![36.4]);
+    }
+
+    #[test]
+    fn test_temperature_log_to_polars_basic() {
+        let parsed = TemperatureLog::parse(LOG).unwrap();
+        let df = parsed.to_polars().unwrap();
+        let schema = df.schema();
+        assert!(schema.contains("timestamp"));
+        assert!(schema.contains("temperature"));
+        assert!(schema.contains("kind"));
+    }
+
+    #[test]
+    fn test_temperature_log_to_polars_row_count() {
+        let parsed = TemperatureLog::parse(LOG).unwrap();
+        let df = parsed.to_polars().unwrap();
+        // 4 timestamps × (6 sample + 6 block + 1 heatsink + 1 cover) = 4 × 14 = 56
+        assert_eq!(df.height(), 4 * (6 + 6 + 1 + 1));
+    }
+
+    #[test]
+    fn test_get_n_zones_no_temp_data() {
+        let result = get_n_zones(b"Run 100.0 Starting\nDebug 101.0 Something");
+        assert!(result.is_err());
     }
 }

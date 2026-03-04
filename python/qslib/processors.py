@@ -15,7 +15,7 @@ from __future__ import annotations
 import re
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, Sequence, TypedDict, Union
 
 import polars as pl
@@ -122,43 +122,6 @@ PandasProcessor = Processor
 # --- Helper functions for Polars ---
 
 
-def polars_from_filterdata(dr: "FilterDataReading", start_time: float | None = None) -> pl.LazyFrame:
-    """Convert FilterDataReading to Polars LazyFrame."""
-
-    d = pl.DataFrame(
-        {
-            "filter_set": dr.filter_set.lowerform,
-            "stage": dr.stage,
-            "cycle": dr.cycle,
-            "step": dr.step,
-            "point": dr.point,
-            "well": [
-                f"{r}{c}"
-                for r in "ABCDEFGHIJKLMNOPQRSTUVWXYZ"[: dr.plate_rows]
-                for c in range(1, dr.plate_cols + 1)
-            ],
-            "row": [i for i in range(dr.plate_rows) for _ in range(dr.plate_cols)],
-            "column": [j for _ in range(dr.plate_rows) for j in range(dr.plate_cols)],
-            "timestamp": dr.timestamp,
-            "fluorescence": dr.well_fluorescence,
-            "sample_temperature": dr.well_temperatures,
-            "exposure": dr.exposure,
-        }
-    ).lazy()
-
-    block_width = dr.plate_cols // len(dr.temperatures)
-    d = d.with_columns(
-        zone=1 + (pl.col("column") // block_width),
-        timestamp=(pl.col("timestamp") * 1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")),
-    )
-    if start_time is not None:
-        start_time_dt = datetime.fromtimestamp(start_time, tz=timezone.utc)
-        d = d.with_columns(
-            (pl.col("timestamp") - pl.lit(start_time_dt)).alias("time_since_start"),
-        )
-    return d
-
-
 def match_expr(
     stage: int | Sequence[int] | range | None = None,
     cycle: int | Sequence[int] | range | None = None,
@@ -167,7 +130,7 @@ def match_expr(
     expr: pl.Expr | None = None,
 ) -> pl.Expr:
     """Build a Polars filter expression from stage/cycle/step/point constraints."""
-    fexpr: pl.Expr | bool = True
+    fexpr: pl.Expr = pl.lit(True)
     match stage:
         case int():
             fexpr = fexpr & (pl.col("stage") == stage)

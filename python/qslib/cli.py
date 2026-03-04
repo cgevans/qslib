@@ -259,7 +259,7 @@ def machine_status(machine: str) -> None:
     )
     click.echo(
         "Sample temperatures are "
-        + ", ".join("{:.2f}".format(x) for x in ms.block_temperatures)
+        + ", ".join("{:.2f}".format(x) for x in ms.sample_temperatures)
         + " °C."
     )
 
@@ -605,6 +605,7 @@ def setup_machine(
                 add_administrator_password(m, p, admin_password)
             if default_controller:
                 set_default_access(m, p)
+        restart_is(m, p)
     except AuthError as e:
         p.error("Current password was not valid.")
         if verbose:
@@ -614,7 +615,6 @@ def setup_machine(
             "Current password was valid, but insufficient.  This script needs at least Controller access."
         )
         p.error(str(e))
-    restart_is(m, p)
 
     try:
         check_access(host, p, controller_password, admin_password, default_controller)

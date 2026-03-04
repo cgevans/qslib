@@ -50,13 +50,11 @@ from ._qslib import RunLogInfo
 from .processors import PolarsProcessor, polars_process
 from .base import RunStatus
 from .data import (
-    FilterDataReading,
     FilterSet,
     _filterdata_df_v2,
     _parse_analysis_result,
     _parse_multicomponent_data_v1,
     _parse_multicomponent_data_v2,
-    df_from_readings,
 )
 from .machine import Machine
 from .processors import NormRaw
@@ -79,6 +77,16 @@ def _safe_exp_name(name: str) -> str:
         raise ValueError(f"Invalid characters ({m[0]}) in run name: {name}.")
 
     return name.replace(" ", "_")
+
+
+def _safe_extractall(z: zipfile.ZipFile, path: str | os.PathLike[str]) -> None:
+    """Extract all members from a ZIP file, validating paths to prevent traversal attacks."""
+    target = Path(path).resolve()
+    for member in z.namelist():
+        member_path = (target / member).resolve()
+        if not str(member_path).startswith(str(target)):
+            raise ValueError(f"ZIP member {member!r} would extract outside target directory")
+    z.extractall(path)
 
 
 TEMPLATE_NAME = "ruo"
@@ -475,6 +483,19 @@ class Experiment:
             d.append("temperatures")
         except DataNotAvailableError:
             pass
+        try:
+            self.quant_data_polars
+            d.append("quant_data")
+        except DataNotAvailableError:
+            pass
+        try:
+            self.calibrations
+            d.append("calibrations")
+        except DataNotAvailableError:
+            pass
+        images_dir = Path(self._dir_eds) / "images"
+        if images_dir.is_dir() and any(images_dir.glob("*.tiff")):
+            d.append("tiff_images")
         return d
 
     def info_html(self) -> str:
@@ -497,11 +518,13 @@ class Experiment:
 
         ost = markdown.markdown(summary, output_format="xhtml", extensions=["tables"])
 
+        import html as html_mod
+
         s = f"""
 <!DOCTYPE html>
 <html>
 <head>
-<title>{self.name}</title>
+<title>{html_mod.escape(self.name)}</title>
 <style>
 table {{
     font-size: 10pt;
@@ -917,14 +940,10 @@ table, th, td {{
             self._update_tcprotocol_xml()
 
             # Push new tcprotocol.xml
-            machine.write_file(
-                "${LogFolder}/tcprotocol.xml",
-                open(self._sdspath("tcprotocol.xml"), "rb").read(),
-            )
-            machine.write_file(
-                "${LogFolder}/qsl-tcprotocol.xml",
-                open(self._sdspath("qsl-tcprotocol.xml"), "rb").read(),
-            )
+            with open(self._sdspath("tcprotocol.xml"), "rb") as f:
+                machine.write_file("${LogFolder}/tcprotocol.xml", f.read())
+            with open(self._sdspath("qsl-tcprotocol.xml"), "rb") as f:
+                machine.write_file("${LogFolder}/qsl-tcprotocol.xml", f.read())
 
     def change_protocol(
         self,
@@ -989,11 +1008,11 @@ table, th, td {{
             # Push new tcprotocol.xml
             machine.write_file(
                 "${LogFolder}/tcprotocol.xml",
-                open(self._sdspath("tcprotocol.xml"), "rb").read(),
+                self._sdspath("tcprotocol.xml").read_bytes(),
             )
             machine.write_file(
                 "${LogFolder}/qsl-tcprotocol.xml",
-                open(self._sdspath("qsl-tcprotocol.xml"), "rb").read(),
+                self._sdspath("qsl-tcprotocol.xml").read_bytes(),
             )
 
     #     def change_plate_setup(self, new_plate_setup: Optional[PlateSetup], machine: MachineReference | None = None,
@@ -1165,6 +1184,7 @@ table, th, td {{
             self.runstate = "INIT"
             self.user: str | None = None
             self.writesoftware = f"QSLib {__version__}"
+            self.plate_type = self.plate_setup.plate_type
 
             self._new_xml_files()
             self._update_files()
@@ -1189,23 +1209,32 @@ table, th, td {{
         ET.SubElement(e.getroot(), "DNATemplateType").text = "WET_DNA"
         ET.SubElement(e.getroot(), "InstrumentTypeId").text = "appletini"  # note cap!
         ET.SubElement(e.getroot(), "BlockTypeID").text = "18"
-        ET.SubElement(e.getroot(), "PlateTypeID").text = "TYPE_8X12"
 
-        e.write(open(os.path.join(self._dir_eds, "experiment.xml"), "wb"))
+        if self.plate_type == 384:
+            plate_type_id = "TYPE_16X24"
+            rows, cols = 16, 24
+            plate_kind_name = "384-Well Plate (16x24)"
+        else:
+            plate_type_id = "TYPE_8X12"
+            rows, cols = 8, 12
+            plate_kind_name = "96-Well Plate (8x12)"
 
-        p = ET.parse(
-            io.BytesIO(
-                b"""<Plate>
+        ET.SubElement(e.getroot(), "PlateTypeID").text = plate_type_id
+
+        with open(os.path.join(self._dir_eds, "experiment.xml"), "wb") as f:
+            e.write(f)
+
+        plate_xml = f"""<Plate>
     <Name></Name>
     <BarCode></BarCode>
     <Description></Description>
-    <Rows>8</Rows>
-    <Columns>12</Columns>
+    <Rows>{rows}</Rows>
+    <Columns>{cols}</Columns>
     <PlateKind>
-        <Name>96-Well Plate (8x12)</Name>
-        <Type>TYPE_8X12</Type>
-        <RowCount>8</RowCount>
-        <ColumnCount>12</ColumnCount>
+        <Name>{plate_kind_name}</Name>
+        <Type>{plate_type_id}</Type>
+        <RowCount>{rows}</RowCount>
+        <ColumnCount>{cols}</ColumnCount>
     </PlateKind>
     <FeatureMap>
         <Feature>
@@ -1215,18 +1244,16 @@ table, th, td {{
     </FeatureMap>
     </Plate>
     """
-            )
-        )
+        p = ET.parse(io.BytesIO(plate_xml.encode()))
 
-        p.write(open(os.path.join(self._dir_eds, "plate_setup.xml"), "wb"))
+        with open(os.path.join(self._dir_eds, "plate_setup.xml"), "wb") as f:
+            p.write(f)
 
-        ET.ElementTree(ET.Element("TCProtocol")).write(
-            open(self._dir_eds / "tcprotocol.xml", "wb")
-        )
+        with open(self._dir_eds / "tcprotocol.xml", "wb") as f:
+            ET.ElementTree(ET.Element("TCProtocol")).write(f)
 
-        ET.ElementTree(ET.Element("QSLTCProtocol")).write(
-            open(self._dir_eds / "qsl-tcprotocol.xml", "wb")
-        )
+        with open(self._dir_eds / "qsl-tcprotocol.xml", "wb") as f:
+            ET.ElementTree(ET.Element("QSLTCProtocol")).write(f)
 
         with open(self._dir_eds / "Manifest.mf", "w") as f:
             f.write(_MANIFEST_CONTENTS)
@@ -1302,7 +1329,7 @@ table, th, td {{
         except ValueError:
             exp.spec_major_version = 1
 
-        z.extractall(exp._dir_base)
+        _safe_extractall(z, exp._dir_base)
 
         exp._update_from_files()
 
@@ -1334,7 +1361,7 @@ table, th, td {{
 
             z = machine.read_dir_as_zip(crt, leaf="EXP")
 
-            z.extractall(exp._dir_base)
+            _safe_extractall(z, exp._dir_base)
 
             exp._update_from_files()
 
@@ -1378,7 +1405,7 @@ table, th, td {{
                         f"Could not find experiment {name} in uncollect runs on {machine}."
                     )
 
-            z.extractall(exp._dir_base)
+            _safe_extractall(z, exp._dir_base)
 
             exp._update_from_files()
 
@@ -1432,7 +1459,7 @@ table, th, td {{
 
             z = zipfile.ZipFile(io.BytesIO(o))
 
-            z.extractall(exp._dir_base)
+            _safe_extractall(z, exp._dir_base)
 
             exp._update_from_files()
 
@@ -1551,7 +1578,8 @@ table, th, td {{
             self.runendtime = datetime.fromtimestamp(float(x) / 1000.0, tz=timezone.utc)
 
     def _update_from_expdata_v2(self) -> None:
-        summary = json.load(open(os.path.join(self._dir_base, "summary.json")))
+        with open(os.path.join(self._dir_base, "summary.json")) as f:
+            summary = json.load(f)
         # fixme: this should go elsewhere, we have it here now because we need it for filterdata
 
         self.name = summary.get("name", "unknown")
@@ -1615,54 +1643,97 @@ table, th, td {{
             self._protocol_from_xml = None
 
     def _update_platesetup_xml(self) -> None:
-        x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml"))
-        self.plate_setup.update_xml(x.getroot())
-        ET.indent(x)
-        x.write(os.path.join(self._dir_eds, "plate_setup.xml"))
+        path = os.path.join(self._dir_eds, "plate_setup.xml")
+        try:
+            with open(path, "r") as f:
+                existing_xml = f.read()
+        except FileNotFoundError:
+            existing_xml = None
+        xml_out = self.plate_setup.to_xml_string(existing_xml)
+        with open(path, "w") as f:
+            f.write(xml_out)
 
     def _update_from_platesetup_xml(self) -> None:
-        x = ET.parse(os.path.join(self._dir_eds, "plate_setup.xml")).getroot()
-        self.plate_setup = PlateSetup.from_platesetup_xml(x)
+        path = os.path.join(self._dir_eds, "plate_setup.xml")
+        with open(path, "r") as f:
+            xml = f.read()
+        self.plate_setup = PlateSetup.from_xml_string(xml)
 
     @cached_method
-    def _get_filterdatareadings_v1(self) -> list[FilterDataReading]:
-        if self.spec_major_version != 1:
-            raise DataLoadingError("filterdata", "v2 file in v1 method.")
-        fdp = os.path.join(self._dir_eds, "filterdata.xml")
-        all_quant_files = [tuple(int(y[1:]) for y in x.stem.split("_")) for x in (Path(self._dir_eds) / "quant").glob("*_E*.quant")]
-        all_quant_files.sort(key = lambda x: x[-1]) # use longest exposure (it is last, which will mean it remains in the dict)
-        all_quant_dict = {}
-        for x in all_quant_files:
-            qstring = open(Path(self._dir_eds) / "quant" / f"S{x[0]:02}_C{x[1]:03}_T{x[2]:02}_P{x[3]:04}_M{x[4]:01}_X{x[5]:01}_E{x[6]:01}.quant", "r").read()
-            qss = qstring.split("\n\n")[3].split("\n")
-            assert len(qss) == 3
-            assert qss[0] == "[conditions]"
-            qd = {k: v for k, v in zip(qss[1].split("\t"), qss[2].split("\t"))}
-            all_quant_dict[(x[0], x[1], x[2], x[3], x[4], x[5])] = float(qd["Time"])
-        if os.path.isfile(fdp):
-            fdx = ET.parse(fdp)
-            fdrs = [ 
-                FilterDataReading(x, timestamp_dict=all_quant_dict)
-                for x in fdx.findall(".//PlateData")
-            ]
-            return fdrs
-        elif fdfs := glob(
-                os.path.join(self._dir_eds, "filter", "*_filterdata.xml")
-            ):
-            fdrs = [
-                FilterDataReading.from_file(fdf, timestamp_dict=all_quant_dict)
-                for fdf in fdfs
-            ]
-            return fdrs
-        else:
-            raise DataNotAvailableError("filterdata", "No filterdata found")
+    def _get_filterdata_collection_v1(self):
+        """Load filterdata as Rust FilterDataCollection with timestamps set.
 
+        Falls back to reconstructing from quant files or TIFF images if
+        no pre-computed filterdata is available.
+        """
+        from ._qslib import FilterDataCollection, QuantDataCollection
+
+        fdp = os.path.join(self._dir_eds, "filterdata.xml")
+        if os.path.isfile(fdp):
+            fdc = FilterDataCollection.read_file(fdp)
+            qdc = QuantDataCollection.from_directory(str(self._dir_eds))
+            fdc.set_timestamps_from_quant(qdc)
+            return fdc
+
+        if fdfs := sorted(glob(os.path.join(self._dir_eds, "filter", "*_filterdata.xml"))):
+            fdc = FilterDataCollection.from_individual_files(fdfs)
+            qdc = QuantDataCollection.from_directory(str(self._dir_eds))
+            fdc.set_timestamps_from_quant(qdc)
+            return fdc
+
+        # Fall back: reconstruct from quant files or TIFFs
+        from ._qslib import (
+            reconstruct_filterdata,
+            UniformityCalibration,
+            BackgroundCalibration,
+            PureDyeCalibration,
+        )
+
+        quant_dir = Path(self._dir_eds) / "quant"
+        images_dir = Path(self._dir_eds) / "images"
+
+        if quant_dir.is_dir() and any(quant_dir.glob("*.quant")):
+            qdc = QuantDataCollection.from_directory(str(self._dir_eds))
+        elif images_dir.is_dir() and any(images_dir.glob("*.tiff")):
+            qdc = QuantDataCollection.from_tiffs_in_directory(str(self._dir_eds))
+        else:
+            raise DataNotAvailableError("filterdata", "No filterdata, quant, or TIFF data found")
+
+        cals = self.calibrations
+        uniformity = cals.get("uniformity")
+        background = cals.get("background")
+        puredye = cals.get("puredye")
+
+        if uniformity is None or background is None:
+            raise DataNotAvailableError(
+                "filterdata", "Missing uniformity or background calibration"
+            )
+
+        return reconstruct_filterdata(qdc, uniformity, background, puredye)
 
     def filter_data_polars_lazy(self) -> 'pl.LazyFrame':
-        from .processors import polars_from_filterdata
+        fdc = self._get_filterdata_collection_v1()
+        d = fdc.to_polars().lazy()
+
+        # Convert timestamp from float seconds to datetime; cast integer columns to i64 for join compat
+        d = d.with_columns(
+            (pl.col("timestamp") * 1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")),
+            pl.col("zone").cast(pl.Int64),
+            pl.col("stage").cast(pl.Int64),
+            pl.col("cycle").cast(pl.Int64),
+            pl.col("step").cast(pl.Int64),
+            pl.col("point").cast(pl.Int64),
+        )
+
         start_time = self.activestarttime.timestamp() if self.activestarttime else None
-        fdr = self._get_filterdatareadings_v1()
-        d = pl.concat(polars_from_filterdata(x, start_time=start_time) for x in fdr).sort("timestamp")
+        if start_time is not None:
+            start_time_dt = datetime.fromtimestamp(start_time, tz=timezone.utc)
+            d = d.with_columns(
+                (pl.col("timestamp") - pl.lit(start_time_dt)).alias("time_since_start"),
+            )
+
+        d = d.sort("timestamp")
+
         duration = (1000 * (pl.col("from") - pl.col("to")).abs() / pl.col("rate")).alias("duration").cast(pl.Duration(time_unit="ms"))
         time_since_ramp = (pl.col("timestamp") - pl.col("timestamp_ramp")).alias("time_since_ramp")
 
@@ -1671,10 +1742,104 @@ table, th, td {{
              ).drop("timestamp_ramp", "to", "from")
         if self.plate_setup:
             d = d.join(
-                self.plate_setup.to_polars_by_well().lazy().select("well", pl.col("name").alias("sample")), 
+                self.plate_setup.to_polars_by_well().lazy().select("well", pl.col("name").alias("sample")),
                 on="well", how="left")
         return d
     
+    @property
+    @cached_method
+    def quant_data_polars(self) -> pl.DataFrame:
+        """Raw quant data as a Polars DataFrame.
+
+        Uses pre-computed .quant files if available, otherwise falls back to
+        computing from TIFF images + ROI calibration.
+        """
+        quant_dir = Path(self._dir_eds) / "quant"
+        images_dir = Path(self._dir_eds) / "images"
+        from ._qslib import QuantDataCollection
+        if quant_dir.is_dir() and any(quant_dir.glob("*.quant")):
+            return QuantDataCollection.from_directory(str(self._dir_eds)).to_polars()
+        elif images_dir.is_dir() and any(images_dir.glob("*.tiff")):
+            return QuantDataCollection.from_tiffs_in_directory(str(self._dir_eds)).to_polars()
+        else:
+            raise DataNotAvailableError("quant_data", "No quant or TIFF data found")
+
+    @property
+    @cached_method
+    def quant_data_from_tiffs_polars(self) -> pl.DataFrame:
+        """Quant data computed from TIFF images + ROI calibration.
+
+        Produces the same DataFrame as quant_data_polars but always uses
+        TIFF images rather than pre-computed .quant files.
+        """
+        images_dir = Path(self._dir_eds) / "images"
+        if not images_dir.is_dir() or not any(images_dir.glob("*.tiff")):
+            raise DataNotAvailableError("quant_data_from_tiffs", "No TIFF images found")
+        from ._qslib import QuantDataCollection
+        return QuantDataCollection.from_tiffs_in_directory(str(self._dir_eds)).to_polars()
+
+    @property
+    @cached_method
+    def roi_calibration(self):
+        """ROI calibration data parsed from roi.ini."""
+        from ._qslib import RoiCalibration
+        cal_dir = Path(self._dir_eds) / "calibrations"
+        roi_path = cal_dir / "roi.ini"
+        if not roi_path.is_file():
+            raise DataNotAvailableError("roi_calibration", "No roi.ini found")
+        return RoiCalibration.parse(roi_path.read_text())
+
+    @property
+    @cached_method
+    def tiff_images(self) -> dict:
+        """Raw TIFF images as numpy arrays, keyed by (stage, cycle, step, point, filter_set, exposure_index).
+
+        Returns a dict mapping tuple keys to numpy uint16 arrays of shape (height, width).
+        """
+        images_dir = Path(self._dir_eds) / "images"
+        if not images_dir.is_dir() or not any(images_dir.glob("*.tiff")):
+            raise DataNotAvailableError("tiff_images", "No TIFF images found")
+        from ._qslib import FilterSet, decode_tiff
+        result = {}
+        for tiff_path in sorted(images_dir.glob("*.tiff")):
+            parts = tiff_path.stem.split("_")
+            stage = int(parts[0][1:])
+            cycle = int(parts[1][1:])
+            step = int(parts[2][1:])
+            point = int(parts[3][1:])
+            emission = int(parts[4][1:])
+            excitation = int(parts[5][1:])
+            exposure_idx = int(parts[6][1:])
+            fs = FilterSet(excitation, emission)
+            img = decode_tiff(tiff_path.read_bytes())
+            result[(stage, cycle, step, point, fs, exposure_idx)] = img
+        return result
+
+    @property
+    @cached_method
+    def calibrations(self) -> dict:
+        """Calibration data parsed from the EDS calibrations directory.
+
+        Returns a dict with keys 'uniformity', 'background', and optionally 'puredye'.
+        """
+        from ._qslib import UniformityCalibration, BackgroundCalibration, PureDyeCalibration
+        cal_dir = Path(self._dir_eds) / "calibrations"
+        if not cal_dir.is_dir():
+            raise DataNotAvailableError("calibrations", "No calibration data found")
+        result = {}
+        uni_path = cal_dir / "uniformity.ini"
+        if uni_path.is_file():
+            result["uniformity"] = UniformityCalibration.parse(uni_path.read_text())
+        bg_path = cal_dir / "background.ini"
+        if bg_path.is_file():
+            result["background"] = BackgroundCalibration.parse(bg_path.read_text())
+        pd_path = cal_dir / "puredye.ini"
+        if pd_path.is_file():
+            result["puredye"] = PureDyeCalibration.parse(pd_path.read_text())
+        if not result:
+            raise DataNotAvailableError("calibrations", "No calibration files found")
+        return result
+
     @property
     @cached_method
     def filter_data_polars(self) -> pl.DataFrame:
@@ -1684,10 +1849,7 @@ table, th, td {{
     @cached_method
     def filter_data(self) -> pd.DataFrame:
         if self.spec_major_version == 1:
-            return df_from_readings(
-                self._get_filterdatareadings_v1(),
-                self.activestarttime.timestamp() if self.activestarttime else None,
-            )
+            return self._filter_data_v1_pandas()
         else:
             fdp = os.path.join(self._dir_base, "run/filter_data.json")
             if self.plate_type is None:
@@ -1704,6 +1866,75 @@ table, th, td {{
                             else None
                         ),
                     )
+            raise DataNotAvailableError("filter_data", "Filter data file not found")
+
+    def _filter_data_v1_pandas(self) -> pd.DataFrame:
+        """Convert Polars filter_data to legacy Pandas wide MultiIndex format."""
+        pdf = self.filter_data_polars.to_pandas()
+
+        start_time = self.activestarttime.timestamp() if self.activestarttime else None
+
+        # Extract timestamp as float seconds from datetime
+        pdf["timestamp"] = pdf["timestamp"].astype("int64") / 1e9
+
+        group_cols = ["filter_set", "stage", "cycle", "step", "point"]
+        groups = pdf.groupby(group_cols, sort=False)
+
+        # Determine well order from plate type
+        from .plate_setup import _WELLNAMES_96, _WELLNAMES_384
+        pt = self.plate_type or 96
+        wellnames = _WELLNAMES_96 if pt == 96 else _WELLNAMES_384
+
+        rows = []
+        index_tuples = []
+        for key, grp in groups:
+            # Sort wells to match expected order
+            grp = grp.set_index("well").reindex(wellnames)
+            ts = grp["timestamp"].iloc[0]
+            exposure = grp["exposure"].iloc[0]
+
+            row_data = {"timestamp": ts, "exposure": exposure}
+            for w in wellnames:
+                row_data[(w, "fl")] = grp.loc[w, "fluorescence"]
+                row_data[(w, "rt")] = grp.loc[w, "sample_temperature"]
+                row_data[(w, "st")] = grp.loc[w, "set_temperature"] if "set_temperature" in grp.columns else grp.loc[w, "sample_temperature"]
+            rows.append(row_data)
+            index_tuples.append(key)
+
+        index = pd.MultiIndex.from_tuples(index_tuples, names=group_cols)
+
+        # Build MultiIndex columns
+        col_tuples = (
+            [("time", "timestamp")]
+            + [(w, v) for w in wellnames for v in ["fl", "rt", "st"]]
+            + [("exposure", "exposure")]
+        )
+        col_index = pd.MultiIndex.from_tuples(col_tuples)
+
+        # Build the data array
+        data = []
+        for row_data in rows:
+            r = [row_data["timestamp"]]
+            for w in wellnames:
+                r.extend([row_data[(w, "fl")], row_data[(w, "rt")], row_data[(w, "st")]])
+            r.append(row_data["exposure"])
+            data.append(r)
+
+        a = pd.DataFrame(data, index=index, columns=col_index)
+
+        if start_time is not None:
+            a[("time", "seconds")] = a[("time", "timestamp")] - start_time
+            a[("time", "hours")] = a[("time", "seconds")] / 3600.0
+
+        a.sort_index(inplace=True)
+
+        # Reorder columns to match legacy format
+        final_cols = pd.MultiIndex.from_tuples(
+            [("time", v) for v in ["seconds", "hours", "timestamp"]]
+            + [(w, v) for w in wellnames for v in ["fl", "rt", "st"]]
+            + [("exposure", "exposure")]
+        )
+        return a.reindex(labels=final_cols, axis="columns")
 
     @property
     def multicomponent_data(self) -> pd.DataFrame:
@@ -1758,7 +1989,8 @@ table, th, td {{
         if not os.path.isfile(adp):
             raise DataNotAvailableError("analysis_result", "Analysis result is not available")
         else:
-            return json.load(open(adp, "r"))
+            with open(adp, "r") as f:
+                return json.load(f)
 
     # def _update_from_data(self) -> None:
     #     if self.spec_major_version == 1:

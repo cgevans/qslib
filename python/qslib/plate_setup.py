@@ -6,9 +6,8 @@
 """Code for handling plate setup."""
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+import html as html_mod
 from dataclasses import dataclass
-from io import BytesIO
 from typing import (
     Any,
     Dict,
@@ -29,6 +28,7 @@ import numpy as np
 import polars as pl
 import tabulate
 
+from ._qslib import PlateSetup as RustPlateSetup, Sample as RustSample
 
 if TYPE_CHECKING:
     from qslib.machine import Machine
@@ -125,38 +125,6 @@ class Sample:
     def uuid(self, val: str) -> None:
         self.properties["SP_UUID"] = val
 
-    @classmethod
-    def from_platesetup_sample(cls, se: ET.Element) -> Sample:
-        name = se.findtext("Name") or "Unnamed"
-        color = _process_color_from_str_int(se.findtext("Color") or "-1")
-
-        keys = [
-            x.text for x in se.findall("CustomProperty/Property") if x.text is not None
-        ]
-        values = [
-            x.text for x in se.findall("CustomProperty/Value") if x.text is not None
-        ]
-        properties = {key: value for key, value in zip(keys, values)}
-
-        return cls(
-            name=name,
-            color=color,
-            properties=properties,
-            description=se.findtext("Description"),
-        )
-
-    def to_xml(self) -> ET.Element:
-        x = ET.Element("Sample")
-        ET.SubElement(x, "Name").text = self.name
-        ET.SubElement(x, "Color").text = _color_to_str_int(self.color)
-        if self.description:
-            ET.SubElement(x, "Description").text = self.description
-        for key, value in self.properties.items():
-            u = ET.SubElement(x, "CustomProperty")
-            ET.SubElement(u, "Property").text = key
-            ET.SubElement(u, "Value").text = value
-        return x
-
     def __eq__(self, other: object) -> bool:
         if not isinstance(other, Sample):
             return False
@@ -218,47 +186,22 @@ class PlateSetup:
         return _SampleWellsView(self.samples_by_name)
 
     @classmethod
-    def from_platesetup_xml(cls, platexml: ET.Element) -> PlateSetup:  # type: ignore
-        pt = platexml.find("PlateKind/Type")
-        if pt is None:
-            raise ValueError
-        qs_platetype = pt.text
-        if qs_platetype == "TYPE_8X12":
-            plate_type = 96  # type: Literal[96, 384]
-        elif qs_platetype == "TYPE_16X24":
-            plate_type = 384
-        else:
-            raise ValueError
+    def from_xml_string(cls, xml: str | bytes) -> PlateSetup:
+        """Create a PlateSetup from an XML string (or bytes).
 
-        sample_fvs = platexml.findall(
-            "FeatureMap/Feature/Id[.='sample']/../../FeatureValue"
-        )
+        Uses Rust XML parsing internally.
+        """
+        if isinstance(xml, bytes):
+            xml = xml.decode("utf-8")
+        rust_ps = RustPlateSetup.from_xml_string(xml)
+        rust_samples = rust_ps.get_samples_and_wells()
+        plate_type: Literal[96, 384] = rust_ps.plate_type_int  # type: ignore
 
-        samples_by_name: Dict[str, Sample] = dict()
-        samples_by_uuid: Dict[str, Sample] = dict()
+        py_samples: Dict[str, Sample] = {}
+        for name, (rust_sample, wells) in rust_samples.items():
+            py_samples[name] = _rust_sample_to_python(rust_sample, wells)
 
-        sample_wells: Dict[str, list[str]] = dict()
-
-        wn = _WELLNAMES_96 if plate_type == 96 else _WELLNAMES_384
-
-        for fv in sample_fvs:
-            if x := fv.findtext("Index"):
-                idx = int(x)
-            else:
-                raise ValueError
-            if y := fv.find("FeatureItem/Sample"):
-                sample = Sample.from_platesetup_sample(y)
-            if sample.name in samples_by_name.keys():
-                assert sample == samples_by_name[sample.name]
-                assert sample == samples_by_uuid[sample.uuid]
-                sample_wells[sample.name].append(wn[idx])
-            else:
-                assert sample.uuid not in samples_by_uuid.keys()
-                samples_by_name[sample.name] = sample
-                samples_by_uuid[sample.uuid] = sample
-                sample_wells[sample.name] = [wn[idx]]
-
-        return cls(sample_wells, samples_by_name, plate_type=plate_type)
+        return cls(sample_wells=None, samples=py_samples, plate_type=plate_type)
 
     def __init__(
         self,
@@ -367,10 +310,10 @@ class PlateSetup:
         
         wn = _WELLNAMES_96 if plate_type == 96 else _WELLNAMES_384
         
-        sample_wells = {}
-        for i, s in enumerate(np.unique(array.flatten())):
+        sample_wells: dict[str, list[str]] = {}
+        for idx, s in enumerate(array.flatten()):
             if s is not None and s != "None" and s != "null":
-                sample_wells[s] = [wn[i]]
+                sample_wells.setdefault(s, []).append(wn[idx])
         
         return cls(sample_wells, plate_type=plate_type)
 
@@ -383,7 +326,6 @@ class PlateSetup:
     ) -> str:
         if showindex is None:
             showindex = _ROWALPHAS_96 if self.plate_type == 96 else _ROWALPHAS
-        print(showindex)
         ws = self.to_polars_by_well(full=True)
 
         def fmt_header(x: str) -> str:
@@ -396,6 +338,8 @@ class PlateSetup:
             elif format == "html":
                 return f"<b>{x}</b>"
 
+        tablefmt = format
+
         if format == "markdown":
             ws = ws.with_columns(pl.when(pl.col("name").is_not_null()).then(pl.col("name").str.replace(".*", "`$0`")).otherwise(pl.lit("")).alias("name"))
             tablefmt = "pipe"
@@ -406,19 +350,17 @@ class PlateSetup:
                 return f"color: {color};" if color else ""
             ws = ws.with_columns(
                 pl.when(pl.col("name").is_not_null()).then(pl.struct(["name", "color"]).map_elements(
-                    lambda r: f'<span style="{color_style(r)}">{r["name"]}</span>',
+                    lambda r: f'<span style="{color_style(r)}">{html_mod.escape(str(r["name"]))}</span>',
                     return_dtype=pl.String
                 ).alias("name"))
             )
-            tablefmt = "unsafehtml" # FIXME: escape the sample names
+            tablefmt = "unsafehtml"
 
-        headers = [""] + list(range(1, 13)) if self.plate_type == 96 else list(range(1, 25))
+        headers = [""] + (list(range(1, 13)) if self.plate_type == 96 else list(range(1, 25)))
 
         ws = ws['name'].to_numpy().reshape((8, 12) if self.plate_type == 96 else (16, 24))
 
         ws_with_rownames = np.insert(ws, 0, [fmt_header(x) for x in showindex], axis=1)
-
-        print(ws)
 
         return tabulate.tabulate(
             ws_with_rownames,
@@ -427,50 +369,32 @@ class PlateSetup:
             showindex=showindex,
         )
 
-    def update_xml(self, root: ET.Element) -> None:
-        samplemap = root.find("FeatureMap/Feature/Id[.='sample']/../..")
-        e: Optional[ET.Element]
+    def to_xml_string(self, existing_xml: str | None = None) -> str:
+        """Serialize this PlateSetup to an XML string.
 
-        e = ET.SubElement(root, "PlateKind")
-        ET.SubElement(e, "Type").text = (
-            "TYPE_8X12" if self.plate_type == 96 else "TYPE_16X24"
-        )
-        ET.SubElement(e, "Name").text = (
-            "96-Well Plate (8x12)"
-            if self.plate_type == 96
-            else "384-Well Plate (16x24)"
-        )
-        ET.SubElement(e, "RowCount").text = "8" if self.plate_type == 96 else "16"
-        ET.SubElement(e, "ColumnCount").text = "12" if self.plate_type == 96 else "24"
+        If existing_xml is provided, the existing XML structure is preserved
+        and only the sample data is updated.  Otherwise a new XML structure is created.
 
-        if not samplemap:
-            e = ET.SubElement(root, "FeatureMap")
-            v = ET.SubElement(e, "Feature")
-            ET.SubElement(v, "Id").text = "sample"
-            ET.SubElement(v, "Name").text = "sample"
-            samplemap = e
-        ws = np.array(self.well_samples)
-        for welli in range(0, self.plate_type):
-            if ws[welli]:
-                e = samplemap.find(f"FeatureValue/Index[.='{welli}']/../FeatureItem")
-                if not e:
-                    e = ET.SubElement(samplemap, "FeatureValue")
-                    ET.SubElement(e, "Index").text = str(welli)
-                    e = ET.SubElement(e, "FeatureItem")
-                if s := e.find("Sample"):
-                    e.remove(s)
-                e.append(self.samples_by_name[ws[welli]].to_xml())
-            else:
-                if e := samplemap.find(f"FeatureValue/Index[.='{welli}']/.."):
-                    samplemap.remove(e)
+        Uses Rust XML handling internally.
+        """
+        rust_samples = _python_samples_to_rust(self.samples_by_name)
+
+        if existing_xml is not None:
+            rust_ps = RustPlateSetup.from_xml_string(existing_xml)
+            rust_ps.set_samples_and_wells(rust_samples)
+        else:
+            rust_ps = RustPlateSetup.from_samples_and_wells(
+                self.plate_type, rust_samples
+            )
+
+        return rust_ps.to_xml_string()
 
     @classmethod
     def from_machine(
         cls, c: Machine, runtitle: str | None = None
     ) -> PlateSetup:
         s = c.get_sds_file("plate_setup.xml", runtitle=runtitle)
-        x = ET.parse(BytesIO(s), parser=None)
-        return cls.from_platesetup_xml(x.getroot())
+        return cls.from_xml_string(s)
 
     def __repr__(self) -> str:
         return f"PlateSetup(samples {self.sample_wells.keys()}))"
@@ -487,7 +411,7 @@ class PlateSetup:
         if len(self.sample_wells) < 12:
             return str(self)
         else:
-            return self.to_table(tablefmt="pipe", markdown=True)
+            return self.to_table(format="markdown")
 
     @classmethod
     def from_picklist(cls, picklist: 'PickList' | str, plate_name: str | None = None, labware: 'Labware' | None = None) -> 'Self':
@@ -574,3 +498,37 @@ class PlateSetup:
             ],
             plate_type=plate_type
         )
+
+
+def _python_sample_to_rust(sample: Sample) -> RustSample:
+    """Convert a Python Sample to a Rust Sample."""
+    return RustSample(
+        name=sample.name,
+        color=sample.color,
+        properties=sample.properties,
+        description=sample.description or None,
+    )
+
+
+def _rust_sample_to_python(rust_sample: RustSample, wells: list[str]) -> Sample:
+    """Convert a Rust Sample to a Python Sample."""
+    desc = rust_sample.description
+    if desc == "":
+        desc = None
+    return Sample(
+        name=rust_sample.name,
+        color=rust_sample.color_rgba,
+        properties=rust_sample.get_properties(),
+        description=desc,
+        wells=wells,
+    )
+
+
+def _python_samples_to_rust(
+    samples_by_name: Dict[str, Sample],
+) -> Dict[str, tuple[RustSample, list[str]]]:
+    """Convert a dict of Python samples to the format expected by Rust set_samples_and_wells."""
+    return {
+        name: (_python_sample_to_rust(sample), list(sample.wells))
+        for name, sample in samples_by_name.items()
+    }

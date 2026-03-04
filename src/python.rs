@@ -14,13 +14,13 @@ use crate::com::{ConnectionError, QSConnectionError, SendCommandError};
 use crate::parser::ParseError;
 use pyo3::PyErr;
 
-pyo3::create_exception!(qslib, QslibException, PyException);
-pyo3::create_exception!(qslib, CommandResponseError, QslibException);
-pyo3::create_exception!(qslib, CommandError, CommandResponseError);
-pyo3::create_exception!(qslib, UnexpectedMessageResponse, CommandResponseError);
-pyo3::create_exception!(qslib, DisconnectedBeforeResponse, CommandResponseError);
+pyo3::create_exception!("qslib._qslib", QslibException, PyException);
+pyo3::create_exception!("qslib._qslib", CommandResponseError, QslibException);
+pyo3::create_exception!("qslib._qslib", CommandError, CommandResponseError);
+pyo3::create_exception!("qslib._qslib", UnexpectedMessageResponse, CommandResponseError);
+pyo3::create_exception!("qslib._qslib", DisconnectedBeforeResponse, CommandResponseError);
 
-#[pyclass]
+#[pyclass(module = "qslib._qslib")]
 #[pyo3(name = "Protocol")]
 pub struct PyProtocol {
     protocol: Protocol,
@@ -58,14 +58,14 @@ impl PyProtocol {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "qslib._qslib")]
 #[pyo3(name = "QSConnection")]
 pub struct PyQSConnection {
     conn: QSConnection,
     rt: Arc<Runtime>,
 }
 
-#[pyclass]
+#[pyclass(module = "qslib._qslib")]
 #[pyo3(name = "MessageResponse")]
 pub struct PyMessageResponse {
     rx: ResponseReceiver,
@@ -82,17 +82,19 @@ impl PyMessageResponse {
     /// Raises:
     ///     ValueError: If response is an error or invalid
     pub fn get_response_bytes(&mut self) -> PyResult<Vec<u8>> {
-        let ret = self.rt.block_on(self.rx.recv());
-        match ret {
-            Some(x) => {
-                match x {
-                    MessageResponse::Ok { ident: _, message } => Ok(message.to_bytes()),
-                    MessageResponse::CommandError { ident: _, error } => Err(CommandError::new_err(error)),
-                    MessageResponse::Next { ident: _ } => self.get_response_bytes(),
-                    MessageResponse::Message(message) => Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message))),
-                }
-            },
-            None => Err(DisconnectedBeforeResponse::new_err("Disconnected before response")),
+        loop {
+            let ret = self.rt.block_on(self.rx.recv());
+            match ret {
+                Some(x) => {
+                    match x {
+                        MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => return Ok(message.to_bytes()),
+                        MessageResponse::CommandError { ident: _, error } => return Err(CommandError::new_err(error)),
+                        MessageResponse::Next { ident: _ } => continue,
+                        MessageResponse::Message(message) => return Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message))),
+                    }
+                },
+                None => return Err(DisconnectedBeforeResponse::new_err("Disconnected before response")),
+            }
         }
     }
 
@@ -112,7 +114,7 @@ impl PyMessageResponse {
         let x = self.rt.block_on(self.rx.recv());
         match x {
             Some(x) => match x {
-                MessageResponse::Ok { ident: _, message } => {
+                MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => {
                     Err(UnexpectedMessageResponse::new_err(format!("OK message received as acknowledgment: {:?}", message)))
                 }
                 MessageResponse::CommandError { ident: _, error } => {
@@ -149,7 +151,7 @@ impl PyMessageResponse {
         })?;
         match x {
             Some(x) => match x {
-                MessageResponse::Ok { ident: _, message } => Ok(message.to_string()),
+                MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => Ok(message.to_string()),
                 MessageResponse::CommandError { ident: _, error } => {
                     Err(CommandError::new_err(error.to_string()))
                 }
@@ -165,7 +167,7 @@ impl PyMessageResponse {
     }
 }
 
-#[pyclass]
+#[pyclass(module = "qslib._qslib")]
 #[pyo3(name = "LogReceiver")]
 pub struct PyLogReceiver {
     rx: StreamMap<String, BroadcastStream<LogMessage>>,
@@ -341,6 +343,11 @@ impl PyQSConnection {
     ///     bool: True if connected, False otherwise
     fn connected(&self) -> bool {
         self.rt.block_on(self.conn.is_connected())
+    }
+
+    /// Send QUIT command to the server for a clean disconnect.
+    fn disconnect(&self) {
+        self.rt.block_on(self.conn.disconnect());
     }
 
     /// Authenticate with a password

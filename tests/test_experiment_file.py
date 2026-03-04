@@ -3,6 +3,7 @@
 
 
 import datetime
+from pathlib import Path
 import numpy as np
 import pytest
 
@@ -17,10 +18,12 @@ from qslib.processors import (
     SubtractByMeanPerWell,
 )
 
+_TESTS_DIR = Path(__file__).parent
+
 
 @pytest.fixture(scope="module")
 def exp() -> Experiment:
-    exp = Experiment.from_file("tests/test.eds")
+    exp = Experiment.from_file(_TESTS_DIR / "test.eds")
     # We need better sample arrangements:
     exp.sample_wells["Sample 1"] = ["A7", "A8"]
     exp.sample_wells["Sample 2"] = ["A9", "A10"]
@@ -164,29 +167,33 @@ def test_filter_strings(exp: Experiment) -> None:
 
 def test_save_file_with_dots(exp: Experiment, tmp_path_factory: pytest.TempPathFactory) -> None: # test for issue #33
     tmp_path = tmp_path_factory.mktemp("exp")
-    
-    # Create a new experiment with dots in the name
-    exp.name = "test.with.dots"
-    exp.save_file(tmp_path)
-    
-    # Check that the file was saved with correct name
-    saved_file = tmp_path / "test.with.dots.eds"
-    assert saved_file.exists()
-    
-    # Load the file back to verify it's valid
-    loaded_exp = Experiment.from_file(saved_file)
-    assert loaded_exp.name == "test.with.dots"
+    original_name = exp.name
 
-    # Now try with dots and spaces in the name; the spaces should be converted to underscores
-    exp.name = "test.with.dots and spaces"
-    exp.save_file(tmp_path)
-    
-    # Check that the file was saved with correct name
-    saved_file = tmp_path / "test.with.dots_and_spaces.eds"
-    assert saved_file.exists()
+    try:
+        # Create a new experiment with dots in the name
+        exp.name = "test.with.dots"
+        exp.save_file(tmp_path)
+
+        # Check that the file was saved with correct name
+        saved_file = tmp_path / "test.with.dots.eds"
+        assert saved_file.exists()
+
+        # Load the file back to verify it's valid
+        loaded_exp = Experiment.from_file(saved_file)
+        assert loaded_exp.name == "test.with.dots"
+
+        # Now try with dots and spaces in the name; the spaces should be converted to underscores
+        exp.name = "test.with.dots and spaces"
+        exp.save_file(tmp_path)
+
+        # Check that the file was saved with correct name
+        saved_file = tmp_path / "test.with.dots_and_spaces.eds"
+        assert saved_file.exists()
+    finally:
+        exp.name = original_name
 
 def test_mid_run_eds():
-    exp = Experiment.from_file("tests/mid-run.eds")
+    exp = Experiment.from_file(_TESTS_DIR / "mid-run.eds")
 
     assert exp.runstate == "RUNNING"
     assert exp.activeendtime is None

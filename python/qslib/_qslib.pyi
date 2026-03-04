@@ -5,6 +5,8 @@
 """Type stubs for qslib._qslib Rust extension module."""
 
 from typing import Any, Dict, List, Optional, Tuple, Union
+import numpy as np
+import numpy.typing as npt
 import polars as pl
 
 # Exceptions
@@ -324,6 +326,47 @@ class FilterDataCollection:
         """
         ...
 
+    @staticmethod
+    def from_xml_bytes(data: bytes) -> "FilterDataCollection":
+        """Parse filter data from XML bytes.
+
+        Args:
+            data: XML content as bytes
+
+        Returns:
+            Parsed FilterDataCollection
+
+        Raises:
+            ValueError: If XML cannot be parsed
+        """
+        ...
+
+    @staticmethod
+    def from_individual_files(paths: List[str]) -> "FilterDataCollection":
+        """Load filter data from individual per-reading XML files.
+
+        Args:
+            paths: List of file paths to individual filterdata XML files
+
+        Returns:
+            Combined FilterDataCollection
+
+        Raises:
+            ValueError: If any file cannot be read or parsed
+        """
+        ...
+
+    def set_timestamps_from_quant(self, quant_data: "QuantDataCollection") -> None:
+        """Populate timestamps on each PlateData from quant data.
+
+        For each plate data entry, finds the longest-exposure quant file
+        for the matching collection point and sets the timestamp.
+
+        Args:
+            quant_data: QuantDataCollection to look up timestamps from
+        """
+        ...
+
     def to_polars(self) -> pl.DataFrame:
         """Convert to a Polars DataFrame.
 
@@ -350,6 +393,34 @@ class PlatePointData:
 
     plate_data: List[Any]
     """List of plate data for this point."""
+
+    def to_polars(self) -> pl.DataFrame:
+        """Convert to a Polars DataFrame."""
+        ...
+
+
+class QuantDataCollection:
+    """Collection of quant data from an experiment."""
+
+    @staticmethod
+    def from_eds(path: str) -> "QuantDataCollection":
+        """Load quant data from an EDS archive."""
+        ...
+
+    @staticmethod
+    def from_directory(path: str) -> "QuantDataCollection":
+        """Load quant data from a directory containing .quant files."""
+        ...
+
+    @staticmethod
+    def from_tiffs_in_eds(path: str) -> "QuantDataCollection":
+        """Load quant data from TIFF images in an EDS archive."""
+        ...
+
+    @staticmethod
+    def from_tiffs_in_directory(path: str) -> "QuantDataCollection":
+        """Load quant data from TIFF images in a directory."""
+        ...
 
     def to_polars(self) -> pl.DataFrame:
         """Convert to a Polars DataFrame."""
@@ -691,4 +762,66 @@ def parse_value_bytes(input: bytes) -> Any:
     Raises:
         ValueError: If parsing fails
     """
+    ...
+
+
+# ROI calibration
+class RoiCalibration:
+    """ROI calibration data for TIFF image processing."""
+
+    @staticmethod
+    def parse(text: str) -> "RoiCalibration":
+        """Parse ROI calibration from INI text."""
+        ...
+
+    @property
+    def n_rows(self) -> int: ...
+    @property
+    def n_cols(self) -> int: ...
+    @property
+    def image_width(self) -> int: ...
+    @property
+    def image_height(self) -> int: ...
+    @property
+    def instrument_type(self) -> str: ...
+    @property
+    def filter_sets(self) -> List["FilterSet"]: ...
+
+    def get_roi_diameter(self, filter_set: "FilterSet") -> Optional[float]: ...
+    def get_ring_size(self, filter_set: "FilterSet") -> Optional[float]: ...
+    def get_horizontal_pos(self, filter_set: "FilterSet") -> Optional["WellMatrix"]: ...
+    def get_vertical_pos(self, filter_set: "FilterSet") -> Optional["WellMatrix"]: ...
+    def get_well_area(self, filter_set: "FilterSet") -> Optional["WellMatrix"]: ...
+    def get_ring_area(self, filter_set: "FilterSet") -> Optional["WellMatrix"]: ...
+    def get_for_emission(self, emission: int) -> Optional["FilterSet"]: ...
+
+
+class WellMatrix:
+    """Matrix of per-well calibration values."""
+
+    data: List[float]
+    n_rows: int
+    n_cols: int
+
+    def get(self, row: int, col: int) -> float: ...
+
+
+# TIFF processing functions
+def apply_roi_to_tiff(
+    tiff_bytes: bytes,
+    roi: RoiCalibration,
+    emission: int,
+    threshold: Optional[int] = None,
+) -> List[Any]:
+    """Apply ROI calibration to a TIFF image."""
+    ...
+
+
+def decode_tiff(tiff_bytes: bytes) -> npt.NDArray[np.uint16]:
+    """Decode a TIFF image to a numpy uint16 array of shape (height, width)."""
+    ...
+
+
+def reconstruct_filterdata_from_tiffs(path: str) -> FilterDataCollection:
+    """Reconstruct filterdata from TIFF images in an EDS archive."""
     ...

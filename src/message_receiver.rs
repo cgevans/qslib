@@ -1,5 +1,7 @@
+use log;
 use regex::bytes::Regex;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 
 #[cfg(feature = "simd")]
@@ -26,12 +28,14 @@ pub struct MsgRecv {
     parttag: Option<usize>,
     msg_end: Option<usize>,
     msg_error: Option<MsgReceiveError>,
+    tag_opened_at: Option<Instant>,
+    tag_timeout: Duration,
 }
 
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Debug for MsgRecv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MsgRecv {{ buf: {:?}, tagstack: {:?}, parttag: {:?}, msg_end: {:?}, msg_error: {:?} }}", String::from_utf8_lossy(&self.buf), self.tagstack.iter().map(|(tag, _)| String::from_utf8_lossy(tag)).collect::<Vec<_>>(), self.parttag, self.msg_end, self.msg_error)
+        write!(f, "MsgRecv {{ buf: {:?}, tagstack: {:?}, parttag: {:?}, msg_end: {:?}, msg_error: {:?}, tag_opened_at: {:?} }}", String::from_utf8_lossy(&self.buf), self.tagstack.iter().map(|(tag, _)| String::from_utf8_lossy(tag)).collect::<Vec<_>>(), self.parttag, self.msg_end, self.msg_error, self.tag_opened_at)
     }
 }
 
@@ -49,6 +53,8 @@ impl MsgRecv {
             parttag: None,
             msg_end: None,
             msg_error: None,
+            tag_opened_at: None,
+            tag_timeout: Duration::from_secs(30),
         }
     }
 
@@ -60,6 +66,7 @@ impl MsgRecv {
                 let cur_error = self.msg_error.take();
                 self.tagstack.clear();
                 self.parttag = None;
+                self.tag_opened_at = None;
                 let _another = self.check_from_pos(0); // We know no message is waiting now.
                 if let Some(err) = cur_error {
                     return Err(err);
@@ -86,8 +93,9 @@ impl MsgRecv {
             }
             let c = self.buf[idx];
             if c == b'\n' {
-                if self.tagstack.len() == 0 {
+                if self.tagstack.is_empty() {
                     self.msg_end = Some(idx + 1);
+                    self.tag_opened_at = None;
                     return true;
                 }
             } else if c == b'<' {
@@ -105,10 +113,14 @@ impl MsgRecv {
                                         self.msg_error = Some(MsgReceiveError::MismatchedCloseTag(
                                             old_tag.1,
                                             idx,
+                                            String::from_utf8_lossy(tag).to_string(),
                                             String::from_utf8_lossy(&old_tag.0).to_string(),
-                                            String::from_utf8_lossy(&tag).to_string(),
                                         ));
                                         self.tagstack.clear();
+                                        self.tag_opened_at = None;
+                                    }
+                                    if self.tagstack.is_empty() {
+                                        self.tag_opened_at = None;
                                     }
                                 }
                                 None => {
@@ -117,12 +129,14 @@ impl MsgRecv {
                                         String::from_utf8_lossy(&tag).to_string(),
                                     ));
                                     self.tagstack.clear();
+                                    self.tag_opened_at = None;
                                 }
                             },
                             (_, _) => {
-                                // if self.msg_error.is_none() {
+                                if self.tagstack.is_empty() {
+                                    self.tag_opened_at = Some(Instant::now());
+                                }
                                 self.tagstack.push((tag.to_vec(), idx));
-                                // }
                             }
                         }
                     }
@@ -146,6 +160,7 @@ impl MsgRecv {
             if c == b'\n' {
                 if self.tagstack.is_empty() {
                     self.msg_end = Some(idx + 1);
+                    self.tag_opened_at = None;
                     return true;
                 }
             } else if c == b'<' {
@@ -162,10 +177,14 @@ impl MsgRecv {
                                     self.msg_error = Some(MsgReceiveError::MismatchedCloseTag(
                                         old_tag.1,
                                         idx,
-                                        String::from_utf8_lossy(&old_tag.0).to_string(),
                                         String::from_utf8_lossy(tag).to_string(),
+                                        String::from_utf8_lossy(&old_tag.0).to_string(),
                                     ));
                                     self.tagstack.clear();
+                                    self.tag_opened_at = None;
+                                }
+                                if self.tagstack.is_empty() {
+                                    self.tag_opened_at = None;
                                 }
                             }
                             None => {
@@ -174,12 +193,14 @@ impl MsgRecv {
                                     String::from_utf8_lossy(tag).to_string(),
                                 ));
                                 self.tagstack.clear();
+                                self.tag_opened_at = None;
                             }
                         },
                         (_, _) => {
-                            // if self.msg_error.is_none() {
+                            if self.tagstack.is_empty() {
+                                self.tag_opened_at = Some(Instant::now());
+                            }
                             self.tagstack.push((tag.to_vec(), idx));
-                            // }
                         }
                     }
                 }
@@ -216,6 +237,25 @@ impl MsgRecv {
     /// assert!(ready);
     /// ```
     pub fn push_data(&mut self, data: &[u8]) -> bool {
+        // Check for tag timeout: if tags have been open too long, force-close them
+        if !self.tagstack.is_empty() {
+            if let Some(opened_at) = self.tag_opened_at {
+                if opened_at.elapsed() > self.tag_timeout {
+                    log::warn!(
+                        "Tag stack timeout after {:?}: force-closing {} unclosed tag(s)",
+                        self.tag_timeout,
+                        self.tagstack.len()
+                    );
+                    self.tagstack.clear();
+                    self.tag_opened_at = None;
+                    // Re-scan from start to find message boundaries
+                    let result = self.check_from_pos(0);
+                    if result {
+                        return true;
+                    }
+                }
+            }
+        }
         let last_pos = self.parttag.unwrap_or(self.buf.len());
         self.buf.extend_from_slice(data);
         self.check_from_pos(last_pos)

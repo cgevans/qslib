@@ -1,13 +1,16 @@
 // SPDX-FileCopyrightText: 2021-2025 Constantine Evans <qslib@mb.costi.net>
 // SPDX-License-Identifier: EUPL-1.2
 
-//! Integration tests that require a running simulator.
+//! Integration tests that require a real machine (or forwarding to one).
 //!
-//! These tests are ignored by default. To run them, ensure a simulator is running:
+//! These tests are ignored by default. To run them, ensure the machine is reachable:
 //! - TCP: localhost:7000
 //! - SSL: localhost:7443
 //!
-//! Run with: `cargo test --test simulator_integration -- --ignored`
+//! Run with: `cargo test --test real_integration -- --ignored --test-threads=4`
+//!
+//! Note: The machine can't handle 30+ concurrent connections, so limit parallelism.
+//! Use `just integration` which sets --test-threads=4 automatically.
 
 use qslib::com::{ConnectionType, QSConnection};
 use qslib::commands::*;
@@ -34,10 +37,10 @@ async fn connect_authenticated(host: &str, port: u16, conn_type: ConnectionType)
     conn
 }
 
-/// Test TCP connection to the simulator
+/// Test TCP connection to the real machine
 #[tokio::test]
 #[ignore]
-async fn test_simulator_tcp_connection() {
+async fn test_real_tcp_connection() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     assert!(connection.is_ok(), "TCP connection failed: {:?}", connection.err());
@@ -51,10 +54,10 @@ async fn test_simulator_tcp_connection() {
     assert!(conn.ready_message.args.get("version").is_some(), "Missing version in ready message");
 }
 
-/// Test SSL connection to the simulator
+/// Test SSL connection to the real machine
 #[tokio::test]
 #[ignore]
-async fn test_simulator_ssl_connection() {
+async fn test_real_ssl_connection() {
     let connection = QSConnection::connect(SSL_HOST, SSL_PORT, ConnectionType::SSL).await;
     
     assert!(connection.is_ok(), "SSL connection failed: {:?}", connection.err());
@@ -67,7 +70,7 @@ async fn test_simulator_ssl_connection() {
 /// Test auto connection type detection for TCP port
 #[tokio::test]
 #[ignore]
-async fn test_simulator_auto_tcp() {
+async fn test_real_auto_tcp() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::Auto).await;
     
     assert!(connection.is_ok(), "Auto TCP connection failed: {:?}", connection.err());
@@ -78,7 +81,7 @@ async fn test_simulator_auto_tcp() {
 /// Test auto connection type detection for SSL port
 #[tokio::test]
 #[ignore]
-async fn test_simulator_auto_ssl() {
+async fn test_real_auto_ssl() {
     let connection = QSConnection::connect(SSL_HOST, SSL_PORT, ConnectionType::Auto).await;
     
     assert!(connection.is_ok(), "Auto SSL connection failed: {:?}", connection.err());
@@ -89,7 +92,7 @@ async fn test_simulator_auto_ssl() {
 /// Test connection with timeout
 #[tokio::test]
 #[ignore]
-async fn test_simulator_connection_timeout() {
+async fn test_real_connection_timeout() {
     let connection = QSConnection::connect_with_timeout(
         TCP_HOST,
         TCP_PORT,
@@ -103,7 +106,7 @@ async fn test_simulator_connection_timeout() {
 /// Test HELP? command (available at all access levels)
 #[tokio::test]
 #[ignore]
-async fn test_simulator_help_command() {
+async fn test_real_help_command() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
@@ -120,7 +123,7 @@ async fn test_simulator_help_command() {
 /// Test power status query
 #[tokio::test]
 #[ignore]
-async fn test_simulator_power_query() {
+async fn test_real_power_query() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     let response = PowerQuery
@@ -139,7 +142,7 @@ async fn test_simulator_power_query() {
 /// Test access level query
 #[tokio::test]
 #[ignore]
-async fn test_simulator_access_level_query() {
+async fn test_real_access_level_query() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
@@ -157,7 +160,7 @@ async fn test_simulator_access_level_query() {
 /// Test authentication
 #[tokio::test]
 #[ignore]
-async fn test_simulator_authentication() {
+async fn test_real_authentication() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
@@ -177,7 +180,7 @@ async fn test_simulator_authentication() {
 /// Test authentication with wrong password fails
 #[tokio::test]
 #[ignore]
-async fn test_simulator_authentication_wrong_password() {
+async fn test_real_authentication_wrong_password() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
@@ -189,13 +192,13 @@ async fn test_simulator_authentication_wrong_password() {
 /// Test setting access level (without password - basic level)
 #[tokio::test]
 #[ignore]
-async fn test_simulator_set_access_level() {
+async fn test_real_set_access_level() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
     
     // Try to set access level to Observer (doesn't require password)
-    let response = AccessLevelSet::level(AccessLevel::Observer)
+    let response = AccessLevelSet::new(AccessLevel::Observer)
         .send(&connection)
         .await
         .expect("Failed to send access level set")
@@ -216,10 +219,10 @@ async fn test_simulator_set_access_level() {
     assert!(verify.is_ok(), "Verification query failed: {:?}", verify.err());
 }
 
-/// Test setting Controller access level (requires authentication on simulator)
+/// Test setting Controller access level (requires authentication on real machine)
 #[tokio::test]
 #[ignore]
-async fn test_simulator_controller_access() {
+async fn test_real_controller_access() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
@@ -241,7 +244,7 @@ async fn test_simulator_controller_access() {
 /// Test subscribing to log messages
 #[tokio::test]
 #[ignore]
-async fn test_simulator_log_subscription() {
+async fn test_real_log_subscription() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     Subscribe::topic("Temperature").send(&connection).await.unwrap();
@@ -260,7 +263,7 @@ async fn test_simulator_log_subscription() {
 /// Test run title query when no run is active
 #[tokio::test]
 #[ignore]
-async fn test_simulator_run_title_no_run() {
+async fn test_real_run_title_no_run() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     let result = connection.get_current_run_name().await;
@@ -275,7 +278,7 @@ async fn test_simulator_run_title_no_run() {
 /// Test temperature setpoints query
 #[tokio::test]
 #[ignore]
-async fn test_simulator_temperature_setpoints() {
+async fn test_real_temperature_setpoints() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     let result = connection.get_current_temperature_setpoints().await;
@@ -294,12 +297,12 @@ async fn test_simulator_temperature_setpoints() {
 /// Test file listing
 #[tokio::test]
 #[ignore]
-async fn test_simulator_file_list() {
+async fn test_real_file_list() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     let result = connection.get_expfile_list("*").await;
     
-    // This might succeed or fail depending on the simulator state
+    // This might succeed or fail depending on the machine state
     // We just want to make sure the command runs without panicking
     println!("File list result: {:?}", result);
 }
@@ -307,7 +310,7 @@ async fn test_simulator_file_list() {
 /// Test multiple concurrent commands
 #[tokio::test]
 #[ignore]
-async fn test_simulator_concurrent_commands() {
+async fn test_real_concurrent_commands() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     // Send multiple commands concurrently
@@ -331,7 +334,7 @@ async fn test_simulator_concurrent_commands() {
 /// Test raw command bytes
 #[tokio::test]
 #[ignore]
-async fn test_simulator_raw_command() {
+async fn test_real_raw_command() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
     
     // Send a raw RUNTitle? command
@@ -347,7 +350,7 @@ async fn test_simulator_raw_command() {
 /// Test SSL-specific functionality
 #[tokio::test]
 #[ignore]
-async fn test_simulator_ssl_commands() {
+async fn test_real_ssl_commands() {
     let connection = connect_authenticated(SSL_HOST, SSL_PORT, ConnectionType::SSL).await;
     
     // Test a simple command over SSL
@@ -364,7 +367,7 @@ async fn test_simulator_ssl_commands() {
 /// Test reconnection behavior
 #[tokio::test]
 #[ignore]
-async fn test_simulator_reconnection() {
+async fn test_real_reconnection() {
     // First connection
     let conn1 = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
@@ -390,9 +393,224 @@ async fn test_simulator_reconnection() {
 /// Test connection to wrong port fails gracefully
 #[tokio::test]
 #[ignore]
-async fn test_simulator_wrong_port_type() {
+async fn test_real_wrong_port_type() {
     // Try SSL connection to TCP port - should fail
     let result = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::SSL).await;
     assert!(result.is_err(), "SSL connection to TCP port should fail");
+}
+
+/// Test drawer status query
+#[tokio::test]
+#[ignore]
+async fn test_real_drawer_query() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    let response = DrawerStatusQuery
+        .send(&connection)
+        .await
+        .expect("Failed to send drawer status query")
+        .receive_response()
+        .await;
+
+    assert!(response.is_ok(), "Drawer status query failed: {:?}", response.err());
+    let status = response.unwrap();
+    assert!(status.is_ok(), "Drawer status returned error: {:?}", status.err());
+}
+
+/// Test cover position query
+#[tokio::test]
+#[ignore]
+async fn test_real_cover_query() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    let response = CoverPositionQuery
+        .send(&connection)
+        .await
+        .expect("Failed to send cover position query")
+        .receive_response()
+        .await;
+
+    assert!(response.is_ok(), "Cover position query failed: {:?}", response.err());
+    let position = response.unwrap();
+    assert!(position.is_ok(), "Cover position returned error: {:?}", position.err());
+}
+
+/// Test cover heat status query - verify temperature is reasonable
+#[tokio::test]
+#[ignore]
+async fn test_real_cover_heat_query() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    let response = CoverHeatStatusQuery
+        .send(&connection)
+        .await
+        .expect("Failed to send cover heat status query")
+        .receive_response()
+        .await;
+
+    assert!(response.is_ok(), "Cover heat status query failed: {:?}", response.err());
+    let status = response.unwrap();
+    assert!(status.is_ok(), "Cover heat status returned error: {:?}", status.err());
+    let heat_status = status.unwrap();
+    assert!(
+        heat_status.temperature > 0.0 && heat_status.temperature < 200.0,
+        "Cover heat temperature {} is outside valid range (0, 200)",
+        heat_status.temperature
+    );
+}
+
+/// Test quick status query - verify sample and block temperatures are present
+#[tokio::test]
+#[ignore]
+async fn test_real_quick_status() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    let response = QuickStatusQuery
+        .send(&connection)
+        .await
+        .expect("Failed to send quick status query")
+        .receive_response()
+        .await;
+
+    assert!(response.is_ok(), "Quick status query failed: {:?}", response.err());
+    let status = response.unwrap();
+    assert!(status.is_ok(), "Quick status returned error: {:?}", status.err());
+    let quick_status = status.unwrap();
+    assert!(
+        !quick_status.sample_temperatures.is_empty(),
+        "Quick status should have sample temperatures"
+    );
+    assert!(
+        !quick_status.block_temperatures.is_empty(),
+        "Quick status should have block temperatures"
+    );
+}
+
+/// Test control zones query - verify zone count is at least 1
+#[tokio::test]
+#[ignore]
+async fn test_real_control_zones() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    let mut response = connection
+        .send_command_bytes(b"TBC:ControlZones?")
+        .await
+        .expect("Failed to send control zones query");
+
+    let result = response.get_response().await;
+    assert!(result.is_ok(), "Control zones query failed: {:?}", result.err());
+    let ok_result = result.unwrap();
+    assert!(ok_result.is_ok(), "Control zones returned error: {:?}", ok_result.err());
+    let ok_response = ok_result.unwrap();
+    // The response args should contain the zone count as a value
+    assert!(!ok_response.args.is_empty(), "Control zones response should have args");
+    let zones_str = ok_response.to_string();
+    let zone_count: usize = zones_str.trim().parse()
+        .unwrap_or_else(|_| panic!("Failed to parse zone count as number from '{}'", zones_str));
+    assert!(zone_count >= 1, "Zone count should be >= 1, got {}", zone_count);
+}
+
+/// Test subscribing to temperature topic and receiving a message
+#[tokio::test]
+#[ignore]
+async fn test_real_subscribe_temperature() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    Subscribe::topic("Temperature").send(&connection).await.unwrap();
+
+    let mut stream = connection.subscribe_log(&["Temperature"]).await;
+
+    let timeout = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
+
+    assert!(timeout.is_ok(), "Timed out waiting for Temperature message");
+    let message = timeout.unwrap();
+    assert!(message.is_some(), "Should receive at least one Temperature message");
+    let (topic, msg_result) = message.unwrap();
+    assert!(msg_result.is_ok(), "Stream message should be Ok");
+    assert_eq!(topic, "Temperature", "Message topic should be Temperature");
+}
+
+/// Test subscribing to multiple topics (Temperature and Status)
+#[tokio::test]
+#[ignore]
+async fn test_real_subscribe_multiple() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    Subscribe::topics(&["Temperature", "Status"]).send(&connection).await.unwrap();
+
+    let mut stream = connection.subscribe_log(&["Temperature", "Status"]).await;
+
+    let timeout = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
+
+    assert!(timeout.is_ok(), "Timed out waiting for messages on Temperature/Status");
+    let message = timeout.unwrap();
+    assert!(message.is_some(), "Should receive at least one message from subscribed topics");
+}
+
+/// Test sample temperatures query
+#[tokio::test]
+#[ignore]
+async fn test_real_sample_temperatures() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    let response = SampleTemperaturesQuery
+        .send(&connection)
+        .await
+        .expect("Failed to send sample temperatures query")
+        .receive_response()
+        .await;
+
+    assert!(response.is_ok(), "Sample temperatures query failed: {:?}", response.err());
+    let temps_result = response.unwrap();
+    assert!(temps_result.is_ok(), "Sample temperatures returned error: {:?}", temps_result.err());
+    let temps = temps_result.unwrap();
+    assert!(temps.len() >= 1, "Should have at least 1 sample temperature, got {}", temps.len());
+}
+
+/// Test block temperatures query
+#[tokio::test]
+#[ignore]
+async fn test_real_block_temperatures() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    let response = BlockTemperaturesQuery
+        .send(&connection)
+        .await
+        .expect("Failed to send block temperatures query")
+        .receive_response()
+        .await;
+
+    assert!(response.is_ok(), "Block temperatures query failed: {:?}", response.err());
+    let temps_result = response.unwrap();
+    assert!(temps_result.is_ok(), "Block temperatures returned error: {:?}", temps_result.err());
+    let temps = temps_result.unwrap();
+    assert!(temps.len() >= 1, "Should have at least 1 block temperature, got {}", temps.len());
+}
+
+/// Test temperature control status query - verify zones and fans are non-empty
+#[tokio::test]
+#[ignore]
+async fn test_real_temperature_control_status() {
+    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+
+    let response = TemperatureControlStatusQuery
+        .send(&connection)
+        .await
+        .expect("Failed to send temperature control status query")
+        .receive_response()
+        .await;
+
+    assert!(response.is_ok(), "Temperature control status query failed: {:?}", response.err());
+    let status_result = response.unwrap();
+    assert!(status_result.is_ok(), "Temperature control status returned error: {:?}", status_result.err());
+    let status = status_result.unwrap();
+    assert!(
+        !status.zones.is_empty(),
+        "Temperature control status should have zones"
+    );
+    assert!(
+        !status.fans.is_empty(),
+        "Temperature control status should have fans"
+    );
 }
 

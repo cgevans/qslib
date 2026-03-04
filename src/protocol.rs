@@ -5,8 +5,12 @@ use std::fmt;
 use thiserror::Error;
 
 /// Default number of temperature zones for QuantStudio machines.
-/// Different models have different zone counts (1, 2, 3, or 6).
-/// Default is 6 for backward compatibility with QuantStudio 5.
+/// Default number of temperature control zones.
+///
+/// Current QuantStudio instruments have 6 zones. This is used when expanding
+/// a single temperature to a per-zone list during protocol parsing. The actual
+/// zone count can be queried from the server with `TBC:ControlZones?`
+/// (see [`ControlZonesQuery`](crate::commands::ControlZonesQuery)).
 pub const DEFAULT_NUM_ZONES: usize = 6;
 
 #[derive(Debug, Error)]
@@ -275,12 +279,12 @@ impl ProtoCommand for Ramp {
                 source: e,
                 protocol_string: protocol_string.clone(),
             })?;
-        let incrementcycle = cmd.options.extract_with_default("incrementcycle", 1)
+        let incrementcycle = cmd.options.extract_with_default("incrementcycle", 2)
             .map_err(|e| ProtocolParseError::ParseError {
                 source: e,
                 protocol_string: protocol_string.clone(),
             })?;
-        let incrementstep = cmd.options.extract_with_default("incrementstep", 1)
+        let incrementstep = cmd.options.extract_with_default("incrementstep", 2)
             .map_err(|e| ProtocolParseError::ParseError {
                 source: e,
                 protocol_string: protocol_string.clone(),
@@ -340,9 +344,9 @@ impl ProtoCommand for Hold {
 
         let increment = cmd.options.extract_with_default("increment", 0)
             .map_err(|e| parse_error_to_protocol_error(e, cmd))?;
-        let incrementcycle = cmd.options.extract_with_default("incrementcycle", 1)
+        let incrementcycle = cmd.options.extract_with_default("incrementcycle", 2)
             .map_err(|e| parse_error_to_protocol_error(e, cmd))?;
-        let incrementstep = cmd.options.extract_with_default("incrementstep", 1)
+        let incrementstep = cmd.options.extract_with_default("incrementstep", 2)
             .map_err(|e| parse_error_to_protocol_error(e, cmd))?;
 
         Ok(Box::new(Hold {

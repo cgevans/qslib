@@ -26,7 +26,7 @@ enum_dispatch = "0.3.13"
 futures = "0.3.31"
 indexmap = "2.7"
 log = "0.4.25"
-pyo3 = { version = "0.26", optional = true, features = ["extension-module", "abi3-py310", "anyhow", "multiple-pymethods"] }
+pyo3 = { version = "0.26", optional = true, features = ["extension-module", "anyhow", "multiple-pymethods"] }
 quick-xml = { version = "0.38", features = ["overlapped-lists", "serialize"] }
 regex = "1.11.1"
 rustls = { version = "0.23.20", features = ["ring"], default-features = false }
@@ -47,6 +47,8 @@ bstr = "1.11.3"
 tracing = "0.1.41"
 polars = { version = "^0.52", features = ["lazy", "diagonal_concat", "timezones"] }
 pyo3-polars = { version = "^0.25", optional = true }
+numpy = { version = "0.26", optional = true }
+tiff = "0.11"
 once_cell = "1.21.3"
 hmac = "0.12"
 md-5 = "0.10"
@@ -56,10 +58,11 @@ rustls-pemfile = "2.2.0"
 webpki = { package = "rustls-webpki", version = "0.102" }
 
 [features]
+default = ["abi3"]
 debug = ["winnow/debug"]
-python = ["pyo3", "pyo3-polars"]
+python = ["pyo3", "pyo3-polars", "numpy"]
+abi3 = ["pyo3/abi3-py310"]
 simd = ["dep:memchr", "winnow/simd"]
-# default = ["python"]
 
 [dev-dependencies]
 env_logger = "0.11.6"
@@ -79,14 +82,3 @@ harness = false
 [[bench]]
 name = "message_parsing"
 harness = false
-
-# [lints.rust]
-# unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
-
-# [[bench]]
-# name = "msg_recv"
-# harness = false
-
-# [[bench]]
-# name = "message_parsing"
-# harness = false

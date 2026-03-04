@@ -1,3 +1,6 @@
+#![cfg_attr(coverage_nightly, feature(coverage_attribute))]
+
+pub mod calibration;
 pub mod com;
 pub mod commands;
 pub mod data;
@@ -6,6 +9,8 @@ pub mod parser;
 pub mod plate_setup;
 pub mod message_log;
 pub mod protocol;
+pub mod quant;
+pub mod tiff;
 
 #[cfg(feature = "python")]
 pub mod python;
@@ -71,6 +76,68 @@ mod qslib {
     #[pymodule_export]
     use crate::message_log::RunLogInfo;
 
+    #[pymodule_export]
+    use crate::commands::AccessLevel;
+
+    #[pymodule_export]
+    use crate::data::FilterSet;
+
+    #[pymodule_export]
+    use crate::parser::SCPICommand;
+
+    // Calibration types
+    #[pymodule_export]
+    use crate::calibration::UniformityCalibration;
+
+    #[pymodule_export]
+    use crate::calibration::BackgroundCalibration;
+
+    #[pymodule_export]
+    use crate::calibration::PureDyeCalibration;
+
+    #[pymodule_export]
+    use crate::calibration::WellMatrix;
+
+    // Quant types
+    #[pymodule_export]
+    use crate::quant::QuantFile;
+
+    #[pymodule_export]
+    use crate::quant::QuantConditions;
+
+    #[pymodule_export]
+    use crate::quant::QuantRegion;
+
+    #[pymodule_export]
+    use crate::quant::WellQuant;
+
+    #[pymodule_export]
+    use crate::quant::CollectionKey;
+
+    #[pymodule_export]
+    use crate::quant::QuantDataCollection;
+
+    // ROI calibration
+    #[pymodule_export]
+    use crate::calibration::RoiCalibration;
+
+    // TIFF processing
+    #[pymodule_export]
+    use crate::tiff::py_apply_roi_to_tiff;
+
+    #[pymodule_export]
+    use crate::tiff::py_decode_tiff;
+
+    // Reconstruction functions
+    #[pymodule_export]
+    use crate::data::py_reconstruct_filterdata_from_eds;
+
+    #[pymodule_export]
+    use crate::data::py_reconstruct_filterdata;
+
+    #[pymodule_export]
+    use crate::data::py_reconstruct_filterdata_from_tiffs;
+
     // #[pymodule_export]
     // use crate::message_log::RunState;
 
@@ -89,6 +156,14 @@ mod qslib {
         use crate::parser::parse_options;
         parse_options(&mut &input[..]).map_err(|e| {
             pyo3::exceptions::PyValueError::new_err(format!("Failed to parse ArgMap: {}", e))
+        })
+    }
+
+    /// Parse a string into an OkResponse (options dict + positional args list)
+    #[pyfunction]
+    fn parse_arglist(input: String) -> PyResult<crate::parser::OkResponse> {
+        crate::parser::OkResponse::try_from(input).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse arglist: {}", e))
         })
     }
 

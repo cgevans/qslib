@@ -247,7 +247,7 @@ class Collector:
             ignore_unverified_devices=True,
         )
 
-        self.matrix_client.sync()
+        await self.matrix_client.sync()
 
     def setup_new_rundir(
         self,
@@ -276,6 +276,11 @@ class Collector:
 
         dirpath.mkdir()
         zf = connection.read_dir_as_zip(name, "experiment")
+        target = dirpath.resolve()
+        for member in zf.namelist():
+            member_path = (target / member).resolve()
+            if not str(member_path).startswith(str(target)):
+                raise ValueError(f"ZIP member {member!r} would extract outside target directory")
         zf.extractall(dirpath)
 
         (dirpath / "apldbio" / "sds" / "quant").mkdir(exist_ok=True)
@@ -306,7 +311,7 @@ class Collector:
         # name = name.replace(" ", "_")
 
         # Wait 5 minutes in case machine compiles it (AB sofware run)
-        asyncio.sleep(300.0)
+        time.sleep(300.0)
 
         try:
             connection.set_access_level(AccessLevel.Controller)
@@ -534,23 +539,28 @@ class Collector:
 
                     if compdir != "":
                         # This will need to compile and sync
-                        asyncio.tasks.create_task(
-                            self.sync_completed(c, state.run.name)
+                        loop = asyncio.get_event_loop()
+                        loop.run_in_executor(
+                            None, self.sync_completed, c, state.run.name
                         )
                     else:
                         # No sync; just compile
-                        asyncio.tasks.create_task(self.compile_eds(c, state.run.name))
+                        loop = asyncio.get_event_loop()
+                        loop.run_in_executor(None, self.compile_eds, c, state.run.name)
             elif action == "Starting":
                 if self.ipdir:
                     newname: str = cast(str, contents[1])
-                    newname.strip('"')
+                    newname = newname.strip('"')
 
-                    asyncio.tasks.create_task(
-                        self.setup_new_rundir(
+                    loop = asyncio.get_event_loop()
+                    loop.run_in_executor(
+                        None,
+                        functools.partial(
+                            self.setup_new_rundir,
                             c,
                             newname,
                             firstmsg=f"\n{topic_str} {timestamp} {message_str}",
-                        )
+                        ),
                     )
 
         elif action == "Collected":

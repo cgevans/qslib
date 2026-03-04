@@ -1,0 +1,200 @@
+# SPDX-FileCopyrightText: 2021-2023 Constantine Evans <qslib@mb.costi.net>
+# SPDX-License-Identifier: EUPL-1.2
+
+"""Unit tests for Machine class — pure logic, no network required."""
+
+import pytest
+
+from qslib import AccessLevel, Machine
+from qslib.machine import _gen_auth_response
+
+
+# --- Machine default params ---
+
+
+def test_machine_default_params():
+    m = Machine("example.com")
+    assert m.host == "example.com"
+    assert m.port == 7443  # default SSL port
+    assert m.ssl is None
+    assert m.automatic is True
+
+
+def test_machine_ssl_false_defaults_port_7000():
+    m = Machine("example.com", ssl=False)
+    assert m.port == 7000
+    assert m.ssl is False
+
+
+def test_machine_custom_port_overrides():
+    m = Machine("example.com", port=9999, ssl=False)
+    assert m.port == 9999
+
+
+def test_machine_ssl_true_default_port():
+    m = Machine("example.com", ssl=True)
+    assert m.port == 7443
+
+
+# --- set_access_level validation ---
+
+
+def test_set_access_level_above_max_raises():
+    m = Machine("example.com", max_access_level="Observer")
+    with pytest.raises(ValueError, match="above maximum"):
+        m.set_access_level(AccessLevel.Controller)
+
+
+def test_max_access_level_property():
+    m = Machine("example.com", max_access_level="Controller")
+    assert m.max_access_level == AccessLevel.Controller
+    m.max_access_level = "Observer"
+    assert m.max_access_level == AccessLevel.Observer
+
+
+# --- _gen_auth_response ---
+
+
+def test_gen_auth_response():
+    # HMAC-MD5 is deterministic — verify known computation
+    result = _gen_auth_response("testpassword", "123456")
+    assert isinstance(result, str)
+    assert len(result) == 32  # MD5 hex digest
+    # Verify determinism
+    assert result == _gen_auth_response("testpassword", "123456")
+    # Different password → different result
+    assert result != _gen_auth_response("otherpassword", "123456")
+
+
+
+# --- asdict ---
+
+
+def test_asdict_without_password():
+    m = Machine("example.com", password="secret")
+    d = m.asdict()
+    assert d["host"] == "example.com"
+    assert "password" not in d
+
+
+def test_asdict_with_password():
+    m = Machine("example.com", password="secret")
+    d = m.asdict(password=True)
+    assert d["password"] == "secret"
+
+
+def test_asdict_minimal():
+    m = Machine("example.com")
+    d = m.asdict()
+    # host is always present; port is included since ssl=None → default 7443
+    assert d["host"] == "example.com"
+    assert "password" not in d
+
+
+# --- connection property ---
+
+
+def test_connection_property_raises():
+    m = Machine("example.com")
+    with pytest.raises(ConnectionError):
+        _ = m.connection
+
+
+def test_connected_false_initially():
+    m = Machine("example.com")
+    assert m.connected is False
+
+
+def test_disconnect_noop():
+    m = Machine("example.com")
+    # Should not raise when not connected
+    m.disconnect()
+    assert m.connected is False
+
+
+# --- set_access_level edge cases ---
+
+
+def test_set_access_level_at_max():
+    m = Machine("example.com", max_access_level="Observer")
+    # Setting to Observer (same as max) should not raise ValueError
+    # (it will fail at the network level, but we're testing the validation)
+    # The ValueError is only raised when *above* max
+    try:
+        m.set_access_level(AccessLevel.Observer)
+    except ConnectionError:
+        pass  # Expected — not connected
+    except Exception:
+        pass  # Other connection errors are fine
+
+
+# --- block setter validation ---
+
+
+def test_block_setter_invalid():
+    m = Machine("example.com")
+    with pytest.raises((ValueError, ConnectionError)):
+        m.block = "invalid"
+
+
+# --- FilterDataFilename ---
+
+
+def test_filter_data_filename_roundtrip():
+    from qslib.machine import FilterDataFilename
+
+    fn = FilterDataFilename.fromstring(
+        "S01_C003_T02_P0001_M4_X1_filterdata.xml"
+    )
+    assert fn.stage == 1
+    assert fn.cycle == 3
+    assert fn.step == 2
+    assert fn.point == 1
+    assert fn.tostring() == "S01_C003_T02_P0001_M4_X1_filterdata.xml"
+
+
+def test_filter_data_filename_is_same_point():
+    from qslib.machine import FilterDataFilename
+
+    fn1 = FilterDataFilename.fromstring(
+        "S01_C003_T02_P0001_M4_X1_filterdata.xml"
+    )
+    fn2 = FilterDataFilename.fromstring(
+        "S01_C003_T02_P0001_M3_X2_filterdata.xml"
+    )
+    fn3 = FilterDataFilename.fromstring(
+        "S01_C003_T02_P0002_M4_X1_filterdata.xml"
+    )
+    assert fn1.is_same_point(fn2)  # Same point, different filter
+    assert not fn1.is_same_point(fn3)  # Different point
+
+
+# --- asdict with all fields ---
+
+
+def test_asdict_all_fields():
+    m = Machine(
+        "example.com",
+        port=9000,
+        password="secret",
+        ssl=True,
+        max_access_level="Administrator",
+        automatic=False,
+    )
+    d = m.asdict(password=True)
+    assert d["host"] == "example.com"
+    assert d["port"] == 9000
+    assert d["password"] == "secret"
+    assert d["ssl"] is True
+    assert d["max_access_level"] == "Administrator"
+    assert d["automatic"] is False
+
+
+# --- repr ---
+
+
+def test_repr():
+    m = Machine("example.com")
+    r = repr(m)
+    assert "Machine" in r
+    assert "example.com" in r

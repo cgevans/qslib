@@ -75,7 +75,7 @@ class RunStatus(BaseStatus):
             b"${RunTitle:--}",
             lambda out: re.sub(r"(<([\w.]+)>)?([^<]+)(</[\w.]+>)?", r"\3", out),
         ),
-        "stage": (b"${Stage:--1}", lambda x: int(x) if x != "PRERUN" else 0),
+        "stage": (b"${Stage:--1}", lambda x: int(x) if x not in ("PRERUN", "POSTRun") else 0),
         "num_stages": (_get_protodef_or_def("${RunMacro}-Stages", -1), int),
         "cycle": (b"${Cycle:--1}", int),
         "num_cycles": (

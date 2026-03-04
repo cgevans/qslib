@@ -56,7 +56,13 @@ IntQuantity = pint.Quantity
 PlainQuantity: TypeAlias = pint.Quantity
 ArrayQuantity: TypeAlias = pint.Quantity
 
-NZONES = 6
+NZONES: int = 6
+"""Default number of temperature control zones.
+
+Current QuantStudio instruments have 6 zones. This is used when expanding
+a single temperature to a per-zone list. Query the actual count from the
+server with ``Machine.get_zone_count()`` (sends ``TBC:ControlZones?``).
+"""
 
 UR: pint.UnitRegistry = pint.UnitRegistry(
     autoconvert_offset_to_baseunit=True, auto_reduce_dimensions=True
@@ -251,8 +257,8 @@ class Ramp(ProtoCommand):
         on_setattr=attr.setters.convert,
         default=_ZEROTEMPDELTA,
     )
-    incrementcycle: int = 1
-    incrementstep: int = 1
+    incrementcycle: int = 2
+    incrementstep: int = 2
     rate: float = 100.0  # This is a percent
     cover: PlainQuantity | None = attr.field(  # [float]
         converter=_wrap_degC_or_none,
@@ -266,9 +272,9 @@ class Ramp(ProtoCommand):
 
         if self.increment != _ZEROTEMPDELTA:
             opts["increment"] = self.increment.to("delta_degC").magnitude
-        if self.incrementcycle != 1:
+        if self.incrementcycle != 2:
             opts["incrementcycle"] = self.incrementcycle
-        if self.incrementstep != 1:
+        if self.incrementstep != 2:
             opts["incrementstep"] = self.incrementstep
         if self.rate != 100.0:
             opts["rate"] = self.rate
@@ -376,8 +382,8 @@ class HoldAndCollect(ProtoCommand):
     increment: PlainQuantity = attr.field(
         default=_ZERO_SECONDS, converter=_wrap_seconds, on_setattr=attr.setters.convert
     )
-    incrementcycle: int = 1
-    incrementstep: int = 1
+    incrementcycle: int = 2
+    incrementstep: int = 2
     tiff: bool = False
     quant: bool = True
     pcr: bool = False
@@ -387,9 +393,9 @@ class HoldAndCollect(ProtoCommand):
         opts = {}
         if self.increment != _ZERO_SECONDS:
             opts["increment"] = self.increment.m_as(_SECONDS)
-        if self.incrementcycle != HoldAndCollect.incrementcycle:
+        if self.incrementcycle != 2:
             opts["incrementcycle"] = self.incrementcycle
-        if self.incrementstep != HoldAndCollect.incrementstep:
+        if self.incrementstep != 2:
             opts["incrementstep"] = self.incrementstep
         opts["tiff"] = self.tiff
         opts["quant"] = self.quant
@@ -416,17 +422,17 @@ class Hold(ProtoCommand):
     increment: PlainQuantity = attr.field(
         converter=_wrap_seconds, on_setattr=attr.setters.convert, default=_ZERO_SECONDS
     )
-    incrementcycle: int = 1
-    incrementstep: int = 1
+    incrementcycle: int = 2
+    incrementstep: int = 2
     _names: ClassVar[Sequence[str]] = ("HOLD",)
 
     def to_scpicommand(self, **kwargs: None) -> SCPICommand:
         opts = {}
         if self.increment != _ZERO_SECONDS:
             opts["increment"] = self.increment.m_as(_SECONDS)
-        if self.incrementcycle != 1:
+        if self.incrementcycle != 2:
             opts["incrementcycle"] = self.incrementcycle
-        if self.incrementstep != 1:
+        if self.incrementstep != 2:
             opts["incrementstep"] = self.incrementstep
         return SCPICommand(
             "HOLD",
@@ -489,8 +495,9 @@ class _NumOrRefIndexer(Generic[G]):
     def append(self, val: G) -> None:
         return self._list.append(val)
 
-    def __iadd__(self, val: Iterable[G]) -> None:
+    def __iadd__(self, val: Iterable[G]) -> Self:
         self._list += val
+        return self
 
 
 class CustomStep(ProtoCommand, XMLable):
@@ -1917,11 +1924,12 @@ class Protocol(ProtoCommand):
         _set_or_create(e, "ExtendedHoldTemp").text = "0"
         _set_or_create(e, "ExtendedHoldTime").text = "0"
         if self.filters:
+            from qslib.data import _filterset_to_xml
             x = _set_or_create(e, "CollectionProfile", ProfileId="1")
             for f in self.filters:
                 if not isinstance(f, FilterSet):
                     f = FilterSet.fromstring(f)
-                x.append(f.to_xml())
+                x.append(_filterset_to_xml(f))
         for s in self.stages:
             e.append(s.to_xml())
         return te, tqe

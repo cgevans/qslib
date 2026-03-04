@@ -9,7 +9,7 @@ source = qslib
 
 [paths]
 source =
-    src/
+    python/
     */site-packages/
 
 [report]
