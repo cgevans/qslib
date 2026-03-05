@@ -4,6 +4,7 @@ pub mod calibration;
 pub mod com;
 pub mod commands;
 pub mod data;
+pub mod eds;
 pub mod message_receiver;
 pub mod parser;
 pub mod plate_setup;
@@ -27,6 +28,12 @@ mod qslib {
 
     #[pymodule_export]
     use crate::python::PyProtocol;
+
+    #[pymodule_export]
+    use crate::python::PyStep;
+
+    #[pymodule_export]
+    use crate::python::PyStage;
 
     #[pymodule_export]
     use crate::python::PyMessageResponse;
@@ -80,10 +87,19 @@ mod qslib {
     use crate::commands::AccessLevel;
 
     #[pymodule_export]
+    use crate::commands::RunStatus;
+
+    #[pymodule_export]
+    use crate::commands::MachineStatus;
+
+    #[pymodule_export]
     use crate::data::FilterSet;
 
     #[pymodule_export]
     use crate::parser::SCPICommand;
+
+    #[pymodule_export]
+    use crate::parser::py_quote_string_if_needed;
 
     // Calibration types
     #[pymodule_export]
@@ -121,6 +137,10 @@ mod qslib {
     #[pymodule_export]
     use crate::calibration::RoiCalibration;
 
+    // EDS Archive
+    #[pymodule_export]
+    use crate::eds::EdsArchive;
+
     // TIFF processing
     #[pymodule_export]
     use crate::tiff::py_apply_roi_to_tiff;
@@ -137,6 +157,9 @@ mod qslib {
 
     #[pymodule_export]
     use crate::data::py_reconstruct_filterdata_from_tiffs;
+
+    #[pymodule_export]
+    use crate::data::py_parse_filterdata_v2_json;
 
     // #[pymodule_export]
     // use crate::message_log::RunState;

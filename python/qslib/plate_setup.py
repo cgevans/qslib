@@ -9,26 +9,22 @@ from __future__ import annotations
 import html as html_mod
 from dataclasses import dataclass
 from typing import (
-    Any,
     Dict,
     Iterable,
     Iterator,
     List,
     Literal,
     Mapping,
-    Optional,
     Sequence,
     Tuple,
     TYPE_CHECKING
 )
-from uuid import uuid1
 
-import attrs
 import numpy as np
 import polars as pl
 import tabulate
 
-from ._qslib import PlateSetup as RustPlateSetup, Sample as RustSample
+from ._qslib import PlateSetup as RustPlateSetup, Sample
 
 if TYPE_CHECKING:
     from qslib.machine import Machine
@@ -51,27 +47,8 @@ _WELLALPHREF_384 = [(x, f"{y}") for x in _ROWALPHAS for y in range(1, 25)]
 
 _SORT_WELLS_ROW_OUTER = pl.col("well").str.extract_groups(r"^(?<row>\w)(?<col>\d{1,2})$").struct.with_fields(pl.field("row"), pl.field("col").cast(pl.Int32))
 
-def _process_color_from_str_int(x: str) -> Tuple[int, int, int, int]:
-    """From a string that represents a signed int32 (this choice make no sense),
-    interpret it as a unsigned 32-bit integer, then unpack the bits to get R,G,B,A."""
-
-    color_bytes: Tuple[int, int, int, int] = tuple(
-        int(b) for b in int(x).to_bytes(4, "little", signed=True)
-    )  # type: ignore
-
-    return color_bytes
-
-
-def _color_to_str_int(x: Tuple[int, int, int, int]) -> str:
-    return str(int.from_bytes(bytes(x), "little", signed=True))
-
 def _color_to_str(x: Tuple[int, int, int, int]) -> str:
     return f"#{x[0]:02x}{x[1]:02x}{x[2]:02x}{x[3]:02x}"
-
-def _str_or_list_to_list(v: str | Sequence[str]) -> list[str]:
-    if isinstance(v, str):
-        return [v]
-    return list(v)
 
 _SAMPLE_SCHEMA = {
     "name": pl.String,
@@ -82,78 +59,9 @@ _SAMPLE_SCHEMA = {
     "properties": pl.Struct,
 }
 
-@attrs.define(init=False)
-class Sample:
-    """A sample in a plate setup.
-    
-    Notes
-    -----
-    Sample equality excludes the auto-generated SP_UUID.
-    """
-    name: str
-    color: Tuple[int, int, int, int] = attrs.field(default=(255, 0, 0, 255))
-    properties: dict[str, str] = attrs.field(factory=dict)
-    description: str | None = None
-    wells: list[str] = attrs.field(
-        factory=list, converter=_str_or_list_to_list, on_setattr=attrs.setters.convert
-    )
-
-    def __init__(
-        self,
-        name: str,
-        uuid: str | None = None,
-        color: Tuple[int, int, int, int] = (0, 0, 0, 255),
-        properties: dict[str, str] | None = None,
-        description: str | None = None,
-        wells: str | list[str] | None = None,
-    ) -> None:
-        if properties is None:
-            properties = dict()
-        if "SP_UUID" not in properties:
-            if not uuid:
-                uuid = uuid1().hex
-            properties["SP_UUID"] = uuid
-        if wells is None:
-            wells = list()
-        self.__attrs_init__(name, color, properties, description, wells=wells)  # type: ignore
-
-    @property
-    def uuid(self) -> str:
-        return self.properties["SP_UUID"]
-
-    @uuid.setter
-    def uuid(self, val: str) -> None:
-        self.properties["SP_UUID"] = val
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, Sample):
-            return False
-        if self.__class__ != other.__class__:
-            return False
-        # Compare all fields except SP_UUID in properties
-        properties_without_uuid = {k: v for k, v in self.properties.items() if k != "SP_UUID"}
-        other_properties_without_uuid = {k: v for k, v in other.properties.items() if k != "SP_UUID"}
-        return (
-            self.name == other.name
-            and self.color == other.color
-            and properties_without_uuid == other_properties_without_uuid
-            and self.description == other.description
-            and self.wells == other.wells
-        )
-
-    def to_record(self) -> dict[str, Any]:
-        return {
-            "name": self.name,
-            "color": _color_to_str(self.color),
-            "description": self.description,
-            "wells": self.wells,
-            "uuid": self.uuid,
-            "properties": self.properties,
-        }
-
-@attrs.define()
 class _SampleWellsView(Mapping[str, list[str]]):
-    samples_by_name: Dict[str, Sample]
+    def __init__(self, samples_by_name: Dict[str, Sample]) -> None:
+        self.samples_by_name = samples_by_name
 
     def __getitem__(self, name: str) -> list[str]:
         return self.samples_by_name[name].wells
@@ -194,14 +102,10 @@ class PlateSetup:
         if isinstance(xml, bytes):
             xml = xml.decode("utf-8")
         rust_ps = RustPlateSetup.from_xml_string(xml)
-        rust_samples = rust_ps.get_samples_and_wells()
+        samples = rust_ps.get_samples_with_wells()
         plate_type: Literal[96, 384] = rust_ps.plate_type_int  # type: ignore
 
-        py_samples: Dict[str, Sample] = {}
-        for name, (rust_sample, wells) in rust_samples.items():
-            py_samples[name] = _rust_sample_to_python(rust_sample, wells)
-
-        return cls(sample_wells=None, samples=py_samples, plate_type=plate_type)
+        return cls(sample_wells=None, samples=samples, plate_type=plate_type)
 
     def __init__(
         self,
@@ -377,14 +281,13 @@ class PlateSetup:
 
         Uses Rust XML handling internally.
         """
-        rust_samples = _python_samples_to_rust(self.samples_by_name)
-
         if existing_xml is not None:
             rust_ps = RustPlateSetup.from_xml_string(existing_xml)
-            rust_ps.set_samples_and_wells(rust_samples)
+            rust_ps.set_samples(self.samples_by_name)
         else:
             rust_ps = RustPlateSetup.from_samples_and_wells(
-                self.plate_type, rust_samples
+                self.plate_type,
+                {name: (sample, list(sample.wells)) for name, sample in self.samples_by_name.items()}
             )
 
         return rust_ps.to_xml_string()
@@ -500,35 +403,3 @@ class PlateSetup:
         )
 
 
-def _python_sample_to_rust(sample: Sample) -> RustSample:
-    """Convert a Python Sample to a Rust Sample."""
-    return RustSample(
-        name=sample.name,
-        color=sample.color,
-        properties=sample.properties,
-        description=sample.description or None,
-    )
-
-
-def _rust_sample_to_python(rust_sample: RustSample, wells: list[str]) -> Sample:
-    """Convert a Rust Sample to a Python Sample."""
-    desc = rust_sample.description
-    if desc == "":
-        desc = None
-    return Sample(
-        name=rust_sample.name,
-        color=rust_sample.color_rgba,
-        properties=rust_sample.get_properties(),
-        description=desc,
-        wells=wells,
-    )
-
-
-def _python_samples_to_rust(
-    samples_by_name: Dict[str, Sample],
-) -> Dict[str, tuple[RustSample, list[str]]]:
-    """Convert a dict of Python samples to the format expected by Rust set_samples_and_wells."""
-    return {
-        name: (_python_sample_to_rust(sample), list(sample.wells))
-        for name, sample in samples_by_name.items()
-    }

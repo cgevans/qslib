@@ -30,7 +30,7 @@ from qslib.scpi_commands import AccessLevel, SCPICommand, ArgList, specialize_co
 from ._util import _unwrap_tags
 from .protocol import Protocol
 
-from .base import MachineStatus, RunStatus  # noqa: E402
+from ._qslib import MachineStatus, RunStatus  # noqa: E402
 
 class FileListInfo(TypedDict, total=False):
     """Information about a file when verbose=True"""
@@ -420,7 +420,7 @@ class Machine:
             protocol to send
         """
         protocol.validate()
-        self.run_command(protocol.to_scpicommand())
+        self.run_command(protocol.to_scpi_string())
 
     @_ensure_connection(AccessLevel.Observer)
     def read_dir_as_zip(self, path: str, leaf: str = "FILE") -> zipfile.ZipFile:
@@ -702,12 +702,14 @@ class Machine:
     @_ensure_connection(AccessLevel.Observer)
     def run_status(self) -> RunStatus:
         """Return information on the status of any run."""
-        return RunStatus.from_machine(self)
+        out = self.run_command_bytes(RunStatus.command())
+        return RunStatus.from_bytes(out)
 
     @_ensure_connection(AccessLevel.Observer)
     def machine_status(self) -> MachineStatus:
         """Return information on the status of the machine."""
-        return MachineStatus.from_machine(self)
+        out = self.run_command_bytes(MachineStatus.command())
+        return MachineStatus.from_bytes(out)
 
     @_ensure_connection(AccessLevel.Observer)
     def get_running_protocol(self) -> Protocol:
@@ -716,7 +718,7 @@ class Machine:
             "RET ${Protocol} ${SampleVolume} ${RunMode}"
         ).split()
         p = f"PROT -volume={svs} -runmode={rm} {pn} " + p
-        return Protocol.from_scpicommand(SCPICommand.from_string(p))
+        return Protocol.from_scpi_string(p)
 
     def set_access_level(
         self,
@@ -853,7 +855,8 @@ class Machine:
     def status(self) -> RunStatus:
         """Return the current status of the run."""
         with self.ensured_connection(AccessLevel.Observer):
-            return RunStatus.from_machine(self)
+            out = self.run_command_bytes(RunStatus.command())
+            return RunStatus.from_bytes(out)
 
     @property
     def drawer_position(self) -> Literal["Open", "Closed", "Unknown"]:

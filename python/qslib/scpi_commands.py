@@ -77,11 +77,8 @@ def quote_string_if_needed(s: str) -> str:
     Strings with spaces or quotation marks are wrapped in double quotes with
     escaped quotes. Other characters like $, {, } are not escaped.
     """
-    if "\n" in s:
-        return f"<quote>{s}</quote>"
-    if " " in s or '"' in s:
-        return '"' + s.replace('"', '\\"') + '"'
-    return s
+    from ._qslib import py_quote_string_if_needed
+    return py_quote_string_if_needed(s)
 
 
 @dataclass

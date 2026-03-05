@@ -1167,6 +1167,77 @@ impl PartialEq for SCPICommand {
     }
 }
 
+/// Quote a string for SCPI if it contains spaces, quotes, or newlines.
+pub fn quote_string_if_needed(s: &str) -> String {
+    if s.contains('\n') {
+        return format!("<quote>{}</quote>", s);
+    }
+    if s.contains(' ') || s.contains('"') {
+        return format!("\"{}\"", s.replace('"', "\\\""));
+    }
+    s.to_string()
+}
+
+impl SCPIArgValue {
+    /// Format this argument value as an SCPI string.
+    pub fn to_scpi_string(&self, parent_command: &str) -> String {
+        match self {
+            SCPIArgValue::Scalar(v) => v.to_scpi_string(),
+            SCPIArgValue::List(items) => items
+                .iter()
+                .map(|v| v.to_scpi_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            SCPIArgValue::CommandBlock(cmds) => {
+                let q = format!("multiline.{}", parent_command.to_lowercase());
+                let body: String = cmds.iter().map(|c| c.to_command_string()).collect();
+                let indented = body
+                    .lines()
+                    .map(|l| format!("\t{}", l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("<{}>\n{}</{}>", q, indented, q)
+            }
+        }
+    }
+}
+
+impl Value {
+    /// Format this value for SCPI output, applying quoting as needed.
+    pub fn to_scpi_string(&self) -> String {
+        match self {
+            Value::String(s) => quote_string_if_needed(s),
+            Value::Int(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::QuotedString(s) => quote_string_if_needed(s),
+            Value::XmlString { value, tag } => {
+                let content = String::from_utf8_lossy(value);
+                format!("<{}>{}</{}>", tag, content, tag)
+            }
+        }
+    }
+}
+
+impl SCPICommand {
+    /// Format this command as an SCPI command string, including terminal newline.
+    pub fn to_command_string(&self) -> String {
+        let mut parts = vec![self.command.clone()];
+        for (k, v) in &self.opts {
+            parts.push(format!("-{}={}", k, v.to_scpi_string(&self.command)));
+        }
+        for v in &self.args {
+            parts.push(v.to_scpi_string(&self.command));
+        }
+        let mut result = parts.join(" ");
+        if let Some(comment) = &self.comment {
+            result.push_str(&format!(" # {}", comment));
+        }
+        result.push('\n');
+        result
+    }
+}
+
 /// Parse a single unquoted value token (stops at space, newline, comma, <, #, ")
 fn scpi_value_one(input: &mut &[u8]) -> ModalResult<Value> {
     let v = alt((
@@ -1397,6 +1468,19 @@ impl SCPICommand {
     fn __eq__(&self, other: &Self) -> bool {
         self == other
     }
+
+    /// Format as an SCPI command string including terminal newline.
+    #[pyo3(name = "to_command_string")]
+    fn py_to_command_string(&self) -> String {
+        self.to_command_string()
+    }
+}
+
+/// Quote a string for SCPI if it contains spaces, quotes, or newlines.
+#[cfg(feature = "python")]
+#[pyfunction]
+pub fn py_quote_string_if_needed(s: &str) -> String {
+    quote_string_if_needed(s)
 }
 
 #[cfg(feature = "python")]

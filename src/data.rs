@@ -1007,6 +1007,115 @@ impl FilterDataCollection {
     }
 }
 
+/// Generate well names for a plate type (96 or 384).
+fn gen_well_names(plate_type: u32) -> Vec<String> {
+    let (rows, cols) = match plate_type {
+        96 => (8u8, 12u32),
+        384 => (16u8, 24u32),
+        _ => panic!("Unsupported plate type: {plate_type}"),
+    };
+    (0..rows)
+        .flat_map(|row| {
+            (1..=cols).map(move |col| format!("{}{}", (b'A' + row) as char, col))
+        })
+        .collect()
+}
+
+/// Parse v2 filter data JSON into a Polars DataFrame.
+///
+/// The JSON is an array of collection points, each with:
+/// - `collectionPoint`: {stage, cycle, step, point}
+/// - `filterData`: [{filterSet, exposure, wellFluorescences: [...]}]
+/// - `zoneTemperatures`: [...]
+///
+/// Returns a long-form DataFrame with columns:
+///   filter_set, stage, cycle, step, point, well, fluorescence, zone, temperature, exposure
+pub fn parse_filterdata_v2_json(json_str: &str, plate_type: u32) -> Result<DataFrame, PolarsError> {
+    let data: Vec<serde_json::Value> = serde_json::from_str(json_str)
+        .map_err(|e| PolarsError::ComputeError(format!("JSON parse error: {e}").into()))?;
+
+    let well_names = gen_well_names(plate_type);
+    let n_wells = well_names.len();
+
+    let mut filter_sets: Vec<String> = Vec::new();
+    let mut stages: Vec<i64> = Vec::new();
+    let mut cycles: Vec<i64> = Vec::new();
+    let mut steps: Vec<i64> = Vec::new();
+    let mut points: Vec<i64> = Vec::new();
+    let mut wells: Vec<String> = Vec::new();
+    let mut fluorescences: Vec<f64> = Vec::new();
+    let mut zones: Vec<u32> = Vec::new();
+    let mut temperatures: Vec<f64> = Vec::new();
+    let mut exposures: Vec<f64> = Vec::new();
+
+    for entry in &data {
+        let cp = &entry["collectionPoint"];
+        let stage = cp["stage"].as_i64().unwrap_or(0);
+        let cycle = cp["cycle"].as_i64().unwrap_or(0);
+        let step = cp["step"].as_i64().unwrap_or(0);
+        let point = cp["point"].as_i64().unwrap_or(0);
+
+        let zone_temps: Vec<f64> = entry["zoneTemperatures"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
+            .unwrap_or_default();
+        let n_zones = zone_temps.len();
+        let zone_size = if n_zones > 0 { n_wells / n_zones } else { n_wells };
+
+        let filter_data = entry["filterData"].as_array();
+        if let Some(fds) = filter_data {
+            for fd in fds {
+                let fs_raw = fd["filterSet"].as_str().unwrap_or("unknown");
+                let fs = fs_raw.to_lowercase().replace('_', "-");
+                let exposure = fd["exposure"].as_f64().unwrap_or(0.0);
+
+                let well_fl = fd["wellFluorescences"].as_array();
+                if let Some(wf) = well_fl {
+                    for (i, (wname, fl_val)) in well_names.iter().zip(wf.iter()).enumerate() {
+                        filter_sets.push(fs.clone());
+                        stages.push(stage);
+                        cycles.push(cycle);
+                        steps.push(step);
+                        points.push(point);
+                        wells.push(wname.clone());
+                        fluorescences.push(fl_val.as_f64().unwrap_or(f64::NAN));
+                        exposures.push(exposure);
+
+                        let zone_idx = if zone_size > 0 { i / zone_size } else { 0 };
+                        let zone_idx = zone_idx.min(n_zones.saturating_sub(1));
+                        zones.push(zone_idx as u32);
+                        temperatures.push(
+                            zone_temps.get(zone_idx).copied().unwrap_or(f64::NAN),
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    DataFrame::new(vec![
+        Column::new("filter_set".into(), &filter_sets),
+        Column::new("stage".into(), &stages),
+        Column::new("cycle".into(), &cycles),
+        Column::new("step".into(), &steps),
+        Column::new("point".into(), &points),
+        Column::new("well".into(), &wells),
+        Column::new("fluorescence".into(), &fluorescences),
+        Column::new("zone".into(), &zones),
+        Column::new("temperature".into(), &temperatures),
+        Column::new("exposure".into(), &exposures),
+    ])
+}
+
+#[cfg(feature = "python")]
+#[pyfunction]
+#[pyo3(name = "parse_filterdata_v2_json")]
+pub fn py_parse_filterdata_v2_json(json_str: &str, plate_type: u32) -> PyResult<PyDataFrame> {
+    parse_filterdata_v2_json(json_str, plate_type)
+        .map(PyDataFrame)
+        .map_err(|e| PyValueError::new_err(format!("Failed to parse v2 filter data: {e}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1554,5 +1663,43 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_parse_filterdata_v2_json() {
+        let json = r#"[
+            {
+                "collectionPoint": {"stage": 2, "cycle": 1, "step": 2, "point": 1},
+                "filterData": [
+                    {"filterSet": "X1_M1", "exposure": 600, "wellFluorescences": [100.0, 200.0, 300.0]}
+                ],
+                "zoneTemperatures": [60.0]
+            }
+        ]"#;
+
+        let df = parse_filterdata_v2_json(json, 96).unwrap();
+        assert_eq!(df.height(), 3);
+        assert_eq!(df.column("filter_set").unwrap().str().unwrap().get(0).unwrap(), "x1-m1");
+        assert_eq!(df.column("stage").unwrap().i64().unwrap().get(0).unwrap(), 2);
+        assert_eq!(df.column("well").unwrap().str().unwrap().get(0).unwrap(), "A1");
+        assert_eq!(df.column("well").unwrap().str().unwrap().get(1).unwrap(), "A2");
+        assert_eq!(df.column("well").unwrap().str().unwrap().get(2).unwrap(), "A3");
+        assert!((df.column("fluorescence").unwrap().f64().unwrap().get(0).unwrap() - 100.0).abs() < 1e-10);
+        assert!((df.column("temperature").unwrap().f64().unwrap().get(0).unwrap() - 60.0).abs() < 1e-10);
+    }
+
+    #[test]
+    fn test_gen_well_names() {
+        let names96 = gen_well_names(96);
+        assert_eq!(names96.len(), 96);
+        assert_eq!(names96[0], "A1");
+        assert_eq!(names96[11], "A12");
+        assert_eq!(names96[12], "B1");
+        assert_eq!(names96[95], "H12");
+
+        let names384 = gen_well_names(384);
+        assert_eq!(names384.len(), 384);
+        assert_eq!(names384[0], "A1");
+        assert_eq!(names384[383], "P24");
     }
 }

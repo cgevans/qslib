@@ -42,7 +42,7 @@ from qslib import scpi_commands
 from qslib.data import FilterSet
 
 from ._util import _nowuuid, _set_or_create
-from .base import RunStatus
+from ._qslib import RunStatus
 from .scpi_commands import SCPICommand, SCPICommandLike
 from .version import __version__
 
@@ -1688,6 +1688,76 @@ class Protocol(ProtoCommand):
         """
         return _NumOrRefIndexer(self.stages)
 
+    def _to_rust_step(self, step: Step) -> Any:
+        """Convert a Python Step to a Rust RustStep."""
+        from ._qslib import RustStep
+        temp_mag = step.temperature.to("degC").magnitude
+        if isinstance(temp_mag, np.ndarray):
+            temp_list = temp_mag.tolist()
+        else:
+            temp_list = [float(temp_mag)] * NZONES
+        return RustStep(
+            time=int(step.time.m_as(_SECONDS)),
+            temperature=temp_list,
+            collect=step.collect if step.collect is not None else (len(step.filters) > 0),
+            temp_increment=float(step.temp_increment.to("delta_degC").magnitude),
+            temp_incrementcycle=step.temp_incrementcycle,
+            temp_incrementpoint=step.temp_incrementpoint,
+            time_increment=int(step.time_increment.m_as(_SECONDS)),
+            time_incrementcycle=step.time_incrementcycle,
+            time_incrementpoint=step.time_incrementpoint,
+            filters=[f.hacform if isinstance(f, FilterSet) else str(f) for f in step.filters],
+            pcr=step.pcr,
+            quant=step.quant,
+            tiff=step.tiff,
+            repeat=step.repeat,
+        )
+
+    def _to_rust_stage(self, stage: Stage, stage_index: int) -> Any:
+        """Convert a Python Stage to a Rust RustStage."""
+        from ._qslib import RustStage
+        rust_steps = []
+        for step in stage.steps:
+            if isinstance(step, Step):
+                rust_steps.append(self._to_rust_step(step))
+            else:
+                # CustomStep - can't easily convert, skip Rust path
+                return None
+        return RustStage(
+            steps=rust_steps,
+            repeat=stage.repeat,
+            index=stage.index or stage_index,
+            label=stage.label,
+        )
+
+    def _to_rust_protocol(self) -> Any:
+        """Convert this Python Protocol to a Rust Protocol object. Returns None if conversion fails."""
+        from ._qslib import Protocol as RustProtocol
+        if self.prerun or self.postrun:
+            return None  # Rust path doesn't handle prerun/postrun from Python yet
+        rust_stages = []
+        for i, stage in enumerate(self.stages):
+            rs = self._to_rust_stage(stage, i + 1)
+            if rs is None:
+                return None
+            rust_stages.append(rs)
+        return RustProtocol.create(
+            name=self.name,
+            stages=rust_stages,
+            volume=float(self.volume),
+            runmode=str(self.runmode),
+            filters=[f.hacform if isinstance(f, FilterSet) else str(f) for f in self.filters],
+            covertemperature=float(self.covertemperature),
+        )
+
+    def to_scpi_string_rust(self) -> str | None:
+        """Serialize this protocol to an SCPI string using the Rust implementation.
+        Returns None if the protocol can't be converted to Rust (e.g., CustomSteps)."""
+        rp = self._to_rust_protocol()
+        if rp is None:
+            return None
+        return rp.to_scpi_string()
+
     def to_scpicommand(self, **kwargs: Any) -> SCPICommand:
         assert not kwargs
         args: list[int | str | Sequence[SCPICommand]] = []
@@ -1761,6 +1831,26 @@ class Protocol(ProtoCommand):
         c.filters = dfilt
 
         return c
+
+    @classmethod
+    def from_scpi_string(cls: Type[Protocol], text: str) -> Protocol:
+        """Parse a Protocol from an SCPI command string.
+
+        This is a convenience method equivalent to
+        ``Protocol.from_scpicommand(SCPICommand.from_string(text))``.
+        """
+        return cls.from_scpicommand(SCPICommand.from_string(text))
+
+    def to_scpi_string(self) -> str:
+        """Serialize this protocol to an SCPI command string.
+
+        Uses the Rust implementation when possible (no CustomSteps, no prerun/postrun),
+        falling back to the Python implementation.
+        """
+        rust_str = self.to_scpi_string_rust()
+        if rust_str is not None:
+            return rust_str
+        return self.to_scpicommand().to_string()
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -1908,9 +1998,7 @@ class Protocol(ProtoCommand):
             " placeholder for the real protocol, contained as"
             " an SCPI command in QSLibProtocolCommand."
         )
-        _set_or_create(qe, "QSLibProtocolCommand").text = (
-            self.to_scpicommand().to_string()
-        )
+        _set_or_create(qe, "QSLibProtocolCommand").text = self.to_scpi_string()
         _set_or_create(qe, "QSLibProtocol").text = str(attr.asdict(self))
         _set_or_create(qe, "QSLibVerson").text = __version__
         _set_or_create(e, "CoverTemperature").text = str(covertemperature)

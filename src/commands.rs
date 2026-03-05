@@ -1197,6 +1197,234 @@ impl TryFrom<OkResponse> for Vec<f64> {
     }
 }
 
+// ---- Status Parsing: compound RET responses ----
+
+use std::collections::HashMap;
+
+/// Status of the current run on the machine.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyclass(frozen, get_all, module = "qslib._qslib"))]
+pub struct RunStatus {
+    pub name: String,
+    pub stage: i64,
+    pub num_stages: i64,
+    pub cycle: i64,
+    pub num_cycles: i64,
+    pub step: i64,
+    pub point: i64,
+    pub state: String,
+}
+
+impl RunStatus {
+    /// The SCPI command to fetch run status via compound RET.
+    pub const COMMAND: &'static [u8] = b"RET ${RunTitle:--} ${Stage:--1} $[ top.getChild('PROTOcolDEFinition').variables.get('${RunMacro}-Stages'.lower(), -1) ] ${Cycle:--1} $[ top.getChild('PROTOcolDEFinition').variables.get('${RunMacro}-Stage${Stage}-Count'.lower(), -1) ] ${Step:--1} ${Point:--1} $(ISTAT?)";
+
+    /// Parse a compound RET response into a RunStatus.
+    pub fn parse(response: &[u8]) -> Result<Self, OkParseError> {
+        let s = std::str::from_utf8(response).map_err(|e| {
+            OkParseError::UnexpectedValues(
+                OkResponse { args: vec![], options: ArgMap::new() },
+                format!("invalid UTF-8: {}", e),
+            )
+        })?;
+        let tokens = shell_words::split(s).map_err(|e| {
+            OkParseError::UnexpectedValues(
+                OkResponse { args: vec![], options: ArgMap::new() },
+                format!("shell split error: {}", e),
+            )
+        })?;
+        if tokens.len() < 8 {
+            return Err(OkParseError::UnexpectedValues(
+                OkResponse { args: vec![], options: ArgMap::new() },
+                format!("expected 8 tokens, got {}", tokens.len()),
+            ));
+        }
+        // Strip XML-like tags from name: <tag>content</tag> → content
+        let name = regex::Regex::new(r"(<[\w.]+>)?([^<]*)(</[\w.]+>)?")
+            .unwrap()
+            .replace_all(&tokens[0], "$2")
+            .to_string();
+        let parse_stage = |s: &str| -> i64 {
+            if s == "PRERUN" || s == "POSTRun" { 0 } else { s.parse().unwrap_or(-1) }
+        };
+        Ok(RunStatus {
+            name,
+            stage: parse_stage(&tokens[1]),
+            num_stages: tokens[2].parse().unwrap_or(-1),
+            cycle: tokens[3].parse().unwrap_or(-1),
+            num_cycles: tokens[4].parse().unwrap_or(-1),
+            step: tokens[5].parse().unwrap_or(-1),
+            point: tokens[6].parse().unwrap_or(-1),
+            state: tokens[7].clone(),
+        })
+    }
+}
+
+impl std::fmt::Display for RunStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "RunStatus(name={:?}, stage={}, num_stages={}, cycle={}, num_cycles={}, step={}, point={}, state={:?})",
+            self.name, self.stage, self.num_stages, self.cycle, self.num_cycles, self.step, self.point, self.state
+        )
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl RunStatus {
+    #[staticmethod]
+    fn from_bytes(response: &[u8]) -> PyResult<Self> {
+        Self::parse(response).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("{}", e))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        self.to_string()
+    }
+
+    fn __str__(&self) -> String {
+        self.to_string()
+    }
+
+    #[staticmethod]
+    fn command() -> &'static [u8] {
+        Self::COMMAND
+    }
+}
+
+/// Status of the machine hardware (temperatures, drawer, cover, etc.).
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyclass(frozen, module = "qslib._qslib"))]
+pub struct MachineStatus {
+    pub drawer: String,
+    pub cover: String,
+    pub lamp_status: String,
+    pub sample_temperatures: Vec<f64>,
+    pub block_temperatures: Vec<f64>,
+    pub cover_temperature: f64,
+    pub target_temperatures: HashMap<String, f64>,
+    pub target_controlled: HashMap<String, bool>,
+    pub led_temperature: f64,
+}
+
+impl MachineStatus {
+    /// The SCPI command to fetch machine status via compound RET.
+    pub const COMMAND: &'static [u8] = b"RET $(DRAWER?) $[ \"$(ENG?)\" or \"unknown\" ] $(LST?) $(TBC:SampleTemperatures?) $(TBC:BlockTemperatures?) $(TBC:CoverTemperatures?) $(TBC:SETT?) $(TBC:CONT?) $(LED:LEDTemperature?)";
+
+    /// Parse a compound RET response into a MachineStatus.
+    pub fn parse(response: &[u8]) -> Result<Self, OkParseError> {
+        let s = std::str::from_utf8(response).map_err(|e| {
+            OkParseError::UnexpectedValues(
+                OkResponse { args: vec![], options: ArgMap::new() },
+                format!("invalid UTF-8: {}", e),
+            )
+        })?;
+        let tokens = shell_words::split(s).map_err(|e| {
+            OkParseError::UnexpectedValues(
+                OkResponse { args: vec![], options: ArgMap::new() },
+                format!("shell split error: {}", e),
+            )
+        })?;
+        if tokens.len() < 9 {
+            return Err(OkParseError::UnexpectedValues(
+                OkResponse { args: vec![], options: ArgMap::new() },
+                format!("expected 9 tokens, got {}", tokens.len()),
+            ));
+        }
+
+        let parse_floats = |s: &str| -> Vec<f64> {
+            s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
+        };
+
+        let kv_re = regex::Regex::new(r"-(\w+)=([\d.eE+-]+)").unwrap();
+        let target_temperatures: HashMap<String, f64> = kv_re
+            .captures_iter(&tokens[6])
+            .filter_map(|c| {
+                let key = c[1].to_string();
+                let val: f64 = c[2].parse().ok()?;
+                Some((key, val))
+            })
+            .collect();
+
+        let bool_re = regex::Regex::new(r"-(\w+)=(True|False)").unwrap();
+        let target_controlled: HashMap<String, bool> = bool_re
+            .captures_iter(&tokens[7])
+            .map(|c| {
+                let key = c[1].to_string();
+                let val = &c[2] == "True";
+                (key, val)
+            })
+            .collect();
+
+        Ok(MachineStatus {
+            drawer: tokens[0].clone(),
+            cover: tokens[1].clone(),
+            lamp_status: tokens[2].clone(),
+            sample_temperatures: parse_floats(&tokens[3]),
+            block_temperatures: parse_floats(&tokens[4]),
+            cover_temperature: tokens[5].parse().unwrap_or(0.0),
+            target_temperatures,
+            target_controlled,
+            led_temperature: tokens[8].parse().unwrap_or(0.0),
+        })
+    }
+}
+
+impl std::fmt::Display for MachineStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "MachineStatus(drawer={:?}, cover={:?}, lamp_status={:?}, cover_temp={:.1}°C, led_temp={:.1}°C)",
+            self.drawer, self.cover, self.lamp_status, self.cover_temperature, self.led_temperature
+        )
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl MachineStatus {
+    #[staticmethod]
+    fn from_bytes(response: &[u8]) -> PyResult<Self> {
+        Self::parse(response).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("{}", e))
+        })
+    }
+
+    #[getter]
+    fn get_drawer(&self) -> &str { &self.drawer }
+    #[getter]
+    fn get_cover(&self) -> &str { &self.cover }
+    #[getter]
+    fn get_lamp_status(&self) -> &str { &self.lamp_status }
+    #[getter]
+    fn get_sample_temperatures(&self) -> Vec<f64> { self.sample_temperatures.clone() }
+    #[getter]
+    fn get_block_temperatures(&self) -> Vec<f64> { self.block_temperatures.clone() }
+    #[getter]
+    fn get_cover_temperature(&self) -> f64 { self.cover_temperature }
+    #[getter]
+    fn get_target_temperatures(&self) -> HashMap<String, f64> { self.target_temperatures.clone() }
+    #[getter]
+    fn get_target_controlled(&self) -> HashMap<String, bool> { self.target_controlled.clone() }
+    #[getter]
+    fn get_led_temperature(&self) -> f64 { self.led_temperature }
+
+    fn __repr__(&self) -> String {
+        self.to_string()
+    }
+
+    fn __str__(&self) -> String {
+        self.to_string()
+    }
+
+    #[staticmethod]
+    fn command() -> &'static [u8] {
+        Self::COMMAND
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2063,5 +2291,102 @@ mod tests {
     fn test_quick_status_query_to_bytes() {
         let bytes = QuickStatusQuery.to_bytes();
         assert!(bytes.starts_with(b"RET $(POW?)"));
+    }
+
+    // ---- RunStatus tests ----
+
+    #[test]
+    fn test_run_status_parse_basic() {
+        let response = b"TestRun 2 5 3 10 1 42 Running";
+        let status = RunStatus::parse(response).unwrap();
+        assert_eq!(status.name, "TestRun");
+        assert_eq!(status.stage, 2);
+        assert_eq!(status.num_stages, 5);
+        assert_eq!(status.cycle, 3);
+        assert_eq!(status.num_cycles, 10);
+        assert_eq!(status.step, 1);
+        assert_eq!(status.point, 42);
+        assert_eq!(status.state, "Running");
+    }
+
+    #[test]
+    fn test_run_status_parse_defaults() {
+        let response = b"- -1 -1 -1 -1 -1 -1 Idle";
+        let status = RunStatus::parse(response).unwrap();
+        assert_eq!(status.name, "-");
+        assert_eq!(status.stage, -1);
+        assert_eq!(status.state, "Idle");
+    }
+
+    #[test]
+    fn test_run_status_parse_prerun_stage() {
+        let response = b"MyRun PRERUN 5 1 10 1 0 Running";
+        let status = RunStatus::parse(response).unwrap();
+        assert_eq!(status.stage, 0);
+    }
+
+    #[test]
+    fn test_run_status_parse_postrun_stage() {
+        let response = b"MyRun POSTRun 5 1 10 1 0 Complete";
+        let status = RunStatus::parse(response).unwrap();
+        assert_eq!(status.stage, 0);
+    }
+
+    #[test]
+    fn test_run_status_parse_xml_tag_name() {
+        let response = b"\"<run.name>Test Run</run.name>\" 1 3 1 10 1 5 Running";
+        let status = RunStatus::parse(response).unwrap();
+        assert_eq!(status.name, "Test Run");
+    }
+
+    #[test]
+    fn test_run_status_parse_quoted_name() {
+        let response = b"\"My Experiment\" 1 3 1 10 1 5 Running";
+        let status = RunStatus::parse(response).unwrap();
+        assert_eq!(status.name, "My Experiment");
+    }
+
+    #[test]
+    fn test_run_status_parse_too_few_tokens() {
+        let response = b"TestRun 2 5";
+        assert!(RunStatus::parse(response).is_err());
+    }
+
+    #[test]
+    fn test_run_status_command() {
+        assert!(RunStatus::COMMAND.starts_with(b"RET "));
+    }
+
+    // ---- MachineStatus tests ----
+
+    #[test]
+    fn test_machine_status_parse_basic() {
+        let response = br#"Closed On off "25.0 25.1 25.2 25.3 25.4 25.5" "24.9 25.0 25.1 25.2 25.3 25.4" 30.5 "-Zone1=25.0 -Zone2=25.0 -Fan1=44.0 -Cover=30.0" "-Zone1=True -Zone2=True -Fan1=True -Cover=True" 35.2"#;
+        let status = MachineStatus::parse(response).unwrap();
+        assert_eq!(status.drawer, "Closed");
+        assert_eq!(status.cover, "On");
+        assert_eq!(status.lamp_status, "off");
+        assert_eq!(status.sample_temperatures.len(), 6);
+        assert!((status.sample_temperatures[0] - 25.0).abs() < 0.01);
+        assert_eq!(status.block_temperatures.len(), 6);
+        assert!((status.cover_temperature - 30.5).abs() < 0.01);
+        assert_eq!(status.target_temperatures.len(), 4);
+        assert!((status.target_temperatures["Zone1"] - 25.0).abs() < 0.01);
+        assert!((status.target_temperatures["Fan1"] - 44.0).abs() < 0.01);
+        assert_eq!(status.target_controlled.len(), 4);
+        assert_eq!(status.target_controlled["Zone1"], true);
+        assert_eq!(status.target_controlled["Cover"], true);
+        assert!((status.led_temperature - 35.2).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_machine_status_parse_too_few_tokens() {
+        let response = b"Closed On off";
+        assert!(MachineStatus::parse(response).is_err());
+    }
+
+    #[test]
+    fn test_machine_status_command() {
+        assert!(MachineStatus::COMMAND.starts_with(b"RET "));
     }
 }

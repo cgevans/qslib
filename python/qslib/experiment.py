@@ -42,13 +42,13 @@ import pandas as pd
 import toml as toml
 
 from qslib.plate_setup import PlateSetup, _SampleWellsView
-from qslib.scpi_commands import AccessLevel, SCPICommand
+from qslib.scpi_commands import AccessLevel
 
 from ._analysis_protocol_text import _ANALYSIS_PROTOCOL_TEXT
 from ._util import _nowuuid, _pp_seqsliceint, _set_or_create, cached_method
-from ._qslib import RunLogInfo
+from ._qslib import RunLogInfo, EdsArchive
 from .processors import PolarsProcessor, polars_process
-from .base import RunStatus
+from ._qslib import RunStatus
 from .data import (
     FilterSet,
     _filterdata_df_v2,
@@ -1296,6 +1296,26 @@ table, th, td {{
 
         # self._update_from_data()
 
+        self._resolve_protocol()
+
+    def _update_from_files_after_eds(self) -> None:
+        """Update from files after EdsArchive has already parsed metadata."""
+        p = self.root_dir
+        if self.spec_major_version == 1:
+            if (p / "tcprotocol.xml").is_file():
+                self._update_from_tcprotocol_xml()
+            if (p / "plate_setup.xml").is_file():
+                self._update_from_platesetup_xml()
+            if (p / "messages.log").is_file():
+                self._update_from_log()
+        elif self.spec_major_version == 2:
+            if (p / "run" / "messages.log").is_file():
+                self._update_from_log()
+
+        self._resolve_protocol()
+
+    def _resolve_protocol(self) -> None:
+        """Choose the best protocol source."""
         if self._protocol_from_xml:
             self.protocol = self._protocol_from_xml
         if self._protocol_from_log:
@@ -1321,17 +1341,40 @@ table, th, td {{
         """
         exp = cls(_create_xml=False)
 
-        z = zipfile.ZipFile(file)
+        if isinstance(file, (str, os.PathLike)):
+            eds = EdsArchive.from_path(str(file))
+        else:
+            data = file.read()
+            eds = EdsArchive.from_bytes(data)
 
-        try:
-            manifest_info = _get_manifest_info(z, checkinfo=True)
-            exp.spec_major_version = int(manifest_info["Specification-Version"][0])
-        except ValueError:
-            exp.spec_major_version = 1
+        # Use EdsArchive's temp directory instead of creating our own
+        exp._eds_archive = eds
+        exp._dir_base = Path(eds.base_dir)
+        exp._dir_eds = exp._dir_base / "apldbio" / "sds"
+        exp.spec_major_version = eds.spec_major_version
+        exp.spec_version = eds.spec_version
 
-        _safe_extractall(z, exp._dir_base)
+        # Apply parsed metadata from Rust
+        exp.name = eds.name or _nowuuid()
+        exp.user = eds.operator
+        exp.runstate = eds.run_state or "UNKNOWN"
+        exp.writesoftware = eds.write_software or "UNKNOWN"
+        exp.plate_type = eds.plate_type
+        exp._plate_type_id = eds.plate_type_id
 
-        exp._update_from_files()
+        if eds.created_time_ms is not None:
+            exp.createdtime = datetime.fromtimestamp(eds.created_time_ms / 1000.0, tz=timezone.utc)
+        else:
+            exp.createdtime = datetime.now(tz=timezone.utc)
+        exp.modifiedtime = exp.createdtime
+
+        if eds.run_start_time_ms is not None:
+            exp.runstarttime = datetime.fromtimestamp(eds.run_start_time_ms / 1000.0, tz=timezone.utc)
+        if eds.run_end_time_ms is not None:
+            exp.runendtime = datetime.fromtimestamp(eds.run_end_time_ms / 1000.0, tz=timezone.utc)
+
+        # Still need to parse protocol, plate_setup, and log from files
+        exp._update_from_files_after_eds()
 
         return exp
 
@@ -1623,9 +1666,7 @@ table, th, td {{
                 x.text is not None
             ):
                 try:
-                    self._protocol_from_qslib = Protocol.from_scpicommand(
-                        SCPICommand.from_string(x.text)
-                    )
+                    self._protocol_from_qslib = Protocol.from_scpi_string(x.text)
                 except ValueError:
                     self._protocol_from_qslib = None
             else:
@@ -1712,6 +1753,33 @@ table, th, td {{
         return reconstruct_filterdata(qdc, uniformity, background, puredye)
 
     def filter_data_polars_lazy(self) -> 'pl.LazyFrame':
+        if self.spec_major_version == 2:
+            return self._filter_data_polars_lazy_v2()
+        return self._filter_data_polars_lazy_v1()
+
+    def _filter_data_polars_lazy_v2(self) -> 'pl.LazyFrame':
+        from ._qslib import parse_filterdata_v2_json
+
+        fdp = os.path.join(self._dir_base, "run/filter_data.json")
+        if not os.path.isfile(fdp):
+            raise DataNotAvailableError("filter_data", "Filter data file not found")
+        if self.plate_type is None:
+            raise ValueError("Plate type must be set before loading filter data.")
+        with open(fdp, "r") as f:
+            json_str = f.read()
+        d = parse_filterdata_v2_json(json_str, self.plate_type).lazy()
+
+        d = d.with_columns(
+            pl.col("zone").cast(pl.Int64),
+        )
+
+        if self.plate_setup:
+            d = d.join(
+                self.plate_setup.to_polars_by_well().lazy().select("well", pl.col("name").alias("sample")),
+                on="well", how="left")
+        return d
+
+    def _filter_data_polars_lazy_v1(self) -> 'pl.LazyFrame':
         fdc = self._get_filterdata_collection_v1()
         d = fdc.to_polars().lazy()
 
@@ -2087,14 +2155,14 @@ table, th, td {{
                 )
                 if rp:
                     pname_u = rp["protoname"].decode("utf-8")
-                    prot = Protocol.from_scpicommand(
-                        SCPICommand.from_string(f"PROT {pname_u} {prot_u}")
+                    prot = Protocol.from_scpi_string(
+                        f"PROT {pname_u} {prot_u}"
                     )
                     if rp[1]:
                         prot.volume = float(rp["sv"])
                 else:
-                    prot = Protocol.from_scpicommand(
-                        SCPICommand.from_string(f"PROT unknown_name {prot_u}")
+                    prot = Protocol.from_scpi_string(
+                        f"PROT unknown_name {prot_u}"
                     )
                 self._protocol_from_log = prot
 
@@ -2107,9 +2175,7 @@ table, th, td {{
                     prot_text = mm[1].decode("utf-8").replace("\nc:", "\n")
                     # Remove extraneous blank lines that can cause parsing failures
                     prot_text = re.sub(r'\n\s*\n', '\n', prot_text)
-                    newprot = Protocol.from_scpicommand(
-                        SCPICommand.from_string(prot_text)
-                    )
+                    newprot = Protocol.from_scpi_string(prot_text)
                     # if newprot.name == prot.name:
                     self._protocol_from_log = newprot
 

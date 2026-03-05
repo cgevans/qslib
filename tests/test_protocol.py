@@ -403,3 +403,71 @@ def test_durformat_stage_integration():
     stage_4day = Stage([step_4day], repeat=1)
     info_4day = stage_4day.info_str(1)
     assert "total duration 4d" in info_4day
+
+
+def test_rust_serialization_roundtrip():
+    """Test that the Rust serialization path produces a valid protocol string
+    that can be parsed back into an equivalent protocol."""
+    import numpy as np
+    temperatures = list(np.linspace(51.2, 49.4, num=6))
+    prot = Protocol(
+        name="test_rust",
+        stages=[
+            Stage(Step(5 * 60, 80)),
+            Stage(Step(60, 53, collect=True, filters=["x1-m4", "x3-m5"]), repeat=5),
+            Stage(Step(20 * 60, temperatures, collect=True, filters=["x1-m4", "x3-m5"]), repeat=10),
+        ],
+        filters=["x1-m4", "x3-m5"],
+        volume=30,
+    )
+
+    # Get Rust serialization
+    rust_str = prot.to_scpi_string_rust()
+    assert rust_str is not None, "Rust serialization should succeed"
+
+    # Parse it back
+    prot_back = Protocol.from_scpicommand(SCPICommand.from_string(rust_str))
+
+    # Verify key properties
+    assert prot_back.name == "test_rust"
+    assert prot_back.volume == 30.0
+    assert len(prot_back.stages) == 3
+    assert prot_back.stages[0].repeat == 1
+    assert prot_back.stages[1].repeat == 5
+    assert prot_back.stages[2].repeat == 10
+
+
+def test_rust_serialization_default_filters():
+    """Test that the Rust serialization correctly handles default filters."""
+    prot = Protocol(
+        name="test_df",
+        stages=[
+            Stage(Step(60, 50, collect=True), repeat=3),
+        ],
+        filters=["x1-m4"],
+        volume=50,
+    )
+
+    rust_str = prot.to_scpi_string_rust()
+    assert rust_str is not None
+    assert "qslib:default_filters" in rust_str
+
+    # Round-trip
+    prot_back = Protocol.from_scpicommand(SCPICommand.from_string(rust_str))
+    assert len(prot_back.stages) == 1
+    assert prot_back.stages[0].repeat == 3
+
+
+def test_rust_protocol_from_scpi_string():
+    """Test creating a Rust Protocol from an SCPI string."""
+    from qslib._qslib import Protocol as RustProtocol
+    rust_prot = RustProtocol.from_scpi_string(PROTSTRING)
+    assert rust_prot.name == "testproto"
+    assert rust_prot.volume == 30.0
+    assert rust_prot.num_stages == 6
+
+    # Serialize and re-parse
+    s = rust_prot.to_scpi_string()
+    rust_prot2 = RustProtocol.from_scpi_string(s)
+    assert rust_prot2.name == "testproto"
+    assert rust_prot2.num_stages == 6

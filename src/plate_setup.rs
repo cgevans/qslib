@@ -114,6 +114,8 @@ pub struct Sample {
     pub description: Option<String>,
     #[serde(rename = "CustomProperty")]
     custom_properties: Vec<CustomProperty>,
+    #[serde(skip)]
+    pub wells: Vec<String>,
 }
 
 impl Sample {
@@ -123,6 +125,7 @@ impl Sample {
             color: Color::rgb(100, 100, 100),
             description: None,
             custom_properties: vec![],
+            wells: vec![],
         }
     }
 
@@ -166,8 +169,8 @@ impl Sample {
 #[pymethods]
 impl Sample {
     #[new]
-    #[pyo3(signature = (name, uuid=None, color=None, properties=None, description=None))]
-    fn new_py(name: String, uuid: Option<String>, color: Option<(u8, u8, u8, u8)>, properties: Option<HashMap<String, String>>, description: Option<String>) -> Self {
+    #[pyo3(signature = (name, uuid=None, color=None, properties=None, description=None, wells=None))]
+    fn new_py(name: String, uuid: Option<String>, color: Option<(u8, u8, u8, u8)>, properties: Option<HashMap<String, String>>, description: Option<String>, wells: Option<&Bound<'_, pyo3::PyAny>>) -> PyResult<Self> {
         let mut sample = Self::new(name);
         if let Some(uuid) = uuid {
             sample.set_property("SP_UUID", uuid);
@@ -187,7 +190,16 @@ impl Sample {
         if let Some(description) = description {
             sample.description = Some(description);
         }
-        sample
+        if let Some(wells_obj) = wells {
+            if let Ok(s) = wells_obj.extract::<String>() {
+                sample.wells = vec![s];
+            } else if let Ok(v) = wells_obj.extract::<Vec<String>>() {
+                sample.wells = v;
+            } else {
+                return Err(pyo3::exceptions::PyTypeError::new_err("wells must be a string or list of strings"));
+            }
+        }
+        Ok(sample)
     }
 
     #[getter]
@@ -200,24 +212,31 @@ impl Sample {
         self.name = name;
     }
 
+    /// Get color as RGBA tuple (matching Python Sample API)
     #[getter]
-    fn color(&self) -> String {
-        self.color.to_hex()
+    fn color(&self) -> (u8, u8, u8, u8) {
+        self.color.to_rgba()
     }
 
     #[setter]
-    fn set_color(&mut self, color: String) -> pyo3::PyResult<()> {
+    fn set_color(&mut self, color: (u8, u8, u8, u8)) {
+        self.color = Color::rgba(color.0, color.1, color.2, color.3);
+    }
+
+    /// Get color as hex string (#rrggbbaa)
+    #[getter]
+    fn color_hex(&self) -> String {
+        self.color.to_hex()
+    }
+
+    /// Set color from hex string
+    #[pyo3(name = "set_color_hex")]
+    fn py_set_color_hex(&mut self, color: String) -> pyo3::PyResult<()> {
         self.color = Color::try_from(color).map_err(|e| pyo3::exceptions::PyValueError::new_err(e))?;
         Ok(())
     }
 
-    /// Set color from RGBA tuple
-    #[pyo3(name = "set_color_rgba")]
-    fn py_set_color_rgba(&mut self, r: u8, g: u8, b: u8, a: u8) {
-        self.color = Color::rgba(r, g, b, a);
-    }
-
-    /// Get color as RGBA tuple
+    /// Get color as RGBA tuple (alias for color getter)
     #[getter]
     fn color_rgba(&self) -> (u8, u8, u8, u8) {
         self.color.to_rgba()
@@ -225,12 +244,29 @@ impl Sample {
 
     #[getter]
     fn description(&self) -> Option<String> {
-        self.description.clone()
+        self.description.as_deref().filter(|s| !s.is_empty()).map(|s| s.to_string())
     }
 
     #[setter]
     fn set_description(&mut self, description: Option<String>) {
         self.description = description;
+    }
+
+    #[getter]
+    fn wells(&self) -> Vec<String> {
+        self.wells.clone()
+    }
+
+    #[setter]
+    fn set_wells(&mut self, wells: &Bound<'_, pyo3::PyAny>) -> PyResult<()> {
+        if let Ok(s) = wells.extract::<String>() {
+            self.wells = vec![s];
+        } else if let Ok(v) = wells.extract::<Vec<String>>() {
+            self.wells = v;
+        } else {
+            return Err(pyo3::exceptions::PyTypeError::new_err("wells must be a string or list of strings"));
+        }
+        Ok(())
     }
 
     #[getter]
@@ -271,6 +307,7 @@ impl Sample {
         self.name == other.name
         && self.color == other.color
         && self.description == other.description
+        && self.wells == other.wells
         && self.custom_properties.iter().filter(|prop| prop.property != "SP_UUID").eq(
             other.custom_properties.iter().filter(|prop| prop.property != "SP_UUID")
         )
@@ -291,6 +328,7 @@ impl Sample {
             properties.set_item(&prop.property, &prop.value).unwrap();
         }
         record.set_item("properties", properties).unwrap();
+        record.set_item("wells", self.wells.clone()).unwrap();
 
         record.into()
     }
@@ -466,6 +504,17 @@ impl PlateSetup {
             }
         }
         sample_wells
+    }
+
+    /// Get samples with wells populated directly in each Sample struct.
+    pub fn get_samples_with_wells(&self) -> HashMap<String, Sample> {
+        self.get_sample_wells()
+            .into_iter()
+            .map(|(name, (mut sample, wells))| {
+                sample.wells = wells;
+                (name, sample)
+            })
+            .collect()
     }
 
     /// Set samples and wells from a HashMap of sample name -> (Sample, well names).
@@ -782,6 +831,25 @@ impl PlateSetup {
 
     fn get_samples_and_wells(&self) -> std::collections::HashMap<String, (Sample, Vec<String>)> {
         self.get_sample_wells()
+    }
+
+    /// Get samples with wells populated directly in each Sample.
+    #[pyo3(name = "get_samples_with_wells")]
+    fn py_get_samples_with_wells(&self) -> std::collections::HashMap<String, Sample> {
+        self.get_samples_with_wells()
+    }
+
+    /// Set samples from a dict of name -> Sample (wells are taken from each Sample's wells field).
+    #[pyo3(name = "set_samples")]
+    fn py_set_samples(&mut self, samples: std::collections::HashMap<String, Sample>) {
+        let converted: HashMap<String, (Sample, Vec<String>)> = samples
+            .into_iter()
+            .map(|(name, sample)| {
+                let wells = sample.wells.clone();
+                (name, (sample, wells))
+            })
+            .collect();
+        self.set_samples_and_wells(converted);
     }
 
     #[pyo3(name = "set_samples_and_wells")]

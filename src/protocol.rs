@@ -539,7 +539,44 @@ fn extract_commands_from_value(value: &Value, parent_cmd: Option<&Command>) -> R
                     value_type: "xml string".to_string(),
                     protocol_string: protocol_string.clone(),
                 })?;
-            
+
+            // Pre-process: convert "# qslib:default_filters" comments into
+            // HACFILT options that survive comment stripping.
+            // This comment marks that the HACFILT uses protocol-level default filters.
+            let mut preprocessed = String::with_capacity(s.len());
+            for line in s.split('\n') {
+                let trimmed = line.trim();
+                let upper = trimmed.to_uppercase();
+                if (upper.starts_with("HACFILT") || upper.starts_with("HOLDANDCOLLECTFILT"))
+                    && line.contains("# qslib:default_filters")
+                {
+                    // Find the # position and keep only the command part
+                    if let Some(hash_pos) = line.find('#') {
+                        let before = &line[..hash_pos];
+                        let before_trimmed = before.trim_start();
+                        // Insert -qslibdf=1 option after command name
+                        if let Some(space_pos) = before_trimmed.find(|c: char| c.is_whitespace()) {
+                            let indent = &line[..line.len() - line.trim_start().len()];
+                            let cmd_name = &before_trimmed[..space_pos];
+                            let args = before_trimmed[space_pos..].trim_end();
+                            preprocessed.push_str(&format!("{}{} -qslibdf=1 {}", indent, cmd_name, args));
+                        } else {
+                            preprocessed.push_str(before.trim_end());
+                        }
+                    } else {
+                        preprocessed.push_str(line);
+                    }
+                } else {
+                    preprocessed.push_str(line);
+                }
+                preprocessed.push('\n');
+            }
+            // Remove trailing extra newline added by the loop
+            if preprocessed.ends_with('\n') && !s.ends_with('\n') {
+                preprocessed.pop();
+            }
+            s = preprocessed;
+
             // Strip inline comments from the string
             // Comments start with # and continue to end of line, but not if inside quotes or XML tags
             let mut result = String::with_capacity(s.len());
@@ -547,7 +584,7 @@ fn extract_commands_from_value(value: &Value, parent_cmd: Option<&Command>) -> R
             let mut i = 0;
             let mut in_quotes = false;
             let mut in_xml_tag = false;
-            
+
             while i < bytes.len() {
                 let b = bytes[i];
                 if b == b'"' && (i == 0 || bytes[i-1] != b'\\') {
@@ -844,6 +881,7 @@ impl ProtoCommand for Step {
                     .collect();
                 let mut filters = hf_filters.map_err(|e| parse_error_to_protocol_error(e, cmd))?;
                 let mut default_filters = Vec::new();
+                let has_default_marker = nested_commands[1].options.get("qslibdf").is_some();
 
                 let h_time = extract_i64(&nested_commands[2].args[0], cmd)?;
                 let h_increment = get_option_i64(&nested_commands[2].options, "increment", 0, cmd)?;
@@ -854,7 +892,7 @@ impl ProtoCommand for Step {
                 let h_pcr = get_option_bool(&nested_commands[2].options, "pcr", false, cmd)?;
 
                 let mut collect = !filters.is_empty();
-                if filters.is_empty() && !default_filters.is_empty() {
+                if has_default_marker && !filters.is_empty() {
                     default_filters = filters.clone();
                     filters = Vec::new();
                     collect = true;
@@ -1011,6 +1049,7 @@ impl Stage {
                             .collect();
                         let mut filters = hf_filters?;
                         let mut default_filters = Vec::new();
+                        let has_default_marker = nested_step_commands[1].options.get("qslibdf").is_some();
 
                         let h_time = extract_i64(&nested_step_commands[2].args[0], cmd)?;
                         let h_increment = get_option_i64(&nested_step_commands[2].options, "increment", 0, cmd)?;
@@ -1021,7 +1060,7 @@ impl Stage {
                         let h_pcr = get_option_bool(&nested_step_commands[2].options, "pcr", false, cmd)?;
 
                         let mut collect = !filters.is_empty();
-                        if filters.is_empty() && !default_filters.is_empty() {
+                        if has_default_marker && !filters.is_empty() {
                             default_filters = filters.clone();
                             filters = Vec::new();
                             collect = true;
@@ -1420,6 +1459,268 @@ impl Protocol {
     }
 }
 
+// =====================================================================
+// SCPI Serialization
+// =====================================================================
+
+/// Format a f64 as an integer string if it's a whole number, otherwise as float.
+fn format_scpi_number(v: f64) -> String {
+    if v.is_finite() && v == v.floor() && v.abs() < (i64::MAX as f64) {
+        format!("{}", v as i64)
+    } else {
+        format!("{}", v)
+    }
+}
+
+/// Indent every non-empty line of text with the given prefix.
+/// Matches Python's textwrap.indent behavior.
+fn indent_text(text: &str, prefix: &str) -> String {
+    text.split('\n')
+        .map(|line| {
+            if line.trim().is_empty() {
+                line.to_string()
+            } else {
+                format!("{}{}", prefix, line)
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+impl Ramp {
+    pub fn to_scpi_string(&self) -> String {
+        let mut parts = vec!["RAMP".to_string()];
+        if self.increment != 0.0 {
+            parts.push(format!("-increment={}", format_scpi_number(self.increment)));
+        }
+        if self.incrementcycle != 2 {
+            parts.push(format!("-incrementcycle={}", self.incrementcycle));
+        }
+        if self.incrementstep != 2 {
+            parts.push(format!("-incrementstep={}", self.incrementstep));
+        }
+        if self.rate != 100.0 {
+            parts.push(format!("-rate={}", format_scpi_number(self.rate)));
+        }
+        if let Some(cover) = self.cover {
+            parts.push(format!("-cover={}", format_scpi_number(cover)));
+        }
+        for &t in &self.temperature {
+            parts.push(format_scpi_number(t));
+        }
+        parts.join(" ") + "\n"
+    }
+}
+
+impl Hold {
+    pub fn to_scpi_string(&self) -> String {
+        let mut parts = vec!["HOLD".to_string()];
+        if self.increment != 0 {
+            parts.push(format!("-increment={}", self.increment));
+        }
+        if self.incrementcycle != 2 {
+            parts.push(format!("-incrementcycle={}", self.incrementcycle));
+        }
+        if self.incrementstep != 2 {
+            parts.push(format!("-incrementstep={}", self.incrementstep));
+        }
+        match self.time {
+            Some(t) => parts.push(format!("{}", t)),
+            None => parts.push(String::new()),
+        }
+        parts.join(" ") + "\n"
+    }
+}
+
+impl HoldAndCollect {
+    pub fn to_scpi_string(&self) -> String {
+        let mut parts = vec!["HOLDANDCOLLECT".to_string()];
+        if self.increment != 0 {
+            parts.push(format!("-increment={}", self.increment));
+        }
+        if self.incrementcycle != 2 {
+            parts.push(format!("-incrementcycle={}", self.incrementcycle));
+        }
+        if self.incrementstep != 2 {
+            parts.push(format!("-incrementstep={}", self.incrementstep));
+        }
+        parts.push(format!("-tiff={}", if self.tiff { "True" } else { "False" }));
+        parts.push(format!("-quant={}", if self.quant { "True" } else { "False" }));
+        parts.push(format!("-pcr={}", if self.pcr { "True" } else { "False" }));
+        parts.push(format!("{}", self.time));
+        parts.join(" ") + "\n"
+    }
+}
+
+impl HACFILT {
+    pub fn to_scpi_string(&self) -> String {
+        let filters = if self.filters.is_empty() {
+            &self.default_filters
+        } else {
+            &self.filters
+        };
+        let mut parts = vec!["HACFILT".to_string()];
+        for f in filters {
+            parts.push(f.clone());
+        }
+        let base = parts.join(" ");
+        if self.filters.is_empty() && !self.default_filters.is_empty() {
+            format!("{} # qslib:default_filters\n", base)
+        } else {
+            format!("{}\n", base)
+        }
+    }
+}
+
+impl Step {
+    /// Serialize this Step as an SCPI command string.
+    ///
+    /// `step_index` is the 1-based index within the stage.
+    /// `default_filters` are the protocol-level default filters.
+    pub fn to_scpi_string(&self, step_index: i64, default_filters: &[String]) -> String {
+        let mut body = String::new();
+
+        // Build Ramp
+        let ramp = Ramp {
+            temperature: self.temperature.clone(),
+            increment: self.temp_increment,
+            incrementcycle: self.temp_incrementcycle,
+            incrementstep: self.temp_incrementpoint.unwrap_or(self.repeat + 1),
+            rate: 100.0,
+            cover: None,
+        };
+        body.push_str(&ramp.to_scpi_string());
+
+        if self.collect == Some(true) {
+            // HACFILT
+            let use_default = self.filters.is_empty();
+            let hacfilt = HACFILT {
+                filters: if use_default { vec![] } else { self.filters.clone() },
+                default_filters: if use_default { default_filters.to_vec() } else { vec![] },
+            };
+            body.push_str(&hacfilt.to_scpi_string());
+
+            // HoldAndCollect
+            let hac = HoldAndCollect {
+                time: self.time,
+                increment: self.time_increment,
+                incrementcycle: self.time_incrementcycle,
+                incrementstep: self.time_incrementpoint.unwrap_or(self.repeat + 1),
+                tiff: self.tiff,
+                quant: self.quant,
+                pcr: self.pcr,
+            };
+            body.push_str(&hac.to_scpi_string());
+        } else {
+            // Hold
+            let hold = Hold {
+                time: Some(self.time),
+                increment: self.time_increment,
+                incrementcycle: self.time_incrementcycle,
+                incrementstep: self.time_incrementpoint.unwrap_or(self.repeat + 1),
+            };
+            body.push_str(&hold.to_scpi_string());
+        }
+
+        // Build STEP command
+        let mut parts = vec!["STEP".to_string()];
+        if self.repeat != 1 {
+            parts.push(format!("-repeat={}", self.repeat));
+        }
+        parts.push(format!("{}", step_index));
+        // Wrap body in <multiline.step>
+        let wrapped = format!(
+            "<multiline.step>\n{}</multiline.step>",
+            indent_text(&body, "\t")
+        );
+        parts.push(wrapped);
+        parts.join(" ") + "\n"
+    }
+}
+
+impl Stage {
+    /// Serialize this Stage as an SCPI command string.
+    ///
+    /// `stage_index` is the 1-based index within the protocol.
+    /// `default_filters` are the protocol-level default filters.
+    pub fn to_scpi_string(&self, stage_index: i64, default_filters: &[String]) -> String {
+        let label = self.label.clone()
+            .unwrap_or_else(|| format!("STAGE_{}", stage_index));
+
+        let mut step_strs = String::new();
+        for (i, step) in self.steps.iter().enumerate() {
+            step_strs.push_str(&step.to_scpi_string((i + 1) as i64, default_filters));
+        }
+
+        let mut parts = vec!["STAGE".to_string()];
+        if self.repeat != 1 {
+            parts.push(format!("-repeat={}", self.repeat));
+        }
+        parts.push(format!("{}", stage_index));
+        parts.push(label);
+        let wrapped = format!(
+            "<multiline.stage>\n{}</multiline.stage>",
+            indent_text(&step_strs, "\t")
+        );
+        parts.push(wrapped);
+        parts.join(" ") + "\n"
+    }
+}
+
+impl Protocol {
+    /// Serialize this Protocol as a full SCPI command string.
+    pub fn to_scpi_string(&self) -> String {
+        let mut parts = vec!["PROTOCOL".to_string()];
+        parts.push(format!("-volume={}", format_scpi_number(self.volume)));
+        parts.push(format!("-runmode={}", self.runmode));
+        parts.push(self.name.clone());
+
+        let mut stages_str = String::new();
+
+        // Prerun
+        if !self.prerun.is_empty() {
+            let mut prerun_body = String::new();
+            for cmd in &self.prerun {
+                let mut bytes = Vec::new();
+                cmd.write_bytes(&mut bytes).unwrap();
+                prerun_body.push_str(&String::from_utf8_lossy(&bytes));
+                prerun_body.push('\n');
+            }
+            stages_str.push_str(&format!(
+                "PRERUN <multiline.prerun>\n{}</multiline.prerun>\n",
+                indent_text(&prerun_body, "\t")
+            ));
+        }
+
+        for (i, stage) in self.stages.iter().enumerate() {
+            let stage_index = stage.index.unwrap_or((i + 1) as i64);
+            stages_str.push_str(&stage.to_scpi_string(stage_index, &self.filters));
+        }
+
+        // Postrun
+        if !self.postrun.is_empty() {
+            let mut postrun_body = String::new();
+            for cmd in &self.postrun {
+                let mut bytes = Vec::new();
+                cmd.write_bytes(&mut bytes).unwrap();
+                postrun_body.push_str(&String::from_utf8_lossy(&bytes));
+                postrun_body.push('\n');
+            }
+            stages_str.push_str(&format!(
+                "POSTRUN <multiline.postrun>\n{}</multiline.postrun>\n",
+                indent_text(&postrun_body, "\t")
+            ));
+        }
+
+        let wrapped = format!(
+            "<multiline.protocol>\n{}</multiline.protocol>",
+            indent_text(&stages_str, "\t")
+        );
+        parts.push(wrapped);
+        parts.join(" ") + "\n"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1704,11 +2005,15 @@ mod tests {
         assert_eq!(step2.temp_increment, -0.3448);
         assert_eq!(step2.time, 20);
         assert_eq!(step2.collect, Some(true));
-        assert_eq!(step2.filters.len(), 1);
-        assert_eq!(step2.filters[0], "m4,x4,quant");
+        // With # qslib:default_filters, step filters are empty; default_filters holds the value
+        assert!(step2.filters.is_empty());
+        assert_eq!(step2.default_filters, vec!["m4,x4,quant"]);
         assert!(step2.quant);
         assert!(!step2.tiff);
         assert!(!step2.pcr);
+
+        // Protocol-level filters should be populated from the consistent default_filters
+        assert_eq!(prot.filters, vec!["m4,x4,quant"]);
 
         // Check third stage
         let stage3 = &prot.stages[2];
@@ -2341,6 +2646,358 @@ mod tests {
     #[test]
     fn test_default_num_zones_constant() {
         assert_eq!(DEFAULT_NUM_ZONES, 6);
+    }
+
+    // =====================================================================
+    // Serialization tests
+    // =====================================================================
+
+    #[test]
+    fn test_ramp_serialization_basic() {
+        let ramp = Ramp {
+            temperature: vec![80.0; 6],
+            increment: 0.0,
+            incrementcycle: 2,
+            incrementstep: 2,
+            rate: 100.0,
+            cover: None,
+        };
+        assert_eq!(ramp.to_scpi_string(), "RAMP 80 80 80 80 80 80\n");
+    }
+
+    #[test]
+    fn test_ramp_serialization_with_options() {
+        let ramp = Ramp {
+            temperature: vec![80.0; 6],
+            increment: -1.0,
+            incrementcycle: 2,
+            incrementstep: 2,
+            rate: 100.0,
+            cover: None,
+        };
+        assert_eq!(ramp.to_scpi_string(), "RAMP -increment=-1 80 80 80 80 80 80\n");
+    }
+
+    #[test]
+    fn test_ramp_serialization_float_temps() {
+        let ramp = Ramp {
+            temperature: vec![51.2, 50.84, 50.48, 50.12, 49.76, 49.4],
+            increment: 0.0,
+            incrementcycle: 2,
+            incrementstep: 2,
+            rate: 100.0,
+            cover: None,
+        };
+        let s = ramp.to_scpi_string();
+        assert!(s.starts_with("RAMP "));
+        assert!(s.contains("51.2"));
+        assert!(s.contains("49.4"));
+    }
+
+    #[test]
+    fn test_hold_serialization_basic() {
+        let hold = Hold {
+            time: Some(300),
+            increment: 0,
+            incrementcycle: 2,
+            incrementstep: 2,
+        };
+        assert_eq!(hold.to_scpi_string(), "HOLD 300\n");
+    }
+
+    #[test]
+    fn test_hold_serialization_with_options() {
+        let hold = Hold {
+            time: Some(60),
+            increment: 5,
+            incrementcycle: 3,
+            incrementstep: 2,
+        };
+        assert_eq!(hold.to_scpi_string(), "HOLD -increment=5 -incrementcycle=3 60\n");
+    }
+
+    #[test]
+    fn test_holdandcollect_serialization() {
+        let hac = HoldAndCollect {
+            time: 120,
+            increment: 0,
+            incrementcycle: 2,
+            incrementstep: 2,
+            tiff: false,
+            quant: true,
+            pcr: false,
+        };
+        assert_eq!(
+            hac.to_scpi_string(),
+            "HOLDANDCOLLECT -tiff=False -quant=True -pcr=False 120\n"
+        );
+    }
+
+    #[test]
+    fn test_hacfilt_serialization() {
+        let hacfilt = HACFILT {
+            filters: vec!["m4,x1,quant".to_string(), "m5,x3,quant".to_string()],
+            default_filters: vec![],
+        };
+        assert_eq!(hacfilt.to_scpi_string(), "HACFILT m4,x1,quant m5,x3,quant\n");
+    }
+
+    #[test]
+    fn test_hacfilt_serialization_default() {
+        let hacfilt = HACFILT {
+            filters: vec![],
+            default_filters: vec!["m4,x4,quant".to_string()],
+        };
+        assert_eq!(
+            hacfilt.to_scpi_string(),
+            "HACFILT m4,x4,quant # qslib:default_filters\n"
+        );
+    }
+
+    #[test]
+    fn test_step_serialization_hold() {
+        let step = Step {
+            time: 300,
+            temperature: vec![80.0; 6],
+            collect: Some(false),
+            temp_increment: 0.0,
+            temp_incrementcycle: 2,
+            temp_incrementpoint: None,
+            time_increment: 0,
+            time_incrementcycle: 2,
+            time_incrementpoint: None,
+            filters: vec![],
+            pcr: false,
+            quant: true,
+            tiff: false,
+            repeat: 1,
+            default_filters: vec![],
+        };
+        let s = step.to_scpi_string(1, &[]);
+        assert!(s.starts_with("STEP 1 <multiline.step>"));
+        assert!(s.contains("RAMP"));
+        assert!(s.contains("HOLD"));
+        assert!(s.contains("300"));
+        assert!(s.contains("</multiline.step>"));
+    }
+
+    #[test]
+    fn test_step_serialization_collect() {
+        let step = Step {
+            time: 120,
+            temperature: vec![53.0; 6],
+            collect: Some(true),
+            temp_increment: 0.0,
+            temp_incrementcycle: 2,
+            temp_incrementpoint: None,
+            time_increment: 0,
+            time_incrementcycle: 2,
+            time_incrementpoint: None,
+            filters: vec!["m4,x1,quant".to_string(), "m5,x3,quant".to_string()],
+            pcr: false,
+            quant: true,
+            tiff: false,
+            repeat: 1,
+            default_filters: vec![],
+        };
+        let s = step.to_scpi_string(1, &[]);
+        assert!(s.contains("RAMP"));
+        assert!(s.contains("HACFILT m4,x1,quant m5,x3,quant"));
+        assert!(s.contains("HOLDANDCOLLECT"));
+        assert!(s.contains("120"));
+    }
+
+    #[test]
+    fn test_protocol_serialization_roundtrip() {
+        // Parse a protocol, serialize it, parse again, check equality
+        let protocol_string = r#"PROTOCOL -volume=50.0 -runmode=standard test_roundtrip <multiline.protocol>
+	STAGE 1 _HOLD_1 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 60 60 60 60 60 60
+			HOLD 60
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=4 2 _PCR_2 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP -increment=-1 60 60 60 60 60 60
+			HACFILT m1,x1,quant m4,x4,quant
+			HOLDANDCOLLECT -tiff=False -quant=True -pcr=False 60
+		</multiline.step>
+	</multiline.stage>
+</multiline.protocol>"#;
+
+        let cmd = Command::try_from(protocol_string).expect("Failed to parse protocol command");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("Failed to parse protocol");
+
+        // Serialize
+        let serialized = protocol.to_scpi_string();
+
+        // Parse again
+        let cmd2 = Command::try_from(serialized.as_str()).expect("Failed to parse re-serialized protocol");
+        let protocol2 = Protocol::from_scpicommand(&cmd2).expect("Failed to parse re-serialized protocol");
+
+        // Compare key fields
+        assert_eq!(protocol.name, protocol2.name);
+        assert_eq!(protocol.volume, protocol2.volume);
+        assert_eq!(protocol.runmode, protocol2.runmode);
+        assert_eq!(protocol.stages.len(), protocol2.stages.len());
+
+        for (s1, s2) in protocol.stages.iter().zip(protocol2.stages.iter()) {
+            assert_eq!(s1.repeat, s2.repeat);
+            assert_eq!(s1.steps.len(), s2.steps.len());
+            for (st1, st2) in s1.steps.iter().zip(s2.steps.iter()) {
+                assert_eq!(st1.time, st2.time);
+                assert_eq!(st1.collect, st2.collect);
+                assert_eq!(st1.filters.len(), st2.filters.len());
+                for (i, (t1, t2)) in st1.temperature.iter().zip(st2.temperature.iter()).enumerate() {
+                    assert!((t1 - t2).abs() < 0.001, "temp[{}]: {} != {}", i, t1, t2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_protocol_serialization_complex_roundtrip() {
+        // Use the PROTSTRING from Python tests
+        let protstring = r#"PROTOCOL -volume=30 -runmode=standard testproto <multiline.protocol>
+	STAGE 1 STAGE_1 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 80 80 80 80 80 80
+			HOLD 300
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=27 2 STAGE_2 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP -increment=-1 80 80 80 80 80 80
+			HOLD 147600
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=5 3 STAGE_3 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 53 53 53 53 53 53
+			HACFILT m4,x1,quant m5,x3,quant
+			HOLDANDCOLLECT -tiff=False -quant=True -pcr=False 120
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=20 4 STAGE_4 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+			HACFILT m4,x1,quant m5,x3,quant
+			HOLDANDCOLLECT -tiff=False -quant=True -pcr=False 64800000
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=20 5 STAGE_5 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+			HACFILT m4,x1,quant m5,x3,quant
+			HOLDANDCOLLECT -tiff=False -quant=True -pcr=False 86400
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=100 6 STAGE_6 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 51.2 50.84 50.480000000000004 50.12 49.76 49.4
+			HACFILT m4,x1,quant m5,x3,quant
+			HOLDANDCOLLECT -tiff=False -quant=True -pcr=False 1200
+		</multiline.step>
+	</multiline.stage>
+</multiline.protocol>
+"#;
+
+        let cmd = Command::try_from(protstring).expect("Failed to parse");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("Failed to parse protocol");
+
+        // Serialize with Rust
+        let serialized = protocol.to_scpi_string();
+
+        // Parse the re-serialized string
+        let cmd2 = Command::try_from(serialized.as_str()).expect("Failed to parse re-serialized");
+        let protocol2 = Protocol::from_scpicommand(&cmd2).expect("Failed to parse re-serialized protocol");
+
+        // Validate round-trip preserves key data
+        assert_eq!(protocol.name, protocol2.name);
+        assert_eq!(protocol.volume, protocol2.volume);
+        assert_eq!(protocol.stages.len(), protocol2.stages.len());
+
+        // Check each stage
+        for (i, (s1, s2)) in protocol.stages.iter().zip(protocol2.stages.iter()).enumerate() {
+            assert_eq!(s1.repeat, s2.repeat, "stage {} repeat", i);
+            assert_eq!(s1.steps.len(), s2.steps.len(), "stage {} steps", i);
+            for (j, (st1, st2)) in s1.steps.iter().zip(s2.steps.iter()).enumerate() {
+                assert_eq!(st1.time, st2.time, "stage {} step {} time", i, j);
+                assert_eq!(st1.collect, st2.collect, "stage {} step {} collect", i, j);
+                assert!((st1.temp_increment - st2.temp_increment).abs() < 0.001,
+                    "stage {} step {} temp_increment: {} != {}", i, j, st1.temp_increment, st2.temp_increment);
+                for (k, (t1, t2)) in st1.temperature.iter().zip(st2.temperature.iter()).enumerate() {
+                    assert!((t1 - t2).abs() < 0.01,
+                        "stage {} step {} temp[{}]: {} != {}", i, j, k, t1, t2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_protocol_default_filters_roundtrip() {
+        // Test that # qslib:default_filters comments are properly round-tripped
+        let protstring = r#"PROTOCOL -volume=50 -runmode=standard test_df <multiline.protocol>
+	STAGE -repeat=30 1 STAGE_1 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 90 90 90 90 90 90
+			HACFILT m4,x4,quant # qslib:default_filters
+			HOLDANDCOLLECT -tiff=False -quant=True -pcr=False 20
+		</multiline.step>
+	</multiline.stage>
+	STAGE -repeat=5 2 STAGE_2 <multiline.stage>
+		STEP 1 <multiline.step>
+			RAMP 80 80 80 80 80 80
+			HACFILT m4,x4,quant # qslib:default_filters
+			HOLDANDCOLLECT -tiff=False -quant=True -pcr=False 60
+		</multiline.step>
+	</multiline.stage>
+</multiline.protocol>"#;
+
+        let cmd = Command::try_from(protstring).expect("Failed to parse");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("Failed to parse protocol");
+
+        // Protocol-level filters should be populated from default_filters
+        assert_eq!(protocol.filters, vec!["m4,x4,quant"]);
+
+        // Steps should have empty filters but non-empty default_filters
+        assert!(protocol.stages[0].steps[0].filters.is_empty());
+        assert_eq!(protocol.stages[0].steps[0].default_filters, vec!["m4,x4,quant"]);
+        assert_eq!(protocol.stages[0].steps[0].collect, Some(true));
+
+        // Serialize and re-parse
+        let serialized = protocol.to_scpi_string();
+        assert!(serialized.contains("qslib:default_filters"));
+
+        let cmd2 = Command::try_from(serialized.as_str()).expect("Failed to parse re-serialized");
+        let protocol2 = Protocol::from_scpicommand(&cmd2).expect("Failed to parse re-serialized protocol");
+
+        assert_eq!(protocol2.filters, vec!["m4,x4,quant"]);
+        assert!(protocol2.stages[0].steps[0].filters.is_empty());
+        assert_eq!(protocol2.stages[0].steps[0].default_filters, vec!["m4,x4,quant"]);
+    }
+
+    #[test]
+    fn test_format_scpi_number() {
+        assert_eq!(format_scpi_number(80.0), "80");
+        assert_eq!(format_scpi_number(51.2), "51.2");
+        assert_eq!(format_scpi_number(-1.0), "-1");
+        assert_eq!(format_scpi_number(0.0), "0");
+        assert_eq!(format_scpi_number(100.5), "100.5");
+    }
+
+    #[test]
+    fn test_indent_text() {
+        assert_eq!(
+            indent_text("RAMP 80\nHOLD 300\n", "\t"),
+            "\tRAMP 80\n\tHOLD 300\n"
+        );
+        // Empty lines should not be indented
+        assert_eq!(
+            indent_text("RAMP 80\n\nHOLD 300\n", "\t"),
+            "\tRAMP 80\n\n\tHOLD 300\n"
+        );
     }
 }
 

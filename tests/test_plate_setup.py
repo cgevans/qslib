@@ -12,10 +12,6 @@ from qslib import PlateSetup
 from qslib.plate_setup import (
     Sample,
     _color_to_str,
-    _color_to_str_int,
-    _process_color_from_str_int,
-    _python_sample_to_rust,
-    _rust_sample_to_python,
 )
 
 
@@ -201,14 +197,12 @@ def test_sample_inequality():
     assert s1 != s2
 
 
-def test_sample_rust_roundtrip():
-    s = Sample("TestSample", color=(10, 20, 30, 255), description="A test")
-    rust_s = _python_sample_to_rust(s)
-    s2 = _rust_sample_to_python(rust_s, ["A1", "A2"])
-    assert s2.name == "TestSample"
-    assert s2.color == (10, 20, 30, 255)
-    assert s2.description == "A test"
-    assert s2.wells == ["A1", "A2"]
+def test_sample_with_wells():
+    s = Sample("TestSample", color=(10, 20, 30, 255), description="A test", wells=["A1", "A2"])
+    assert s.name == "TestSample"
+    assert s.color == (10, 20, 30, 255)
+    assert s.description == "A test"
+    assert s.wells == ["A1", "A2"]
 
 
 def test_sample_to_record():
@@ -220,13 +214,6 @@ def test_sample_to_record():
 
 
 # --- Color helpers ---
-
-
-def test_color_roundtrip():
-    original = (255, 128, 0, 255)
-    s = _color_to_str_int(original)
-    result = _process_color_from_str_int(s)
-    assert result == original
 
 
 def test_color_to_str():
