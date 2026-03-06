@@ -41,251 +41,67 @@ class QSConnection:
         port: int = 7443,
         connection_type: str = "Auto",
         timeout: Optional[int] = 10,
-    ) -> None:
-        """Create a new QSConnection.
+        client_cert_path: Optional[str] = None,
+        client_key_path: Optional[str] = None,
+        server_ca_path: Optional[str] = None,
+        tls_server_name: Optional[str] = None,
+    ) -> None: ...
 
-        Args:
-            host: Hostname or IP address to connect to
-            port: Port number (default: 7443)
-            connection_type: Connection type - "Auto", "SSL", or "TCP" (default: "Auto")
-            timeout: Connection timeout in seconds (default: 10)
+    def run_command(self, command: Union[str, bytes]) -> "MessageResponse": ...
+    def run_command_bytes(self, bytes: bytes) -> "MessageResponse": ...
 
-        Raises:
-            ValueError: If connection_type is invalid or connection fails
-        """
-        ...
+    def subscribe_log(self, topics: List[str]) -> "LogReceiver": ...
+    def connected(self) -> bool: ...
+    def disconnect(self) -> None: ...
 
-    def run_command(self, command: Union[str, bytes]) -> "MessageResponse":
-        """Send a command.
-
-        Args:
-            command: Command string or bytes to send
-
-        Returns:
-            MessageResponse object to get the server's response
-
-        Raises:
-            ValueError: If command is invalid or connection error occurs
-        """
-        ...
-
-    def run_command_bytes(self, bytes: bytes) -> "MessageResponse":
-        """Send a raw bytes command.
-
-        Args:
-            bytes: Raw command bytes to send
-
-        Returns:
-            MessageResponse object to get the server's response
-
-        Raises:
-            ValueError: If command is invalid or connection error occurs
-        """
-        ...
-
-    def subscribe_log(self, topics: List[str]) -> "LogReceiver":
-        """Subscribe to log messages for specified topics.
-
-        Args:
-            topics: List of topic strings to subscribe to
-
-        Returns:
-            LogReceiver object to receive log messages
-
-        Raises:
-            ValueError: If subscription fails
-        """
-        ...
-
-    def connected(self) -> bool:
-        """Check if the connection is still active.
-
-        Returns:
-            True if connected, False otherwise
-        """
-        ...
-
-    def authenticate(self, password: str) -> None:
-        """Authenticate with a password.
-
-        Args:
-            password: Password string
-
-        Raises:
-            CommandError: If authentication fails
-        """
-        ...
-
-    def set_access_level(self, level: str) -> None:
-        """Set access level.
-
-        Args:
-            level: Access level string ("Guest", "Observer", "Controller",
-                   "Administrator", "Full")
-
-        Raises:
-            CommandError: If setting access level fails
-            ValueError: If level is invalid
-        """
-        ...
-
-    def get_running_protocol(self) -> "Protocol":
-        """Get the currently running protocol (parsed by Rust).
-
-        Returns:
-            Protocol object with parsed protocol information
-
-        Raises:
-            CommandError: If no protocol is running or if an error occurs
-        """
-        ...
-
-    def expect_ident(self, ident: Any) -> "MessageResponse":
-        """Wait for a specific message identifier.
-
-        Args:
-            ident: The message identifier to wait for
-
-        Returns:
-            MessageResponse for the expected message
-        """
-        ...
+    def authenticate(self, password: str) -> None: ...
+    def set_access_level(self, level: str) -> None: ...
+    def get_running_protocol(self) -> "Protocol": ...
+    def expect_ident(self, ident: Union[int, str]) -> "MessageResponse": ...
 
 
 class MessageResponse:
     """Response handler for QuantStudio machine commands."""
 
-    def get_response(self) -> str:
-        """Get the response from the machine.
-
-        Returns:
-            Response message from server
-
-        Raises:
-            CommandError: If response is an error
-            UnexpectedMessageResponse: If response type is unexpected
-            DisconnectedBeforeResponse: If connection lost
-        """
-        ...
-
-    def get_response_bytes(self) -> bytes:
-        """Get the response from the machine as bytes.
-
-        Returns:
-            Response message from server as bytes
-
-        Raises:
-            CommandError: If response is an error
-            UnexpectedMessageResponse: If response type is unexpected
-            DisconnectedBeforeResponse: If connection lost
-        """
-        ...
-
-    def __next__(self) -> str:
-        """Get next response from server (alias for get_response)."""
-        ...
-
-    def get_ack(self) -> None:
-        """Get acknowledgment from server.
-
-        Raises:
-            CommandError: If response is an error
-            UnexpectedMessageResponse: If response is not an acknowledgment
-            DisconnectedBeforeResponse: If connection lost
-        """
-        ...
-
-    def get_response_with_timeout(self, timeout: int) -> str:
-        """Get response from server with timeout.
-
-        Args:
-            timeout: Timeout in seconds
-
-        Returns:
-            Response message from server
-
-        Raises:
-            TimeoutError: If timeout occurs
-            CommandError: If response is an error
-        """
-        ...
+    def get_response(self) -> str: ...
+    def get_response_bytes(self) -> bytes: ...
+    def get_ack(self) -> None: ...
+    def get_response_with_timeout(self, timeout: int) -> str: ...
 
 
 class LogReceiver:
     """Receiver for subscribed log messages."""
 
-    def __next__(self) -> Any:
-        """Get next log message.
-
-        Returns:
-            LogMessage object with topic and message attributes
-
-        Raises:
-            ValueError: If no message available
-        """
-        ...
-
-    def next(self) -> Any:
-        """Get next log message (alias for __next__)."""
-        ...
+    def __next__(self) -> "LogMessage": ...
+    def next(self) -> "LogMessage": ...
 
 
-class Protocol:
-    """Parsed protocol from QuantStudio machine (Rust implementation)."""
+class LogMessage:
+    """Log message from QuantStudio machine."""
 
-    @property
-    def name(self) -> str:
-        """Protocol name."""
-        ...
-
-    @property
-    def volume(self) -> float:
-        """Sample volume in microliters."""
-        ...
-
-    @property
-    def runmode(self) -> str:
-        """Run mode string."""
-        ...
-
-    @property
-    def stages(self) -> int:
-        """Number of stages in the protocol."""
-        ...
+    topic: str
+    timestamp: Optional[float]
+    message: str
 
     def __str__(self) -> str: ...
-    def __repr__(self) -> str: ...
+    def get_message(self) -> str: ...
+    def get_topic(self) -> str: ...
+    def get_timestamp(self) -> Optional[float]: ...
 
 
+# Parser classes
 class Command:
     """SCPI command builder."""
 
-    def __init__(self, command: str) -> None:
-        """Create a new command.
+    command: bytes
+    options: Dict[str, Any]
+    args: List[Any]
 
-        Args:
-            command: The command string (e.g., "SYST:STAT?")
-        """
-        ...
-
-    def to_string(self) -> str:
-        """Convert command to string representation."""
-        ...
+    def __init__(self, command: str) -> None: ...
+    def to_string(self) -> str: ...
 
     @staticmethod
-    def from_string(s: str) -> "Command":
-        """Parse a command from string.
-
-        Args:
-            s: Command string to parse
-
-        Returns:
-            Parsed Command object
-
-        Raises:
-            ValueError: If parsing fails
-        """
-        ...
+    def from_string(s: str) -> "Command": ...
 
     def __str__(self) -> str: ...
     def __repr__(self) -> str: ...
@@ -294,137 +110,451 @@ class Command:
 class OkResponse:
     """Parsed OK response from QuantStudio machine."""
 
-    options: Dict[str, Any]
-    """Options dictionary from response."""
+    @property
+    def opts(self) -> Dict[str, Any]: ...
+    @property
+    def args(self) -> List[Any]: ...
 
-    args: List[Any]
-    """Positional arguments from response."""
+    @staticmethod
+    def from_string(s: str) -> "OkResponse": ...
+
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
+
+
+class SCPICommand:
+    """High-level SCPI command representation."""
+
+    @property
+    def command(self) -> str: ...
+    @property
+    def args(self) -> tuple: ...
+    @property
+    def opts(self) -> Dict[str, Any]: ...
+    @property
+    def comment(self) -> Optional[str]: ...
+
+    @staticmethod
+    def from_string(s: str) -> "SCPICommand": ...
+
+    def to_command_string(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: "SCPICommand") -> bool: ...
+
+
+# Enums
+class AccessLevel:
+    """Access level for QuantStudio machine connection."""
+
+    Guest: "AccessLevel"
+    Observer: "AccessLevel"
+    Controller: "AccessLevel"
+    Administrator: "AccessLevel"
+    Full: "AccessLevel"
+
+    def __init__(self, value: Union[str, "AccessLevel"]) -> None: ...
+
+    @property
+    def value(self) -> str: ...
+
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __hash__(self) -> int: ...
+    def __lt__(self, other: "AccessLevel") -> bool: ...
+    def __le__(self, other: "AccessLevel") -> bool: ...
+    def __gt__(self, other: "AccessLevel") -> bool: ...
+    def __ge__(self, other: "AccessLevel") -> bool: ...
+    def __eq__(self, other: object) -> bool: ...
+
+
+class RunStatus:
+    """Status of a running experiment."""
+
+    name: str
+    stage: int
+    num_stages: int
+    cycle: int
+    num_cycles: int
+    step: int
+    point: int
+    state: str
+
+    @staticmethod
+    def from_bytes(data: bytes) -> "RunStatus": ...
+    @staticmethod
+    def command() -> bytes: ...
+
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
+
+
+class MachineStatus:
+    """Current machine hardware status."""
+
+    drawer: str
+    cover: str
+    lamp_status: str
+    sample_temperatures: List[float]
+    block_temperatures: List[float]
+    cover_temperature: float
+    target_temperatures: Dict[str, float]
+    target_controlled: Dict[str, bool]
+    led_temperature: float
+
+    @staticmethod
+    def from_bytes(data: bytes) -> "MachineStatus": ...
+    @staticmethod
+    def command() -> bytes: ...
+
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
+
+    def get_drawer(self) -> str: ...
+    def get_cover(self) -> str: ...
+    def get_lamp_status(self) -> str: ...
+    def get_sample_temperatures(self) -> List[float]: ...
+    def get_block_temperatures(self) -> List[float]: ...
+    def get_cover_temperature(self) -> float: ...
+    def get_target_temperatures(self) -> Dict[str, float]: ...
+    def get_target_controlled(self) -> Dict[str, bool]: ...
+    def get_led_temperature(self) -> float: ...
+
+
+# Protocol classes
+class RustStep:
+    """A single step in a protocol stage."""
+
+    def __init__(
+        self,
+        time: int,
+        temperature: List[float],
+        collect: Optional[bool] = None,
+        temp_increment: float = 0.0,
+        temp_incrementcycle: int = 2,
+        temp_incrementpoint: Optional[int] = None,
+        time_increment: int = 0,
+        time_incrementcycle: int = 2,
+        time_incrementpoint: Optional[int] = None,
+        filters: List[str] = [],
+        pcr: bool = False,
+        quant: bool = True,
+        tiff: bool = False,
+        repeat: int = 1,
+    ) -> None: ...
+
+    @property
+    def time(self) -> int: ...
+    @property
+    def temperature(self) -> List[float]: ...
+    @property
+    def collect(self) -> Optional[bool]: ...
+    @property
+    def temp_increment(self) -> float: ...
+    @property
+    def temp_incrementcycle(self) -> int: ...
+    @property
+    def temp_incrementpoint(self) -> Optional[int]: ...
+    @property
+    def time_increment(self) -> int: ...
+    @property
+    def time_incrementcycle(self) -> int: ...
+    @property
+    def time_incrementpoint(self) -> Optional[int]: ...
+    @property
+    def filters(self) -> List[str]: ...
+    @property
+    def pcr(self) -> bool: ...
+    @property
+    def quant(self) -> bool: ...
+    @property
+    def tiff(self) -> bool: ...
+    @property
+    def repeat(self) -> int: ...
+    @property
+    def default_filters(self) -> List[str]: ...
+
+    def to_scpi_string(self, step_index: int, default_filters: List[str]) -> str: ...
+    def info_str(self, index: Optional[int], repeats: int) -> str: ...
+    def __repr__(self) -> str: ...
+
+
+class RustStage:
+    """A stage in a protocol, containing one or more steps."""
+
+    def __init__(
+        self,
+        steps: List[RustStep],
+        repeat: int = 1,
+        index: Optional[int] = None,
+        label: Optional[str] = None,
+        custom_step_scpi: List[Tuple[int, str]] = [],
+    ) -> None: ...
+
+    @property
+    def repeat(self) -> int: ...
+    @property
+    def index(self) -> Optional[int]: ...
+    @property
+    def label(self) -> Optional[str]: ...
+    @property
+    def default_filters(self) -> List[str]: ...
+    @property
+    def steps(self) -> List[RustStep]: ...
+    @property
+    def has_custom_steps(self) -> bool: ...
+
+    def all_steps(self) -> List[Tuple[str, Any]]: ...
+    def to_scpi_string(self, stage_index: int, default_filters: List[str]) -> str: ...
+    def info_str(self, index: Optional[int]) -> str: ...
+    def __repr__(self) -> str: ...
+
+
+class Protocol:
+    """Parsed protocol from QuantStudio machine (Rust implementation)."""
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def volume(self) -> float: ...
+    @property
+    def runmode(self) -> str: ...
+    @property
+    def covertemperature(self) -> float: ...
+    @property
+    def filters(self) -> List[str]: ...
+    @property
+    def num_stages(self) -> int: ...
+    @property
+    def stages(self) -> List[RustStage]: ...
+    @property
+    def prerun(self) -> List[str]: ...
+    @property
+    def postrun(self) -> List[str]: ...
+
+    def to_scpi_string(self) -> str: ...
+    def to_xml_pair(
+        self,
+        cover_temperature: float,
+        version: str,
+        machine_toml: Optional[str] = None,
+    ) -> Tuple[str, str]: ...
+
+    @staticmethod
+    def from_xml_string(xml: str) -> "Protocol": ...
+    @staticmethod
+    def parse_qsl_tcprotocol_command(xml: str) -> Optional[str]: ...
+    @staticmethod
+    def parse_qsl_machine_connection(xml: str) -> Optional[str]: ...
+    @staticmethod
+    def from_scpi_string(s: str) -> "Protocol": ...
+    @staticmethod
+    def create(
+        name: str,
+        stages: List[RustStage],
+        volume: float = 50.0,
+        runmode: str = "standard",
+        filters: List[str] = [],
+        covertemperature: float = 105.0,
+        prerun: List[str] = [],
+        postrun: List[str] = [],
+    ) -> "Protocol": ...
+
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
 
 
 # Data classes
-class FilterDataCollection:
-    """Collection of filter data from an experiment."""
+class FilterSet:
+    """Excitation/emission filter pair."""
 
-    name: str
-    """Name of the data collection."""
+    ex: int
+    em: int
+    quant: bool
 
-    plate_point_data: List["PlatePointData"]
-    """List of plate point data entries."""
-
-    @staticmethod
-    def read_file(path: str) -> "FilterDataCollection":
-        """Read filter data from an XML file.
-
-        Args:
-            path: Path to the XML file
-
-        Returns:
-            Parsed FilterDataCollection
-
-        Raises:
-            ValueError: If file cannot be read or parsed
-        """
-        ...
+    def __init__(self, ex: int, em: int, quant: bool = True) -> None: ...
 
     @staticmethod
-    def from_xml_bytes(data: bytes) -> "FilterDataCollection":
-        """Parse filter data from XML bytes.
+    def fromstring(value: Union["FilterSet", str, List[str]]) -> "FilterSet": ...
 
-        Args:
-            data: XML content as bytes
+    @property
+    def lowerform(self) -> str: ...
+    @property
+    def upperform(self) -> str: ...
+    @property
+    def hacform(self) -> str: ...
 
-        Returns:
-            Parsed FilterDataCollection
+    def to_xml(self) -> str: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __hash__(self) -> int: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __lt__(self, other: "FilterSet") -> bool: ...
+    def __le__(self, other: "FilterSet") -> bool: ...
+    def __gt__(self, other: "FilterSet") -> bool: ...
+    def __ge__(self, other: "FilterSet") -> bool: ...
+    def __reduce__(self) -> Tuple[type, Tuple[int, int, bool]]: ...
+    def __copy__(self) -> "FilterSet": ...
+    def __deepcopy__(self, memo: dict) -> "FilterSet": ...
 
-        Raises:
-            ValueError: If XML cannot be parsed
-        """
-        ...
 
-    @staticmethod
-    def from_individual_files(paths: List[str]) -> "FilterDataCollection":
-        """Load filter data from individual per-reading XML files.
+class Attribute:
+    """Key-value attribute."""
 
-        Args:
-            paths: List of file paths to individual filterdata XML files
+    key: str
+    value: str
 
-        Returns:
-            Combined FilterDataCollection
 
-        Raises:
-            ValueError: If any file cannot be read or parsed
-        """
-        ...
+class PlateData:
+    """Data for a single plate reading."""
 
-    def set_timestamps_from_quant(self, quant_data: "QuantDataCollection") -> None:
-        """Populate timestamps on each PlateData from quant data.
+    rows: int
+    cols: int
+    well_data: List[float]
+    attributes: List[Attribute]
+    timestamp: Optional[float]
+    set_temperatures: Optional[List[float]]
 
-        For each plate data entry, finds the longest-exposure quant file
-        for the matching collection point and sets the timestamp.
-
-        Args:
-            quant_data: QuantDataCollection to look up timestamps from
-        """
-        ...
-
-    def to_polars(self) -> pl.DataFrame:
-        """Convert to a Polars DataFrame.
-
-        Returns:
-            DataFrame with filter data
-        """
-        ...
+    def to_polars(self) -> pl.DataFrame: ...
 
 
 class PlatePointData:
     """Data for a single plate point (stage/cycle/step/point combination)."""
 
     stage: int
-    """Stage number."""
-
     cycle: int
-    """Cycle number."""
-
     step: int
-    """Step number."""
-
     point: int
-    """Point number."""
+    plate_data: List[PlateData]
 
-    plate_data: List[Any]
-    """List of plate data for this point."""
+    def to_polars(self) -> pl.DataFrame: ...
 
-    def to_polars(self) -> pl.DataFrame:
-        """Convert to a Polars DataFrame."""
-        ...
+
+class FilterDataCollection:
+    """Collection of filter data from an experiment."""
+
+    name: str
+    plate_point_data: List[PlatePointData]
+
+    @staticmethod
+    def read_file(path: str) -> "FilterDataCollection": ...
+    @staticmethod
+    def from_xml_bytes(data: bytes) -> "FilterDataCollection": ...
+    @staticmethod
+    def from_individual_files(paths: List[str]) -> "FilterDataCollection": ...
+
+    def set_timestamps_from_quant(self, quant_data: "QuantDataCollection") -> None: ...
+    def to_polars(self) -> pl.DataFrame: ...
+
+
+# Quant classes
+class QuantRegion:
+    """Pixel statistics for an image region."""
+
+    sum: float
+    count: int
+    saturation: int
+
+
+class WellQuant:
+    """Inner and outer region data for a single well."""
+
+    inner: QuantRegion
+    outer: QuantRegion
+
+
+class QuantConditions:
+    """Metadata for a quant file."""
+
+    stage: int
+    cycle: int
+    step: int
+    point: int
+    excitation: str
+    emission: str
+    filter_set: FilterSet
+    exposure_ms: float
+    timestamp: float
+    block_temperatures: List[float]
+    sample_temperatures: List[float]
+    cover_temperature: float
+
+
+class QuantFile:
+    """Parsed .quant file."""
+
+    @staticmethod
+    def parse(data: str) -> "QuantFile": ...
+
+    @property
+    def conditions(self) -> QuantConditions: ...
+    @property
+    def n_rows(self) -> int: ...
+    @property
+    def n_cols(self) -> int: ...
+    @property
+    def wells(self) -> List[WellQuant]: ...
+
+    def __repr__(self) -> str: ...
+
+
+class CollectionKey:
+    """Unique identifier for a quant file entry."""
+
+    stage: int
+    cycle: int
+    step: int
+    point: int
+    filter_set: FilterSet
+    exposure_index: int
+
+    def __repr__(self) -> str: ...
+    def __hash__(self) -> int: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __lt__(self, other: "CollectionKey") -> bool: ...
+    def __le__(self, other: "CollectionKey") -> bool: ...
+    def __gt__(self, other: "CollectionKey") -> bool: ...
+    def __ge__(self, other: "CollectionKey") -> bool: ...
 
 
 class QuantDataCollection:
     """Collection of quant data from an experiment."""
 
-    @staticmethod
-    def from_eds(path: str) -> "QuantDataCollection":
-        """Load quant data from an EDS archive."""
-        ...
+    n_rows: int
+    n_cols: int
 
     @staticmethod
-    def from_directory(path: str) -> "QuantDataCollection":
-        """Load quant data from a directory containing .quant files."""
-        ...
-
+    def from_eds(path: str) -> "QuantDataCollection": ...
     @staticmethod
-    def from_tiffs_in_eds(path: str) -> "QuantDataCollection":
-        """Load quant data from TIFF images in an EDS archive."""
-        ...
-
+    def from_directory(path: str) -> "QuantDataCollection": ...
     @staticmethod
-    def from_tiffs_in_directory(path: str) -> "QuantDataCollection":
-        """Load quant data from TIFF images in a directory."""
-        ...
+    def from_tiffs_in_eds(path: str) -> "QuantDataCollection": ...
+    @staticmethod
+    def from_tiffs_in_directory(path: str) -> "QuantDataCollection": ...
 
-    def to_polars(self) -> pl.DataFrame:
-        """Convert to a Polars DataFrame."""
-        ...
+    def to_polars(self) -> pl.DataFrame: ...
+    def keys(self) -> List[CollectionKey]: ...
+    def filter_sets(self) -> List[FilterSet]: ...
+    def exposure_indices(self) -> List[int]: ...
+    def collection_points(self) -> List[Tuple[int, int, int, int]]: ...
+    def get_exposures(
+        self,
+        stage: int,
+        cycle: int,
+        step: int,
+        point: int,
+        filter_set: FilterSet,
+    ) -> List[QuantFile]: ...
+    def get(
+        self,
+        stage: int,
+        cycle: int,
+        step: int,
+        point: int,
+        filter_set: FilterSet,
+        exposure_index: int,
+    ) -> Optional[QuantFile]: ...
+    def __len__(self) -> int: ...
+    def __repr__(self) -> str: ...
 
 
 # Message log classes
@@ -432,89 +562,35 @@ class RunLogInfo:
     """Parsed run log information."""
 
     runstarttime: Optional[float]
-    """Unix timestamp when run started."""
-
     runendtime: Optional[float]
-    """Unix timestamp when run ended."""
-
     prerunstart: Optional[float]
-    """Unix timestamp when prerun started."""
-
     activestarttime: Optional[float]
-    """Unix timestamp when active run started."""
-
     activeendtime: Optional[float]
-    """Unix timestamp when active run ended."""
-
     runstate: str
-    """Current run state (INIT, RUNNING, COMPLETE, ABORTED, STOPPED)."""
-
     stage_names: List[str]
-    """Names of stages in the protocol."""
-
     stage_start_times: List[float]
-    """Start timestamps for each stage."""
-
     stage_end_times: List[Optional[float]]
-    """End timestamps for each stage (None if not ended)."""
 
     @staticmethod
-    def parse(log: bytes) -> "RunLogInfo":
-        """Parse run log information from message log bytes.
-
-        Args:
-            log: Raw message log bytes
-
-        Returns:
-            Parsed RunLogInfo
-        """
-        ...
+    def parse(log: bytes) -> "RunLogInfo": ...
 
 
 class TemperatureLog:
     """Parsed temperature log from message log."""
 
     timestamps: List[float]
-    """Unix timestamps for each reading."""
-
     heatsink_temps: List[float]
-    """Heatsink temperatures."""
-
     cover_temperatures: List[float]
-    """Cover temperatures."""
-
     block_temperatures: List[List[float]]
-    """Block temperatures for each zone."""
-
     sample_temperatures: List[List[float]]
-    """Sample temperatures for each zone."""
-
     num_zones: int
-    """Number of temperature zones."""
 
     @staticmethod
-    def parse(log: bytes) -> "TemperatureLog":
-        """Parse temperature log from message log bytes.
-
-        Args:
-            log: Raw message log bytes
-
-        Returns:
-            Parsed TemperatureLog
-        """
-        ...
-
+    def parse(log: bytes) -> "TemperatureLog": ...
     @staticmethod
-    def parse_to_polars(log: bytes) -> pl.DataFrame:
-        """Parse temperature log directly to Polars DataFrame.
+    def parse_to_polars(log: bytes) -> pl.DataFrame: ...
 
-        Args:
-            log: Raw message log bytes
-
-        Returns:
-            DataFrame with temperature data
-        """
-        ...
+    def to_polars(self) -> pl.DataFrame: ...
 
 
 # Plate setup classes
@@ -528,55 +604,51 @@ class Sample:
         color: Optional[Tuple[int, int, int, int]] = None,
         properties: Optional[Dict[str, str]] = None,
         description: Optional[str] = None,
-    ) -> None:
-        """Create a new sample.
-
-        Args:
-            name: Sample name
-            uuid: Optional UUID (auto-generated if not provided)
-            color: Optional RGBA color tuple
-            properties: Optional custom properties
-            description: Optional description
-        """
-        ...
+        wells: Optional[Union[str, List[str]]] = None,
+    ) -> None: ...
 
     @property
-    def name(self) -> str:
-        """Sample name."""
-        ...
-
+    def name(self) -> str: ...
     @name.setter
     def name(self, value: str) -> None: ...
 
     @property
-    def color(self) -> str:
-        """Color as hex string."""
-        ...
-
+    def color(self) -> Tuple[int, int, int, int]: ...
     @color.setter
-    def color(self, value: str) -> None: ...
+    def color(self, value: Tuple[int, int, int, int]) -> None: ...
 
     @property
-    def color_rgba(self) -> Tuple[int, int, int, int]:
-        """Color as RGBA tuple."""
-        ...
-
-    def set_color_rgba(self, r: int, g: int, b: int, a: int) -> None:
-        """Set color from RGBA values."""
-        ...
+    def color_hex(self) -> str: ...
+    def set_color_hex(self, color: str) -> None: ...
 
     @property
-    def description(self) -> Optional[str]:
-        """Sample description."""
-        ...
+    def color_rgba(self) -> Tuple[int, int, int, int]: ...
 
+    @property
+    def description(self) -> Optional[str]: ...
     @description.setter
     def description(self, value: Optional[str]) -> None: ...
 
     @property
-    def uuid(self) -> Optional[str]:
-        """Sample UUID."""
-        ...
+    def wells(self) -> List[str]: ...
+    @wells.setter
+    def wells(self, value: Union[str, List[str]]) -> None: ...
+
+    @property
+    def uuid(self) -> Optional[str]: ...
+    @uuid.setter
+    def uuid(self, value: str) -> None: ...
+
+    def get_property(self, key: str) -> Optional[str]: ...
+    def get_properties(self) -> Dict[str, str]: ...
+    def set_property(self, key: str, value: str) -> None: ...
+    def to_record(self) -> Dict[str, Any]: ...
+
+    def __repr__(self) -> str: ...
+    def __eq__(self, other: object) -> bool: ...
+    def __getitem__(self, key: str) -> str: ...
+    def __setitem__(self, key: str, value: str) -> None: ...
+    def __delitem__(self, key: str) -> None: ...
 
 
 class PlateSetup:
@@ -586,193 +658,117 @@ class PlateSetup:
         self,
         name: Optional[str] = None,
         plate_type: Optional[str] = None,
-    ) -> None:
-        """Create a new plate setup.
-
-        Args:
-            name: Optional plate name
-            plate_type: Plate type ("TYPE_8X12" for 96-well, "TYPE_16X24" for 384-well)
-        """
-        ...
+    ) -> None: ...
 
     @staticmethod
-    def from_xml_string(xml: str) -> "PlateSetup":
-        """Parse plate setup from XML string.
+    def from_xml_string(xml: str) -> "PlateSetup": ...
+    @staticmethod
+    def from_samples_and_wells(
+        plate_type: int,
+        samples: Dict[str, Tuple[Sample, List[str]]],
+    ) -> "PlateSetup": ...
 
-        Args:
-            xml: XML string containing plate setup
-
-        Returns:
-            Parsed PlateSetup
-
-        Raises:
-            ValueError: If XML is invalid
-        """
-        ...
-
-    def to_xml_string(self) -> str:
-        """Convert plate setup to XML string.
-
-        Returns:
-            XML string representation
-        """
-        ...
+    def to_xml_string(self) -> str: ...
 
     @property
-    def name(self) -> Optional[str]:
-        """Plate name."""
-        ...
-
+    def name(self) -> Optional[str]: ...
     @name.setter
     def name(self, value: Optional[str]) -> None: ...
 
     @property
-    def barcode(self) -> Optional[str]:
-        """Plate barcode."""
-        ...
-
+    def barcode(self) -> Optional[str]: ...
     @barcode.setter
     def barcode(self, value: Optional[str]) -> None: ...
 
     @property
-    def description(self) -> Optional[str]:
-        """Plate description."""
-        ...
-
+    def description(self) -> Optional[str]: ...
     @description.setter
     def description(self, value: Optional[str]) -> None: ...
 
     @property
-    def rows(self) -> int:
-        """Number of rows."""
-        ...
+    def rows(self) -> int: ...
+    @property
+    def columns(self) -> int: ...
 
     @property
-    def columns(self) -> int:
-        """Number of columns."""
-        ...
-
-    @property
-    def plate_type(self) -> str:
-        """Plate type string."""
-        ...
-
+    def plate_type(self) -> str: ...
     @plate_type.setter
     def plate_type(self, value: str) -> None: ...
 
-    def get_well_names(self) -> List[str]:
-        """Get list of all well names (e.g., ['A1', 'A2', ...])."""
-        ...
+    @property
+    def plate_type_int(self) -> int: ...
 
-    def get_samples_and_wells(self) -> Dict[str, Tuple[Sample, List[str]]]:
-        """Get mapping of sample names to (Sample, well_names) tuples."""
-        ...
-
-    def get_sample(self, name: str) -> Optional[Sample]:
-        """Get a specific sample by name."""
-        ...
-
+    def get_well_names(self) -> List[str]: ...
+    def get_samples_and_wells(self) -> Dict[str, Tuple[Sample, List[str]]]: ...
+    def get_samples_with_wells(self) -> Dict[str, Sample]: ...
+    def set_samples(self, samples: Dict[str, Sample]) -> None: ...
+    def set_samples_and_wells(
+        self, samples: Dict[str, Tuple[Sample, List[str]]]
+    ) -> None: ...
+    def get_sample(self, name: str) -> Optional[Sample]: ...
     def to_line_protocol(
         self,
         timestamp: int,
         run_name: Optional[str] = None,
         machine_name: Optional[str] = None,
-    ) -> List[str]:
-        """Convert to InfluxDB line protocol format."""
-        ...
-
-    def print_debug(self) -> None:
-        """Print debug representation."""
-        ...
+    ) -> List[str]: ...
+    def print_debug(self) -> None: ...
 
     def __repr__(self) -> str: ...
     def __str__(self) -> str: ...
 
 
-# Module-level functions
-def get_n_zones(log: bytes) -> int:
-    """Get the number of temperature zones from a message log.
+# Calibration classes
+class WellMatrix:
+    """Matrix of per-well calibration values."""
 
-    Args:
-        log: Raw message log bytes
+    data: List[float]
+    n_rows: int
+    n_cols: int
 
-    Returns:
-        Number of temperature zones
-
-    Raises:
-        ValueError: If no temperature data found in log
-    """
-    ...
+    def get(self, row: int, col: int) -> float: ...
+    def __repr__(self) -> str: ...
 
 
-def parse_argmap(input: str) -> Dict[str, Any]:
-    """Parse a string into an ArgMap (options dictionary).
+class UniformityCalibration:
+    """Uniformity calibration data."""
 
-    Args:
-        input: String containing options like "-key=value"
+    @staticmethod
+    def parse(text: str) -> "UniformityCalibration": ...
 
-    Returns:
-        Dictionary mapping keys to values
+    @property
+    def signal_norm(self) -> float: ...
 
-    Raises:
-        ValueError: If parsing fails
-    """
-    ...
+    def get_uniformity(self, filter_set: FilterSet) -> Optional[WellMatrix]: ...
+    def __repr__(self) -> str: ...
 
 
-def parse_argmap_bytes(input: bytes) -> Dict[str, Any]:
-    """Parse bytes into an ArgMap (options dictionary).
+class BackgroundCalibration:
+    """Background calibration data."""
 
-    Args:
-        input: Bytes containing options like "-key=value"
+    @staticmethod
+    def parse(text: str) -> "BackgroundCalibration": ...
 
-    Returns:
-        Dictionary mapping keys to values
-
-    Raises:
-        ValueError: If parsing fails
-    """
-    ...
+    def get_offset(self, filter_set: FilterSet) -> Optional[WellMatrix]: ...
+    def get_slope(self, filter_set: FilterSet) -> Optional[WellMatrix]: ...
+    def __repr__(self) -> str: ...
 
 
-def parse_value(input: str) -> Any:
-    """Parse a string into a Value.
+class PureDyeCalibration:
+    """Pure dye calibration data."""
 
-    Args:
-        input: String to parse
+    @staticmethod
+    def parse(text: str) -> "PureDyeCalibration": ...
 
-    Returns:
-        Parsed Value (string, int, float, or list)
-
-    Raises:
-        ValueError: If parsing fails
-    """
-    ...
+    def get_color_balance(self, filter_set: FilterSet) -> float: ...
+    def __repr__(self) -> str: ...
 
 
-def parse_value_bytes(input: bytes) -> Any:
-    """Parse bytes into a Value.
-
-    Args:
-        input: Bytes to parse
-
-    Returns:
-        Parsed Value (string, int, float, or list)
-
-    Raises:
-        ValueError: If parsing fails
-    """
-    ...
-
-
-# ROI calibration
 class RoiCalibration:
     """ROI calibration data for TIFF image processing."""
 
     @staticmethod
-    def parse(text: str) -> "RoiCalibration":
-        """Parse ROI calibration from INI text."""
-        ...
+    def parse(text: str) -> "RoiCalibration": ...
 
     @property
     def n_rows(self) -> int: ...
@@ -785,25 +781,86 @@ class RoiCalibration:
     @property
     def instrument_type(self) -> str: ...
     @property
-    def filter_sets(self) -> List["FilterSet"]: ...
+    def filter_sets(self) -> List[FilterSet]: ...
 
-    def get_roi_diameter(self, filter_set: "FilterSet") -> Optional[float]: ...
-    def get_ring_size(self, filter_set: "FilterSet") -> Optional[float]: ...
-    def get_horizontal_pos(self, filter_set: "FilterSet") -> Optional["WellMatrix"]: ...
-    def get_vertical_pos(self, filter_set: "FilterSet") -> Optional["WellMatrix"]: ...
-    def get_well_area(self, filter_set: "FilterSet") -> Optional["WellMatrix"]: ...
-    def get_ring_area(self, filter_set: "FilterSet") -> Optional["WellMatrix"]: ...
-    def get_for_emission(self, emission: int) -> Optional["FilterSet"]: ...
+    def get_roi_diameter(self, filter_set: FilterSet) -> Optional[float]: ...
+    def get_ring_size(self, filter_set: FilterSet) -> Optional[float]: ...
+    def get_horizontal_pos(self, filter_set: FilterSet) -> Optional[WellMatrix]: ...
+    def get_vertical_pos(self, filter_set: FilterSet) -> Optional[WellMatrix]: ...
+    def get_well_area(self, filter_set: FilterSet) -> Optional[WellMatrix]: ...
+    def get_ring_area(self, filter_set: FilterSet) -> Optional[WellMatrix]: ...
+    def get_for_emission(self, emission: int) -> Optional[FilterSet]: ...
 
 
-class WellMatrix:
-    """Matrix of per-well calibration values."""
+# EDS Archive
+class EdsArchive:
+    """In-memory EDS (ZIP) archive for experiment data."""
 
-    data: List[float]
-    n_rows: int
-    n_cols: int
+    @staticmethod
+    def from_path(path: str) -> "EdsArchive": ...
+    @staticmethod
+    def from_bytes(data: bytes) -> "EdsArchive": ...
+    @staticmethod
+    def create_new(plate_type: int, version: str) -> "EdsArchive": ...
 
-    def get(self, row: int, col: int) -> float: ...
+    def read_file(self, relative_path: str) -> bytes: ...
+    def read_eds_file(self, filename: str) -> str: ...
+    def file_exists(self, relative_path: str) -> bool: ...
+    def plate_setup(self) -> PlateSetup: ...
+    def log_bytes(self) -> bytes: ...
+    def has_log(self) -> bool: ...
+    def save(self, path: str) -> None: ...
+    def write_eds_file(self, filename: str, content: str) -> None: ...
+    def write_file(self, relative_path: str, data: bytes) -> None: ...
+    def update_experiment_xml(
+        self,
+        name: str,
+        operator: Optional[str] = None,
+        created_time_ms: int = 0,
+        modified_time_ms: int = 0,
+        run_start_time_ms: Optional[int] = None,
+        run_end_time_ms: Optional[int] = None,
+        run_state: str = "INIT",
+        software_version: str = "QSLib",
+    ) -> None: ...
+    def write_tcprotocol(
+        self,
+        protocol: Protocol,
+        cover_temperature: float,
+        version: str,
+        machine_toml: Optional[str] = None,
+    ) -> None: ...
+
+    @property
+    def name(self) -> str: ...
+    @property
+    def operator(self) -> Optional[str]: ...
+    @property
+    def plate_type(self) -> Optional[int]: ...
+    @property
+    def plate_type_id(self) -> Optional[str]: ...
+    @property
+    def spec_major_version(self) -> int: ...
+    @property
+    def spec_version(self) -> str: ...
+    @property
+    def run_state(self) -> str: ...
+    @property
+    def write_software(self) -> Optional[str]: ...
+    @property
+    def created_time_ms(self) -> Optional[float]: ...
+    @property
+    def run_start_time_ms(self) -> Optional[float]: ...
+    @property
+    def run_end_time_ms(self) -> Optional[float]: ...
+    @property
+    def manifest(self) -> Dict[str, str]: ...
+    @property
+    def base_dir(self) -> str: ...
+    @property
+    def eds_dir(self) -> str: ...
+
+    def __repr__(self) -> str: ...
 
 
 # TIFF processing functions
@@ -812,16 +869,29 @@ def apply_roi_to_tiff(
     roi: RoiCalibration,
     emission: int,
     threshold: Optional[int] = None,
-) -> List[Any]:
-    """Apply ROI calibration to a TIFF image."""
-    ...
+) -> List[WellQuant]: ...
 
 
-def decode_tiff(tiff_bytes: bytes) -> npt.NDArray[np.uint16]:
-    """Decode a TIFF image to a numpy uint16 array of shape (height, width)."""
-    ...
+def decode_tiff(tiff_bytes: bytes) -> npt.NDArray[np.uint16]: ...
 
 
-def reconstruct_filterdata_from_tiffs(path: str) -> FilterDataCollection:
-    """Reconstruct filterdata from TIFF images in an EDS archive."""
-    ...
+# Reconstruction functions
+def reconstruct_filterdata_from_eds(path: str) -> FilterDataCollection: ...
+def reconstruct_filterdata_from_tiffs(path: str) -> FilterDataCollection: ...
+def reconstruct_filterdata(
+    quant_data: QuantDataCollection,
+    uniformity: UniformityCalibration,
+    background: BackgroundCalibration,
+    puredye: Optional[PureDyeCalibration] = None,
+) -> FilterDataCollection: ...
+def parse_filterdata_v2_json(json_str: str, plate_type: int) -> pl.DataFrame: ...
+
+
+# Module-level parsing functions
+def get_n_zones(log: bytes) -> int: ...
+def parse_argmap(input: str) -> Dict[str, Any]: ...
+def parse_argmap_bytes(input: bytes) -> Dict[str, Any]: ...
+def parse_arglist(input: str) -> OkResponse: ...
+def parse_value(input: str) -> Any: ...
+def parse_value_bytes(input: bytes) -> Any: ...
+def py_quote_string_if_needed(s: str) -> str: ...
