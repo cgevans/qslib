@@ -599,20 +599,30 @@ async fn handle_message(
                                     stage.label.as_ref().unwrap_or(&format!("Stage {}", i + 1)),
                                     stage.repeat
                                 ));
-                                for (j, step) in stage.steps.iter().enumerate() {
-                                    let temp_str = if step.temperature.len() == 6 && step.temperature.iter().all(|&t| t == step.temperature[0]) {
-                                        format!("{}°C", step.temperature[0])
-                                    } else {
-                                        format!("{:?}°C", step.temperature)
-                                    };
-                                    output.push_str(&format!(
-                                        "  Step {}: {}s at {}",
-                                        j + 1, step.time, temp_str
-                                    ));
-                                    if step.collect == Some(true) {
-                                        output.push_str(" (collect)");
+                                for (j, stage_step) in stage.steps.iter().enumerate() {
+                                    match stage_step {
+                                        qslib::protocol::StageStep::Standard(step) => {
+                                            let temp_str = if step.temperature.len() == 6 && step.temperature.iter().all(|&t| t == step.temperature[0]) {
+                                                format!("{}°C", step.temperature[0])
+                                            } else {
+                                                format!("{:?}°C", step.temperature)
+                                            };
+                                            output.push_str(&format!(
+                                                "  Step {}: {}s at {}",
+                                                j + 1, step.time, temp_str
+                                            ));
+                                            if step.collect == Some(true) {
+                                                output.push_str(" (collect)");
+                                            }
+                                            output.push_str("<br>");
+                                        }
+                                        qslib::protocol::StageStep::Custom(_) => {
+                                            output.push_str(&format!(
+                                                "  Step {}: (custom SCPI)<br>",
+                                                j + 1
+                                            ));
+                                        }
                                     }
-                                    output.push_str("<br>");
                                 }
                             }
                             send_matrix_message(&room, &output, false).await?;
