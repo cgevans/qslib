@@ -5,6 +5,7 @@ pub mod com;
 pub mod commands;
 pub mod data;
 pub mod eds;
+pub mod experiment_xml;
 pub mod message_receiver;
 pub mod parser;
 pub mod plate_setup;

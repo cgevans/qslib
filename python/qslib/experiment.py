@@ -1190,78 +1190,10 @@ table, th, td {{
             self._update_files()
 
     def _new_xml_files(self) -> None:
-        os.mkdir(self._dir_base / "apldbio")
-        os.mkdir(self._dir_base / "apldbio" / "sds")
-
-        e = ET.ElementTree(ET.Element("Experiment"))
-
-        ET.SubElement(e.getroot(), "Label").text = "ruo"
-        tp = ET.SubElement(e.getroot(), "Type")
-        ET.SubElement(tp, "Id").text = "Custom"
-        ET.SubElement(tp, "Name").text = "Custom"
-        ET.SubElement(tp, "Description").text = "Custom QSLib experiment"
-        ET.SubElement(tp, "ResultPersisterName").text = "scAnalysisResultPersister"
-        ET.SubElement(tp, "ContributedResultPersisterName").text = (
-            "mcAnalysisResultPersister"
-        )
-        ET.SubElement(e.getroot(), "ChemistryType").text = "Other"
-        ET.SubElement(e.getroot(), "TCProtocolMode").text = "Standard"
-        ET.SubElement(e.getroot(), "DNATemplateType").text = "WET_DNA"
-        ET.SubElement(e.getroot(), "InstrumentTypeId").text = "appletini"  # note cap!
-        ET.SubElement(e.getroot(), "BlockTypeID").text = "18"
-
-        if self.plate_type == 384:
-            plate_type_id = "TYPE_16X24"
-            rows, cols = 16, 24
-            plate_kind_name = "384-Well Plate (16x24)"
-        else:
-            plate_type_id = "TYPE_8X12"
-            rows, cols = 8, 12
-            plate_kind_name = "96-Well Plate (8x12)"
-
-        ET.SubElement(e.getroot(), "PlateTypeID").text = plate_type_id
-
-        with open(os.path.join(self._dir_eds, "experiment.xml"), "wb") as f:
-            e.write(f)
-
-        plate_xml = f"""<Plate>
-    <Name></Name>
-    <BarCode></BarCode>
-    <Description></Description>
-    <Rows>{rows}</Rows>
-    <Columns>{cols}</Columns>
-    <PlateKind>
-        <Name>{plate_kind_name}</Name>
-        <Type>{plate_type_id}</Type>
-        <RowCount>{rows}</RowCount>
-        <ColumnCount>{cols}</ColumnCount>
-    </PlateKind>
-    <FeatureMap>
-        <Feature>
-            <Id>marker-task</Id>
-            <Name>marker-task</Name>
-        </Feature>
-    </FeatureMap>
-    </Plate>
-    """
-        p = ET.parse(io.BytesIO(plate_xml.encode()))
-
-        with open(os.path.join(self._dir_eds, "plate_setup.xml"), "wb") as f:
-            p.write(f)
-
-        with open(self._dir_eds / "tcprotocol.xml", "wb") as f:
-            ET.ElementTree(ET.Element("TCProtocol")).write(f)
-
-        with open(self._dir_eds / "qsl-tcprotocol.xml", "wb") as f:
-            ET.ElementTree(ET.Element("QSLTCProtocol")).write(f)
-
-        with open(self._dir_eds / "Manifest.mf", "w") as f:
-            f.write(_MANIFEST_CONTENTS)
-
-        # File will not load in AB without this, even though it is
-        # useless for our purposes.
-        with open(self._dir_eds / "analysis_protocol.xml", "w") as f:
-            f.write(_ANALYSIS_PROTOCOL_TEXT)
+        from ._qslib import EdsArchive
+        self._eds_archive = EdsArchive.create_new(self.plate_type or 96, __version__)
+        self._dir_base = Path(self._eds_archive.base_dir)
+        self._dir_eds = self._dir_base / "apldbio" / "sds"
 
     def _sdspath(self, path: str | os.PathLike[str]) -> Path:
         return self._dir_eds / path
@@ -1551,6 +1483,21 @@ table, th, td {{
         return exp
 
     def _update_experiment_xml(self) -> None:
+        eds = getattr(self, '_eds_archive', None)
+        if eds is not None:
+            eds.update_experiment_xml(
+                name=self.name,
+                operator=self.user,
+                created_time_ms=int(self.createdtime.timestamp() * 1000),
+                modified_time_ms=int(datetime.now().timestamp() * 1000),
+                run_start_time_ms=int(self.runstarttime.timestamp() * 1000) if self.runstarttime else None,
+                run_end_time_ms=int(self.runendtime.timestamp() * 1000) if self.runendtime else None,
+                run_state=self.runstate,
+                software_version=f"QSLib {__version__}",
+            )
+            return
+
+        # Python fallback for cases without _eds_archive (from_running etc.)
         exml = ET.parse(os.path.join(self._dir_eds, "experiment.xml"))
 
         _set_or_create(exml, "Name", text=self.name)
@@ -1642,43 +1589,65 @@ table, th, td {{
 
     def _update_tcprotocol_xml(self) -> None:
         if self.protocol:
-            # exml = ET.parse(os.path.join(self._dir_eds, "tcprotocol.xml"))
+            machine_toml = None
+            if self.machine:
+                m2d = self.machine.asdict(password=False)
+                machine_toml = toml.dumps(m2d)
+
+            # Try Rust path first
+            rust_proto = self.protocol._to_rust_protocol()
+            if rust_proto is not None:
+                try:
+                    tc_str, qstc_str = rust_proto.to_xml_pair(
+                        self.protocol.covertemperature, __version__, machine_toml
+                    )
+                    with open(self.root_dir / "tcprotocol.xml", "w") as f:
+                        f.write(tc_str)
+                    with open(self.root_dir / "qsl-tcprotocol.xml", "w") as f:
+                        f.write(qstc_str)
+                    return
+                except Exception:
+                    pass
+
+            # Python fallback
             tcxml, qstcxml = self.protocol.to_xml()
             ET.indent(tcxml)
             ET.indent(qstcxml)
             tcxml.write(self.root_dir / "tcprotocol.xml")
 
-            # Make new machine with stripped password:
-            if self.machine:
-                m2d = self.machine.asdict(password=False)
-                ET.SubElement(qstcxml.getroot(), "MachineConnection").text = toml.dumps(
-                    m2d
-                )
+            if machine_toml:
+                ET.SubElement(qstcxml.getroot(), "MachineConnection").text = machine_toml
 
             qstcxml.write(self.root_dir / "qsl-tcprotocol.xml")
 
     def _update_from_tcprotocol_xml(self) -> None:
-        exml = ET.parse(self.root_dir / "tcprotocol.xml")
-        if (self.root_dir / "qsl-tcprotocol.xml").is_file():
-            qstcxml = ET.parse(self.root_dir / "qsl-tcprotocol.xml")
+        from ._qslib import Protocol as RustProtocol
 
-            if ((x := qstcxml.find("QSLibProtocolCommand")) is not None) and (
-                x.text is not None
-            ):
+        # Parse tcprotocol.xml
+        tc_xml = (self.root_dir / "tcprotocol.xml").read_text()
+
+        # Parse qsl-tcprotocol.xml if it exists
+        if (self.root_dir / "qsl-tcprotocol.xml").is_file():
+            qstc_xml = (self.root_dir / "qsl-tcprotocol.xml").read_text()
+
+            cmd_text = RustProtocol.parse_qsl_tcprotocol_command(qstc_xml)
+            if cmd_text:
                 try:
-                    self._protocol_from_qslib = Protocol.from_scpi_string(x.text)
+                    self._protocol_from_qslib = Protocol.from_scpi_string(cmd_text)
                 except ValueError:
                     self._protocol_from_qslib = None
             else:
                 self._protocol_from_qslib = None
 
-            if (mc := qstcxml.findtext("MachineConnection")) and not self.machine:
+            mc_text = RustProtocol.parse_qsl_machine_connection(qstc_xml)
+            if mc_text and not self.machine:
                 try:
-                    self.machine = Machine(**toml.loads(mc))
-                except ValueError:
+                    self.machine = Machine(**toml.loads(mc_text))
+                except (ValueError, TypeError):
                     pass
+
         try:
-            self._protocol_from_xml = Protocol.from_xml(exml.getroot())
+            self._protocol_from_xml = Protocol.from_xml(ET.fromstring(tc_xml))
         except Exception as e:
             print(e)
             self._protocol_from_xml = None

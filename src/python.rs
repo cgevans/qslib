@@ -174,7 +174,7 @@ impl PyStage {
 #[pyclass(module = "qslib._qslib")]
 #[pyo3(name = "Protocol")]
 pub struct PyProtocol {
-    protocol: Protocol,
+    pub(crate) protocol: Protocol,
 }
 
 #[pymethods]
@@ -226,6 +226,38 @@ impl PyProtocol {
     /// Serialize to SCPI command string.
     fn to_scpi_string(&self) -> String {
         self.protocol.to_scpi_string()
+    }
+
+    /// Generate (tcprotocol_xml, qsl_tcprotocol_xml) pair.
+    #[pyo3(signature = (cover_temperature, version, machine_toml=None))]
+    fn to_xml_pair(
+        &self,
+        cover_temperature: f64,
+        version: &str,
+        machine_toml: Option<&str>,
+    ) -> (String, String) {
+        self.protocol.to_xml_pair(cover_temperature, version, machine_toml)
+    }
+
+    /// Parse a Protocol from tcprotocol.xml content.
+    #[staticmethod]
+    fn from_xml_string(xml: &str) -> PyResult<PyProtocol> {
+        let protocol = Protocol::from_xml_str(xml).map_err(|e| {
+            PyValueError::new_err(format!("Failed to parse tcprotocol XML: {}", e))
+        })?;
+        Ok(PyProtocol { protocol })
+    }
+
+    /// Extract QSLibProtocolCommand text from qsl-tcprotocol.xml.
+    #[staticmethod]
+    fn parse_qsl_tcprotocol_command(xml: &str) -> Option<String> {
+        Protocol::parse_qsl_tcprotocol_command(xml)
+    }
+
+    /// Extract MachineConnection TOML text from qsl-tcprotocol.xml.
+    #[staticmethod]
+    fn parse_qsl_machine_connection(xml: &str) -> Option<String> {
+        Protocol::parse_qsl_machine_connection(xml)
     }
 
     /// Parse a protocol from an SCPI command string.

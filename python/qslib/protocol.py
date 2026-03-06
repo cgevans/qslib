@@ -1967,6 +1967,16 @@ class Protocol(ProtoCommand):
 
     @classmethod
     def from_xml(cls, e: ET.Element) -> Protocol:
+        # Try Rust path first
+        try:
+            from ._qslib import Protocol as RustProtocol
+            xml_str = ET.tostring(e, encoding="unicode")
+            rust_proto = RustProtocol.from_xml_string(xml_str)
+            return cls._from_rust_protocol(rust_proto)
+        except Exception:
+            pass
+
+        # Python fallback
         svol = float(e.findtext("SampleVolume") or 50.0)
         runmode = e.findtext("RunMode") or "standard"
         covertemperature = float(e.findtext("CoverTemperature") or 105.0)
@@ -1975,15 +1985,63 @@ class Protocol(ProtoCommand):
             raise ValueError
         filter_e = e.find("CollectionProfile")
         filters = []
-        if filter_e:
+        if filter_e is not None:
             for x in filter_e.findall("CollectionCondition/FilterSet"):
                 filters.append(x.attrib["Excitation"] + "-" + x.attrib["Emission"])
         stages = [Stage.from_xml(x) for x in e.findall("TCStage")]
         return Protocol(stages, protoname, svol, runmode, filters, covertemperature)
 
+    @classmethod
+    def _from_rust_protocol(cls, rust_proto) -> Protocol:
+        """Convert a Rust Protocol object back to a Python Protocol."""
+        stages = []
+        for rs in rust_proto.stages:
+            steps = []
+            for rstep in rs.steps:
+                steps.append(Step(
+                    time=rstep.time * UR.seconds,
+                    temperature=Q_(rstep.temperature, "degC"),
+                    collect=rstep.collect,
+                    temp_increment=Q_(rstep.temp_increment, "delta_degC"),
+                    temp_incrementcycle=rstep.temp_incrementcycle,
+                    temp_incrementpoint=rstep.temp_incrementpoint,
+                    time_increment=rstep.time_increment * UR.seconds,
+                    time_incrementcycle=rstep.time_incrementcycle,
+                    time_incrementpoint=rstep.time_incrementpoint,
+                    filters=[FilterSet.fromstring(f) for f in rstep.filters] if rstep.filters else [],
+                    pcr=rstep.pcr,
+                    quant=rstep.quant,
+                    tiff=rstep.tiff,
+                    repeat=rstep.repeat,
+                ))
+            stage = Stage(steps, rs.repeat)
+            stage._index = rs.index
+            stage._label = rs.label
+            stages.append(stage)
+
+        filters = [FilterSet.fromstring(f) for f in rust_proto.filters] if rust_proto.filters else []
+        return Protocol(
+            stages,
+            rust_proto.name,
+            rust_proto.volume,
+            rust_proto.runmode,
+            filters,
+            rust_proto.covertemperature,
+        )
+
     def to_xml(
         self, covertemperature: float = 105.0
     ) -> tuple[ET.ElementTree, ET.ElementTree]:
+        # Try Rust path first
+        rust_proto = self._to_rust_protocol()
+        if rust_proto is not None:
+            try:
+                tc, qstc = rust_proto.to_xml_pair(covertemperature, __version__)
+                return ET.ElementTree(ET.fromstring(tc)), ET.ElementTree(ET.fromstring(qstc))
+            except Exception:
+                pass
+
+        # Python fallback for CustomStep or other cases
         te = ET.ElementTree(ET.Element("TCProtocol"))
         tqe = ET.ElementTree(ET.Element("QSTCProtocol"))
 

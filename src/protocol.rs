@@ -1,7 +1,10 @@
 use crate::parser::{ArgMap, Command, ParseError, Value};
+use quick_xml::events::{BytesEnd, BytesStart, BytesText, Event};
+use quick_xml::Writer;
 use std::any::Any;
 use std::convert::TryInto;
 use std::fmt;
+use std::io::Cursor;
 use thiserror::Error;
 
 /// Default number of temperature zones for QuantStudio machines.
@@ -1721,6 +1724,486 @@ impl Protocol {
     }
 }
 
+// =====================================================================
+// XML Generation (tcprotocol.xml / qsl-tcprotocol.xml)
+// =====================================================================
+
+fn write_simple_element(writer: &mut Writer<Cursor<Vec<u8>>>, tag: &str, text: &str) {
+    writer.create_element(tag).write_text_content(BytesText::new(text)).unwrap();
+}
+
+fn write_empty_element(writer: &mut Writer<Cursor<Vec<u8>>>, tag: &str) {
+    writer.create_element(tag).write_text_content(BytesText::new("")).unwrap();
+}
+
+impl Step {
+    /// Write this step as a TCStep XML element.
+    fn write_xml(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+        writer.create_element("TCStep").write_inner_content(|w| {
+            write_simple_element(w, "CollectionFlag",
+                if self.collect == Some(true) { "1" } else { "0" });
+            for &t in &self.temperature {
+                write_simple_element(w, "Temperature", &format_scpi_number(t));
+            }
+            write_simple_element(w, "HoldTime", &format!("{}", self.time));
+            write_simple_element(w, "ExtTemperature",
+                &format_scpi_number(self.temp_increment));
+            write_simple_element(w, "ExtHoldTime", &format!("{}", self.time_increment));
+            write_simple_element(w, "RampRate", "1.6");
+            write_simple_element(w, "RampRateUnit", "DEGREES_PER_SECOND");
+            Ok(())
+        }).unwrap();
+    }
+}
+
+impl Stage {
+    /// Write this stage as a TCStage XML element.
+    fn write_xml(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
+        writer.create_element("TCStage").write_inner_content(|w| {
+            write_simple_element(w, "StageFlag", "CYCLING");
+            write_simple_element(w, "NumOfRepetitions", &format!("{}", self.repeat));
+            for step in &self.steps {
+                step.write_xml(w);
+            }
+            // Determine starting cycle from steps
+            let mut scycle: Option<i64> = None;
+            for step in &self.steps {
+                for &c in &[step.temp_incrementcycle, step.time_incrementcycle] {
+                    scycle = Some(scycle.map_or(c, |prev| prev.min(c)));
+                }
+            }
+            if let Some(c) = scycle {
+                write_simple_element(w, "StartingCycle", &format!("{}", c));
+            }
+            write_simple_element(w, "AutoDeltaEnabled", "true");
+            Ok(())
+        }).unwrap();
+    }
+}
+
+impl Protocol {
+    /// Generate (tcprotocol_xml_string, qsl_tcprotocol_xml_string).
+    ///
+    /// `cover_temperature` is the cover temperature to write (typically 105.0).
+    /// `version` is the QSLib version string.
+    /// `machine_toml` is an optional TOML string for MachineConnection.
+    pub fn to_xml_pair(
+        &self,
+        cover_temperature: f64,
+        version: &str,
+        machine_toml: Option<&str>,
+    ) -> (String, String) {
+        // Build tcprotocol.xml
+        let tc_xml = {
+            let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 2);
+            writer.create_element("TCProtocol").write_inner_content(|w| {
+                write_simple_element(w, "FileVersion", "2.0");
+                write_simple_element(w, "ProtocolName", &self.name);
+                write_simple_element(w, "CoverTemperature",
+                    &format_scpi_number(cover_temperature));
+                write_simple_element(w, "SampleVolume",
+                    &format_scpi_number(if self.volume != 0.0 { self.volume } else { 50.0 }));
+                write_simple_element(w, "RunMode",
+                    if self.runmode.is_empty() { "Standard" } else { &self.runmode });
+                write_empty_element(w, "UserName");
+                write_simple_element(w, "TubeType", "0");
+                write_simple_element(w, "BlockID", "18");
+                write_simple_element(w, "Delay", "0.0");
+                write_simple_element(w, "ExtendedPCRCycles", "0");
+                write_simple_element(w, "ExtendedHoldTemp", "0");
+                write_simple_element(w, "ExtendedHoldTime", "0");
+                // CollectionProfile with filters
+                if !self.filters.is_empty() {
+                    let mut profile = BytesStart::new("CollectionProfile");
+                    profile.push_attribute(("ProfileId", "1"));
+                    w.write_event(Event::Start(profile)).unwrap();
+                    for filter in &self.filters {
+                        // Parse filter string like "x4-m4" or "4,4"
+                        let (ex, em) = parse_filter_for_xml(filter);
+                        w.create_element("CollectionCondition").write_inner_content(|w2| {
+                            let mut fs = BytesStart::new("FilterSet");
+                            fs.push_attribute(("Emission", em.as_str()));
+                            fs.push_attribute(("Excitation", ex.as_str()));
+                            w2.write_event(Event::Empty(fs)).unwrap();
+                            write_simple_element(w2, "Frames", "0");
+                            Ok(())
+                        }).unwrap();
+                    }
+                    w.write_event(Event::End(BytesEnd::new("CollectionProfile"))).unwrap();
+                }
+                // Stages
+                for stage in &self.stages {
+                    stage.write_xml(w);
+                }
+                Ok(())
+            }).unwrap();
+            String::from_utf8(writer.into_inner().into_inner()).unwrap()
+        };
+
+        // Build qsl-tcprotocol.xml
+        let qstc_xml = {
+            let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 2);
+            writer.create_element("QSTCProtocol").write_inner_content(|w| {
+                write_simple_element(w, "QSLibNote",
+                    "This protocol was generated by QSLib. It may be only an approximation or \
+                     placeholder for the real protocol, contained as an SCPI command in \
+                     QSLibProtocolCommand.");
+                write_simple_element(w, "QSLibProtocolCommand", &self.to_scpi_string());
+                // Intentional typo preserved from original code
+                write_simple_element(w, "QSLibVerson", version);
+                if let Some(toml) = machine_toml {
+                    write_simple_element(w, "MachineConnection", toml);
+                }
+                Ok(())
+            }).unwrap();
+            String::from_utf8(writer.into_inner().into_inner()).unwrap()
+        };
+
+        (tc_xml, qstc_xml)
+    }
+}
+
+/// Parse a filter string (e.g. "x4-m4", "4,1,4") into (excitation, emission) for XML attributes.
+fn parse_filter_for_xml(filter: &str) -> (String, String) {
+    // Format: "x{n}-m{n}" or "{em},{row},{ex}" (hacform)
+    if let Some(rest) = filter.strip_prefix('x') {
+        if let Some((ex, em)) = rest.split_once("-m") {
+            return (format!("x{}", ex), format!("m{}", em));
+        }
+    }
+    // Try hacform: "em,row,ex" like "4,1,4"
+    let parts: Vec<&str> = filter.split(',').collect();
+    if parts.len() >= 3 {
+        return (format!("x{}", parts[2]), format!("m{}", parts[0]));
+    }
+    // Fallback
+    (filter.to_string(), filter.to_string())
+}
+
+// =====================================================================
+// XML Parsing (tcprotocol.xml / qsl-tcprotocol.xml)
+// =====================================================================
+
+impl Protocol {
+    /// Parse a Protocol from tcprotocol.xml content.
+    /// Tolerant of unknown elements/attributes.
+    pub fn from_xml_str(xml: &str) -> Result<Protocol, ProtocolParseError> {
+        use quick_xml::events::Event;
+        use quick_xml::reader::Reader;
+
+        let mut reader = Reader::from_str(xml);
+        let mut depth: u32 = 0;
+        let mut current_tag = String::new();
+        let mut tag_depth: u32 = 0;
+
+        let mut name = String::new();
+        let mut volume = 50.0_f64;
+        let mut runmode = "standard".to_string();
+        let mut cover_temperature = 105.0_f64;
+        let mut filters: Vec<String> = Vec::new();
+        let mut stages: Vec<Stage> = Vec::new();
+
+        // State for parsing nested structures
+        let mut in_collection_condition = false;
+        let mut in_tc_stage = false;
+        let mut in_tc_step = false;
+        let mut stage_repetitions = 1_i64;
+        let mut stage_starting_cycle = 1_i64;
+        let mut stage_auto_delta = false;
+
+        // Raw step data accumulated during parsing (resolved at stage end)
+        struct RawStep {
+            collection_flag: bool,
+            temperatures: Vec<f64>,
+            hold_time: i64,
+            ext_temperature: f64,
+            ext_hold_time: i64,
+        }
+        let mut raw_steps: Vec<RawStep> = Vec::new();
+
+        // Current step accumulation
+        let mut step_collection_flag = false;
+        let mut step_temperatures: Vec<f64> = Vec::new();
+        let mut step_hold_time = 0_i64;
+        let mut step_ext_temperature = 0.0_f64;
+        let mut step_ext_hold_time = 0_i64;
+
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) => break,
+                Ok(Event::Start(ref e)) => {
+                    depth += 1;
+                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    current_tag = tag.clone();
+                    tag_depth = depth;
+
+                    match tag.as_str() {
+                        "TCStage" => {
+                            in_tc_stage = true;
+                            stage_repetitions = 1;
+                            stage_starting_cycle = 1;
+                            stage_auto_delta = false;
+                            raw_steps.clear();
+                        }
+                        "TCStep" if in_tc_stage => {
+                            in_tc_step = true;
+                            step_collection_flag = false;
+                            step_temperatures.clear();
+                            step_hold_time = 0;
+                            step_ext_temperature = 0.0;
+                            step_ext_hold_time = 0;
+                        }
+                        "CollectionCondition" => {
+                            in_collection_condition = true;
+                        }
+                        "FilterSet" if in_collection_condition => {
+                            let mut ex = String::new();
+                            let mut em = String::new();
+                            for attr in e.attributes().flatten() {
+                                match attr.key.as_ref() {
+                                    b"Excitation" => {
+                                        ex = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    b"Emission" => {
+                                        em = String::from_utf8_lossy(&attr.value).to_string();
+                                    }
+                                    _ => {}
+                                }
+                            }
+                            if !ex.is_empty() && !em.is_empty() {
+                                filters.push(format!("{}-{}", ex, em));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Ok(Event::Empty(ref e)) => {
+                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    if tag == "FilterSet" && in_collection_condition {
+                        let mut ex = String::new();
+                        let mut em = String::new();
+                        for attr in e.attributes().flatten() {
+                            match attr.key.as_ref() {
+                                b"Excitation" => {
+                                    ex = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                b"Emission" => {
+                                    em = String::from_utf8_lossy(&attr.value).to_string();
+                                }
+                                _ => {}
+                            }
+                        }
+                        if !ex.is_empty() && !em.is_empty() {
+                            filters.push(format!("{}-{}", ex, em));
+                        }
+                    }
+                }
+                Ok(Event::End(ref e)) => {
+                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    match tag.as_str() {
+                        "TCStep" if in_tc_step => {
+                            in_tc_step = false;
+                            raw_steps.push(RawStep {
+                                collection_flag: step_collection_flag,
+                                temperatures: if step_temperatures.is_empty() {
+                                    vec![25.0; DEFAULT_NUM_ZONES]
+                                } else {
+                                    step_temperatures.clone()
+                                },
+                                hold_time: step_hold_time,
+                                ext_temperature: step_ext_temperature,
+                                ext_hold_time: step_ext_hold_time,
+                            });
+                        }
+                        "TCStage" if in_tc_stage => {
+                            in_tc_stage = false;
+                            // Now resolve raw steps with stage-level settings
+                            let etc = if stage_auto_delta { stage_starting_cycle } else { 1 };
+                            let resolved_steps: Vec<Step> = raw_steps.drain(..).map(|rs| {
+                                Step {
+                                    time: rs.hold_time,
+                                    temperature: rs.temperatures,
+                                    collect: Some(rs.collection_flag),
+                                    temp_increment: if stage_auto_delta { rs.ext_temperature } else { 0.0 },
+                                    temp_incrementcycle: etc,
+                                    temp_incrementpoint: Some(1),
+                                    time_increment: if stage_auto_delta { rs.ext_hold_time } else { 0 },
+                                    time_incrementcycle: etc,
+                                    time_incrementpoint: Some(1),
+                                    filters: vec![],
+                                    pcr: true,
+                                    quant: true,
+                                    tiff: false,
+                                    repeat: 1,
+                                    default_filters: vec![],
+                                }
+                            }).collect();
+                            stages.push(Stage {
+                                steps: resolved_steps,
+                                repeat: stage_repetitions,
+                                index: Some(stages.len() as i64 + 1),
+                                label: None,
+                                default_filters: vec![],
+                            });
+                        }
+                        "CollectionCondition" => {
+                            in_collection_condition = false;
+                        }
+                        _ => {}
+                    }
+                    depth -= 1;
+                }
+                Ok(Event::Text(ref e)) => {
+                    let text = std::str::from_utf8(e.as_ref()).unwrap_or_default().trim().to_string();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    if in_tc_step {
+                        match current_tag.as_str() {
+                            "CollectionFlag" => {
+                                step_collection_flag = text == "1" || text.eq_ignore_ascii_case("true");
+                            }
+                            "Temperature" => {
+                                if let Ok(t) = text.parse::<f64>() {
+                                    step_temperatures.push(t);
+                                }
+                            }
+                            "HoldTime" => {
+                                step_hold_time = text.parse().unwrap_or(0);
+                            }
+                            "ExtTemperature" => {
+                                step_ext_temperature = text.parse().unwrap_or(0.0);
+                            }
+                            "ExtHoldTime" => {
+                                step_ext_hold_time = text.parse().unwrap_or(0);
+                            }
+                            _ => {}
+                        }
+                    } else if in_tc_stage {
+                        match current_tag.as_str() {
+                            "NumOfRepetitions" => {
+                                stage_repetitions = text.parse().unwrap_or(1);
+                            }
+                            "StartingCycle" => {
+                                stage_starting_cycle = text.parse().unwrap_or(1);
+                            }
+                            "AutoDeltaEnabled" => {
+                                stage_auto_delta = text.eq_ignore_ascii_case("true");
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        // Top-level fields (direct children of TCProtocol)
+                        match current_tag.as_str() {
+                            "ProtocolName" if tag_depth == 2 => name = text,
+                            "SampleVolume" if tag_depth == 2 => {
+                                volume = text.parse().unwrap_or(50.0);
+                            }
+                            "RunMode" if tag_depth == 2 => runmode = text,
+                            "CoverTemperature" if tag_depth == 2 => {
+                                cover_temperature = text.parse().unwrap_or(105.0);
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                Err(e) => {
+                    return Err(ProtocolParseError::UnexpectedStructure {
+                        message: format!("XML parse error: {}", e),
+                        protocol_string: xml.chars().take(200).collect(),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        if name.is_empty() {
+            return Err(ProtocolParseError::MissingField {
+                field: "ProtocolName".to_string(),
+                protocol_string: xml.chars().take(200).collect(),
+            });
+        }
+
+        Ok(Protocol {
+            stages,
+            name,
+            volume,
+            runmode,
+            filters,
+            covertemperature: cover_temperature,
+            prerun: vec![],
+            postrun: vec![],
+        })
+    }
+
+    /// Extract QSLibProtocolCommand text from qsl-tcprotocol.xml.
+    pub fn parse_qsl_tcprotocol_command(xml: &str) -> Option<String> {
+        Self::extract_qsl_element(xml, "QSLibProtocolCommand")
+    }
+
+    /// Extract MachineConnection TOML from qsl-tcprotocol.xml.
+    pub fn parse_qsl_machine_connection(xml: &str) -> Option<String> {
+        Self::extract_qsl_element(xml, "MachineConnection")
+    }
+
+    /// Helper: extract text content of a named element from XML, resolving entity references.
+    fn extract_qsl_element(xml: &str, element_name: &str) -> Option<String> {
+        use quick_xml::events::Event;
+        use quick_xml::reader::Reader;
+
+        let mut reader = Reader::from_str(xml);
+        let mut in_target = false;
+        let mut text_buf = String::new();
+
+        loop {
+            match reader.read_event() {
+                Ok(Event::Eof) => break,
+                Ok(Event::Start(ref e)) => {
+                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    if tag == element_name {
+                        in_target = true;
+                        text_buf.clear();
+                    }
+                }
+                Ok(Event::Text(ref e)) if in_target => {
+                    let raw = std::str::from_utf8(e.as_ref()).unwrap_or_default();
+                    text_buf.push_str(raw);
+                }
+                Ok(Event::GeneralRef(ref e)) if in_target => {
+                    // Resolve standard XML entity references
+                    let name = std::str::from_utf8(e.as_ref()).unwrap_or_default();
+                    match name {
+                        "lt" => text_buf.push('<'),
+                        "gt" => text_buf.push('>'),
+                        "amp" => text_buf.push('&'),
+                        "quot" => text_buf.push('"'),
+                        "apos" => text_buf.push('\''),
+                        _ => {
+                            // Unknown entity, preserve as-is
+                            text_buf.push('&');
+                            text_buf.push_str(name);
+                            text_buf.push(';');
+                        }
+                    }
+                }
+                Ok(Event::End(ref e)) if in_target => {
+                    let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
+                    if tag == element_name {
+                        if !text_buf.trim().is_empty() {
+                            return Some(text_buf);
+                        }
+                        in_target = false;
+                    }
+                }
+                Ok(Event::End(_)) => {}
+                Err(_) => break,
+                _ => {}
+            }
+        }
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2998,6 +3481,353 @@ mod tests {
             indent_text("RAMP 80\n\nHOLD 300\n", "\t"),
             "\tRAMP 80\n\n\tHOLD 300\n"
         );
+    }
+
+    // XML generation tests
+
+    #[test]
+    fn test_to_xml_pair_basic() {
+        let protocol = Protocol {
+            stages: vec![Stage {
+                steps: vec![Step {
+                    time: 60,
+                    temperature: vec![25.0; 6],
+                    collect: Some(false),
+                    temp_increment: 0.0,
+                    temp_incrementcycle: 2,
+                    temp_incrementpoint: None,
+                    time_increment: 0,
+                    time_incrementcycle: 2,
+                    time_incrementpoint: None,
+                    filters: vec![],
+                    pcr: false,
+                    quant: true,
+                    tiff: false,
+                    repeat: 1,
+                    default_filters: vec![],
+                }],
+                repeat: 1,
+                index: Some(1),
+                label: None,
+                default_filters: vec![],
+            }],
+            name: "test_protocol".to_string(),
+            volume: 50.0,
+            runmode: "Standard".to_string(),
+            filters: vec![],
+            covertemperature: 105.0,
+            prerun: vec![],
+            postrun: vec![],
+        };
+
+        let (tc, qstc) = protocol.to_xml_pair(105.0, "0.14.0", None);
+
+        assert!(tc.contains("<TCProtocol>"));
+        assert!(tc.contains("<ProtocolName>test_protocol</ProtocolName>"));
+        assert!(tc.contains("<CoverTemperature>105</CoverTemperature>"));
+        assert!(tc.contains("<SampleVolume>50</SampleVolume>"));
+        assert!(tc.contains("<RunMode>Standard</RunMode>"));
+        assert!(tc.contains("<TCStage>"));
+        assert!(tc.contains("<TCStep>"));
+        assert!(tc.contains("<HoldTime>60</HoldTime>"));
+
+        assert!(qstc.contains("<QSTCProtocol>"));
+        assert!(qstc.contains("<QSLibProtocolCommand>"));
+        assert!(qstc.contains("<QSLibVerson>0.14.0</QSLibVerson>"));
+        assert!(!qstc.contains("<MachineConnection>"));
+    }
+
+    #[test]
+    fn test_to_xml_pair_with_filters() {
+        let protocol = Protocol {
+            stages: vec![Stage {
+                steps: vec![Step {
+                    time: 30,
+                    temperature: vec![60.0; 6],
+                    collect: Some(true),
+                    temp_increment: 0.0,
+                    temp_incrementcycle: 2,
+                    temp_incrementpoint: None,
+                    time_increment: 0,
+                    time_incrementcycle: 2,
+                    time_incrementpoint: None,
+                    filters: vec![],
+                    pcr: false,
+                    quant: true,
+                    tiff: false,
+                    repeat: 1,
+                    default_filters: vec![],
+                }],
+                repeat: 10,
+                index: Some(1),
+                label: None,
+                default_filters: vec![],
+            }],
+            name: "filter_test".to_string(),
+            volume: 25.0,
+            runmode: "standard".to_string(),
+            filters: vec!["x4-m4".to_string(), "x1-m1".to_string()],
+            covertemperature: 105.0,
+            prerun: vec![],
+            postrun: vec![],
+        };
+
+        let (tc, _) = protocol.to_xml_pair(105.0, "0.14.0", None);
+        assert!(tc.contains("<CollectionProfile ProfileId=\"1\">"));
+        assert!(tc.contains("Emission=\"m4\""));
+        assert!(tc.contains("Excitation=\"x4\""));
+        assert!(tc.contains("Emission=\"m1\""));
+        assert!(tc.contains("Excitation=\"x1\""));
+    }
+
+    #[test]
+    fn test_to_xml_pair_with_machine_toml() {
+        let protocol = Protocol {
+            stages: vec![],
+            name: "test".to_string(),
+            volume: 50.0,
+            runmode: "standard".to_string(),
+            filters: vec![],
+            covertemperature: 105.0,
+            prerun: vec![],
+            postrun: vec![],
+        };
+
+        let (_, qstc) = protocol.to_xml_pair(105.0, "0.14.0",
+            Some("host = \"192.168.1.1\"\nport = 7443\n"));
+        assert!(qstc.contains("<MachineConnection>"));
+        // Quotes may be escaped as &quot; in XML
+        assert!(qstc.contains("192.168.1.1"));
+    }
+
+    // XML parsing tests
+
+    #[test]
+    fn test_from_xml_str_basic() {
+        let xml = r#"<TCProtocol>
+            <FileVersion>2.0</FileVersion>
+            <ProtocolName>test_protocol</ProtocolName>
+            <CoverTemperature>105.0</CoverTemperature>
+            <SampleVolume>50.0</SampleVolume>
+            <RunMode>Standard</RunMode>
+            <TCStage>
+                <StageFlag>CYCLING</StageFlag>
+                <NumOfRepetitions>10</NumOfRepetitions>
+                <TCStep>
+                    <CollectionFlag>0</CollectionFlag>
+                    <Temperature>60.0</Temperature>
+                    <Temperature>60.0</Temperature>
+                    <Temperature>60.0</Temperature>
+                    <Temperature>60.0</Temperature>
+                    <Temperature>60.0</Temperature>
+                    <Temperature>60.0</Temperature>
+                    <HoldTime>30</HoldTime>
+                    <ExtTemperature>0.0</ExtTemperature>
+                    <ExtHoldTime>0</ExtHoldTime>
+                </TCStep>
+                <StartingCycle>1</StartingCycle>
+                <AutoDeltaEnabled>false</AutoDeltaEnabled>
+            </TCStage>
+        </TCProtocol>"#;
+
+        let proto = Protocol::from_xml_str(xml).unwrap();
+        assert_eq!(proto.name, "test_protocol");
+        assert_eq!(proto.volume, 50.0);
+        assert_eq!(proto.covertemperature, 105.0);
+        assert_eq!(proto.stages.len(), 1);
+        assert_eq!(proto.stages[0].repeat, 10);
+        assert_eq!(proto.stages[0].steps.len(), 1);
+        assert_eq!(proto.stages[0].steps[0].time, 30);
+        assert_eq!(proto.stages[0].steps[0].temperature, vec![60.0; 6]);
+    }
+
+    #[test]
+    fn test_from_xml_str_with_filters() {
+        let xml = r#"<TCProtocol>
+            <ProtocolName>filter_test</ProtocolName>
+            <CollectionProfile ProfileId="1">
+                <CollectionCondition>
+                    <FilterSet Emission="m4" Excitation="x4"/>
+                    <Frames>0</Frames>
+                </CollectionCondition>
+                <CollectionCondition>
+                    <FilterSet Emission="m1" Excitation="x1"/>
+                    <Frames>0</Frames>
+                </CollectionCondition>
+            </CollectionProfile>
+            <TCStage>
+                <NumOfRepetitions>1</NumOfRepetitions>
+                <TCStep>
+                    <CollectionFlag>1</CollectionFlag>
+                    <Temperature>25.0</Temperature>
+                    <HoldTime>60</HoldTime>
+                    <ExtTemperature>0</ExtTemperature>
+                    <ExtHoldTime>0</ExtHoldTime>
+                </TCStep>
+                <StartingCycle>1</StartingCycle>
+                <AutoDeltaEnabled>false</AutoDeltaEnabled>
+            </TCStage>
+        </TCProtocol>"#;
+
+        let proto = Protocol::from_xml_str(xml).unwrap();
+        assert_eq!(proto.filters, vec!["x4-m4", "x1-m1"]);
+        assert_eq!(proto.stages[0].steps[0].collect, Some(true));
+    }
+
+    #[test]
+    fn test_from_xml_str_tolerates_unknown_elements() {
+        let xml = r#"<TCProtocol>
+            <FileVersion>2.0</FileVersion>
+            <ProtocolName>tolerant_test</ProtocolName>
+            <UnknownElement>some value</UnknownElement>
+            <AnotherUnknown attr="foo">bar</AnotherUnknown>
+            <TCStage>
+                <StageFlag>PRE_CYCLING</StageFlag>
+                <NumOfRepetitions>1</NumOfRepetitions>
+                <SomeNewFeature>true</SomeNewFeature>
+                <TCStep>
+                    <CollectionFlag>0</CollectionFlag>
+                    <Temperature>95.0</Temperature>
+                    <HoldTime>120</HoldTime>
+                    <ExtTemperature>0</ExtTemperature>
+                    <ExtHoldTime>0</ExtHoldTime>
+                    <NewStepProperty>xyz</NewStepProperty>
+                </TCStep>
+                <StartingCycle>1</StartingCycle>
+                <AutoDeltaEnabled>false</AutoDeltaEnabled>
+            </TCStage>
+        </TCProtocol>"#;
+
+        let proto = Protocol::from_xml_str(xml).unwrap();
+        assert_eq!(proto.name, "tolerant_test");
+        assert_eq!(proto.stages[0].steps[0].time, 120);
+    }
+
+    #[test]
+    fn test_xml_roundtrip() {
+        // Create a protocol, generate XML, parse it back
+        let original = Protocol {
+            stages: vec![
+                Stage {
+                    steps: vec![Step {
+                        time: 120,
+                        temperature: vec![95.0; 6],
+                        collect: Some(false),
+                        temp_increment: 0.0,
+                        temp_incrementcycle: 2,
+                        temp_incrementpoint: None,
+                        time_increment: 0,
+                        time_incrementcycle: 2,
+                        time_incrementpoint: None,
+                        filters: vec![],
+                        pcr: false,
+                        quant: true,
+                        tiff: false,
+                        repeat: 1,
+                        default_filters: vec![],
+                    }],
+                    repeat: 1,
+                    index: Some(1),
+                    label: None,
+                    default_filters: vec![],
+                },
+                Stage {
+                    steps: vec![Step {
+                        time: 30,
+                        temperature: vec![60.0; 6],
+                        collect: Some(true),
+                        temp_increment: 0.5,
+                        temp_incrementcycle: 3,
+                        temp_incrementpoint: Some(1),
+                        time_increment: 0,
+                        time_incrementcycle: 2,
+                        time_incrementpoint: None,
+                        filters: vec![],
+                        pcr: false,
+                        quant: true,
+                        tiff: false,
+                        repeat: 1,
+                        default_filters: vec![],
+                    }],
+                    repeat: 40,
+                    index: Some(2),
+                    label: None,
+                    default_filters: vec![],
+                },
+            ],
+            name: "roundtrip_test".to_string(),
+            volume: 25.0,
+            runmode: "Standard".to_string(),
+            filters: vec!["x4-m4".to_string()],
+            covertemperature: 105.0,
+            prerun: vec![],
+            postrun: vec![],
+        };
+
+        let (tc_xml, _) = original.to_xml_pair(105.0, "0.14.0", None);
+        let parsed = Protocol::from_xml_str(&tc_xml).unwrap();
+
+        assert_eq!(parsed.name, "roundtrip_test");
+        assert_eq!(parsed.volume, 25.0);
+        assert_eq!(parsed.covertemperature, 105.0);
+        assert_eq!(parsed.filters, vec!["x4-m4"]);
+        assert_eq!(parsed.stages.len(), 2);
+        assert_eq!(parsed.stages[0].repeat, 1);
+        assert_eq!(parsed.stages[0].steps[0].time, 120);
+        assert_eq!(parsed.stages[1].repeat, 40);
+        assert_eq!(parsed.stages[1].steps[0].time, 30);
+        assert_eq!(parsed.stages[1].steps[0].temp_increment, 0.5);
+    }
+
+    #[test]
+    fn test_parse_qsl_tcprotocol_command() {
+        let xml = r#"<QSTCProtocol>
+            <QSLibNote>Test note</QSLibNote>
+            <QSLibProtocolCommand>PROTOCOL -volume=50 test_proto &lt;multiline.protocol&gt;...</QSLibProtocolCommand>
+            <QSLibVerson>0.14.0</QSLibVerson>
+        </QSTCProtocol>"#;
+
+        let cmd = Protocol::parse_qsl_tcprotocol_command(xml);
+        assert!(cmd.is_some());
+        assert!(cmd.unwrap().starts_with("PROTOCOL"));
+    }
+
+    #[test]
+    fn test_parse_qsl_machine_connection() {
+        let xml = r#"<QSTCProtocol>
+            <QSLibNote>Test</QSLibNote>
+            <MachineConnection>host = "192.168.1.1"
+port = 7443
+</MachineConnection>
+        </QSTCProtocol>"#;
+
+        let mc = Protocol::parse_qsl_machine_connection(xml);
+        assert!(mc.is_some());
+        assert!(mc.unwrap().contains("host = \"192.168.1.1\""));
+    }
+
+    #[test]
+    fn test_parse_qsl_no_command() {
+        let xml = "<QSTCProtocol><QSLibNote>no command</QSLibNote></QSTCProtocol>";
+        assert!(Protocol::parse_qsl_tcprotocol_command(xml).is_none());
+    }
+
+    #[test]
+    fn test_extract_qsl_element_entities() {
+        let xml = r#"<Root><Cmd>hello &lt;world&gt; end</Cmd></Root>"#;
+        let result = Protocol::extract_qsl_element(xml, "Cmd");
+        assert_eq!(result, Some("hello <world> end".to_string()));
+    }
+
+    #[test]
+    fn test_parse_filter_for_xml() {
+        let (ex, em) = parse_filter_for_xml("x4-m4");
+        assert_eq!(ex, "x4");
+        assert_eq!(em, "m4");
+
+        let (ex, em) = parse_filter_for_xml("4,1,4");
+        assert_eq!(ex, "x4");
+        assert_eq!(em, "m4");
     }
 }
 

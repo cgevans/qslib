@@ -445,6 +445,132 @@ impl EdsArchive {
     }
 }
 
+impl EdsArchive {
+    /// Create a new, empty EDS archive with template XML files.
+    pub fn create_new(plate_type: u32, version: &str) -> Result<Self, EdsError> {
+        use crate::experiment_xml;
+
+        let tmp_dir = tempfile::TempDir::new()
+            .map_err(|e| EdsError::Io(format!("Failed to create temp dir: {}", e)))?;
+        let base_dir = tmp_dir.path().to_path_buf();
+        let eds_dir = base_dir.join("apldbio").join("sds");
+        std::fs::create_dir_all(&eds_dir)
+            .map_err(|e| EdsError::Io(format!("mkdir: {}", e)))?;
+
+        // Write template files
+        let experiment_xml = experiment_xml::new_experiment_xml(plate_type);
+        std::fs::write(eds_dir.join("experiment.xml"), &experiment_xml)
+            .map_err(|e| EdsError::Io(format!("write experiment.xml: {}", e)))?;
+
+        let plate_setup_xml = experiment_xml::new_plate_setup_xml(plate_type);
+        std::fs::write(eds_dir.join("plate_setup.xml"), &plate_setup_xml)
+            .map_err(|e| EdsError::Io(format!("write plate_setup.xml: {}", e)))?;
+
+        // Empty tcprotocol/qsl-tcprotocol placeholders
+        std::fs::write(eds_dir.join("tcprotocol.xml"), "<TCProtocol/>")
+            .map_err(|e| EdsError::Io(format!("write tcprotocol.xml: {}", e)))?;
+        std::fs::write(eds_dir.join("qsl-tcprotocol.xml"), "<QSLTCProtocol/>")
+            .map_err(|e| EdsError::Io(format!("write qsl-tcprotocol.xml: {}", e)))?;
+
+        // Manifest
+        let manifest = experiment_xml::new_manifest(version);
+        std::fs::write(eds_dir.join("Manifest.mf"), &manifest)
+            .map_err(|e| EdsError::Io(format!("write Manifest.mf: {}", e)))?;
+
+        // Analysis protocol
+        let analysis = experiment_xml::analysis_protocol_xml();
+        std::fs::write(eds_dir.join("analysis_protocol.xml"), &analysis)
+            .map_err(|e| EdsError::Io(format!("write analysis_protocol.xml: {}", e)))?;
+
+        let manifest_map = Self::parse_manifest(&base_dir)?;
+        let plate_type_id = match plate_type {
+            384 => Some("TYPE_16X24".to_string()),
+            _ => Some("TYPE_8X12".to_string()),
+        };
+
+        Ok(EdsArchive {
+            base_dir,
+            _tmp_dir: Some(tmp_dir),
+            name: String::new(),
+            operator: None,
+            plate_type: Some(plate_type),
+            plate_type_id,
+            spec_major_version: 1,
+            spec_version: "1.3.2".to_string(),
+            created_time_ms: None,
+            run_start_time_ms: None,
+            run_end_time_ms: None,
+            run_state: "INIT".to_string(),
+            write_software: None,
+            manifest: manifest_map,
+        })
+    }
+
+    /// Update experiment.xml with new metadata, preserving unknown elements.
+    pub fn update_experiment_xml(
+        &mut self,
+        name: &str,
+        operator: Option<&str>,
+        created_time_ms: i64,
+        modified_time_ms: i64,
+        run_start_time_ms: Option<i64>,
+        run_end_time_ms: Option<i64>,
+        run_state: &str,
+        software_version: &str,
+    ) -> Result<(), EdsError> {
+        use crate::experiment_xml;
+
+        let xml_path = self.eds_dir().join("experiment.xml");
+        let raw_xml = std::fs::read_to_string(&xml_path)
+            .map_err(|e| EdsError::Io(format!("read experiment.xml: {}", e)))?;
+
+        let updated = experiment_xml::update_experiment_xml(
+            &raw_xml,
+            name,
+            operator,
+            created_time_ms,
+            modified_time_ms,
+            run_start_time_ms,
+            run_end_time_ms,
+            run_state,
+            software_version,
+        )?;
+
+        std::fs::write(&xml_path, &updated)
+            .map_err(|e| EdsError::Io(format!("write experiment.xml: {}", e)))?;
+
+        // Update cached metadata
+        self.name = name.to_string();
+        self.operator = operator.map(|s| s.to_string());
+        self.created_time_ms = Some(created_time_ms as f64);
+        self.run_start_time_ms = run_start_time_ms.map(|t| t as f64);
+        self.run_end_time_ms = run_end_time_ms.map(|t| t as f64);
+        self.run_state = run_state.to_string();
+        self.write_software = Some(software_version.to_string());
+
+        Ok(())
+    }
+
+    /// Write tcprotocol.xml and qsl-tcprotocol.xml from a Protocol.
+    pub fn write_tcprotocol(
+        &self,
+        protocol: &crate::protocol::Protocol,
+        cover_temperature: f64,
+        version: &str,
+        machine_toml: Option<&str>,
+    ) -> Result<(), EdsError> {
+        let (tc_xml, qstc_xml) = protocol.to_xml_pair(cover_temperature, version, machine_toml);
+
+        let eds = self.eds_dir();
+        std::fs::write(eds.join("tcprotocol.xml"), &tc_xml)
+            .map_err(|e| EdsError::Io(format!("write tcprotocol.xml: {}", e)))?;
+        std::fs::write(eds.join("qsl-tcprotocol.xml"), &qstc_xml)
+            .map_err(|e| EdsError::Io(format!("write qsl-tcprotocol.xml: {}", e)))?;
+
+        Ok(())
+    }
+}
+
 /// Walk a directory recursively, returning file/dir paths.
 fn walkdir(dir: &Path) -> Result<Vec<PathBuf>, EdsError> {
     let mut entries = Vec::new();
@@ -630,6 +756,49 @@ impl EdsArchive {
     #[pyo3(name = "write_file")]
     fn py_write_file(&self, relative_path: &str, data: &[u8]) -> PyResult<()> {
         self.write_file(relative_path, data).map_err(|e| e.into())
+    }
+
+    /// Create a new empty EDS archive.
+    #[staticmethod]
+    #[pyo3(name = "create_new")]
+    fn py_create_new(plate_type: u32, version: &str) -> PyResult<Self> {
+        Self::create_new(plate_type, version).map_err(|e| e.into())
+    }
+
+    /// Update experiment.xml metadata preserving unknown elements.
+    #[pyo3(name = "update_experiment_xml")]
+    #[pyo3(signature = (name, operator=None, created_time_ms=0, modified_time_ms=0,
+        run_start_time_ms=None, run_end_time_ms=None, run_state="INIT", software_version="QSLib"))]
+    #[allow(clippy::too_many_arguments)]
+    fn py_update_experiment_xml(
+        &mut self,
+        name: &str,
+        operator: Option<&str>,
+        created_time_ms: i64,
+        modified_time_ms: i64,
+        run_start_time_ms: Option<i64>,
+        run_end_time_ms: Option<i64>,
+        run_state: &str,
+        software_version: &str,
+    ) -> PyResult<()> {
+        self.update_experiment_xml(
+            name, operator, created_time_ms, modified_time_ms,
+            run_start_time_ms, run_end_time_ms, run_state, software_version,
+        ).map_err(|e| e.into())
+    }
+
+    /// Write tcprotocol.xml and qsl-tcprotocol.xml from a Protocol.
+    #[pyo3(name = "write_tcprotocol")]
+    #[pyo3(signature = (protocol, cover_temperature, version, machine_toml=None))]
+    fn py_write_tcprotocol(
+        &self,
+        protocol: &crate::python::PyProtocol,
+        cover_temperature: f64,
+        version: &str,
+        machine_toml: Option<&str>,
+    ) -> PyResult<()> {
+        self.write_tcprotocol(&protocol.protocol, cover_temperature, version, machine_toml)
+            .map_err(|e| e.into())
     }
 
     fn __repr__(&self) -> String {
