@@ -746,6 +746,7 @@ impl RoiCalibration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::require_tiff_eds;
     use std::io::Read;
 
     fn read_from_test_eds(path: &str) -> String {
@@ -917,9 +918,7 @@ mod tests {
         assert!(cal.offset.len() >= 10);
     }
 
-    fn read_from_tiff_eds(path: &str) -> String {
-        let eds_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tiff-collection.eds");
+    fn read_from_tiff_eds(eds_path: &std::path::Path, path: &str) -> String {
         let file = std::fs::File::open(eds_path).expect("tiff-collection.eds not found");
         let mut archive = ::zip::ZipArchive::new(file).expect("invalid zip");
         let mut entry = archive.by_name(path).expect("file not found in EDS");
@@ -930,7 +929,8 @@ mod tests {
 
     #[test]
     fn test_parse_roi_calibration() {
-        let text = read_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+        let eds_path = require_tiff_eds!();
+        let text = read_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let cal = RoiCalibration::parse(&text).unwrap();
 
         assert_eq!(cal.n_rows, 8);
@@ -943,7 +943,8 @@ mod tests {
 
     #[test]
     fn test_roi_filter_sets() {
-        let text = read_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+        let eds_path = require_tiff_eds!();
+        let text = read_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let cal = RoiCalibration::parse(&text).unwrap();
 
         // Should have x1-m1, x2-m2, x3-m3, x4-m4, x5-m5, x5-m6
@@ -957,7 +958,8 @@ mod tests {
 
     #[test]
     fn test_roi_position_dimensions() {
-        let text = read_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+        let eds_path = require_tiff_eds!();
+        let text = read_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let cal = RoiCalibration::parse(&text).unwrap();
 
         let x4m4 = FilterSet::new(4, 4, true);
@@ -982,7 +984,8 @@ mod tests {
 
     #[test]
     fn test_roi_get_for_emission() {
-        let text = read_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+        let eds_path = require_tiff_eds!();
+        let text = read_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let cal = RoiCalibration::parse(&text).unwrap();
 
         // m4 should map to x4-m4
@@ -999,7 +1002,8 @@ mod tests {
 
     #[test]
     fn test_roi_diameter_values() {
-        let text = read_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+        let eds_path = require_tiff_eds!();
+        let text = read_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let cal = RoiCalibration::parse(&text).unwrap();
 
         // ROI diameters should be around 35-36 pixels

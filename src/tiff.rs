@@ -245,11 +245,10 @@ pub fn py_decode_tiff<'py>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::require_tiff_eds;
     use std::io::Read;
 
-    fn read_bytes_from_tiff_eds(path: &str) -> Vec<u8> {
-        let eds_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tiff-collection.eds");
+    fn read_bytes_from_tiff_eds(eds_path: &std::path::Path, path: &str) -> Vec<u8> {
         let file = std::fs::File::open(eds_path).expect("tiff-collection.eds not found");
         let mut archive = ::zip::ZipArchive::new(file).expect("invalid zip");
         let mut entry = archive.by_name(path).expect("file not found in EDS");
@@ -258,13 +257,14 @@ mod tests {
         content
     }
 
-    fn read_string_from_tiff_eds(path: &str) -> String {
-        String::from_utf8(read_bytes_from_tiff_eds(path)).expect("invalid utf8")
+    fn read_string_from_tiff_eds(eds_path: &std::path::Path, path: &str) -> String {
+        String::from_utf8(read_bytes_from_tiff_eds(eds_path, path)).expect("invalid utf8")
     }
 
     #[test]
     fn test_decode_tiff() {
-        let data = read_bytes_from_tiff_eds("apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
+        let eds_path = require_tiff_eds!();
+        let data = read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
         let (pixels, width, height) = decode_tiff_u16(&data).unwrap();
         assert_eq!(width, 648);
         assert_eq!(height, 486);
@@ -273,9 +273,10 @@ mod tests {
 
     #[test]
     fn test_apply_roi_to_tiff() {
+        let eds_path = require_tiff_eds!();
         let tiff_data =
-            read_bytes_from_tiff_eds("apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
-        let roi_text = read_string_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
+        let roi_text = read_string_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let roi = RoiCalibration::parse(&roi_text).unwrap();
 
         let wells = apply_roi_calibration_to_tiff(&tiff_data, &roi, 4, None).unwrap();
@@ -301,17 +302,18 @@ mod tests {
 
     #[test]
     fn test_tiff_roi_matches_quant() {
+        let eds_path = require_tiff_eds!();
         // Compare TIFF+ROI result against the quant file for the same image
         let tiff_data =
-            read_bytes_from_tiff_eds("apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
-        let roi_text = read_string_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
+        let roi_text = read_string_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let roi = RoiCalibration::parse(&roi_text).unwrap();
 
         let tiff_wells = apply_roi_calibration_to_tiff(&tiff_data, &roi, 4, None).unwrap();
 
         // Parse the corresponding quant file
         let quant_data =
-            read_bytes_from_tiff_eds("apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E1.quant");
+            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E1.quant");
         let qf = crate::quant::QuantFile::parse(&quant_data).unwrap();
 
         // Verify exact match for all 96 wells
@@ -352,16 +354,17 @@ mod tests {
 
     #[test]
     fn test_tiff_roi_matches_quant_e2() {
+        let eds_path = require_tiff_eds!();
         // Also verify E2 (longer exposure) matches
         let tiff_data =
-            read_bytes_from_tiff_eds("apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E2.tiff");
-        let roi_text = read_string_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E2.tiff");
+        let roi_text = read_string_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let roi = RoiCalibration::parse(&roi_text).unwrap();
 
         let tiff_wells = apply_roi_calibration_to_tiff(&tiff_data, &roi, 4, None).unwrap();
 
         let quant_data =
-            read_bytes_from_tiff_eds("apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E2.quant");
+            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E2.quant");
         let qf = crate::quant::QuantFile::parse(&quant_data).unwrap();
 
         for (i, (tw, qw)) in tiff_wells.iter().zip(qf.wells.iter()).enumerate() {
@@ -386,8 +389,9 @@ mod tests {
 
     #[test]
     fn test_all_tiffs_match_quants() {
+        let eds_path = require_tiff_eds!();
         // Verify all 6 TIFFs in tiff-collection.eds match their quant files
-        let roi_text = read_string_from_tiff_eds("apldbio/sds/calibrations/roi.ini");
+        let roi_text = read_string_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let roi = RoiCalibration::parse(&roi_text).unwrap();
 
         let tiff_quant_pairs = [
@@ -400,10 +404,10 @@ mod tests {
         ];
 
         for (tiff_path, quant_path) in &tiff_quant_pairs {
-            let tiff_data = read_bytes_from_tiff_eds(tiff_path);
+            let tiff_data = read_bytes_from_tiff_eds(&eds_path, tiff_path);
             let tiff_wells = apply_roi_calibration_to_tiff(&tiff_data, &roi, 4, None).unwrap();
 
-            let quant_data = read_bytes_from_tiff_eds(quant_path);
+            let quant_data = read_bytes_from_tiff_eds(&eds_path, quant_path);
             let qf = crate::quant::QuantFile::parse(&quant_data).unwrap();
 
             assert_eq!(tiff_wells.len(), qf.wells.len(), "Well count mismatch for {}", tiff_path);

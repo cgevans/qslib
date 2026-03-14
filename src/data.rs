@@ -1119,6 +1119,7 @@ pub fn py_parse_filterdata_v2_json(json_str: &str, plate_type: u32) -> PyResult<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::require_tiff_eds;
 
     #[test]
     fn test_parse_filter_data() {
@@ -1621,8 +1622,7 @@ mod tests {
 
     #[test]
     fn test_reconstruct_filterdata_from_tiffs_matches_quants() {
-        let tiff_eds_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tiff-collection.eds");
+        let tiff_eds_path = require_tiff_eds!();
 
         // Reconstruct from quant files
         let from_quants = reconstruct_filterdata_from_eds(&tiff_eds_path).unwrap();

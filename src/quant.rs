@@ -1417,6 +1417,7 @@ impl QuantDataCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::require_tiff_eds;
     use std::io::Read;
 
     fn read_quant_from_test_eds(path: &str) -> Vec<u8> {
@@ -1642,9 +1643,8 @@ mod tests {
 
     #[test]
     fn test_parse_quant_xml() {
-        let eds_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tiff-collection.eds");
-        let file = std::fs::File::open(eds_path).expect("tiff-collection.eds not found");
+        let eds_path = require_tiff_eds!();
+        let file = std::fs::File::open(&eds_path).expect("tiff-collection.eds not found");
         let mut archive = ::zip::ZipArchive::new(file).expect("invalid zip");
         let mut entry = archive
             .by_name("apldbio/sds/quant/1-1-1-1-m4-x1.xml")
@@ -1675,13 +1675,10 @@ mod tests {
         assert!((e2.exposure_ms - 550.0).abs() < 0.01);
     }
 
-    fn tiff_eds_path() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tiff-collection.eds")
-    }
-
     #[test]
     fn test_from_tiffs_in_eds() {
-        let coll = QuantDataCollection::from_tiffs_in_eds(tiff_eds_path()).unwrap();
+        let eds_path = require_tiff_eds!();
+        let coll = QuantDataCollection::from_tiffs_in_eds(&eds_path).unwrap();
 
         // tiff-collection.eds has 3 collection points × 1 filter × 2 exposures = 6 entries
         assert_eq!(coll.len(), 6);
@@ -1695,9 +1692,10 @@ mod tests {
 
     #[test]
     fn test_from_tiffs_matches_from_quants() {
+        let eds_path = require_tiff_eds!();
         // TIFF-derived quant data should exactly match the .quant file data
-        let tiff_coll = QuantDataCollection::from_tiffs_in_eds(tiff_eds_path()).unwrap();
-        let quant_coll = QuantDataCollection::from_eds(tiff_eds_path()).unwrap();
+        let tiff_coll = QuantDataCollection::from_tiffs_in_eds(&eds_path).unwrap();
+        let quant_coll = QuantDataCollection::from_eds(&eds_path).unwrap();
 
         assert_eq!(tiff_coll.len(), quant_coll.len());
 
@@ -1722,8 +1720,9 @@ mod tests {
 
     #[test]
     fn test_from_tiffs_polars_matches() {
-        let tiff_coll = QuantDataCollection::from_tiffs_in_eds(tiff_eds_path()).unwrap();
-        let quant_coll = QuantDataCollection::from_eds(tiff_eds_path()).unwrap();
+        let eds_path = require_tiff_eds!();
+        let tiff_coll = QuantDataCollection::from_tiffs_in_eds(&eds_path).unwrap();
+        let quant_coll = QuantDataCollection::from_eds(&eds_path).unwrap();
 
         let tiff_df = tiff_coll.to_polars().unwrap();
         let quant_df = quant_coll.to_polars().unwrap();

@@ -11,6 +11,7 @@ python-source = "python"
 module-name = "qslib._qslib"
 bindings = "pyo3"
 features = ["python"]
+exclude = ["tiff-collection.eds"]
 
 [project]
 name = "qslib"
@@ -93,6 +94,7 @@ dev = [
     "qslib[monitor]",
     "altair>=6.0.0",
     "maturin>=1.12.6",
+    "mypy>=1.19.1",
 ]
 docs = [
     "myst_parser",

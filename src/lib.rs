@@ -14,6 +14,10 @@ pub mod protocol;
 pub mod quant;
 pub mod tiff;
 
+#[cfg(test)]
+#[macro_use]
+mod test_utils;
+
 #[cfg(feature = "python")]
 pub mod python;
 
