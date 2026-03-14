@@ -152,7 +152,7 @@ def test_proto() -> None:
 
     assert str(prot) != str(prot_explicitfilter)
 
-    prot_fromstring = Protocol.from_scpicommand(SCPICommand.from_string(PROTSTRING))
+    prot_fromstring = Protocol.from_scpi_string(PROTSTRING)
 
     assert prot_explicitfilter.to_scpicommand() == prot_fromstring.to_scpicommand()
 
@@ -198,10 +198,10 @@ def test_exp_saveload_proto(tmp_path: pathlib.Path) -> None:
     exp.save_file(tmp_path / "test_proto.eds")
     exp2 = Experiment.from_file(tmp_path / "test_proto.eds")
 
-    # FIXME: for now, we don't do a great job with save/load for default filters
+    # Compare via Rust serialization for consistent formatting (int vs float)
     assert (
-        exp.protocol.to_scpicommand().to_string()
-        == exp2.protocol.to_scpicommand().to_string()
+        exp.protocol.to_scpi_string()
+        == exp2.protocol.to_scpi_string()
     )
 
 
@@ -426,7 +426,7 @@ def test_rust_serialization_roundtrip():
     assert rust_str is not None, "Rust serialization should succeed"
 
     # Parse it back
-    prot_back = Protocol.from_scpicommand(SCPICommand.from_string(rust_str))
+    prot_back = Protocol.from_scpi_string(rust_str)
 
     # Verify key properties
     assert prot_back.name == "test_rust"
@@ -453,7 +453,7 @@ def test_rust_serialization_default_filters():
     assert "qslib:default_filters" in rust_str
 
     # Round-trip
-    prot_back = Protocol.from_scpicommand(SCPICommand.from_string(rust_str))
+    prot_back = Protocol.from_scpi_string(rust_str)
     assert len(prot_back.stages) == 1
     assert prot_back.stages[0].repeat == 3
 

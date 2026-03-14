@@ -397,8 +397,8 @@ impl ProtoCommand for HoldAndCollect {
         };
 
         let increment = get_option_i64(&cmd.options, "increment", 0, cmd)?;
-        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 1, cmd)?;
-        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 1, cmd)?;
+        let incrementcycle = get_option_i64(&cmd.options, "incrementcycle", 2, cmd)?;
+        let incrementstep = get_option_i64(&cmd.options, "incrementstep", 2, cmd)?;
         let tiff = get_option_bool(&cmd.options, "tiff", false, cmd)?;
         let quant = get_option_bool(&cmd.options, "quant", true, cmd)?;
         let pcr = get_option_bool(&cmd.options, "pcr", false, cmd)?;
@@ -874,8 +874,8 @@ impl ProtoCommand for Step {
             if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
                 let r_temp = extract_temperature_list_from_args(&nested_commands[0].args, cmd, DEFAULT_NUM_ZONES)?;
                 let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0, cmd)?;
-                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1, cmd)?;
-                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1, cmd)?;
+                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 2, cmd)?;
+                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 2, cmd)?;
 
                 let hf_filters: Result<Vec<String>, ParseError> = nested_commands[1]
                     .args
@@ -888,8 +888,8 @@ impl ProtoCommand for Step {
 
                 let h_time = extract_i64(&nested_commands[2].args[0], cmd)?;
                 let h_increment = get_option_i64(&nested_commands[2].options, "increment", 0, cmd)?;
-                let h_incrementcycle = get_option_i64(&nested_commands[2].options, "incrementcycle", 1, cmd)?;
-                let h_incrementstep = get_option_i64(&nested_commands[2].options, "incrementstep", 1, cmd)?;
+                let h_incrementcycle = get_option_i64(&nested_commands[2].options, "incrementcycle", 2, cmd)?;
+                let h_incrementstep = get_option_i64(&nested_commands[2].options, "incrementstep", 2, cmd)?;
                 let h_tiff = get_option_bool(&nested_commands[2].options, "tiff", false, cmd)?;
                 let h_quant = get_option_bool(&nested_commands[2].options, "quant", true, cmd)?;
                 let h_pcr = get_option_bool(&nested_commands[2].options, "pcr", false, cmd)?;
@@ -938,8 +938,8 @@ impl ProtoCommand for Step {
             if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
                 let r_temp = extract_temperature_list_from_args(&nested_commands[0].args, cmd, DEFAULT_NUM_ZONES)?;
                 let r_increment = get_option_f64(&nested_commands[0].options, "increment", 0.0, cmd)?;
-                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 1, cmd)?;
-                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 1, cmd)?;
+                let r_incrementcycle = get_option_i64(&nested_commands[0].options, "incrementcycle", 2, cmd)?;
+                let r_incrementstep = get_option_i64(&nested_commands[0].options, "incrementstep", 2, cmd)?;
 
                 let h_time = extract_i64_option(&nested_commands[1].args[0], cmd)?;
                 if h_time.is_none() {
@@ -949,8 +949,8 @@ impl ProtoCommand for Step {
                     });
                 }
                 let h_increment = get_option_i64(&nested_commands[1].options, "increment", 0, cmd)?;
-                let h_incrementcycle = get_option_i64(&nested_commands[1].options, "incrementcycle", 1, cmd)?;
-                let h_incrementstep = get_option_i64(&nested_commands[1].options, "incrementstep", 1, cmd)?;
+                let h_incrementcycle = get_option_i64(&nested_commands[1].options, "incrementcycle", 2, cmd)?;
+                let h_incrementstep = get_option_i64(&nested_commands[1].options, "incrementstep", 2, cmd)?;
 
                 let time_incrementpoint = if h_incrementstep <= repeat {
                     Some(h_incrementstep)
@@ -991,9 +991,27 @@ impl ProtoCommand for Step {
     }
 }
 
+/// A step within a stage: either a standard Step or opaque custom SCPI commands.
+#[derive(Debug, Clone)]
+pub enum StageStep {
+    Standard(Step),
+    /// Opaque SCPI commands — generates placeholder XML.
+    Custom(Vec<Command>),
+}
+
+impl StageStep {
+    /// Returns a reference to the inner Step if this is a Standard step.
+    pub fn as_standard(&self) -> Option<&Step> {
+        match self {
+            StageStep::Standard(s) => Some(s),
+            StageStep::Custom(_) => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Stage {
-    pub steps: Vec<Step>,
+    pub steps: Vec<StageStep>,
     pub repeat: i64,
     pub index: Option<i64>,
     pub label: Option<String>,
@@ -1042,8 +1060,8 @@ impl Stage {
                     if cmd1_name == "RAMP" && (cmd2_name == "HACFILT" || cmd2_name == "HOLDANDCOLLECTFILTER") && cmd3_name == "HOLDANDCOLLECT" {
                         let r_temp = extract_temperature_list_from_args(&nested_step_commands[0].args, cmd, DEFAULT_NUM_ZONES)?;
                         let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0, cmd)?;
-                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1, cmd)?;
-                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1, cmd)?;
+                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 2, cmd)?;
+                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 2, cmd)?;
 
                         let hf_filters: Result<Vec<String>, ProtocolParseError> = nested_step_commands[1]
                             .args
@@ -1056,8 +1074,8 @@ impl Stage {
 
                         let h_time = extract_i64(&nested_step_commands[2].args[0], cmd)?;
                         let h_increment = get_option_i64(&nested_step_commands[2].options, "increment", 0, cmd)?;
-                        let h_incrementcycle = get_option_i64(&nested_step_commands[2].options, "incrementcycle", 1, cmd)?;
-                        let h_incrementstep = get_option_i64(&nested_step_commands[2].options, "incrementstep", 1, cmd)?;
+                        let h_incrementcycle = get_option_i64(&nested_step_commands[2].options, "incrementcycle", 2, cmd)?;
+                        let h_incrementstep = get_option_i64(&nested_step_commands[2].options, "incrementstep", 2, cmd)?;
                         let h_tiff = get_option_bool(&nested_step_commands[2].options, "tiff", false, cmd)?;
                         let h_quant = get_option_bool(&nested_step_commands[2].options, "quant", true, cmd)?;
                         let h_pcr = get_option_bool(&nested_step_commands[2].options, "pcr", false, cmd)?;
@@ -1081,7 +1099,7 @@ impl Stage {
                             None
                         };
 
-                        steps.push(Step {
+                        steps.push(StageStep::Standard(Step {
                             time: h_time,
                             temperature: r_temp,
                             collect: Some(collect),
@@ -1097,7 +1115,7 @@ impl Stage {
                             tiff: h_tiff,
                             repeat,
                             default_filters,
-                        });
+                        }));
                         continue;
                     }
                 } else if nested_step_commands.len() == 2 {
@@ -1107,16 +1125,16 @@ impl Stage {
                     if cmd1_name == "RAMP" && cmd2_name == "HOLD" {
                         let r_temp = extract_temperature_list_from_args(&nested_step_commands[0].args, cmd, DEFAULT_NUM_ZONES)?;
                         let r_increment = get_option_f64(&nested_step_commands[0].options, "increment", 0.0, cmd)?;
-                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 1, cmd)? as i64;
-                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 1, cmd)? as i64;
+                        let r_incrementcycle = get_option_i64(&nested_step_commands[0].options, "incrementcycle", 2, cmd)? as i64;
+                        let r_incrementstep = get_option_i64(&nested_step_commands[0].options, "incrementstep", 2, cmd)? as i64;
 
                         let h_time = extract_i64_option(&nested_step_commands[1].args[0], cmd)?;
                         if h_time.is_none() {
                             continue;
                         }
                         let h_increment = get_option_i64(&nested_step_commands[1].options, "increment", 0, cmd)?;
-                        let h_incrementcycle = get_option_i64(&nested_step_commands[1].options, "incrementcycle", 1, cmd)? as i64;
-                        let h_incrementstep = get_option_i64(&nested_step_commands[1].options, "incrementstep", 1, cmd)? as i64;
+                        let h_incrementcycle = get_option_i64(&nested_step_commands[1].options, "incrementcycle", 2, cmd)? as i64;
+                        let h_incrementstep = get_option_i64(&nested_step_commands[1].options, "incrementstep", 2, cmd)? as i64;
 
                         let time_incrementpoint = if h_incrementstep <= repeat {
                             Some(h_incrementstep)
@@ -1130,7 +1148,7 @@ impl Stage {
                             None
                         };
 
-                        steps.push(Step {
+                        steps.push(StageStep::Standard(Step {
                             time: h_time.unwrap(),
                             temperature: r_temp,
                             collect: Some(false),
@@ -1146,10 +1164,13 @@ impl Stage {
                             tiff: false,
                             repeat,
                             default_filters: Vec::new(),
-                        });
+                        }));
                         continue;
                     }
                 }
+                // Unrecognized step pattern — capture as Custom
+                steps.push(StageStep::Custom(nested_step_commands));
+                continue;
             }
             return Err(ProtocolParseError::UnexpectedStructure {
                 message: format!("Stage step must be a valid Step, got: {}", get_command_name(step_cmd)),
@@ -1161,13 +1182,15 @@ impl Stage {
 
         let mut default_filters = Vec::new();
         for step in &steps {
-            if !step.default_filters.is_empty() {
-                if default_filters.is_empty() {
-                    default_filters = step.default_filters.clone();
-                } else if default_filters != step.default_filters {
-                    return Err(ProtocolParseError::InconsistentDefaultFilters {
-                        protocol_string: protocol_string.clone(),
-                    });
+            if let StageStep::Standard(step) = step {
+                if !step.default_filters.is_empty() {
+                    if default_filters.is_empty() {
+                        default_filters = step.default_filters.clone();
+                    } else if default_filters != step.default_filters {
+                        return Err(ProtocolParseError::InconsistentDefaultFilters {
+                            protocol_string: protocol_string.clone(),
+                        });
+                    }
                 }
             }
         }
@@ -1192,16 +1215,22 @@ impl Stage {
         let stepstrs: Vec<String> = self.steps.iter()
             .enumerate()
             .map(|(i, step)| {
-                let step_info = step.info_str(Some((i + 1) as i64), self.repeat);
+                let step_info = match step {
+                    StageStep::Standard(s) => s.info_str(Some((i + 1) as i64), self.repeat),
+                    StageStep::Custom(cmds) => format!("{}. Custom step of {} commands", i + 1, cmds.len()),
+                };
                 step_info.lines()
                     .map(|line| format!("    {}", line))
                     .collect::<Vec<String>>()
                     .join("\n")
             })
             .collect();
-        
+
         let total_duration: i64 = self.steps.iter()
-            .map(|s| s.time * self.repeat)
+            .map(|s| match s {
+                StageStep::Standard(s) => s.time * self.repeat,
+                StageStep::Custom(_) => 0,
+            })
             .sum();
         if total_duration > 0 {
             stagestr.push_str(&format!(" (total duration {})", format_duration(total_duration)));
@@ -1395,6 +1424,11 @@ impl Protocol {
                         })?;
                     let mut input = s.as_bytes();
                     while !input.is_empty() {
+                        // Skip leading whitespace/newlines
+                        while !input.is_empty() && (input[0] == b' ' || input[0] == b'\t' || input[0] == b'\n' || input[0] == b'\r') {
+                            input = &input[1..];
+                        }
+                        if input.is_empty() { break; }
                         match Command::parse(&mut input) {
                             Ok(cmd) => prerun.push(cmd),
                             Err(_) => break,
@@ -1415,6 +1449,11 @@ impl Protocol {
                             })?;
                         let mut input = s.as_bytes();
                         while !input.is_empty() {
+                            // Skip leading whitespace/newlines
+                            while !input.is_empty() && (input[0] == b' ' || input[0] == b'\t' || input[0] == b'\n' || input[0] == b'\r') {
+                                input = &input[1..];
+                            }
+                            if input.is_empty() { break; }
                             match Command::parse(&mut input) {
                                 Ok(cmd) => postrun.push(cmd),
                                 Err(_) => break,
@@ -1652,7 +1691,25 @@ impl Stage {
 
         let mut step_strs = String::new();
         for (i, step) in self.steps.iter().enumerate() {
-            step_strs.push_str(&step.to_scpi_string((i + 1) as i64, default_filters));
+            match step {
+                StageStep::Standard(s) => {
+                    step_strs.push_str(&s.to_scpi_string((i + 1) as i64, default_filters));
+                }
+                StageStep::Custom(cmds) => {
+                    let mut body = String::new();
+                    for cmd in cmds {
+                        let mut bytes = Vec::new();
+                        cmd.write_bytes(&mut bytes).unwrap();
+                        body.push_str(&String::from_utf8_lossy(&bytes));
+                        body.push('\n');
+                    }
+                    let wrapped = format!(
+                        "<multiline.step>\n{}</multiline.step>",
+                        indent_text(&body, "\t")
+                    );
+                    step_strs.push_str(&format!("STEP {} {}\n", i + 1, wrapped));
+                }
+            }
         }
 
         let mut parts = vec!["STAGE".to_string()];
@@ -1756,6 +1813,22 @@ impl Step {
     }
 }
 
+/// Write a placeholder TCStep XML element for a Custom step.
+fn write_custom_step_xml(writer: &mut Writer<Cursor<Vec<u8>>>) {
+    writer.create_element("TCStep").write_inner_content(|w| {
+        write_simple_element(w, "CollectionFlag", "0");
+        for _ in 0..DEFAULT_NUM_ZONES {
+            write_simple_element(w, "Temperature", "30");
+        }
+        write_simple_element(w, "HoldTime", "1");
+        write_simple_element(w, "ExtTemperature", "0");
+        write_simple_element(w, "ExtHoldTime", "0");
+        write_simple_element(w, "RampRate", "1.6");
+        write_simple_element(w, "RampRateUnit", "DEGREES_PER_SECOND");
+        Ok(())
+    }).unwrap();
+}
+
 impl Stage {
     /// Write this stage as a TCStage XML element.
     fn write_xml(&self, writer: &mut Writer<Cursor<Vec<u8>>>) {
@@ -1763,13 +1836,18 @@ impl Stage {
             write_simple_element(w, "StageFlag", "CYCLING");
             write_simple_element(w, "NumOfRepetitions", &format!("{}", self.repeat));
             for step in &self.steps {
-                step.write_xml(w);
+                match step {
+                    StageStep::Standard(s) => s.write_xml(w),
+                    StageStep::Custom(_) => write_custom_step_xml(w),
+                }
             }
-            // Determine starting cycle from steps
+            // Determine starting cycle from standard steps only
             let mut scycle: Option<i64> = None;
             for step in &self.steps {
-                for &c in &[step.temp_incrementcycle, step.time_incrementcycle] {
-                    scycle = Some(scycle.map_or(c, |prev| prev.min(c)));
+                if let StageStep::Standard(step) = step {
+                    for &c in &[step.temp_incrementcycle, step.time_incrementcycle] {
+                        scycle = Some(scycle.map_or(c, |prev| prev.min(c)));
+                    }
                 }
             }
             if let Some(c) = scycle {
@@ -2019,8 +2097,8 @@ impl Protocol {
                             in_tc_stage = false;
                             // Now resolve raw steps with stage-level settings
                             let etc = if stage_auto_delta { stage_starting_cycle } else { 1 };
-                            let resolved_steps: Vec<Step> = raw_steps.drain(..).map(|rs| {
-                                Step {
+                            let resolved_steps: Vec<StageStep> = raw_steps.drain(..).map(|rs| {
+                                StageStep::Standard(Step {
                                     time: rs.hold_time,
                                     temperature: rs.temperatures,
                                     collect: Some(rs.collection_flag),
@@ -2036,7 +2114,7 @@ impl Protocol {
                                     tiff: false,
                                     repeat: 1,
                                     default_filters: vec![],
-                                }
+                                })
                             }).collect();
                             stages.push(Stage {
                                 steps: resolved_steps,
@@ -2368,7 +2446,7 @@ mod tests {
         assert_eq!(stage1.repeat, 1);
         assert_eq!(stage1.steps.len(), 1);
 
-        let step1 = &stage1.steps[0];
+        let step1 = stage1.steps[0].as_standard().unwrap();
         assert_eq!(step1.temperature, vec![60.0; 6]);
         assert_eq!(step1.time, 60);
         assert_eq!(step1.collect, Some(false));
@@ -2380,7 +2458,7 @@ mod tests {
         assert_eq!(stage2.repeat, 4);
         assert_eq!(stage2.steps.len(), 1);
 
-        let step2 = &stage2.steps[0];
+        let step2 = stage2.steps[0].as_standard().unwrap();
         assert_eq!(step2.temperature, vec![60.0; 6]);
         assert_eq!(step2.temp_increment, -1.0);
         assert_eq!(step2.time, 60);
@@ -2472,7 +2550,7 @@ mod tests {
         assert_eq!(stage1.label, Some("STAGE_1".to_string()));
         assert_eq!(stage1.repeat, 1);
         assert_eq!(stage1.steps.len(), 1);
-        let step1 = &stage1.steps[0];
+        let step1 = stage1.steps[0].as_standard().unwrap();
         assert_eq!(step1.temperature, vec![90.0; 6]);
         assert_eq!(step1.time, 600);
         assert_eq!(step1.collect, Some(false));
@@ -2483,7 +2561,7 @@ mod tests {
         assert_eq!(stage2.label, Some("STAGE_2".to_string()));
         assert_eq!(stage2.repeat, 30);
         assert_eq!(stage2.steps.len(), 1);
-        let step2 = &stage2.steps[0];
+        let step2 = stage2.steps[0].as_standard().unwrap();
         assert_eq!(step2.temperature, vec![90.0; 6]);
         assert_eq!(step2.temp_increment, -0.3448);
         assert_eq!(step2.time, 20);
@@ -2503,7 +2581,7 @@ mod tests {
         assert_eq!(stage3.index, Some(3));
         assert_eq!(stage3.label, Some("STAGE_3".to_string()));
         assert_eq!(stage3.repeat, 5);
-        let step3 = &stage3.steps[0];
+        let step3 = stage3.steps[0].as_standard().unwrap();
         assert_eq!(step3.temperature, vec![80.0; 6]);
         assert_eq!(step3.time, 60);
 
@@ -2512,7 +2590,7 @@ mod tests {
         assert_eq!(stage4.index, Some(4));
         assert_eq!(stage4.label, Some("STAGE_4".to_string()));
         assert_eq!(stage4.repeat, 550);
-        let step4 = &stage4.steps[0];
+        let step4 = stage4.steps[0].as_standard().unwrap();
         assert_eq!(step4.temperature, vec![80.0; 6]);
         assert_eq!(step4.temp_increment, -0.1002);
         assert_eq!(step4.time, 26);
@@ -2522,7 +2600,7 @@ mod tests {
         assert_eq!(stage5.index, Some(5));
         assert_eq!(stage5.label, Some("STAGE_5".to_string()));
         assert_eq!(stage5.repeat, 4);
-        let step5 = &stage5.steps[0];
+        let step5 = stage5.steps[0].as_standard().unwrap();
         assert_eq!(step5.temperature, vec![25.0; 6]);
         assert_eq!(step5.time, 1800);
     }
@@ -2592,34 +2670,34 @@ mod tests {
         
         // Stage 1: Simple hold
         assert_eq!(prot.stages[0].repeat, 1);
-        assert_eq!(prot.stages[0].steps[0].temperature, vec![80.0; 6]);
-        assert_eq!(prot.stages[0].steps[0].time, 300); // 5 minutes
-        assert_eq!(prot.stages[0].steps[0].collect, Some(false));
-        
+        assert_eq!(prot.stages[0].steps[0].as_standard().unwrap().temperature, vec![80.0; 6]);
+        assert_eq!(prot.stages[0].steps[0].as_standard().unwrap().time, 300); // 5 minutes
+        assert_eq!(prot.stages[0].steps[0].as_standard().unwrap().collect, Some(false));
+
         // Stage 2: Long hold with temp decrement
         assert_eq!(prot.stages[1].repeat, 27);
-        assert_eq!(prot.stages[1].steps[0].temp_increment, -1.0);
-        assert_eq!(prot.stages[1].steps[0].time, 147600); // 41 hours
-        
+        assert_eq!(prot.stages[1].steps[0].as_standard().unwrap().temp_increment, -1.0);
+        assert_eq!(prot.stages[1].steps[0].as_standard().unwrap().time, 147600); // 41 hours
+
         // Stage 3: Collecting stage
         assert_eq!(prot.stages[2].repeat, 5);
-        assert_eq!(prot.stages[2].steps[0].temperature, vec![53.0; 6]);
-        assert_eq!(prot.stages[2].steps[0].time, 120); // 2 minutes
-        assert_eq!(prot.stages[2].steps[0].collect, Some(true));
-        assert_eq!(prot.stages[2].steps[0].filters.len(), 2);
-        
+        assert_eq!(prot.stages[2].steps[0].as_standard().unwrap().temperature, vec![53.0; 6]);
+        assert_eq!(prot.stages[2].steps[0].as_standard().unwrap().time, 120); // 2 minutes
+        assert_eq!(prot.stages[2].steps[0].as_standard().unwrap().collect, Some(true));
+        assert_eq!(prot.stages[2].steps[0].as_standard().unwrap().filters.len(), 2);
+
         // Stage 4: Very long collection with zone temps
         assert_eq!(prot.stages[3].repeat, 20);
         let expected_temps = vec![51.2, 50.84, 50.480000000000004, 50.12, 49.76, 49.4];
-        assert_eq!(prot.stages[3].steps[0].temperature, expected_temps);
-        assert_eq!(prot.stages[3].steps[0].time, 64800000);
-        
+        assert_eq!(prot.stages[3].steps[0].as_standard().unwrap().temperature, expected_temps);
+        assert_eq!(prot.stages[3].steps[0].as_standard().unwrap().time, 64800000);
+
         // Stage 5-6: Similar structure
         assert_eq!(prot.stages[4].repeat, 20);
-        assert_eq!(prot.stages[4].steps[0].time, 86400); // 24 hours
-        
+        assert_eq!(prot.stages[4].steps[0].as_standard().unwrap().time, 86400); // 24 hours
+
         assert_eq!(prot.stages[5].repeat, 100);
-        assert_eq!(prot.stages[5].steps[0].time, 1200); // 20 minutes
+        assert_eq!(prot.stages[5].steps[0].as_standard().unwrap().time, 1200); // 20 minutes
     }
     
     /// Test format_duration helper matches Python _durformat behavior
@@ -2764,7 +2842,7 @@ mod tests {
         };
         
         let stage = Stage {
-            steps: vec![step],
+            steps: vec![StageStep::Standard(step)],
             repeat: 10,
             index: Some(1),
             label: Some("STAGE_1".to_string()),
@@ -3329,6 +3407,8 @@ mod tests {
             assert_eq!(s1.repeat, s2.repeat);
             assert_eq!(s1.steps.len(), s2.steps.len());
             for (st1, st2) in s1.steps.iter().zip(s2.steps.iter()) {
+                let st1 = st1.as_standard().unwrap();
+                let st2 = st2.as_standard().unwrap();
                 assert_eq!(st1.time, st2.time);
                 assert_eq!(st1.collect, st2.collect);
                 assert_eq!(st1.filters.len(), st2.filters.len());
@@ -3406,6 +3486,8 @@ mod tests {
             assert_eq!(s1.repeat, s2.repeat, "stage {} repeat", i);
             assert_eq!(s1.steps.len(), s2.steps.len(), "stage {} steps", i);
             for (j, (st1, st2)) in s1.steps.iter().zip(s2.steps.iter()).enumerate() {
+                let st1 = st1.as_standard().unwrap();
+                let st2 = st2.as_standard().unwrap();
                 assert_eq!(st1.time, st2.time, "stage {} step {} time", i, j);
                 assert_eq!(st1.collect, st2.collect, "stage {} step {} collect", i, j);
                 assert!((st1.temp_increment - st2.temp_increment).abs() < 0.001,
@@ -3445,9 +3527,9 @@ mod tests {
         assert_eq!(protocol.filters, vec!["m4,x4,quant"]);
 
         // Steps should have empty filters but non-empty default_filters
-        assert!(protocol.stages[0].steps[0].filters.is_empty());
-        assert_eq!(protocol.stages[0].steps[0].default_filters, vec!["m4,x4,quant"]);
-        assert_eq!(protocol.stages[0].steps[0].collect, Some(true));
+        assert!(protocol.stages[0].steps[0].as_standard().unwrap().filters.is_empty());
+        assert_eq!(protocol.stages[0].steps[0].as_standard().unwrap().default_filters, vec!["m4,x4,quant"]);
+        assert_eq!(protocol.stages[0].steps[0].as_standard().unwrap().collect, Some(true));
 
         // Serialize and re-parse
         let serialized = protocol.to_scpi_string();
@@ -3457,8 +3539,8 @@ mod tests {
         let protocol2 = Protocol::from_scpicommand(&cmd2).expect("Failed to parse re-serialized protocol");
 
         assert_eq!(protocol2.filters, vec!["m4,x4,quant"]);
-        assert!(protocol2.stages[0].steps[0].filters.is_empty());
-        assert_eq!(protocol2.stages[0].steps[0].default_filters, vec!["m4,x4,quant"]);
+        assert!(protocol2.stages[0].steps[0].as_standard().unwrap().filters.is_empty());
+        assert_eq!(protocol2.stages[0].steps[0].as_standard().unwrap().default_filters, vec!["m4,x4,quant"]);
     }
 
     #[test]
@@ -3489,7 +3571,7 @@ mod tests {
     fn test_to_xml_pair_basic() {
         let protocol = Protocol {
             stages: vec![Stage {
-                steps: vec![Step {
+                steps: vec![StageStep::Standard(Step {
                     time: 60,
                     temperature: vec![25.0; 6],
                     collect: Some(false),
@@ -3505,7 +3587,7 @@ mod tests {
                     tiff: false,
                     repeat: 1,
                     default_filters: vec![],
-                }],
+                })],
                 repeat: 1,
                 index: Some(1),
                 label: None,
@@ -3541,7 +3623,7 @@ mod tests {
     fn test_to_xml_pair_with_filters() {
         let protocol = Protocol {
             stages: vec![Stage {
-                steps: vec![Step {
+                steps: vec![StageStep::Standard(Step {
                     time: 30,
                     temperature: vec![60.0; 6],
                     collect: Some(true),
@@ -3557,7 +3639,7 @@ mod tests {
                     tiff: false,
                     repeat: 1,
                     default_filters: vec![],
-                }],
+                })],
                 repeat: 10,
                 index: Some(1),
                 label: None,
@@ -3637,8 +3719,8 @@ mod tests {
         assert_eq!(proto.stages.len(), 1);
         assert_eq!(proto.stages[0].repeat, 10);
         assert_eq!(proto.stages[0].steps.len(), 1);
-        assert_eq!(proto.stages[0].steps[0].time, 30);
-        assert_eq!(proto.stages[0].steps[0].temperature, vec![60.0; 6]);
+        assert_eq!(proto.stages[0].steps[0].as_standard().unwrap().time, 30);
+        assert_eq!(proto.stages[0].steps[0].as_standard().unwrap().temperature, vec![60.0; 6]);
     }
 
     #[test]
@@ -3671,7 +3753,7 @@ mod tests {
 
         let proto = Protocol::from_xml_str(xml).unwrap();
         assert_eq!(proto.filters, vec!["x4-m4", "x1-m1"]);
-        assert_eq!(proto.stages[0].steps[0].collect, Some(true));
+        assert_eq!(proto.stages[0].steps[0].as_standard().unwrap().collect, Some(true));
     }
 
     #[test]
@@ -3700,7 +3782,7 @@ mod tests {
 
         let proto = Protocol::from_xml_str(xml).unwrap();
         assert_eq!(proto.name, "tolerant_test");
-        assert_eq!(proto.stages[0].steps[0].time, 120);
+        assert_eq!(proto.stages[0].steps[0].as_standard().unwrap().time, 120);
     }
 
     #[test]
@@ -3709,7 +3791,7 @@ mod tests {
         let original = Protocol {
             stages: vec![
                 Stage {
-                    steps: vec![Step {
+                    steps: vec![StageStep::Standard(Step {
                         time: 120,
                         temperature: vec![95.0; 6],
                         collect: Some(false),
@@ -3725,14 +3807,14 @@ mod tests {
                         tiff: false,
                         repeat: 1,
                         default_filters: vec![],
-                    }],
+                    })],
                     repeat: 1,
                     index: Some(1),
                     label: None,
                     default_filters: vec![],
                 },
                 Stage {
-                    steps: vec![Step {
+                    steps: vec![StageStep::Standard(Step {
                         time: 30,
                         temperature: vec![60.0; 6],
                         collect: Some(true),
@@ -3748,7 +3830,7 @@ mod tests {
                         tiff: false,
                         repeat: 1,
                         default_filters: vec![],
-                    }],
+                    })],
                     repeat: 40,
                     index: Some(2),
                     label: None,
@@ -3773,10 +3855,10 @@ mod tests {
         assert_eq!(parsed.filters, vec!["x4-m4"]);
         assert_eq!(parsed.stages.len(), 2);
         assert_eq!(parsed.stages[0].repeat, 1);
-        assert_eq!(parsed.stages[0].steps[0].time, 120);
+        assert_eq!(parsed.stages[0].steps[0].as_standard().unwrap().time, 120);
         assert_eq!(parsed.stages[1].repeat, 40);
-        assert_eq!(parsed.stages[1].steps[0].time, 30);
-        assert_eq!(parsed.stages[1].steps[0].temp_increment, 0.5);
+        assert_eq!(parsed.stages[1].steps[0].as_standard().unwrap().time, 30);
+        assert_eq!(parsed.stages[1].steps[0].as_standard().unwrap().temp_increment, 0.5);
     }
 
     #[test]
@@ -3828,6 +3910,151 @@ port = 7443
         let (ex, em) = parse_filter_for_xml("4,1,4");
         assert_eq!(ex, "x4");
         assert_eq!(em, "m4");
+    }
+
+    // =====================================================================
+    // CustomStep tests
+    // =====================================================================
+
+    #[test]
+    fn test_custom_step_scpi_roundtrip() {
+        // A stage with an unrecognized step pattern should be parsed as Custom
+        let protocol_string = r#"PROTOCOL -volume=50.0 test_custom <multiline.protocol>
+	STAGE 1 STAGE_1 <multiline.stage>
+		STEP 1 <multiline.step>
+			LAMP ON
+			WAITFOR 10
+		</multiline.step>
+		STEP 2 <multiline.step>
+			RAMP 60 60 60 60 60 60
+			HOLD 60
+		</multiline.step>
+	</multiline.stage>
+</multiline.protocol>"#;
+
+        let cmd = Command::try_from(protocol_string).expect("Failed to parse");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("Failed to parse protocol");
+
+        assert_eq!(protocol.stages.len(), 1);
+        assert_eq!(protocol.stages[0].steps.len(), 2);
+
+        // First step should be Custom
+        assert!(protocol.stages[0].steps[0].as_standard().is_none());
+        if let StageStep::Custom(cmds) = &protocol.stages[0].steps[0] {
+            assert_eq!(cmds.len(), 2);
+        } else {
+            panic!("Expected Custom step");
+        }
+
+        // Second step should be Standard
+        let step2 = protocol.stages[0].steps[1].as_standard().unwrap();
+        assert_eq!(step2.time, 60);
+        assert_eq!(step2.temperature, vec![60.0; 6]);
+
+        // Serialize and re-parse
+        let serialized = protocol.to_scpi_string();
+        assert!(serialized.contains("LAMP"));
+        assert!(serialized.contains("WAITFOR"));
+
+        let cmd2 = Command::try_from(serialized.as_str()).expect("Failed to parse re-serialized");
+        let protocol2 = Protocol::from_scpicommand(&cmd2).expect("Failed to parse re-serialized protocol");
+
+        assert_eq!(protocol2.stages[0].steps.len(), 2);
+        assert!(protocol2.stages[0].steps[0].as_standard().is_none());
+        assert!(protocol2.stages[0].steps[1].as_standard().is_some());
+    }
+
+    #[test]
+    fn test_custom_step_placeholder_xml() {
+        // A protocol with a Custom step should generate placeholder XML
+        let protocol_string = r#"PROTOCOL -volume=50.0 test_custom_xml <multiline.protocol>
+	STAGE 1 STAGE_1 <multiline.stage>
+		STEP 1 <multiline.step>
+			LAMP ON
+		</multiline.step>
+	</multiline.stage>
+</multiline.protocol>"#;
+
+        let cmd = Command::try_from(protocol_string).expect("Failed to parse");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("Failed to parse protocol");
+
+        let (tc_xml, qstc_xml) = protocol.to_xml_pair(105.0, "0.14.0", None);
+
+        // Should still produce valid XML with a placeholder TCStep
+        assert!(tc_xml.contains("<TCStep>"));
+        assert!(tc_xml.contains("<HoldTime>1</HoldTime>"));
+        assert!(tc_xml.contains("<Temperature>30</Temperature>"));
+        // The qstc_xml should contain the real SCPI command
+        assert!(qstc_xml.contains("LAMP"));
+    }
+
+    #[test]
+    fn test_custom_step_info_str() {
+        let cmd = Command::new("LAMP");
+        let stage = Stage {
+            steps: vec![StageStep::Custom(vec![cmd])],
+            repeat: 1,
+            index: Some(1),
+            label: None,
+            default_filters: vec![],
+        };
+
+        let info = stage.info_str(Some(1));
+        assert!(info.contains("Custom step of 1 commands"));
+    }
+
+    #[test]
+    fn test_protocol_with_prerun_postrun_roundtrip() {
+        // Build a protocol with prerun/postrun directly, then roundtrip via SCPI
+        let prerun_cmd = Command::try_from("RAMP 25 25 25 25 25 25").unwrap();
+        let postrun_cmd = Command::try_from("RAMP 25 25 25 25 25 25").unwrap();
+
+        let protocol = Protocol {
+            stages: vec![Stage {
+                steps: vec![StageStep::Standard(Step {
+                    time: 60,
+                    temperature: vec![60.0; 6],
+                    collect: Some(false),
+                    temp_increment: 0.0,
+                    temp_incrementcycle: 2,
+                    temp_incrementpoint: None,
+                    time_increment: 0,
+                    time_incrementcycle: 2,
+                    time_incrementpoint: None,
+                    filters: vec![],
+                    pcr: false,
+                    quant: true,
+                    tiff: false,
+                    repeat: 1,
+                    default_filters: vec![],
+                })],
+                repeat: 1,
+                index: Some(1),
+                label: None,
+                default_filters: vec![],
+            }],
+            name: "test_prepost".to_string(),
+            volume: 50.0,
+            runmode: "standard".to_string(),
+            filters: vec![],
+            covertemperature: 105.0,
+            prerun: vec![prerun_cmd],
+            postrun: vec![postrun_cmd],
+        };
+
+        assert!(!protocol.prerun.is_empty());
+        assert!(!protocol.postrun.is_empty());
+
+        let serialized = protocol.to_scpi_string();
+        assert!(serialized.contains("PRERUN"));
+        assert!(serialized.contains("POSTRUN"));
+
+        let cmd2 = Command::try_from(serialized.as_str()).expect("Failed to parse re-serialized");
+        let protocol2 = Protocol::from_scpicommand(&cmd2).expect("Failed to parse re-serialized protocol");
+
+        assert!(!protocol2.prerun.is_empty());
+        assert!(!protocol2.postrun.is_empty());
+        assert_eq!(protocol2.stages.len(), 1);
     }
 }
 

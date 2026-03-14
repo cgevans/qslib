@@ -41,7 +41,7 @@ import pint
 from qslib import scpi_commands
 from qslib.data import FilterSet
 
-from ._util import _nowuuid, _set_or_create
+from ._util import _nowuuid
 from ._qslib import RunStatus
 from .scpi_commands import SCPICommand, SCPICommandLike
 from .version import __version__
@@ -235,11 +235,6 @@ class ProtoCommand(ABC):
         ...
 
     def __init__(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover
-        ...
-
-    @classmethod
-    @abstractmethod
-    def from_scpicommand(cls: Type[T], sc: SCPICommand) -> T:  # pragma: no cover
         ...
 
     _names: ClassVar[Sequence[str]] = tuple()
@@ -446,11 +441,6 @@ class Hold(ProtoCommand):
         return Hold(sc.args[0], **sc.opts)  # type: ignore
 
 
-class XMLable(ABC):
-    @abstractmethod
-    def to_xml(self, **kwargs: Any) -> ET.Element: ...
-
-
 G = TypeVar("G")
 
 
@@ -500,7 +490,7 @@ class _NumOrRefIndexer(Generic[G]):
         return self
 
 
-class CustomStep(ProtoCommand, XMLable):
+class CustomStep(ProtoCommand):
     """A protocol step composed of SCPI/protocol commands."""
 
     _body: list[ProtoCommand]
@@ -564,23 +554,6 @@ class CustomStep(ProtoCommand, XMLable):
     def collects(self) -> bool:
         return False
 
-    def to_xml(self, **kwargs: Any) -> ET.Element:
-        assert not kwargs
-        e = ET.Element("TCStep")
-        ET.SubElement(e, "CollectionFlag").text = str(
-            int(self.collects)
-        )  # FIXME: approx
-        for t in range(0, 6):  # FIXME
-            ET.SubElement(e, "Temperature").text = "30.0"
-        ET.SubElement(e, "HoldTime").text = "1"
-        # FIXME: does not contain cycle starts, because AB format can't handle
-        ET.SubElement(e, "ExtTemperature").text = str(0)
-        ET.SubElement(e, "ExtHoldTime").text = str(0)
-        # FIXME: RampRate, RampRateUnit
-        ET.SubElement(e, "RampRate").text = "1.6"
-        ET.SubElement(e, "RampRateUnit").text = "DEGREES_PER_SECOND"
-        return e
-
     def to_scpicommand(self, *, stepindex: int = -1, **kwargs: Any) -> SCPICommand:
         opts = {}
         args: list[int | str | None | Sequence[SCPICommand]] = []
@@ -595,28 +568,12 @@ class CustomStep(ProtoCommand, XMLable):
 
         return SCPICommand("STEP", *args, **opts)  # type: ignore
 
-    @classmethod
-    def from_scpicommand(cls, sc: SCPICommand) -> CustomStep:
-        # Try a normal step:
-        try:
-            return Step.from_scpicommand(sc)
-        except ValueError:
-            return cls(
-                [
-                    cast(ProtoCommand, x.specialize())
-                    for x in cast(Sequence[SCPICommand], sc.args[1])
-                ],
-                identifier=cast(Union[int, str], sc.args[0]),
-                **sc.opts,  # type: ignore
-            )
-
-
 def _filterlist(y: Iterable[FilterSet | str]) -> Sequence[FilterSet]:
     return [FilterSet.fromstring(x) for x in y]
 
 
 @attr.define
-class Step(CustomStep, XMLable):
+class Step(CustomStep):
     """
     A normal protocol step, of a hold and possible collection.
 
@@ -935,123 +892,6 @@ class Step(CustomStep, XMLable):
         raise ValueError
 
     @classmethod
-    def from_xml(
-        cls, e: ET.Element, *, etc: int = 1, ehtc: int = 1, he: bool = False
-    ) -> Step:
-        collect = bool(int(e.findtext("CollectionFlag") or 0))
-        ts: ArrayQuantity = Q_(
-            [float(x.text or math.nan) for x in e.findall("Temperature")], "degC"
-        )
-        ht: IntQuantity = int(e.findtext("HoldTime") or 0) * UR.seconds
-        et: FloatQuantity = float(e.findtext("ExtTemperature") or 0.0) * UR.delta_degC
-        eht: IntQuantity = int(e.findtext("ExtHoldTime") or 0) * UR.seconds
-        if not he:
-            et = _ZEROTEMPDELTA
-            eht = 0 * UR.seconds
-
-        return Step(
-            time=ht,
-            temperature=ts,
-            collect=collect,
-            temp_increment=et,
-            temp_incrementcycle=etc,
-            temp_incrementpoint=1,
-            time_increment=eht,
-            time_incrementcycle=ehtc,
-            time_incrementpoint=1,
-            filters=[],
-            pcr=True,
-        )
-
-    def to_xml(self, **kwargs: Any) -> ET.Element:
-        assert not kwargs
-        e = ET.Element("TCStep")
-        ET.SubElement(e, "CollectionFlag").text = str(
-            int(self.collects)
-        )  # FIXME: approx
-        for t in self.temperature_list.to("°C").magnitude:
-            ET.SubElement(e, "Temperature").text = str(t)
-        ET.SubElement(e, "HoldTime").text = str(int(self.time.to("seconds").magnitude))
-        # FIXME: does not contain cycle starts, because AB format can't handle
-        ET.SubElement(e, "ExtTemperature").text = str(
-            self.temp_increment.to("delta_degC").magnitude
-        )
-        ET.SubElement(e, "ExtHoldTime").text = str(
-            int(self.time_increment.to("seconds").magnitude)
-        )
-        # FIXME: RampRate, RampRateUnit
-        ET.SubElement(e, "RampRate").text = "1.6"
-        ET.SubElement(e, "RampRateUnit").text = "DEGREES_PER_SECOND"
-        return e
-
-    @classmethod
-    def from_scpicommand(cls, sc: SCPICommand) -> Step:
-        coms = [x.specialize() for x in cast(Sequence[SCPICommand], sc.args[1])]
-
-        # FIXME: When willing to require Python 3.10, this can be cleaned up with a match statement.
-
-        h: Hold | HoldAndCollect
-
-        repeat = cast(int, sc.opts.get("repeat", 1))  # FIXME: check cast
-
-        com_classes = [x.__class__ for x in coms]
-        if com_classes == [Ramp, HACFILT, HoldAndCollect]:
-            r = cast(Ramp, coms[0])
-            hcf = cast(HACFILT, coms[1])
-            h = cast(HoldAndCollect, coms[2])
-            c = cls(
-                h.time,
-                r.temperature,
-                time_incrementcycle=1,
-                temp_incrementcycle=1,
-                repeat=repeat,
-            )
-            c.collect = True
-            if hcf._default_filters:
-                c.filters = []
-                c.collect = True
-                c._default_filters = hcf._default_filters
-            else:
-                c.filters = hcf.filters
-            c.time_increment = h.increment
-            c.temp_increment = r.increment
-            c.time_incrementcycle = h.incrementcycle
-            c.time_incrementpoint = (
-                h.incrementstep if h.incrementstep <= repeat else None
-            )
-            c.temp_incrementcycle = r.incrementcycle
-            c.temp_incrementpoint = (
-                r.incrementstep if r.incrementstep <= repeat else None
-            )
-
-        elif com_classes == [Ramp, Hold]:
-            r = cast(Ramp, coms[0])
-            h = cast(Hold, coms[1])
-            if h.time is None:
-                raise ValueError
-            c = cls(
-                h.time,
-                r.temperature,
-                time_incrementcycle=1,
-                temp_incrementcycle=1,
-                repeat=repeat,
-            )
-            c.collect = False
-            c.time_increment = h.increment
-            c.temp_increment = r.increment
-            c.time_incrementcycle = h.incrementcycle
-            c.time_incrementpoint = (
-                h.incrementstep if h.incrementstep <= repeat else None
-            )
-            c.temp_incrementcycle = r.incrementcycle
-            c.temp_incrementpoint = (
-                r.incrementstep if r.incrementstep <= repeat else None
-            )
-        else:
-            raise ValueError
-        return c
-
-    @classmethod
     def fromdict(cls, d: dict[str, Any]) -> "Step":
         return cls(**d)
 
@@ -1075,7 +915,7 @@ def _maybelist_cs(x: CustomStep | Sequence[CustomStep]) -> Sequence[CustomStep]:
 
 
 @attr.define
-class Stage(XMLable, ProtoCommand):
+class Stage(ProtoCommand):
     """A Stage in a protocol, composed of :class:`Step` s with a possible repeat."""
 
     steps: Sequence[CustomStep] = attr.field(converter=_maybelist_cs)
@@ -1505,62 +1345,6 @@ class Stage(XMLable, ProtoCommand):
 
         return SCPICommand("STAGe", *args, comment=None, **opts)
 
-    @classmethod
-    def from_scpicommand(cls, sc: SCPICommand, **kwargs: Any) -> Stage:
-        c = cls(
-            [
-                cast(CustomStep, x.specialize(**kwargs))
-                for x in cast(Sequence[SCPICommand], sc.args[2])
-            ],
-            index=cast(int, sc.args[0]),
-            label=cast(Optional[str], sc.args[1]),
-            **sc.opts,  # type: ignore
-        )
-
-        dfilt: list[FilterSet] = []
-
-        for s in c.steps:
-            if isinstance(s, Step) and s._default_filters:
-                ndf = s._default_filters
-                if len(dfilt) == 0:
-                    dfilt = list(ndf)
-                if dfilt != ndf:
-                    raise ValueError("Inconsistent default filters")
-        c._default_filters = dfilt
-
-        return c
-
-    @classmethod
-    def from_xml(cls, e: ET.Element) -> Stage:
-        rep = int(e.findtext("NumOfRepetitions") or 1)
-        startcycle = int(cast(str, e.findtext("StartingCycle")))
-        ade = e.findtext("AutoDeltaEnabled") == "true"
-        steps: list[CustomStep] = [
-            Step.from_xml(x, etc=startcycle, ehtc=startcycle, he=ade)
-            for x in e.findall("TCStep")
-        ]
-        return cls(steps, rep)
-
-    def to_xml(self, **kwargs: Any) -> ET.Element:
-        assert not kwargs
-        e = ET.Element("TCStage")
-        ET.SubElement(e, "StageFlag").text = "CYCLING"
-        ET.SubElement(e, "NumOfRepetitions").text = str(int(self.repeat))
-        scycle: set[int] = set()
-        for s in self.steps:
-            if isinstance(s, Step):
-                scycle.add(s.temp_incrementcycle)
-                scycle.add(s.time_incrementcycle)
-            if isinstance(s, XMLable):
-                e.append(s.to_xml())
-        if len(scycle) > 1:
-            log.warning("XML-based protocols do not support time and temperature starting cycles being different, so XML protocol is an approximation.")
-        if scycle:
-            ET.SubElement(e, "StartingCycle").text = str(next(iter(scycle)))
-        ET.SubElement(e, "AutoDeltaEnabled").text = "true"
-
-        return e
-
     def info_str(self, index: int | None = None) -> str:
         if self.repeat > 1:
             adds = "s"
@@ -1717,30 +1501,36 @@ class Protocol(ProtoCommand):
         """Convert a Python Stage to a Rust RustStage."""
         from ._qslib import RustStage
         rust_steps = []
-        for step in stage.steps:
+        custom_step_scpi: list[tuple[int, str]] = []
+        for i, step in enumerate(stage.steps):
             if isinstance(step, Step):
                 rust_steps.append(self._to_rust_step(step))
             else:
-                # CustomStep - can't easily convert, skip Rust path
-                return None
+                # CustomStep — serialize body commands to SCPI string for Rust
+                body_scpi = "".join(
+                    com.to_scpicommand().to_string() for com in step.body
+                )
+                # Position accounts for standard steps already added
+                custom_step_scpi.append((len(rust_steps), body_scpi))
         return RustStage(
             steps=rust_steps,
             repeat=stage.repeat,
             index=stage.index or stage_index,
             label=stage.label,
+            custom_step_scpi=custom_step_scpi,
         )
 
     def _to_rust_protocol(self) -> Any:
-        """Convert this Python Protocol to a Rust Protocol object. Returns None if conversion fails."""
+        """Convert this Python Protocol to a Rust Protocol object."""
         from ._qslib import Protocol as RustProtocol
-        if self.prerun or self.postrun:
-            return None  # Rust path doesn't handle prerun/postrun from Python yet
         rust_stages = []
         for i, stage in enumerate(self.stages):
             rs = self._to_rust_stage(stage, i + 1)
-            if rs is None:
-                return None
             rust_stages.append(rs)
+
+        prerun_scpi = [s.to_scpicommand().to_string() for s in self.prerun] if self.prerun else []
+        postrun_scpi = [s.to_scpicommand().to_string() for s in self.postrun] if self.postrun else []
+
         return RustProtocol.create(
             name=self.name,
             stages=rust_stages,
@@ -1748,15 +1538,13 @@ class Protocol(ProtoCommand):
             runmode=str(self.runmode),
             filters=[f.hacform if isinstance(f, FilterSet) else str(f) for f in self.filters],
             covertemperature=float(self.covertemperature),
+            prerun=prerun_scpi,
+            postrun=postrun_scpi,
         )
 
-    def to_scpi_string_rust(self) -> str | None:
-        """Serialize this protocol to an SCPI string using the Rust implementation.
-        Returns None if the protocol can't be converted to Rust (e.g., CustomSteps)."""
-        rp = self._to_rust_protocol()
-        if rp is None:
-            return None
-        return rp.to_scpi_string()
+    def to_scpi_string_rust(self) -> str:
+        """Serialize this protocol to an SCPI string using the Rust implementation."""
+        return self._to_rust_protocol().to_scpi_string()
 
     def to_scpicommand(self, **kwargs: Any) -> SCPICommand:
         assert not kwargs
@@ -1790,67 +1578,15 @@ class Protocol(ProtoCommand):
         return SCPICommand("PROTocol", *args, comment=None, **opts)
 
     @classmethod
-    def from_scpicommand(cls: Type[Protocol], sc: SCPICommand) -> Protocol:
-        stage_commands = [x for x in cast(Sequence[SCPICommand], sc.args[1])]
-
-        if stage_commands[0].command.upper() == "PRERUN":
-            prerun = cast(Sequence[SCPICommand], stage_commands[0].args[0])
-            assert isinstance(prerun, Sequence)
-            del stage_commands[0]
-        else:
-            prerun = []
-        if stage_commands[-1].command.upper() == "POSTRUN":
-            postrun = cast(Sequence[SCPICommand], stage_commands[-1].args[0])
-            assert isinstance(postrun, Sequence)
-            del stage_commands[-1]
-        else:
-            postrun = []
-
-        stages = [cast(Stage, x.specialize()) for x in stage_commands]
-        for s in stages:
-            if not isinstance(s, Stage):
-                raise ValueError
-
-        name = sc.args[0]
-        if not isinstance(name, str):
-            raise ValueError
-
-        opts = sc.opts
-
-        c = cls(stages, name, prerun=prerun, postrun=postrun, **opts)  # type: ignore
-
-        dfilt: list[FilterSet] = []
-
-        for s in c.stages:
-            if hasattr(s, "_default_filters") and s._default_filters:
-                ndf = s._default_filters
-                if len(dfilt) == 0:
-                    dfilt = list(ndf)
-                if dfilt != ndf:
-                    raise ValueError("Inconsistent default filters")
-        c.filters = dfilt
-
-        return c
-
-    @classmethod
     def from_scpi_string(cls: Type[Protocol], text: str) -> Protocol:
-        """Parse a Protocol from an SCPI command string.
-
-        This is a convenience method equivalent to
-        ``Protocol.from_scpicommand(SCPICommand.from_string(text))``.
-        """
-        return cls.from_scpicommand(SCPICommand.from_string(text))
+        """Parse a Protocol from an SCPI command string."""
+        from ._qslib import Protocol as RustProtocol
+        rust_proto = RustProtocol.from_scpi_string(text)
+        return cls._from_rust_protocol(rust_proto)
 
     def to_scpi_string(self) -> str:
-        """Serialize this protocol to an SCPI command string.
-
-        Uses the Rust implementation when possible (no CustomSteps, no prerun/postrun),
-        falling back to the Python implementation.
-        """
-        rust_str = self.to_scpi_string_rust()
-        if rust_str is not None:
-            return rust_str
-        return self.to_scpicommand().to_string()
+        """Serialize this protocol to an SCPI command string."""
+        return self.to_scpi_string_rust()
 
     @property
     def dataframe(self) -> pd.DataFrame:
@@ -1967,57 +1703,60 @@ class Protocol(ProtoCommand):
 
     @classmethod
     def from_xml(cls, e: ET.Element) -> Protocol:
-        # Try Rust path first
-        try:
-            from ._qslib import Protocol as RustProtocol
-            xml_str = ET.tostring(e, encoding="unicode")
-            rust_proto = RustProtocol.from_xml_string(xml_str)
-            return cls._from_rust_protocol(rust_proto)
-        except Exception:
-            pass
-
-        # Python fallback
-        svol = float(e.findtext("SampleVolume") or 50.0)
-        runmode = e.findtext("RunMode") or "standard"
-        covertemperature = float(e.findtext("CoverTemperature") or 105.0)
-        protoname = e.findtext("ProtocolName")
-        if protoname is None:
-            raise ValueError
-        filter_e = e.find("CollectionProfile")
-        filters = []
-        if filter_e is not None:
-            for x in filter_e.findall("CollectionCondition/FilterSet"):
-                filters.append(x.attrib["Excitation"] + "-" + x.attrib["Emission"])
-        stages = [Stage.from_xml(x) for x in e.findall("TCStage")]
-        return Protocol(stages, protoname, svol, runmode, filters, covertemperature)
+        from ._qslib import Protocol as RustProtocol
+        xml_str = ET.tostring(e, encoding="unicode")
+        rust_proto = RustProtocol.from_xml_string(xml_str)
+        return cls._from_rust_protocol(rust_proto)
 
     @classmethod
     def _from_rust_protocol(cls, rust_proto) -> Protocol:
         """Convert a Rust Protocol object back to a Python Protocol."""
         stages = []
         for rs in rust_proto.stages:
-            steps = []
-            for rstep in rs.steps:
-                steps.append(Step(
-                    time=rstep.time * UR.seconds,
-                    temperature=Q_(rstep.temperature, "degC"),
-                    collect=rstep.collect,
-                    temp_increment=Q_(rstep.temp_increment, "delta_degC"),
-                    temp_incrementcycle=rstep.temp_incrementcycle,
-                    temp_incrementpoint=rstep.temp_incrementpoint,
-                    time_increment=rstep.time_increment * UR.seconds,
-                    time_incrementcycle=rstep.time_incrementcycle,
-                    time_incrementpoint=rstep.time_incrementpoint,
-                    filters=[FilterSet.fromstring(f) for f in rstep.filters] if rstep.filters else [],
-                    pcr=rstep.pcr,
-                    quant=rstep.quant,
-                    tiff=rstep.tiff,
-                    repeat=rstep.repeat,
-                ))
+            steps: list[CustomStep] = []
+            for kind, data in rs.all_steps():
+                if kind == "standard":
+                    rstep = data
+                    step = Step(
+                        time=rstep.time * UR.seconds,
+                        temperature=Q_(rstep.temperature, "degC"),
+                        collect=rstep.collect,
+                        temp_increment=Q_(rstep.temp_increment, "delta_degC"),
+                        temp_incrementcycle=rstep.temp_incrementcycle,
+                        temp_incrementpoint=rstep.temp_incrementpoint,
+                        time_increment=rstep.time_increment * UR.seconds,
+                        time_incrementcycle=rstep.time_incrementcycle,
+                        time_incrementpoint=rstep.time_incrementpoint,
+                        filters=[FilterSet.fromstring(f) for f in rstep.filters] if rstep.filters else [],
+                        pcr=rstep.pcr,
+                        quant=rstep.quant,
+                        tiff=rstep.tiff,
+                        repeat=rstep.repeat,
+                    )
+                    if rstep.default_filters:
+                        step._default_filters = [FilterSet.fromstring(f) for f in rstep.default_filters]
+                    steps.append(step)
+                else:
+                    # Custom step: data is the SCPI body string
+                    body_cmds = [
+                        cast(ProtoCommand, SCPICommand.from_string(line).specialize())
+                        for line in cast(str, data).split("\n") if line.strip()
+                    ]
+                    steps.append(CustomStep(body_cmds))
             stage = Stage(steps, rs.repeat)
             stage._index = rs.index
             stage._label = rs.label
+            if rs.default_filters:
+                stage._default_filters = [FilterSet.fromstring(f) for f in rs.default_filters]
             stages.append(stage)
+
+        # Reconstruct prerun/postrun
+        prerun: list[ProtoCommand] = []
+        for scpi_str in rust_proto.prerun:
+            prerun.append(cast(ProtoCommand, SCPICommand.from_string(scpi_str).specialize()))
+        postrun: list[ProtoCommand] = []
+        for scpi_str in rust_proto.postrun:
+            postrun.append(cast(ProtoCommand, SCPICommand.from_string(scpi_str).specialize()))
 
         filters = [FilterSet.fromstring(f) for f in rust_proto.filters] if rust_proto.filters else []
         return Protocol(
@@ -2027,58 +1766,16 @@ class Protocol(ProtoCommand):
             rust_proto.runmode,
             filters,
             rust_proto.covertemperature,
+            prerun=prerun,
+            postrun=postrun,
         )
 
     def to_xml(
         self, covertemperature: float = 105.0
     ) -> tuple[ET.ElementTree, ET.ElementTree]:
-        # Try Rust path first
         rust_proto = self._to_rust_protocol()
-        if rust_proto is not None:
-            try:
-                tc, qstc = rust_proto.to_xml_pair(covertemperature, __version__)
-                return ET.ElementTree(ET.fromstring(tc)), ET.ElementTree(ET.fromstring(qstc))
-            except Exception:
-                pass
-
-        # Python fallback for CustomStep or other cases
-        te = ET.ElementTree(ET.Element("TCProtocol"))
-        tqe = ET.ElementTree(ET.Element("QSTCProtocol"))
-
-        e = te.getroot()
-        qe = tqe.getroot()
-
-        _set_or_create(e, "FileVersion").text = "2.0"
-        _set_or_create(e, "ProtocolName").text = self.name
-        _set_or_create(qe, "QSLibNote").text = (
-            "This protocol was"
-            " generated by QSLib. It may be only an approximation or"
-            " placeholder for the real protocol, contained as"
-            " an SCPI command in QSLibProtocolCommand."
-        )
-        _set_or_create(qe, "QSLibProtocolCommand").text = self.to_scpi_string()
-        _set_or_create(qe, "QSLibProtocol").text = str(attr.asdict(self))
-        _set_or_create(qe, "QSLibVerson").text = __version__
-        _set_or_create(e, "CoverTemperature").text = str(covertemperature)
-        _set_or_create(e, "SampleVolume").text = str(self.volume or 50)
-        _set_or_create(e, "RunMode").text = str(self.runmode or "Standard")
-        _set_or_create(e, "UserName").text = ""
-        _set_or_create(e, "TubeType").text = "0"
-        _set_or_create(e, "BlockID").text = "18"  # FIXME
-        _set_or_create(e, "Delay").text = "0.0"
-        _set_or_create(e, "ExtendedPCRCycles").text = "0"
-        _set_or_create(e, "ExtendedHoldTemp").text = "0"
-        _set_or_create(e, "ExtendedHoldTime").text = "0"
-        if self.filters:
-            from qslib.data import _filterset_to_xml
-            x = _set_or_create(e, "CollectionProfile", ProfileId="1")
-            for f in self.filters:
-                if not isinstance(f, FilterSet):
-                    f = FilterSet.fromstring(f)
-                x.append(_filterset_to_xml(f))
-        for s in self.stages:
-            e.append(s.to_xml())
-        return te, tqe
+        tc, qstc = rust_proto.to_xml_pair(covertemperature, __version__)
+        return ET.ElementTree(ET.fromstring(tc)), ET.ElementTree(ET.fromstring(qstc))
 
     def info(self) -> str:
         """Generate a (markdown) text protocol description."""
@@ -2213,7 +1910,7 @@ class Protocol(ProtoCommand):
 
 for c in cast(
     Sequence[Protocol],
-    [Ramp, Exposure, HACFILT, HoldAndCollect, Hold, CustomStep, Stage, Protocol],
+    [Ramp, Exposure, HACFILT, HoldAndCollect, Hold],
 ):
     for n in c._names:
         scpi_commands._scpi_command_classes[n.upper()] = cast(SCPICommandLike, c)

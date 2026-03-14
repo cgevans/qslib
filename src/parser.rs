@@ -559,8 +559,11 @@ impl TryFrom<&str> for Command {
     type Error = ParseError;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let mut input = s.as_bytes();
-        let c = Command::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
-        // FIXME: check if input is empty
+        let c = Command::parse(&mut input).map_err(|e| {
+            let offset = s.len() - input.len();
+            let remaining = &s[offset..s.len().min(offset + 200)];
+            ParseError::ParseError(format!("{} at {:?}", e, remaining))
+        })?;
         Ok(c)
     }
 }
@@ -569,7 +572,10 @@ impl TryFrom<Vec<u8>> for Command {
     type Error = ParseError;
     fn try_from(s: Vec<u8>) -> Result<Self, Self::Error> {
         let mut input = &s[..];
-        let c = Command::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
+        let c = Command::parse(&mut input).map_err(|e| {
+            let remaining = String::from_utf8_lossy(&input[..input.len().min(200)]);
+            ParseError::ParseError(format!("{} at {:?}", e, remaining))
+        })?;
         Ok(c)
     }
 }
@@ -578,7 +584,11 @@ impl TryFrom<String> for Command {
     type Error = ParseError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
         let mut input = s.as_bytes();
-        let c = Command::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
+        let c = Command::parse(&mut input).map_err(|e| {
+            let offset = s.len() - input.len();
+            let remaining = &s[offset..s.len().min(offset + 200)];
+            ParseError::ParseError(format!("{} at {:?}", e, remaining))
+        })?;
         Ok(c)
     }
 }
@@ -1111,7 +1121,7 @@ impl MessageResponse {
 
 #[derive(Debug, Error)]
 pub enum ParseError {
-    #[error("parse error")]
+    #[error("parse error: expected {0}")]
     ParseError(String),
 }
 
@@ -1424,7 +1434,7 @@ impl SCPICommand {
     fn py_from_string(s: &str) -> PyResult<Self> {
         let mut input = s.as_bytes();
         parse_scpi_command(&mut input).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse SCPICommand: {}", e))
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse SCPICommand from {:?}: {}", s, e))
         })
     }
 

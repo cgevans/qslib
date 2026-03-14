@@ -1594,31 +1594,14 @@ table, th, td {{
                 m2d = self.machine.asdict(password=False)
                 machine_toml = toml.dumps(m2d)
 
-            # Try Rust path first
             rust_proto = self.protocol._to_rust_protocol()
-            if rust_proto is not None:
-                try:
-                    tc_str, qstc_str = rust_proto.to_xml_pair(
-                        self.protocol.covertemperature, __version__, machine_toml
-                    )
-                    with open(self.root_dir / "tcprotocol.xml", "w") as f:
-                        f.write(tc_str)
-                    with open(self.root_dir / "qsl-tcprotocol.xml", "w") as f:
-                        f.write(qstc_str)
-                    return
-                except Exception:
-                    pass
-
-            # Python fallback
-            tcxml, qstcxml = self.protocol.to_xml()
-            ET.indent(tcxml)
-            ET.indent(qstcxml)
-            tcxml.write(self.root_dir / "tcprotocol.xml")
-
-            if machine_toml:
-                ET.SubElement(qstcxml.getroot(), "MachineConnection").text = machine_toml
-
-            qstcxml.write(self.root_dir / "qsl-tcprotocol.xml")
+            tc_str, qstc_str = rust_proto.to_xml_pair(
+                self.protocol.covertemperature, __version__, machine_toml
+            )
+            with open(self.root_dir / "tcprotocol.xml", "w") as f:
+                f.write(tc_str)
+            with open(self.root_dir / "qsl-tcprotocol.xml", "w") as f:
+                f.write(qstc_str)
 
     def _update_from_tcprotocol_xml(self) -> None:
         from ._qslib import Protocol as RustProtocol

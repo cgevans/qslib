@@ -1,7 +1,7 @@
 use crate::com::{QSConnection, ConnectionType, ResponseReceiver, TlsConfig};
 use crate::parser::Command;
 use crate::parser::{LogMessage, MessageResponse, MessageIdent};
-use crate::protocol::{Protocol, Stage, Step};
+use crate::protocol::{Protocol, Stage, StageStep, Step};
 use pyo3::exceptions::{PyTimeoutError, PyValueError, PyException};
 use pyo3::prelude::*;
 use std::sync::Arc;
@@ -125,15 +125,44 @@ pub struct PyStage {
 #[pymethods]
 impl PyStage {
     #[new]
-    #[pyo3(signature = (steps, repeat=1, index=None, label=None))]
+    #[pyo3(signature = (steps, repeat=1, index=None, label=None, custom_step_scpi=vec![]))]
     fn new(
         steps: Vec<PyRef<PyStep>>,
         repeat: i64,
         index: Option<i64>,
         label: Option<String>,
-    ) -> Self {
-        let rust_steps: Vec<Step> = steps.iter().map(|s| s.step.clone()).collect();
-        PyStage {
+        custom_step_scpi: Vec<(usize, String)>,
+    ) -> PyResult<Self> {
+        let mut rust_steps: Vec<StageStep> = steps.iter()
+            .map(|s| StageStep::Standard(s.step.clone()))
+            .collect();
+        // Insert custom steps at specified positions
+        for (pos, scpi) in custom_step_scpi {
+            let mut input = scpi.as_bytes();
+            let mut cmds = Vec::new();
+            while !input.is_empty() {
+                // Skip blank lines / whitespace between commands
+                while !input.is_empty() && (input[0] == b'\n' || input[0] == b'\r' || input[0] == b' ' || input[0] == b'\t') {
+                    input = &input[1..];
+                }
+                if input.is_empty() {
+                    break;
+                }
+                let remaining_preview: String = String::from_utf8_lossy(&input[..input.len().min(200)]).to_string();
+                match Command::parse(&mut input) {
+                    Ok(cmd) => cmds.push(cmd),
+                    Err(e) => return Err(PyValueError::new_err(
+                        format!("Failed to parse custom step SCPI at: {:?}\nError: {}", remaining_preview, e)
+                    )),
+                }
+            }
+            if pos <= rust_steps.len() {
+                rust_steps.insert(pos, StageStep::Custom(cmds));
+            } else {
+                rust_steps.push(StageStep::Custom(cmds));
+            }
+        }
+        Ok(PyStage {
             stage: Stage {
                 steps: rust_steps,
                 repeat,
@@ -141,7 +170,7 @@ impl PyStage {
                 label,
                 default_filters: vec![],
             },
-        }
+        })
     }
 
     #[getter]
@@ -155,7 +184,34 @@ impl PyStage {
 
     #[getter]
     fn steps(&self) -> Vec<PyStep> {
-        self.stage.steps.iter().map(|s| PyStep { step: s.clone() }).collect()
+        self.stage.steps.iter().filter_map(|s| match s {
+            StageStep::Standard(step) => Some(PyStep { step: step.clone() }),
+            StageStep::Custom(_) => None,
+        }).collect()
+    }
+
+    #[getter]
+    fn has_custom_steps(&self) -> bool {
+        self.stage.steps.iter().any(|s| matches!(s, StageStep::Custom(_)))
+    }
+
+    /// Returns all steps as a list of ("standard", PyStep) or ("custom", scpi_body_string) tuples,
+    /// preserving their original order (including interleaved custom steps).
+    fn all_steps(&self, py: Python<'_>) -> Vec<(String, PyObject)> {
+        self.stage.steps.iter().map(|s| match s {
+            StageStep::Standard(step) => (
+                "standard".to_string(),
+                PyStep { step: step.clone() }.into_pyobject(py).unwrap().into_any().unbind(),
+            ),
+            StageStep::Custom(cmds) => {
+                let body = cmds.iter().map(|c| {
+                    let mut buf = Vec::new();
+                    c.write_bytes(&mut buf).unwrap();
+                    String::from_utf8(buf).unwrap()
+                }).collect::<Vec<_>>().join("\n");
+                ("custom".to_string(), body.into_pyobject(py).unwrap().into_any().unbind())
+            }
+        }).collect()
     }
 
     fn to_scpi_string(&self, stage_index: i64, default_filters: Vec<String>) -> String {
@@ -167,7 +223,12 @@ impl PyStage {
     }
 
     fn __repr__(&self) -> String {
-        format!("RustStage(repeat={}, steps={})", self.stage.repeat, self.stage.steps.len())
+        let custom = self.stage.steps.iter().filter(|s| matches!(s, StageStep::Custom(_))).count();
+        if custom > 0 {
+            format!("RustStage(repeat={}, steps={}, custom={})", self.stage.repeat, self.stage.steps.len(), custom)
+        } else {
+            format!("RustStage(repeat={}, steps={})", self.stage.repeat, self.stage.steps.len())
+        }
     }
 }
 
@@ -223,6 +284,24 @@ impl PyProtocol {
         self.protocol.stages.iter().map(|s| PyStage { stage: s.clone() }).collect()
     }
 
+    #[getter]
+    fn prerun(&self) -> Vec<String> {
+        self.protocol.prerun.iter().map(|c| {
+            let mut buf = Vec::new();
+            c.write_bytes(&mut buf).unwrap();
+            String::from_utf8(buf).unwrap()
+        }).collect()
+    }
+
+    #[getter]
+    fn postrun(&self) -> Vec<String> {
+        self.protocol.postrun.iter().map(|c| {
+            let mut buf = Vec::new();
+            c.write_bytes(&mut buf).unwrap();
+            String::from_utf8(buf).unwrap()
+        }).collect()
+    }
+
     /// Serialize to SCPI command string.
     fn to_scpi_string(&self) -> String {
         self.protocol.to_scpi_string()
@@ -275,7 +354,7 @@ impl PyProtocol {
     /// Create a Protocol from components.
     #[staticmethod]
     #[pyo3(signature = (name, stages, volume=50.0, runmode="standard".to_string(),
-        filters=vec![], covertemperature=105.0))]
+        filters=vec![], covertemperature=105.0, prerun=vec![], postrun=vec![]))]
     fn create(
         name: String,
         stages: Vec<PyRef<PyStage>>,
@@ -283,9 +362,36 @@ impl PyProtocol {
         runmode: String,
         filters: Vec<String>,
         covertemperature: f64,
-    ) -> PyProtocol {
+        prerun: Vec<String>,
+        postrun: Vec<String>,
+    ) -> PyResult<PyProtocol> {
         let rust_stages: Vec<Stage> = stages.iter().map(|s| s.stage.clone()).collect();
-        PyProtocol {
+
+        let parse_commands = |strings: Vec<String>| -> PyResult<Vec<Command>> {
+            let mut cmds = Vec::new();
+            for s in strings {
+                let mut input = s.as_bytes();
+                while !input.is_empty() {
+                    // Skip blank lines / whitespace between commands
+                    while !input.is_empty() && matches!(input[0], b'\n' | b'\r' | b' ' | b'\t') {
+                        input = &input[1..];
+                    }
+                    if input.is_empty() {
+                        break;
+                    }
+                    let remaining_preview: String = String::from_utf8_lossy(&input[..input.len().min(200)]).to_string();
+                    match Command::parse(&mut input) {
+                        Ok(cmd) => cmds.push(cmd),
+                        Err(e) => return Err(PyValueError::new_err(
+                            format!("Failed to parse SCPI command at: {:?}\nError: {}", remaining_preview, e)
+                        )),
+                    }
+                }
+            }
+            Ok(cmds)
+        };
+
+        Ok(PyProtocol {
             protocol: Protocol {
                 stages: rust_stages,
                 name,
@@ -293,10 +399,10 @@ impl PyProtocol {
                 runmode,
                 filters,
                 covertemperature,
-                prerun: vec![],
-                postrun: vec![],
+                prerun: parse_commands(prerun)?,
+                postrun: parse_commands(postrun)?,
             },
-        }
+        })
     }
 }
 
