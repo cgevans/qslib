@@ -111,7 +111,7 @@ jobs:
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          uv pip install qslib --find-links dist --no-index --only-binary :all: --force-reinstall
+          uv pip install qslib --find-links dist --only-binary qslib --force-reinstall
       - name: pytest
         run: just ci-test-python
       - name: Upload coverage
@@ -195,7 +195,7 @@ jobs:
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          uv pip install qslib --find-links dist --no-index --only-binary :all: --force-reinstall
+          uv pip install qslib --find-links dist --only-binary qslib --force-reinstall
       - name: pytest
         shell: bash
         run: just ci-test-python
@@ -277,7 +277,7 @@ jobs:
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          uv pip install qslib --find-links dist --no-index --only-binary :all: --force-reinstall
+          uv pip install qslib --find-links dist --only-binary qslib --force-reinstall
       - name: pytest
         run: just ci-test-python
       - name: Upload coverage
