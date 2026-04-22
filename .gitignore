@@ -144,7 +144,8 @@ docs/_build/
 .python-version
 
 # Cargo
-.cargo/
+.cargo/*
+!.cargo/config.toml
 Cargo.lock
 *.ipynb
 *.crt

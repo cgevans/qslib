@@ -12,14 +12,6 @@ module-name = "qslib._qslib"
 bindings = "pyo3"
 features = ["python"]
 exclude = ["tiff-collection.eds"]
-# vendor/matrix-sdk is referenced by [patch.crates-io] at the workspace
-# root. Cargo reads the patch when building qslib even though qslib
-# doesn't actually depend on matrix-sdk, so the vendored tree must be
-# present in the sdist to resolve the patch path.
-include = [
-    { path = "vendor/**/*", format = "sdist" },
-    { path = "Cargo.lock", format = "sdist" },
-]
 
 [project]
 name = "qslib"

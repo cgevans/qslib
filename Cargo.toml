@@ -80,13 +80,6 @@ base64 = "0.21"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
 
-# Patched matrix-sdk adds `#![recursion_limit = "512"]` to work around
-# rust-lang/rust#152942 (query depth overflow on rustc 1.94+ due to
-# matrix-sdk's deeply nested #[instrument] async chain gaining one more
-# ManuallyDrop layer). Only qs-monitor uses matrix-sdk; harmless for qslib.
-[patch.crates-io]
-matrix-sdk = { path = "vendor/matrix-sdk" }
-
 [[bench]]
 name = "msg_recv"
 harness = false

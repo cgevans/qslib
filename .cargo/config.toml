@@ -1,0 +1,10 @@
+# Local-only override: point qs-monitor's matrix-sdk 0.16 dep at our
+# vendored copy that adds `#![recursion_limit = "512"]` to work around
+# rust-lang/rust#152942 (query-depth overflow on rustc 1.94+ in
+# matrix-sdk's deeply nested #[instrument] async chain).
+#
+# Unlike [patch.crates-io] in Cargo.toml, `paths` overrides are NOT
+# published into sdists/crates.io metadata. qslib (Python wheel/sdist)
+# does not depend on matrix-sdk; only qs-monitor does, and qs-monitor
+# is internal.
+paths = ["vendor/matrix-sdk"]
