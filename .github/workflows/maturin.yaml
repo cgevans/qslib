@@ -249,8 +249,6 @@ jobs:
     strategy:
       matrix:
         include:
-          - runner: macos-15-intel
-            target: x86_64
           - runner: macos-15
             target: aarch64
     steps:
@@ -299,7 +297,7 @@ jobs:
     runs-on: macos-15
     strategy:
       matrix:
-        target: [x86_64, aarch64]
+        target: [aarch64]
         python-version: ['3.13t', '3.14t']
     steps:
       - uses: actions/checkout@v4
