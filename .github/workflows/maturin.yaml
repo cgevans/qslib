@@ -108,13 +108,12 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v2
       - name: Setup test environment
+        env:
+          RUSTC_WRAPPER: ""
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          ls -la dist/
-          WHL=$(ls dist/qslib-*.whl | head -1)
-          echo "Installing wheel: $WHL"
-          uv pip install --reinstall-package qslib --no-sources "$WHL"
+          uv pip install --force-reinstall dist/qslib-*.whl
       - name: pytest
         run: just ci-test-python
       - name: Upload coverage
@@ -195,13 +194,12 @@ jobs:
         uses: extractions/setup-just@v2
       - name: Setup test environment
         shell: bash
+        env:
+          RUSTC_WRAPPER: ""
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          ls -la dist/
-          WHL=$(ls dist/qslib-*.whl | head -1)
-          echo "Installing wheel: $WHL"
-          uv pip install --reinstall-package qslib --no-sources "$WHL"
+          uv pip install --force-reinstall dist/qslib-*.whl
       - name: pytest
         shell: bash
         run: just ci-test-python
@@ -280,13 +278,12 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v2
       - name: Setup test environment
+        env:
+          RUSTC_WRAPPER: ""
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          ls -la dist/
-          WHL=$(ls dist/qslib-*.whl | head -1)
-          echo "Installing wheel: $WHL"
-          uv pip install --reinstall-package qslib --no-sources "$WHL"
+          uv pip install --force-reinstall dist/qslib-*.whl
       - name: pytest
         run: just ci-test-python
       - name: Upload coverage
