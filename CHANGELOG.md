@@ -48,6 +48,20 @@ Robustness improvements to communication, consolidation of parsing into Rust, an
 ### Testing
 - ~226 new tests across Rust and Python, covering communication, parsing, plate setup, processors, and machine logic.
 
+### Security
+- Update `rustls-webpki` 0.102 → 0.103 to fix four advisories: CRL distribution-point matching (RUSTSEC-2026-0049), URI name-constraint bypass (RUSTSEC-2026-0098), wildcard name-constraint bypass (RUSTSEC-2026-0099), and reachable panic in CRL parsing (RUSTSEC-2026-0104).
+- Bump `bytes` to 1.11.1 (integer overflow in `BytesMut::reserve`, RUSTSEC-2026-0007), `quinn-proto` to 0.11.14 (QUIC endpoint DoS, RUSTSEC-2026-0037), and `time` to 0.3.47 (stack-exhaustion DoS, RUSTSEC-2026-0009).
+- Port `qs-monitor` from `matrix-sdk` 0.9 to 0.16, fixing three advisories: encrypted-event sender spoofing (RUSTSEC-2025-0041), panic in `RoomMember::normalized_power_level()` (RUSTSEC-2025-0065), and DoS via custom `m.room.join_rules` events (RUSTSEC-2025-0135).
+
+### Build
+- Vendor `matrix-sdk` 0.16 with `#![recursion_limit = "512"]` added to work around [rust-lang/rust#152942](https://github.com/rust-lang/rust/issues/152942) (query-depth overflow on rustc 1.94+ due to matrix-sdk's deeply nested `#[tracing::instrument]` async chain picking up an extra `ManuallyDrop` layer).
+- `qs-monitor/src/main.rs` gets the same attribute to raise the trait-solver limit for `Send`-ness of `Client::sync()` when passed to `tokio::spawn`.
+
+### CI
+- Bump GitHub Actions past the Node.js 20 deprecation: `actions/checkout` v4→v6, `setup-python` v5→v6, `upload-artifact` v4→v7, `download-artifact` v4→v8, `extractions/setup-just` v2→v4, `astral-sh/setup-uv` v7→v8.1.0, `codecov/codecov-action` v5→v6.
+- Fix wheel-test jobs on Linux: `RUSTC_WRAPPER=sccache` was leaking from `maturin-action` into subsequent `uv sync` invocations where sccache isn't on PATH, failing silently on macOS (sccache pre-installed) but breaking Linux. Now overridden per-step.
+- Drop macOS x86_64 (Intel) from the wheel matrix (<8 Darwin downloads/month across all arches on PyPI).
+
 ## Version 0.14.0
 
 A significant reorganization:

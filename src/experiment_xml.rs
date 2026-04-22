@@ -193,8 +193,6 @@ pub fn update_experiment_xml(
     let mut writer = Writer::new_with_indent(Cursor::new(Vec::new()), b' ', 2);
 
     let mut depth: u32 = 0;
-    let mut current_tag = String::new();
-    let mut tag_depth: u32 = 0;
     let mut seen_elements: HashSet<String> = HashSet::new();
     let mut in_run_info = false;
     let mut in_software_version = false;
@@ -227,8 +225,6 @@ pub fn update_experiment_xml(
                     Event::Start(ref e) => {
                         depth += 1;
                         let tag = String::from_utf8_lossy(e.name().as_ref()).to_string();
-                        current_tag = tag.clone();
-                        tag_depth = depth;
 
                         // depth==2 means direct child of <Experiment>
                         if depth == 2 {

@@ -8,9 +8,9 @@ use dashmap::DashMap;
 use env_logger::Env;
 use futures::stream;
 use influxdb2::Client;
-use influxdb2::models::{DataPoint, FieldValue};
+use influxdb2::models::DataPoint;
 use log::{debug, error, info, warn};
-use qslib::parser::{OkResponse, Value};
+use qslib::parser::OkResponse;
 use qslib::{
     com::FilterDataFilename,
     com::QSConnection,
@@ -153,17 +153,6 @@ fn load_config(path: PathBuf) -> Result<Config> {
         .build()?;
 
     Ok(settings.try_deserialize()?)
-}
-
-fn value_to_influxvalue(value: Value) -> FieldValue {
-    match value {
-        Value::String(s) => FieldValue::String(s),
-        Value::Int(i) => FieldValue::I64(i),
-        Value::Float(f) => FieldValue::F64(f),
-        Value::Bool(b) => FieldValue::Bool(b),
-        Value::QuotedString(s) => FieldValue::String(s),
-        Value::XmlString { value, tag: _ } => FieldValue::String(value.to_string()),
-    }
 }
 
 async fn refresh_state(
