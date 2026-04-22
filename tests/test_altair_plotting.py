@@ -3,14 +3,18 @@
 
 """Tests for Altair plotting functionality."""
 
+from pathlib import Path
+
 import pytest
 from qslib import Experiment
+
+_TESTS_DIR = Path(__file__).parent
 
 
 @pytest.fixture
 def exp() -> Experiment:
     """Load test experiment for plotting tests."""
-    return Experiment.from_file("tests/test.eds")
+    return Experiment.from_file(_TESTS_DIR / "test.eds")
 
 
 def test_plot_over_time_altair_basic(exp: Experiment) -> None:

@@ -2,7 +2,7 @@ use anyhow::Context;
 use bstr::{BString, ByteSlice};
 use dashmap::DashMap;
 use hmac::{Hmac, Mac};
-use log::{error, trace};
+use log::{error, trace, warn};
 use md5::Md5;
 type HmacMd5 = Hmac<Md5>;
 use rustls::{
@@ -178,10 +178,10 @@ impl ServerCertVerifier for ChainOnlyVerifier {
         )
         .map_err(|e| {
             TLSError::InvalidCertificate(match e {
-                webpki::Error::CertExpired => rustls::CertificateError::Expired,
-                webpki::Error::CertNotValidYet => rustls::CertificateError::NotValidYet,
+                webpki::Error::CertExpired { .. } => rustls::CertificateError::Expired,
+                webpki::Error::CertNotValidYet { .. } => rustls::CertificateError::NotValidYet,
                 webpki::Error::UnknownIssuer => rustls::CertificateError::UnknownIssuer,
-                webpki::Error::CertNotValidForName => rustls::CertificateError::NotValidForName,
+                webpki::Error::CertNotValidForName(..) => rustls::CertificateError::NotValidForName,
                 _ => rustls::CertificateError::BadEncoding,
             })
         })?;
@@ -262,8 +262,7 @@ impl AsyncRead for ReadHalfOptions {
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        // Safety: we're not moving the data, just accessing it through the pin
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         match this {
             ReadHalfOptions::Tls(r) => Pin::new(r).poll_read(cx, buf),
             ReadHalfOptions::Tcp(r) => Pin::new(r).poll_read(cx, buf),
@@ -381,11 +380,14 @@ impl QSConnectionInner {
                                 trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
-                        Ok(MessageResponse::Ok { ident, message }) => {
-                            // OK is final response, always remove channel
-                            let ident_clone = ident.clone();
-                            if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                match channel.send(MessageResponse::Ok { ident, message }).await {
+                        Ok(msg @ MessageResponse::Ok { .. }) | Ok(msg @ MessageResponse::Warning { .. }) => {
+                            // OK/Warning is final response, always remove channel
+                            let ident_clone = match &msg {
+                                MessageResponse::Ok { ident, .. } | MessageResponse::Warning { ident, .. } => ident.clone(),
+                                _ => unreachable!(),
+                            };
+                            if let Some(channel) = self.messagechannels.get_mut(&ident_clone) {
+                                match channel.send(msg).await {
                                     Ok(_) => {
                                         // Successfully sent, remove channel
                                         self.messagechannels.remove(&ident_clone);
@@ -434,7 +436,7 @@ impl QSConnectionInner {
                         Some(MessageIdent::String(s)) => Some(MessageIdent::String(s)),
                         None => {
                             let i = Some(MessageIdent::Number(self.next_ident));
-                            self.next_ident += 1;
+                            self.next_ident = self.next_ident.wrapping_add(1);
                             i
                         }
                     };
@@ -477,8 +479,7 @@ impl AsyncWrite for WriteHalfOptions {
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        // Safety: we're not moving the data, just accessing it through the pin
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         match this {
             WriteHalfOptions::Tls(w) => Pin::new(w).poll_write(cx, buf),
             WriteHalfOptions::Tcp(w) => Pin::new(w).poll_write(cx, buf),
@@ -489,7 +490,7 @@ impl AsyncWrite for WriteHalfOptions {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         match this {
             WriteHalfOptions::Tls(w) => Pin::new(w).poll_flush(cx),
             WriteHalfOptions::Tcp(w) => Pin::new(w).poll_flush(cx),
@@ -500,7 +501,7 @@ impl AsyncWrite for WriteHalfOptions {
         self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
-        let this = unsafe { self.get_unchecked_mut() };
+        let this = self.get_mut();
         match this {
             WriteHalfOptions::Tls(w) => Pin::new(w).poll_shutdown(cx),
             WriteHalfOptions::Tcp(w) => Pin::new(w).poll_shutdown(cx),
@@ -547,7 +548,7 @@ impl ResponseReceiver {
         };
 
         match first_msg {
-            MessageResponse::Ok { ident: _, message } => Ok(Ok(message)),
+            MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => Ok(Ok(message)),
             MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
             MessageResponse::Next { .. } => {
                 // Received NEXT, now wait for OK/Error with next_to_ok_timeout
@@ -555,7 +556,7 @@ impl ResponseReceiver {
                     match timeout(next_to_ok, self.recv()).await {
                         Ok(Some(msg)) => {
                             match msg {
-                                MessageResponse::Ok { ident: _, message } => {
+                                MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => {
                                     return Ok(Ok(message));
                                 }
                                 MessageResponse::CommandError { ident: _, error } => {
@@ -589,7 +590,7 @@ impl ResponseReceiver {
             match timeout(timeout_duration, self.recv()).await {
                 Ok(Some(msg)) => {
                     match msg {
-                        MessageResponse::Ok { ident: _, message } => return Ok(Ok(message)),
+                        MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => return Ok(Ok(message)),
                         MessageResponse::CommandError { ident: _, error } => return Ok(Err(error)),
                         MessageResponse::Next { .. } => {
                             // Continue waiting with same timeout
@@ -618,7 +619,7 @@ impl ResponseReceiver {
         };
 
         match first_msg {
-            MessageResponse::Ok { ident: _, message } => Ok(Ok(message)),
+            MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => Ok(Ok(message)),
             MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
             MessageResponse::Next { .. } => {
                 // Received NEXT, now wait for OK/Error with next_to_ok timeout
@@ -626,7 +627,7 @@ impl ResponseReceiver {
                     match timeout(next_to_ok, self.recv()).await {
                         Ok(Some(msg)) => {
                             match msg {
-                                MessageResponse::Ok { ident: _, message } => {
+                                MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => {
                                     return Ok(Ok(message));
                                 }
                                 MessageResponse::CommandError { ident: _, error } => {
@@ -955,19 +956,34 @@ impl QSConnection {
         let (com_tx, com_rx) = mpsc::channel(100);
         let logchannels = Arc::new(DashMap::new());
 
-        // Read ready message
+        // Read ready message using MsgRecv for proper framing
+        let mut receiver = MsgRecv::new();
         let mut b = [0; 1024];
-        let m = c.read(&mut b).await?;
-        if m == 0 {
-            return Err(ConnectionError::Timeout);
+        loop {
+            let m = c.read(&mut b).await?;
+            if m == 0 {
+                return Err(ConnectionError::Timeout);
+            }
+            if receiver.push_data(&b[..m]) {
+                break;
+            }
         }
-        trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..m]));
-        let msg = parser::Ready::parse(&mut &b[..m])
+        let ready_bytes = receiver.try_get_msg()
+            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to receive ready message: {}", e)
+            )))?
+            .ok_or(ConnectionError::Timeout)?;
+        trace!("Ready message: {:?}", String::from_utf8_lossy(&ready_bytes));
+        let msg = parser::Ready::parse(&mut ready_bytes.as_slice())
             .map_err(|e| ConnectionError::IOError(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Failed to parse ready message: {}", e)
             )))?;
         trace!("Ready message: {:?}", msg);
+        if let Err(warning) = msg.validate_capabilities() {
+            warn!("{}", warning);
+        }
 
         let (r, w) = tokio::io::split(c);
         let r = ReadHalfOptions::Tls(r);
@@ -1005,17 +1021,38 @@ impl QSConnection {
         let (com_tx, com_rx) = mpsc::channel(100);
         let logchannels = Arc::new(DashMap::new());
 
-        // Read ready message
+        // Read ready message using MsgRecv for proper framing
+        let mut receiver = MsgRecv::new();
         let mut b = [0; 1024];
-        stream.readable().await?;
-        let n = stream.try_read(&mut b)?;
-        trace!("Ready message: {:?}", String::from_utf8_lossy(&b[..n]));
-        let msg = parser::Ready::parse(&mut &b[..n])
+        loop {
+            stream.readable().await?;
+            match stream.try_read(&mut b) {
+                Ok(0) => return Err(ConnectionError::Timeout),
+                Ok(n) => {
+                    if receiver.push_data(&b[..n]) {
+                        break;
+                    }
+                }
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(e) => return Err(ConnectionError::IOError(e)),
+            }
+        }
+        let ready_bytes = receiver.try_get_msg()
+            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("Failed to receive ready message: {}", e)
+            )))?
+            .ok_or(ConnectionError::Timeout)?;
+        trace!("Ready message: {:?}", String::from_utf8_lossy(&ready_bytes));
+        let msg = parser::Ready::parse(&mut ready_bytes.as_slice())
             .map_err(|e| ConnectionError::IOError(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("Failed to parse ready message: {}", e)
             )))?;
         trace!("Ready message: {:?}", msg);
+        if let Err(warning) = msg.validate_capabilities() {
+            warn!("{}", warning);
+        }
 
         let (r, w) = tokio::io::split(stream);
         let r = ReadHalfOptions::Tcp(r);
@@ -1051,6 +1088,20 @@ impl QSConnection {
         &self,
         topics: &[&str],
     ) -> StreamMap<String, BroadcastStream<LogMessage>> {
+        self.subscribe_log_with_options(topics, false).await
+    }
+
+    pub async fn subscribe_log_with_options(
+        &self,
+        topics: &[&str],
+        timestamp: bool,
+    ) -> StreamMap<String, BroadcastStream<LogMessage>> {
+        // Send SUBS+ command to the server for the requested topics
+        if !topics.is_empty() {
+            let cmd = crate::commands::Subscribe::topics(topics).with_timestamp(timestamp);
+            let _ = self.send_command(cmd).await;
+        }
+
         let mut s = StreamMap::new();
         for &topic in topics {
             if !self.logchannels.contains_key(topic) {
@@ -1070,6 +1121,15 @@ impl QSConnection {
     /// is hanging, this might return true.
     pub async fn is_connected(&self) -> bool {
         !self.task.is_finished()
+    }
+
+    /// Send QUIT command to the server for a clean disconnect.
+    /// This is best-effort: errors are silently ignored since we're disconnecting anyway.
+    pub async fn disconnect(&self) {
+        if let Ok(mut rx) = self.send_command_bytes(b"QUIT".as_bstr()).await {
+            // Try to get the response, but don't wait long
+            let _ = timeout(Duration::from_secs(2), rx.recv()).await;
+        }
     }
 
     pub async fn get_exp_file(&self, path: &str) -> Result<Vec<u8>, CommandError<ErrorResponse>> {
@@ -1217,8 +1277,6 @@ impl QSConnection {
         let run_mode = parts[2].clone();
 
 
-        println!("protocol_content: {}", protocol_content);
-
         // Construct full PROT command string
         let prot_command = format!(
             "PROT -volume={} -runmode={} {} <multiline.protocol>\n{}\n</multiline.protocol>",
@@ -1230,8 +1288,6 @@ impl QSConnection {
 
     pub async fn get_running_protocol(&self) -> Result<Protocol, CommandError<ErrorResponse>> {
         let prot_command = self.get_running_protocol_string().await?;
-
-        println!("prot_command: {}", prot_command);
 
         // Parse into Command and then Protocol
         let cmd = Command::try_from(prot_command.clone())
@@ -1295,7 +1351,7 @@ impl QSConnection {
         &self,
         level: AccessLevel,
     ) -> Result<(), CommandError<ErrorResponse>> {
-        commands::AccessLevelSet::level(level)
+        commands::AccessLevelSet::new(level)
             .send(self)
             .await?
             .receive_response()
@@ -1528,5 +1584,85 @@ impl FilterSet {
 impl std::fmt::Display for FilterSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "x{}-m{}", self.ex, self.em)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_filter_data_filename_roundtrip() {
+        let filename = "S01_C001_T01_P0001_M4_X1_filterdata.xml";
+        let parsed = FilterDataFilename::from_string(filename).unwrap();
+        assert_eq!(parsed.stage, 1);
+        assert_eq!(parsed.cycle, 1);
+        assert_eq!(parsed.step, 1);
+        assert_eq!(parsed.point, 1);
+        assert_eq!(parsed.filterset.em, 4);
+        assert_eq!(parsed.filterset.ex, 1);
+        assert_eq!(parsed.to_string(), filename);
+    }
+
+    #[test]
+    fn test_filter_data_filename_invalid() {
+        assert!(FilterDataFilename::from_string("not_a_valid_filename.xml").is_err());
+        assert!(FilterDataFilename::from_string("").is_err());
+    }
+
+    #[test]
+    fn test_filter_data_filename_is_same_point() {
+        let f1 = FilterDataFilename::from_string("S01_C001_T01_P0001_M4_X1_filterdata.xml").unwrap();
+        let f2 = FilterDataFilename::from_string("S01_C001_T01_P0001_M5_X2_filterdata.xml").unwrap();
+        assert!(f1.is_same_point(&f2));
+    }
+
+    #[test]
+    fn test_filter_data_filename_different_point() {
+        let f1 = FilterDataFilename::from_string("S01_C001_T01_P0001_M4_X1_filterdata.xml").unwrap();
+        let f2 = FilterDataFilename::from_string("S01_C002_T01_P0001_M4_X1_filterdata.xml").unwrap();
+        assert!(!f1.is_same_point(&f2));
+    }
+
+    #[test]
+    fn test_filter_set_roundtrip() {
+        let fs = FilterSet::from_string("x1-m4").unwrap();
+        assert_eq!(fs.ex, 1);
+        assert_eq!(fs.em, 4);
+        assert_eq!(fs.to_string(), "x1-m4");
+    }
+
+    #[test]
+    fn test_filter_set_invalid() {
+        assert!(FilterSet::from_string("bad").is_err());
+        assert!(FilterSet::from_string("").is_err());
+        assert!(FilterSet::from_string("x-m").is_err());
+    }
+
+    #[test]
+    fn test_filter_data_filename_display() {
+        let fdf = FilterDataFilename {
+            stage: 2,
+            cycle: 15,
+            step: 3,
+            point: 42,
+            filterset: FilterSet { em: 4, ex: 1 },
+        };
+        assert_eq!(
+            format!("{}", fdf),
+            "S02_C015_T03_P0042_M4_X1_filterdata.xml"
+        );
+    }
+
+    #[test]
+    fn test_tls_config_builder() {
+        let config = TlsConfig::new()
+            .with_client_cert("/cert.pem", Some("/key.pem"))
+            .with_server_ca("/ca.pem")
+            .with_server_name("example.com");
+        assert_eq!(config.client_cert_path, Some("/cert.pem".to_string()));
+        assert_eq!(config.client_key_path, Some("/key.pem".to_string()));
+        assert_eq!(config.server_ca_path, Some("/ca.pem".to_string()));
+        assert_eq!(config.tls_server_name, Some("example.com".to_string()));
     }
 }

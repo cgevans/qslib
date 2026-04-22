@@ -6,6 +6,48 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Version 0.15.0
+
+Robustness improvements to communication, consolidation of parsing into Rust, and a new quant/calibration data pipeline:
+
+### Communication fixes
+- Fix READY message read to handle partial TCP reads (TCP does not guarantee message boundaries).
+- Fix double newline on command send when content already has a trailing newline.
+- Fix quoted string parser to handle backslash escape sequences (`\"`, `\\`, `\n`, `\t`).
+- Fix ErrorResponse parser to handle errors without brackets.
+- Fix Rust parser tag character set to include underscore (e.g. `<quote_reply>`).
+- Fix DRAW? returning "false" instead of "Open" by not coercing open/closed to Bool in response parser.
+- Add single-quote string support to Rust parser.
+- Extend boolean parsing to cover all server-recognized forms (yes/no, on/off, open/close).
+- Extend command name character set to include `+`, `-`, `~`, `<` (e.g. `SUBS+`, `FLAG-`).
+- Add WARNing response type to Rust parser.
+- Add tag stack timeout to message receiver, preventing unclosed tags from absorbing all subsequent messages.
+- Send QUIT command on disconnect for clean server-side cleanup.
+- Handle auth-required gracefully in `Machine.connect()` with a clear error message for remote connections.
+- Handle `ExclusiveAccess` and `AccessGiven` errors as specific exception subclasses.
+
+### Data and protocol fixes
+- Fix IncrementCycle/IncrementStep defaults to match server (default=2, not 1).
+- Fix SampleTemperatures separator mismatch in multicomponent data parsing.
+- Remove overly strict temperature zone and plate type assertions.
+- Parameterize plate type in `Experiment._new_xml_files` instead of hardcoding 96-well.
+
+### New features
+- Consolidate Python parsing to Rust: `AccessLevel`, `FilterSet`, `SCPICommand`, `PlateSetup` all now handled in Rust; `pyparsing` dependency removed.
+- Add Rust quant/calibration file parsers and filterdata reconstruction from quant + calibrations (matches filterdata.xml to <0.1 error).
+- Add ROI calibration parsing and TIFF-to-quant processing pipeline (exact match to instrument output).
+- Migrate `FilterDataCollection` loading and timestamp-setting to Rust.
+- Dynamic zone count querying via `Machine.get_zone_count()` instead of hardcoded 6.
+- Expose server random key auth mechanism via `Machine.generate_random_key()`.
+- Validate READY message capabilities on connection.
+- Make `subscribe_log()` actually send SUBS+ command to the server.
+- Parse MESSage timestamp structurally in `LogMessage`.
+- Extend `Subscribe` command builder with timestamp and multi-topic support.
+- Add exclusive and stealth flags to `AccessLevelSet` command.
+
+### Testing
+- ~226 new tests across Rust and Python, covering communication, parsing, plate setup, processors, and machine logic.
+
 ## Version 0.14.0
 
 A significant reorganization:

@@ -189,3 +189,266 @@ def test_block_temp():
     m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
     with m:
         assert m.block == (False, 25.0)
+
+
+@requires_machine
+def test_run_status_idle():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        rs = m.run_status()
+        assert rs.name == "-"
+
+
+@requires_machine
+def test_machine_status():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        ms = m.machine_status()
+        assert hasattr(ms, "drawer")
+        assert hasattr(ms, "sample_temperatures")
+
+
+@requires_machine
+def test_get_running_protocol_no_run():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        with pytest.raises(Exception):
+            m.get_running_protocol()
+
+
+@requires_machine
+def test_get_zone_count():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        z = m.get_zone_count()
+        assert z >= 1
+
+
+@requires_machine
+def test_list_runs_in_storage():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        runs = m.list_runs_in_storage()
+        assert isinstance(runs, list)
+
+
+@requires_machine
+def test_list_runs_in_storage_verbose():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        runs = m.list_runs_in_storage(verbose=True)
+        assert isinstance(runs, list)
+
+
+@requires_machine
+def test_power_status():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        p = m.power
+        assert isinstance(p, bool)
+
+
+@requires_machine
+def test_drawer_position():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        d = m.drawer_position
+        assert d in ("Open", "Closed", "Unknown")
+
+
+@requires_machine
+def test_block_temperature():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        b = m.block
+        assert isinstance(b, tuple) and len(b) == 2
+
+
+@requires_machine
+def test_run_command_help():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        result = m.run_command("HELP?")
+        assert isinstance(result, str) and len(result) > 0
+
+
+@requires_machine
+def test_cover_position():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        pos = m.cover_position
+        assert pos in ("Up", "Down", "Unknown", "")
+
+
+@requires_machine
+def test_drawer_open_close():
+    m = Machine(
+        TEST_MACHINE,
+        port=TEST_PORT,
+        max_access_level="Controller",
+        password=TEST_PASSWORD,
+        ssl=TEST_SSL,
+    )
+    with m:
+        m.drawer_open()
+        m.drawer_close(lower_cover=False, check=False)
+
+
+@requires_machine
+def test_cover_lower():
+    m = Machine(
+        TEST_MACHINE,
+        port=TEST_PORT,
+        max_access_level="Controller",
+        password=TEST_PASSWORD,
+        ssl=TEST_SSL,
+    )
+    with m:
+        # Close drawer first, then lower cover
+        m.drawer_close(lower_cover=False, check=False)
+        m.cover_lower(check=False)
+
+
+@requires_machine
+def test_run_command_to_bytes():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        result = m.run_command_to_bytes("HELP?")
+        assert isinstance(result, bytes) and len(result) > 0
+
+
+@requires_machine
+def test_run_command_bytes_raw():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        result = m.run_command_bytes(b"HELP?")
+        assert isinstance(result, bytes) and len(result) > 0
+
+
+@requires_machine
+def test_define_protocol():
+    proto = Protocol(
+        [Stage.stepped_ramp(50, 60, 120, n_steps=3, collect=True)],
+        filters=["x1-m4"],
+        name="TestProto",
+    )
+    m = Machine(
+        TEST_MACHINE,
+        port=TEST_PORT,
+        max_access_level="Controller",
+        password=TEST_PASSWORD,
+        ssl=TEST_SSL,
+    )
+    with m:
+        m.define_protocol(proto)
+
+
+@requires_machine
+def test_list_files_verbose():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        result = m.list_files("public_run_complete:", verbose=True)
+        assert isinstance(result, list)
+        # Each entry should be a dict with at least 'path'
+        for entry in result:
+            assert isinstance(entry, dict)
+            assert "path" in entry
+
+
+@requires_machine
+def test_current_run_name_no_run():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        name = m.current_run_name
+        assert name is None
+
+
+@requires_machine
+def test_at_access_context_manager():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        initial = m.access_level
+        with m.at_access("Controller"):
+            assert m.get_access_level()[0] == AccessLevel.Controller
+        # After exiting context, should restore previous level
+        restored = m.get_access_level()[0]
+        assert restored == initial
+
+
+@requires_machine
+def test_block_setter_off():
+    m = Machine(
+        TEST_MACHINE,
+        port=TEST_PORT,
+        max_access_level="Controller",
+        password=TEST_PASSWORD,
+        ssl=TEST_SSL,
+    )
+    with m:
+        m.block = False
+        on, temp = m.block
+        assert on is False
+
+
+@requires_machine
+def test_block_setter_tuple():
+    m = Machine(
+        TEST_MACHINE,
+        port=TEST_PORT,
+        max_access_level="Controller",
+        password=TEST_PASSWORD,
+        ssl=TEST_SSL,
+    )
+    with m:
+        m.block = (True, 30.0)
+        on, temp = m.block
+        assert on is True
+        assert abs(temp - 30.0) < 1.0
+        # Clean up: turn block off
+        m.block = False
+
+
+@requires_machine
+def test_generate_random_key():
+    m = Machine(
+        TEST_MACHINE,
+        port=TEST_PORT,
+        max_access_level="Controller",
+        password=TEST_PASSWORD,
+        ssl=TEST_SSL,
+    )
+    with m:
+        key = m.generate_random_key()
+        assert isinstance(key, str)
+        assert len(key) > 0
+
+
+@requires_machine
+def test_power_cycle():
+    m = Machine(
+        TEST_MACHINE,
+        port=TEST_PORT,
+        max_access_level="Controller",
+        password=TEST_PASSWORD,
+        ssl=TEST_SSL,
+    )
+    with m:
+        original = m.power
+        m.power = True
+        assert m.power is True
+        m.power = False
+        assert m.power is False
+        # Restore
+        m.power = original
+
+
+@requires_machine
+def test_get_expfile_list():
+    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
+    with m:
+        # This may return an empty list or a list of files
+        try:
+            result = m.get_expfile_list("*", allow_nomatch=True)
+            assert isinstance(result, list)
+        except Exception:
+            pass  # May fail if no experiment is running

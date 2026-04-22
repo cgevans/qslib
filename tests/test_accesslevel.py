@@ -41,6 +41,5 @@ def test_access():
             AccessLevel(l1) < invalid  # type: ignore
         with pytest.raises(ValueError):
             AccessLevel(l1) <= invalid  # type: ignore
-        with pytest.raises(ValueError):
-            AccessLevel(l1) == invalid  # type: ignore
+        assert not (AccessLevel(l1) == invalid)  # type: ignore
         assert str(AccessLevel(l1)) == l1

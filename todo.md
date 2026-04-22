@@ -1,1 +1,0 @@
-- Add a test for an aborted run and stopped run.

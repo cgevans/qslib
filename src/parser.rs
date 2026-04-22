@@ -288,6 +288,45 @@ impl From<String> for Value {
     }
 }
 
+/// Parse a double-quoted string with backslash escape support.
+/// Handles \" within the string without prematurely closing.
+fn parse_quoted_string(input: &mut &[u8]) -> ModalResult<String> {
+    literal(b'"').parse_next(input)?;
+    let mut result = Vec::new();
+    loop {
+        let chunk = take_till(0.., |c: u8| c == b'"' || c == b'\\').parse_next(input)?;
+        result.extend_from_slice(chunk);
+        if input.is_empty() {
+            return Err(ErrMode::from_input(input));
+        }
+        match input[0] {
+            b'"' => {
+                *input = &input[1..];
+                return Ok(String::from_utf8_lossy(&result).to_string());
+            }
+            b'\\' => {
+                if input.len() < 2 {
+                    return Err(ErrMode::from_input(input));
+                }
+                match input[1] {
+                    b'"' => result.push(b'"'),
+                    b'\\' => result.push(b'\\'),
+                    b'n' => result.push(b'\n'),
+                    b't' => result.push(b'\t'),
+                    b'r' => result.push(b'\r'),
+                    other => {
+                        // Preserve unknown escape sequences as-is
+                        result.push(b'\\');
+                        result.push(other);
+                    }
+                }
+                *input = &input[2..];
+            }
+            _ => unreachable!(),
+        }
+    }
+}
+
 impl Value {
     pub fn parse(input: &mut &[u8]) -> ModalResult<Value> {
         let v = alt((
@@ -300,14 +339,18 @@ impl Value {
                     }
                 })
                 .context(StrContext::Label("xml")),
-            // Handle quoted strings
+            // Handle double-quoted strings with backslash escape support
+            parse_quoted_string
+            .map(|val| Value::QuotedString(val))
+            .context(StrContext::Label("quoted")),
+            // Handle single-quoted strings (no escape processing)
             delimited(
-                literal(b'"'),
-                take_till(0.., |c: u8| c == b'"'),
-                literal(b'"'),
+                literal(b'\''),
+                take_till(0.., |c: u8| c == b'\''),
+                literal(b'\''),
             )
             .map(|val| Value::QuotedString(String::from_utf8_lossy(val).to_string()))
-            .context(StrContext::Label("quoted")),
+            .context(StrContext::Label("single_quoted")),
             take_till(0.., |c: u8| c == b' ' || c == b'\n')
                 .map(|val| Value::String(String::from_utf8_lossy(val).to_string()))
                 .context(StrContext::Label("value")),
@@ -318,8 +361,8 @@ impl Value {
         };
         if let Value::String(s) = &v {
             match s.to_lowercase().as_str() {
-                "true" | "True" => return Ok(Value::Bool(true)),
-                "false" | "False" => return Ok(Value::Bool(false)),
+                "true" | "yes" | "on" => return Ok(Value::Bool(true)),
+                "false" | "no" | "off" => return Ok(Value::Bool(false)),
                 _ => {}
             }
             if let Ok(i) = s.parse::<i64>() {
@@ -338,7 +381,15 @@ impl Value {
             Value::Int(num) => bytes.write_all(num.to_string().as_bytes()),
             Value::Float(f) => bytes.write_all(f.to_string().as_bytes()),
             Value::Bool(b) => bytes.write_all(b.to_string().as_bytes()),
-            Value::QuotedString(str) => bytes.write_all(format!("\"{}\"", str).as_bytes()),
+            Value::QuotedString(str) => {
+                let escaped = str
+                    .replace('\\', "\\\\")
+                    .replace('"', "\\\"")
+                    .replace('\n', "\\n")
+                    .replace('\t', "\\t")
+                    .replace('\r', "\\r");
+                bytes.write_all(format!("\"{}\"", escaped).as_bytes())
+            }
             Value::XmlString { value, tag } => {
                 bytes.write_all(format!("<{}>", tag).as_bytes())?;
                 bytes.write_all(value)?;
@@ -397,6 +448,7 @@ impl TryFrom<&Value> for f64 {
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         match value {
             Value::Float(f) => Ok(*f),
+            Value::Int(i) => Ok(*i as f64),
             _ => Err(ParseError::ParseError("float".to_string())),
         }
     }
@@ -413,11 +465,12 @@ impl TryFrom<&Value> for bool {
 }
 
 impl TryFrom<&Value> for String {
-
     type Error = ParseError;
     fn try_from(value: &Value) -> Result<Self, Self::Error> {
         match value {
-            Value::String(s) => Ok(s.clone()),
+            Value::String(s) | Value::QuotedString(s) => Ok(s.clone()),
+            Value::XmlString { value, .. } => String::from_utf8(value.to_vec())
+                .map_err(|_| ParseError::ParseError("string (invalid utf8)".to_string())),
             _ => Err(ParseError::ParseError("string".to_string())),
         }
     }
@@ -433,13 +486,11 @@ pub enum MessageIdent {
 impl MessageIdent {
     pub fn parse(input: &mut &[u8]) -> ModalResult<MessageIdent> {
         let r = alt((
-            digit1.map(|val| {
-                MessageIdent::Number(
-                    String::from_utf8_lossy(val)
-                        .to_string()
-                        .parse::<u32>()
-                        .unwrap(),
-                )
+            digit1.try_map(|val| {
+                String::from_utf8_lossy(val)
+                    .to_string()
+                    .parse::<u32>()
+                    .map(MessageIdent::Number)
             }),
             Command::parse
                 .take()
@@ -471,13 +522,15 @@ impl Message {
             bytes.write_all(b" ")?;
         }
         bytes.write_all(content)?;
-        bytes.write_all(b"\n")?;
+        if !content.ends_with(b"\n") {
+            bytes.write_all(b"\n")?;
+        }
         Ok(())
     }
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "python", pyclass(get_all, set_all))]
+#[cfg_attr(feature = "python", pyclass(get_all, set_all, module = "qslib._qslib"))]
 pub struct Command {
     pub command: Vec<u8>,
     pub options: ArgMap,
@@ -506,8 +559,11 @@ impl TryFrom<&str> for Command {
     type Error = ParseError;
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let mut input = s.as_bytes();
-        let c = Command::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
-        // FIXME: check if input is empty
+        let c = Command::parse(&mut input).map_err(|e| {
+            let offset = s.len() - input.len();
+            let remaining = &s[offset..s.len().min(offset + 200)];
+            ParseError::ParseError(format!("{} at {:?}", e, remaining))
+        })?;
         Ok(c)
     }
 }
@@ -516,7 +572,10 @@ impl TryFrom<Vec<u8>> for Command {
     type Error = ParseError;
     fn try_from(s: Vec<u8>) -> Result<Self, Self::Error> {
         let mut input = &s[..];
-        let c = Command::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
+        let c = Command::parse(&mut input).map_err(|e| {
+            let remaining = String::from_utf8_lossy(&input[..input.len().min(200)]);
+            ParseError::ParseError(format!("{} at {:?}", e, remaining))
+        })?;
         Ok(c)
     }
 }
@@ -525,7 +584,11 @@ impl TryFrom<String> for Command {
     type Error = ParseError;
     fn try_from(s: String) -> Result<Self, Self::Error> {
         let mut input = s.as_bytes();
-        let c = Command::parse(&mut input).map_err(|e| ParseError::ParseError(e.to_string()))?;
+        let c = Command::parse(&mut input).map_err(|e| {
+            let offset = s.len() - input.len();
+            let remaining = &s[offset..s.len().min(offset + 200)];
+            ParseError::ParseError(format!("{} at {:?}", e, remaining))
+        })?;
         Ok(c)
     }
 }
@@ -568,7 +631,7 @@ impl Command {
 
     pub fn parse(input: &mut &[u8]) -> ModalResult<Command> {
         let comm = take_while(1.., |c: u8| {
-            c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*' || c == b'='        })
+            c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*' || c == b'=' || c == b'+' || c == b'-' || c == b'~' || c == b'<'        })
         .context(StrContext::Label("command"))
         .parse_next(input)?;
         space0
@@ -697,7 +760,7 @@ pub fn parse_options(input: &mut &[u8]) -> ModalResult<ArgMap> {
 }
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "python", pyclass)]
+#[cfg_attr(feature = "python", pyclass(module = "qslib._qslib"))]
 pub struct OkResponse {
     pub options: ArgMap,
     pub args: Vec<Value>,
@@ -782,10 +845,46 @@ impl From<OkResponse> for String {
     }
 }
 
+#[cfg(feature = "python")]
+#[pymethods]
+impl OkResponse {
+    #[getter]
+    fn opts(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyAny>> {
+        Ok(self.options.clone().into_pyobject(py).unwrap().into_any().unbind())
+    }
+
+    #[getter]
+    fn args(&self, py: Python<'_>) -> PyResult<Vec<Py<pyo3::types::PyAny>>> {
+        self.args.iter().map(|v| {
+            Ok(v.clone().into_pyobject(py).unwrap().into_any().unbind())
+        }).collect()
+    }
+
+    #[staticmethod]
+    #[pyo3(name = "from_string")]
+    fn py_from_string(s: String) -> PyResult<Self> {
+        OkResponse::try_from(s).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse: {}", e))
+        })
+    }
+
+    fn __repr__(&self) -> String {
+        format!("{}", self)
+    }
+
+    fn __str__(&self) -> String {
+        format!("{}", self)
+    }
+}
+
 #[derive(Debug)]
 #[cfg_attr(feature = "python", derive(IntoPyObject))]
 pub enum MessageResponse {
     Ok {
+        ident: MessageIdent,
+        message: OkResponse,
+    },
+    Warning {
         ident: MessageIdent,
         message: OkResponse,
     },
@@ -820,15 +919,31 @@ impl Display for ErrorResponse {
 
 impl ErrorResponse {
     pub fn parse(input: &mut &[u8]) -> ModalResult<ErrorResponse> {
-        return (seq!{
+        // Try bracketed format first: [ErrorClass] -options --> message
+        // Fall back to treating entire text as the error message (for respondError paths)
+        let bracketed = (seq!{
             ErrorResponse {
-                error: delimited("[", take_till(0.., |c: u8| c == b']'), "]").map(|val| String::from_utf8_lossy(val).to_string()), // FIXME: don't fail if no []
+                error: delimited("[", take_till(0.., |c: u8| c == b']'), "]").map(|val| String::from_utf8_lossy(val).to_string()),
                 _: space0,
                 args: parse_options,
                 _: space0,
                 message: take_till(0.., |c: u8| c == b'\n').map(|val| String::from_utf8_lossy(val).to_string()),
             }
         }).parse_next(input);
+
+        if bracketed.is_ok() {
+            return bracketed;
+        }
+
+        // Fallback: no brackets, entire remaining text is the error message
+        let msg = take_till(0.., |c: u8| c == b'\n')
+            .map(|val: &[u8]| String::from_utf8_lossy(val).to_string())
+            .parse_next(input)?;
+        Ok(ErrorResponse {
+            error: String::new(),
+            args: ArgMap::new(),
+            message: msg,
+        })
     }
 }
 
@@ -836,6 +951,21 @@ fn parse_ok(input: &mut &[u8]) -> ModalResult<MessageResponse> {
     return (seq! {
         MessageResponse::Ok {
             _: literal(b"OK"),
+            _: space1,
+            ident: MessageIdent::parse,
+            _: space0,
+            message: OkResponse::parse,
+            _: space0,
+            _: newline
+        }
+    })
+    .parse_next(input);
+}
+
+fn parse_warning(input: &mut &[u8]) -> ModalResult<MessageResponse> {
+    return (seq! {
+        MessageResponse::Warning {
+            _: literal(b"WARNing"),
             _: space1,
             ident: MessageIdent::parse,
             _: space0,
@@ -896,15 +1026,37 @@ impl Ready {
         })
         .parse_next(input);
     }
+
+    /// Check if the server advertises a specific capability.
+    pub fn has_capability(&self, capability: &str) -> bool {
+        match self.args.get("capabilities") {
+            Some(Value::String(caps)) => caps.split(',').any(|c| c.trim() == capability),
+            _ => false,
+        }
+    }
+
+    /// Check that the server supports command indexing (required for proper operation).
+    /// Returns an error message if the capability is missing.
+    pub fn validate_capabilities(&self) -> Result<(), String> {
+        if !self.has_capability("Index") {
+            return Err(
+                "Server does not advertise 'Index' capability. \
+                 Command indexing may not work correctly."
+                .to_string()
+            );
+        }
+        Ok(())
+    }
 }
 
 use crate::com::QSConnectionError;
 use crate::commands::CommandBuilder;
 
 #[derive(Debug, Clone)]
-#[cfg_attr(feature = "python", pyclass)]
+#[cfg_attr(feature = "python", pyclass(module = "qslib._qslib"))]
 pub struct LogMessage {
     pub topic: String,
+    pub timestamp: Option<f64>,
     pub message: String,
 }
 
@@ -912,7 +1064,11 @@ pub struct LogMessage {
 #[pymethods]
 impl LogMessage {
     fn __str__(&self) -> String {
-        format!("{}: {}", self.topic, self.message)
+        if let Some(ts) = self.timestamp {
+            format!("{} [{}]: {}", self.topic, ts, self.message)
+        } else {
+            format!("{}: {}", self.topic, self.message)
+        }
     }
 
     fn get_message(&self) -> String {
@@ -922,31 +1078,50 @@ impl LogMessage {
     fn get_topic(&self) -> String {
         self.topic.clone()
     }
+
+    fn get_timestamp(&self) -> Option<f64> {
+        self.timestamp
+    }
 }
 
 fn parse_message(input: &mut &[u8]) -> ModalResult<MessageResponse> {
-    let msg = seq!{LogMessage {
-            _: literal(b"MESSage"),
-            _: space1,
-            topic: take_while(1.., |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*').map(|val| String::from_utf8_lossy(val).to_string()),
-            _: space1,
-            // FIXME: this should handle xml quotes; it is also not really needed if using our receiver, which already splits messages.
-            message: take_till(0.., |c: u8| c == b'\n').map(|val| String::from_utf8_lossy(val).to_string()),
-            _: space0,
-            _: newline
-        }}.parse_next(input)?;
-    Ok(MessageResponse::Message(msg))
+    let _: &[u8] = literal(b"MESSage").parse_next(input)?;
+    let _: &[u8] = space1.parse_next(input)?;
+    let topic: String = take_while(1.., |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*')
+        .map(|val: &[u8]| String::from_utf8_lossy(val).to_string())
+        .parse_next(input)?;
+    let _: &[u8] = space1.parse_next(input)?;
+
+    // Try to parse an optional timestamp (float) before the message text.
+    // The server prepends a Unix timestamp when subscribed with -timestamp.
+    let rest: String = take_till(0.., |c: u8| c == b'\n')
+        .map(|val: &[u8]| String::from_utf8_lossy(val).to_string())
+        .parse_next(input)?;
+    let _: () = (space0, newline).void().parse_next(input)?;
+
+    let (timestamp, message) = match rest.find(' ') {
+        Some(pos) => {
+            let candidate = &rest[..pos];
+            match candidate.parse::<f64>() {
+                Ok(ts) if ts > 1_000_000_000.0 => (Some(ts), rest[pos + 1..].to_string()),
+                _ => (None, rest),
+            }
+        }
+        None => (None, rest),
+    };
+
+    Ok(MessageResponse::Message(LogMessage { topic, timestamp, message }))
 }
 
 impl MessageResponse {
     pub fn parse(input: &mut &[u8]) -> ModalResult<MessageResponse> {
-        alt((parse_ok, parse_error, parse_next, parse_message)).parse_next(input)
+        alt((parse_ok, parse_warning, parse_error, parse_next, parse_message)).parse_next(input)
     }
 }
 
 #[derive(Debug, Error)]
 pub enum ParseError {
-    #[error("parse error")]
+    #[error("parse error: expected {0}")]
     ParseError(String),
 }
 
@@ -961,7 +1136,7 @@ impl TryFrom<&[u8]> for MessageResponse {
 pub fn parse_tag<'s>(input: &mut &'s [u8]) -> ModalResult<&'s [u8]> {
     delimited(
         literal(b'<'),
-        take_while(1.., |c: u8| c.is_ascii_alphanumeric() || c == b'.'),
+        take_while(1.., |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b'_'),
         literal(b'>'),
     )
     .parse_next(input)
@@ -976,6 +1151,371 @@ pub fn xml_delimited<'a>(input: &mut &'a [u8]) -> ModalResult<(&'a [u8], &'a [u8
     Ok((t, val))
 }
 
+// --- SCPICommand: Full SCPI command parser with nested commands, comments, comma lists ---
+
+/// An SCPI argument value that may be a scalar, a comma-separated list, or a block of nested commands.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SCPIArgValue {
+    Scalar(Value),
+    List(Vec<Value>),
+    CommandBlock(Vec<SCPICommand>),
+}
+
+/// A fully-parsed SCPI command with support for nested commands, comments, and comma-separated lists.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyclass(module = "qslib._qslib"))]
+pub struct SCPICommand {
+    pub command: String,
+    pub args: Vec<SCPIArgValue>,
+    pub opts: IndexMap<String, SCPIArgValue>,
+    pub comment: Option<String>,
+}
+
+impl PartialEq for SCPICommand {
+    fn eq(&self, other: &Self) -> bool {
+        self.command == other.command && self.args == other.args && self.opts == other.opts
+    }
+}
+
+/// Quote a string for SCPI if it contains spaces, quotes, or newlines.
+pub fn quote_string_if_needed(s: &str) -> String {
+    if s.contains('\n') {
+        return format!("<quote>{}</quote>", s);
+    }
+    if s.contains(' ') || s.contains('"') {
+        return format!("\"{}\"", s.replace('"', "\\\""));
+    }
+    s.to_string()
+}
+
+impl SCPIArgValue {
+    /// Format this argument value as an SCPI string.
+    pub fn to_scpi_string(&self, parent_command: &str) -> String {
+        match self {
+            SCPIArgValue::Scalar(v) => v.to_scpi_string(),
+            SCPIArgValue::List(items) => items
+                .iter()
+                .map(|v| v.to_scpi_string())
+                .collect::<Vec<_>>()
+                .join(","),
+            SCPIArgValue::CommandBlock(cmds) => {
+                let q = format!("multiline.{}", parent_command.to_lowercase());
+                let body: String = cmds.iter().map(|c| c.to_command_string()).collect();
+                let indented = body
+                    .lines()
+                    .map(|l| format!("\t{}", l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                format!("<{}>\n{}</{}>", q, indented, q)
+            }
+        }
+    }
+}
+
+impl Value {
+    /// Format this value for SCPI output, applying quoting as needed.
+    pub fn to_scpi_string(&self) -> String {
+        match self {
+            Value::String(s) => quote_string_if_needed(s),
+            Value::Int(i) => i.to_string(),
+            Value::Float(f) => f.to_string(),
+            Value::Bool(b) => b.to_string(),
+            Value::QuotedString(s) => quote_string_if_needed(s),
+            Value::XmlString { value, tag } => {
+                let content = String::from_utf8_lossy(value);
+                format!("<{}>{}</{}>", tag, content, tag)
+            }
+        }
+    }
+}
+
+impl SCPICommand {
+    /// Format this command as an SCPI command string, including terminal newline.
+    pub fn to_command_string(&self) -> String {
+        let mut parts = vec![self.command.clone()];
+        for (k, v) in &self.opts {
+            parts.push(format!("-{}={}", k, v.to_scpi_string(&self.command)));
+        }
+        for v in &self.args {
+            parts.push(v.to_scpi_string(&self.command));
+        }
+        let mut result = parts.join(" ");
+        if let Some(comment) = &self.comment {
+            result.push_str(&format!(" # {}", comment));
+        }
+        result.push('\n');
+        result
+    }
+}
+
+/// Parse a single unquoted value token (stops at space, newline, comma, <, #, ")
+fn scpi_value_one(input: &mut &[u8]) -> ModalResult<Value> {
+    let v = alt((
+        // Handle double-quoted strings
+        parse_quoted_string
+            .map(Value::QuotedString)
+            .context(StrContext::Label("quoted")),
+        // Handle single-quoted strings
+        delimited(
+            literal(b'\''),
+            take_till(0.., |c: u8| c == b'\''),
+            literal(b'\''),
+        )
+        .map(|val: &[u8]| Value::QuotedString(String::from_utf8_lossy(val).to_string()))
+        .context(StrContext::Label("single_quoted")),
+        // XML-delimited quoted content (not command blocks - those use multiline. prefix)
+        xml_delimited
+            .verify(|(tag, _): &(&[u8], &[u8])| !tag.starts_with(b"multiline."))
+            .map(|(_, val)| {
+                Value::String(String::from_utf8_lossy(val).to_string())
+            })
+            .context(StrContext::Label("xml_quoted")),
+        // Unquoted value (stops at whitespace, comma, <, #)
+        take_till(1.., |c: u8| c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == b',' || c == b'<' || c == b'#')
+            .map(|val: &[u8]| Value::String(String::from_utf8_lossy(val).to_string()))
+            .context(StrContext::Label("unquoted")),
+    ))
+    .parse_next(input)?;
+    // Convert string to bool/int/float
+    if let Value::String(s) = &v {
+        match s.to_lowercase().as_str() {
+            "true" | "yes" | "on" | "open" | "opened" => return Ok(Value::Bool(true)),
+            "false" | "no" | "off" | "close" | "closed" => return Ok(Value::Bool(false)),
+            _ => {}
+        }
+        if let Ok(i) = s.parse::<i64>() {
+            return Ok(Value::Int(i));
+        }
+        if let Ok(f) = s.parse::<f64>() {
+            return Ok(Value::Float(f));
+        }
+    }
+    Ok(v)
+}
+
+/// Parse a possibly comma-separated value (single value or comma-delimited list)
+fn scpi_opt_value(input: &mut &[u8]) -> ModalResult<SCPIArgValue> {
+    // Try parsing an XML-delimited block (<tag>...</tag>)
+    if input.starts_with(b"<") && !input.starts_with(b"</") {
+        // Save position for backtracking
+        let saved = *input;
+        if let Ok((tag, content)) = xml_delimited.parse_next(input) {
+            // Check if content starts with newline (command block) or is plain text
+            let trimmed = content.iter().position(|&c| c != b' ' && c != b'\t');
+            let starts_with_newline = trimmed.is_some_and(|pos| content[pos] == b'\n');
+            if starts_with_newline {
+                // Try to parse as a command block (stages, steps, etc.)
+                let mut cmds = Vec::new();
+                let mut inner = content;
+                loop {
+                    let _: &[u8] = take_while(0.., |c: u8| c == b' ' || c == b'\t' || c == b'\n' || c == b'\r')
+                        .parse_next(&mut inner)?;
+                    if inner.is_empty() {
+                        break;
+                    }
+                    match parse_scpi_command(&mut inner) {
+                        Ok(cmd) => cmds.push(cmd),
+                        Err(_) => break,
+                    }
+                }
+                if !cmds.is_empty() {
+                    return Ok(SCPIArgValue::CommandBlock(cmds));
+                }
+            }
+            // Plain XML-quoted text
+            let tag_str = String::from_utf8_lossy(tag).to_string();
+            return Ok(SCPIArgValue::Scalar(Value::XmlString {
+                value: content.into(),
+                tag: tag_str,
+            }));
+        }
+        // xml_delimited failed, restore position
+        *input = saved;
+    }
+    // Parse first value
+    let first = scpi_value_one(input)?;
+    // Check for comma-separated list
+    if input.first() == Some(&b',') {
+        let mut items = vec![first];
+        while input.first() == Some(&b',') {
+            *input = &input[1..]; // consume comma
+            items.push(scpi_value_one(input)?);
+        }
+        Ok(SCPIArgValue::List(items))
+    } else {
+        Ok(SCPIArgValue::Scalar(first))
+    }
+}
+
+/// Parse one option key=value pair (-key=value)
+fn scpi_opt_kv(input: &mut &[u8]) -> ModalResult<(String, SCPIArgValue)> {
+    literal(b'-').parse_next(input)?;
+    let key: &[u8] = alphanumeric1.parse_next(input)?;
+    literal(b'=').parse_next(input)?;
+    let val = scpi_opt_value(input)?;
+    Ok((String::from_utf8_lossy(key).to_lowercase(), val))
+}
+
+/// Parse one SCPI command (command name + opts + args + optional comment)
+pub fn parse_scpi_command(input: &mut &[u8]) -> ModalResult<SCPICommand> {
+    // Command name: alphanumeric + special chars
+    let comm: &[u8] = take_while(1.., |c: u8| {
+        c.is_ascii_alphanumeric() || b".:?*=+-~<{}>".contains(&c)
+    })
+    .context(StrContext::Label("command"))
+    .parse_next(input)?;
+    let command = String::from_utf8_lossy(comm).to_uppercase();
+
+    // Parse options and args mixed together
+    let mut opts = IndexMap::new();
+    let mut args = Vec::new();
+    let mut comment = None;
+
+    loop {
+        // Skip horizontal whitespace
+        let _: &[u8] = take_while(0.., |c: u8| c == b' ' || c == b'\t').parse_next(input)?;
+
+        // Check for end conditions
+        if input.is_empty() || input[0] == b'\n' {
+            if !input.is_empty() {
+                *input = &input[1..]; // consume newline
+            }
+            break;
+        }
+
+        // Check for comment
+        if input[0] == b'#' {
+            *input = &input[1..]; // skip #
+            // Skip optional space after #
+            let _: &[u8] = take_while(0.., |c: u8| c == b' ').parse_next(input)?;
+            let comment_text: &[u8] = take_till(0.., |c: u8| c == b'\n').parse_next(input)?;
+            comment = Some(String::from_utf8_lossy(comment_text).to_string());
+            // Consume the newline if present
+            if !input.is_empty() && input[0] == b'\n' {
+                *input = &input[1..];
+            }
+            break;
+        }
+
+        // Try option (-key=value)
+        if input[0] == b'-' && input.len() > 1 && input[1].is_ascii_alphanumeric() {
+            // Peek to check it's really an option (has = sign)
+            if let Some(eq_pos) = input.iter().position(|&c| c == b'=') {
+                let is_option = input[1..eq_pos].iter().all(|c| c.is_ascii_alphanumeric());
+                if is_option {
+                    let (key, val) = scpi_opt_kv(input)?;
+                    opts.insert(key, val);
+                    continue;
+                }
+            }
+        }
+
+        // Parse argument value
+        match scpi_opt_value(input) {
+            Ok(val) => args.push(val),
+            Err(_) => break,
+        }
+    }
+
+    Ok(SCPICommand {
+        command,
+        args,
+        opts,
+        comment,
+    })
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl SCPICommand {
+    /// Parse an SCPI command string.
+    #[staticmethod]
+    #[pyo3(name = "from_string")]
+    fn py_from_string(s: &str) -> PyResult<Self> {
+        let mut input = s.as_bytes();
+        parse_scpi_command(&mut input).map_err(|e| {
+            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse SCPICommand from {:?}: {}", s, e))
+        })
+    }
+
+    /// Get the command name.
+    #[getter]
+    fn command(&self) -> &str {
+        &self.command
+    }
+
+    /// Get the comment, if any.
+    #[getter]
+    fn comment(&self) -> Option<&str> {
+        self.comment.as_deref()
+    }
+
+    /// Get options as a Python dict.
+    #[getter]
+    fn opts(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyAny>> {
+        let dict = pyo3::types::PyDict::new(py);
+        for (key, val) in &self.opts {
+            dict.set_item(key, scpi_arg_to_py(py, val)?)?;
+        }
+        Ok(dict.into_any().unbind())
+    }
+
+    /// Get positional args as a Python tuple.
+    #[getter]
+    fn args(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyAny>> {
+        let items: Vec<Py<pyo3::types::PyAny>> = self.args.iter()
+            .map(|v| scpi_arg_to_py(py, v))
+            .collect::<PyResult<_>>()?;
+        let tuple = pyo3::types::PyTuple::new(py, items)?;
+        Ok(tuple.into_any().unbind())
+    }
+
+    fn __repr__(&self) -> String {
+        format!("SCPICommand(command='{}', args={:?}, opts={:?}, comment={:?})",
+            self.command, self.args, self.opts, self.comment)
+    }
+
+    fn __eq__(&self, other: &Self) -> bool {
+        self == other
+    }
+
+    /// Format as an SCPI command string including terminal newline.
+    #[pyo3(name = "to_command_string")]
+    fn py_to_command_string(&self) -> String {
+        self.to_command_string()
+    }
+}
+
+/// Quote a string for SCPI if it contains spaces, quotes, or newlines.
+#[cfg(feature = "python")]
+#[pyfunction]
+pub fn py_quote_string_if_needed(s: &str) -> String {
+    quote_string_if_needed(s)
+}
+
+#[cfg(feature = "python")]
+fn scpi_arg_to_py(py: Python<'_>, val: &SCPIArgValue) -> PyResult<Py<pyo3::types::PyAny>> {
+    match val {
+        SCPIArgValue::Scalar(v) => {
+            Ok(v.clone().into_pyobject(py).unwrap().into_any().unbind())
+        }
+        SCPIArgValue::List(items) => {
+            let py_items: Vec<Py<pyo3::types::PyAny>> = items.iter()
+                .map(|v| Ok(v.clone().into_pyobject(py).unwrap().into_any().unbind()))
+                .collect::<PyResult<_>>()?;
+            let list = pyo3::types::PyList::new(py, py_items)?;
+            Ok(list.into_any().unbind())
+        }
+        SCPIArgValue::CommandBlock(cmds) => {
+            let py_cmds: Vec<Py<SCPICommand>> = cmds.iter()
+                .map(|cmd| Py::new(py, cmd.clone()))
+                .collect::<PyResult<_>>()?;
+            let list = pyo3::types::PyList::new(py, py_cmds)?;
+            Ok(list.into_any().unbind())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -988,10 +1528,25 @@ mod tests {
 
         if let MessageResponse::Message(msg) = result {
             assert_eq!(msg.topic, "LEDStatus");
+            assert!(msg.timestamp.is_none());
             assert_eq!(
                 msg.message,
                 "Temperature:56.1434 Current:9.19802 Voltage:3.40984 JuncTemp:72.7511"
             );
+        } else {
+            panic!("Expected MessageResponse::Message, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_parse_message_with_timestamp() {
+        let input = b"MESSage Temperature 1614567890.123 -sample=22.5,22.4\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+
+        if let MessageResponse::Message(msg) = result {
+            assert_eq!(msg.topic, "Temperature");
+            assert!((msg.timestamp.unwrap() - 1614567890.123).abs() < 0.001);
+            assert_eq!(msg.message, "-sample=22.5,22.4");
         } else {
             panic!("Expected MessageResponse::Message, got {:?}", result);
         }
@@ -1155,7 +1710,7 @@ mod tests {
         let result = Command::parse(&mut &input[..]).unwrap();
         assert_eq!(String::from_utf8_lossy(&result.command), "POW");
         assert!(matches!(result.options.get("zone").unwrap(), Value::Int(1)));
-        assert_eq!(result.args[0].to_string(), "ON");
+        assert!(matches!(result.args[0], Value::Bool(true)));
     }
 
     #[test]
@@ -1174,6 +1729,27 @@ mod tests {
     }
 
     #[test]
+    fn test_message_no_double_newline() {
+        // Content without trailing newline should get one added
+        let msg = Message {
+            ident: None,
+            content: Some(b"CMD arg1".into()),
+        };
+        let mut output = Vec::new();
+        msg.write_bytes(&mut output).unwrap();
+        assert_eq!(&output, b"CMD arg1\n");
+
+        // Content with trailing newline should NOT get another
+        let msg = Message {
+            ident: None,
+            content: Some(b"CMD arg1\n".into()),
+        };
+        let mut output = Vec::new();
+        msg.write_bytes(&mut output).unwrap();
+        assert_eq!(&output, b"CMD arg1\n");
+    }
+
+    #[test]
     fn test_command_roundtrip() {
         let original = "CMD -opt1=value -opt2=3.14 arg1 arg2";
         let cmd = Command::try_from(original).unwrap();
@@ -1186,6 +1762,41 @@ mod tests {
             String::from_utf8_lossy(&cmd.command),
             String::from_utf8_lossy(&reparsed.command)
         );
+    }
+
+    #[test]
+    fn test_parse_command_suffix_chars() {
+        // Server commands can have +, -, ~, < suffixes
+        let input = b"SUBS+ topic1";
+        let result = Command::parse(&mut &input[..]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.command), "SUBS+");
+        assert_eq!(result.args[0].to_string(), "topic1");
+
+        let input = b"FLAG- topic1";
+        let result = Command::parse(&mut &input[..]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.command), "FLAG-");
+
+        let input = b"CLEAR~ item";
+        let result = Command::parse(&mut &input[..]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.command), "CLEAR~");
+
+        let input = b"LOAD< file";
+        let result = Command::parse(&mut &input[..]).unwrap();
+        assert_eq!(String::from_utf8_lossy(&result.command), "LOAD<");
+    }
+
+    #[test]
+    fn test_parse_error_response_with_suffix_command() {
+        // Server echoes command with suffix in error response (numeric ident)
+        let input = b"ERRor 42 [SomeError] --> bad args\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        match result {
+            MessageResponse::CommandError { ident, error } => {
+                assert_eq!(ident, MessageIdent::Number(42));
+                assert_eq!(error.error, "SomeError");
+            }
+            _ => panic!("Expected CommandError response"),
+        }
     }
 
     #[test]
@@ -1234,11 +1845,28 @@ mod tests {
     fn test_parse_ready_message() {
         let input = b"READy -session=474800 -product=QuantStudio3_5 -version=1.3.0 -build=001\n";
         let result = Ready::parse(&mut &input[..]).unwrap();
-        
+
         assert_eq!(result.args.get("session").unwrap().to_string(), "474800");
         assert_eq!(result.args.get("product").unwrap().to_string(), "QuantStudio3_5");
         assert_eq!(result.args.get("version").unwrap().to_string(), "1.3.0");
         assert_eq!(result.args.get("build").unwrap().to_string(), "1");
+    }
+
+    #[test]
+    fn test_ready_capabilities_present() {
+        let input = b"READy -session=1 -capabilities=Index\n";
+        let result = Ready::parse(&mut &input[..]).unwrap();
+        assert!(result.has_capability("Index"));
+        assert!(!result.has_capability("Other"));
+        assert!(result.validate_capabilities().is_ok());
+    }
+
+    #[test]
+    fn test_ready_capabilities_missing() {
+        let input = b"READy -session=1 -product=Test\n";
+        let result = Ready::parse(&mut &input[..]).unwrap();
+        assert!(!result.has_capability("Index"));
+        assert!(result.validate_capabilities().is_err());
     }
 
     #[test]
@@ -1371,11 +1999,286 @@ mod tests {
         assert_eq!(Value::Int(42).to_string(), "42");
         assert_eq!(Value::String("hello".to_string()).to_string(), "hello");
         assert_eq!(Value::Bool(true).to_string(), "true");
-        
-        let xml = Value::XmlString { 
-            value: "content".into(), 
-            tag: "tag".to_string() 
+
+        let xml = Value::XmlString {
+            value: "content".into(),
+            tag: "tag".to_string()
         };
         assert_eq!(xml.to_string(), "content");
+    }
+
+    #[test]
+    fn test_tag_with_underscore() {
+        let input = b"<quote_reply>content</quote_reply>";
+        let mut inp: &[u8] = input;
+        let result = xml_delimited(&mut inp).unwrap();
+        assert_eq!(String::from_utf8_lossy(result.0), "quote_reply");
+        assert_eq!(String::from_utf8_lossy(result.1), "content");
+    }
+
+    #[test]
+    fn test_single_quoted_string() {
+        let input = b"'hello world'";
+        let mut inp: &[u8] = input;
+        let result = Value::parse(&mut inp).unwrap();
+        assert_eq!(result, Value::QuotedString("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_single_quoted_string_with_dollar() {
+        let input = b"'Price is $100'";
+        let mut inp: &[u8] = input;
+        let result = Value::parse(&mut inp).unwrap();
+        assert_eq!(result, Value::QuotedString("Price is $100".to_string()));
+    }
+
+    #[test]
+    fn test_bool_parsing_extended() {
+        let cases_true = vec!["true", "True", "yes", "Yes", "on", "On"];
+        let cases_false = vec!["false", "False", "no", "No", "off", "Off"];
+        for s in cases_true {
+            let mut inp = s.as_bytes();
+            let v = Value::parse(&mut inp).unwrap();
+            assert_eq!(v, Value::Bool(true), "Expected true for '{}'", s);
+        }
+        for s in cases_false {
+            let mut inp = s.as_bytes();
+            let v = Value::parse(&mut inp).unwrap();
+            assert_eq!(v, Value::Bool(false), "Expected false for '{}'", s);
+        }
+        // open/closed/close/opened stay as strings in response parsing
+        // (they are valid machine responses like DRAW? → "Open")
+        for s in ["open", "opened", "Open", "close", "closed", "Closed"] {
+            let mut inp = s.as_bytes();
+            let v = Value::parse(&mut inp).unwrap();
+            assert!(matches!(v, Value::String(_)), "Expected string for '{}', got {:?}", s, v);
+        }
+    }
+
+    #[test]
+    fn test_quoted_string_with_escaped_quote() {
+        let input = b"\"foo\\\"bar\"";
+        let mut inp: &[u8] = input;
+        let result = Value::parse(&mut inp).unwrap();
+        assert_eq!(result, Value::QuotedString("foo\"bar".to_string()));
+    }
+
+    #[test]
+    fn test_quoted_string_with_escaped_backslash() {
+        let input = b"\"foo\\\\bar\"";
+        let mut inp: &[u8] = input;
+        let result = Value::parse(&mut inp).unwrap();
+        assert_eq!(result, Value::QuotedString("foo\\bar".to_string()));
+    }
+
+    #[test]
+    fn test_quoted_string_simple() {
+        let input = b"\"hello world\"";
+        let mut inp: &[u8] = input;
+        let result = Value::parse(&mut inp).unwrap();
+        assert_eq!(result, Value::QuotedString("hello world".to_string()));
+    }
+
+    #[test]
+    fn test_quoted_string_roundtrip() {
+        // Test that output from write_bytes can be re-parsed
+        let original = Value::QuotedString("foo\"bar".to_string());
+        let mut bytes = Vec::new();
+        original.write_bytes(&mut bytes).unwrap();
+        let mut inp: &[u8] = &bytes;
+        let parsed = Value::parse(&mut inp).unwrap();
+        assert_eq!(parsed, Value::QuotedString("foo\"bar".to_string()));
+    }
+
+    #[test]
+    fn test_quoted_string_roundtrip_backslash() {
+        // Backslashes must survive parse -> serialize -> parse
+        let original = Value::QuotedString("foo\\bar".to_string());
+        let mut bytes = Vec::new();
+        original.write_bytes(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"\"foo\\\\bar\"");
+        let mut inp: &[u8] = &bytes;
+        let parsed = Value::parse(&mut inp).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn test_quoted_string_roundtrip_newline() {
+        let original = Value::QuotedString("line1\nline2".to_string());
+        let mut bytes = Vec::new();
+        original.write_bytes(&mut bytes).unwrap();
+        assert_eq!(&bytes, b"\"line1\\nline2\"");
+        let mut inp: &[u8] = &bytes;
+        let parsed = Value::parse(&mut inp).unwrap();
+        assert_eq!(parsed, original);
+    }
+
+    #[test]
+    fn test_warning_response() {
+        let input = b"WARNing 1 Some warning text\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        if let MessageResponse::Warning { message, .. } = result {
+            assert_eq!(message.args.first().unwrap().to_string(), "Some");
+        } else {
+            panic!("Expected Warning, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_warning_response_with_options() {
+        let input = b"WARNing 1 -detail=info Something happened\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        if let MessageResponse::Warning { message, .. } = result {
+            assert!(message.options.get("detail").is_some());
+        } else {
+            panic!("Expected Warning, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_error_response_with_brackets() {
+        let input = b"ERRor 1 [InsufficientAccess] Access denied\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        if let MessageResponse::CommandError { error, .. } = result {
+            assert_eq!(error.error, "InsufficientAccess");
+            assert_eq!(error.message, "Access denied");
+        } else {
+            panic!("Expected CommandError, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_error_response_without_brackets() {
+        let input = b"ERRor 1 Aborted\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        if let MessageResponse::CommandError { error, .. } = result {
+            assert_eq!(error.error, "");
+            assert_eq!(error.message, "Aborted");
+        } else {
+            panic!("Expected CommandError, got {:?}", result);
+        }
+    }
+
+    #[test]
+    fn test_error_response_internal_error() {
+        let input = b"ERRor 1 Internal error: something went wrong\n";
+        let result = MessageResponse::try_from(&input[..]).unwrap();
+        if let MessageResponse::CommandError { error, .. } = result {
+            assert_eq!(error.error, "");
+            assert_eq!(error.message, "Internal error: something went wrong");
+        } else {
+            panic!("Expected CommandError, got {:?}", result);
+        }
+    }
+
+    // --- SCPICommand parser tests ---
+
+    #[test]
+    fn test_scpi_simple_command() {
+        let mut input = b"TEST:CMD\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.command, "TEST:CMD");
+        assert!(cmd.args.is_empty());
+        assert!(cmd.opts.is_empty());
+        assert!(cmd.comment.is_none());
+    }
+
+    #[test]
+    fn test_scpi_command_with_args() {
+        let mut input = b"CMD arg1 42 3.14\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.command, "CMD");
+        assert_eq!(cmd.args.len(), 3);
+        assert!(matches!(&cmd.args[0], SCPIArgValue::Scalar(Value::String(s)) if s == "arg1"));
+        assert!(matches!(&cmd.args[1], SCPIArgValue::Scalar(Value::Int(42))));
+        assert!(matches!(&cmd.args[2], SCPIArgValue::Scalar(Value::Float(f)) if (*f - 3.14).abs() < 0.001));
+    }
+
+    #[test]
+    fn test_scpi_command_with_opts() {
+        let mut input = b"CMD -stage=3 -cycle=10\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.command, "CMD");
+        assert!(cmd.args.is_empty());
+        assert!(matches!(cmd.opts.get("stage"), Some(SCPIArgValue::Scalar(Value::Int(3)))));
+        assert!(matches!(cmd.opts.get("cycle"), Some(SCPIArgValue::Scalar(Value::Int(10)))));
+    }
+
+    #[test]
+    fn test_scpi_command_with_comment() {
+        let mut input = b"CMD arg1 # this is a comment\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.command, "CMD");
+        assert_eq!(cmd.args.len(), 1);
+        assert_eq!(cmd.comment.as_deref(), Some("this is a comment"));
+    }
+
+    #[test]
+    fn test_scpi_command_comma_list() {
+        let mut input = b"CMD m4,x1,quant,500\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.command, "CMD");
+        assert_eq!(cmd.args.len(), 1);
+        if let SCPIArgValue::List(items) = &cmd.args[0] {
+            assert_eq!(items.len(), 4);
+        } else {
+            panic!("Expected list arg, got {:?}", cmd.args[0]);
+        }
+    }
+
+    #[test]
+    fn test_scpi_command_mixed_opts_and_args() {
+        let mut input = b"CMD -opt=val arg1 -opt2=42 arg2\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.command, "CMD");
+        assert_eq!(cmd.args.len(), 2);
+        assert!(matches!(cmd.opts.get("opt"), Some(SCPIArgValue::Scalar(Value::String(s))) if s == "val"));
+        assert!(matches!(cmd.opts.get("opt2"), Some(SCPIArgValue::Scalar(Value::Int(42)))));
+    }
+
+    #[test]
+    fn test_scpi_command_quoted_string() {
+        let mut input = b"CMD \"hello world\"\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.args.len(), 1);
+        assert!(matches!(&cmd.args[0], SCPIArgValue::Scalar(Value::QuotedString(s)) if s == "hello world"));
+    }
+
+    #[test]
+    fn test_scpi_command_xml_quoted() {
+        let mut input = b"CMD <quote>multiline\ncontent</quote>\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.args.len(), 1);
+    }
+
+    #[test]
+    fn test_scpi_command_no_newline() {
+        let mut input = b"CMD arg1" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.command, "CMD");
+        assert_eq!(cmd.args.len(), 1);
+    }
+
+    #[test]
+    fn test_scpi_command_bool_arg() {
+        let mut input = b"CMD true false\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.args.len(), 2);
+        assert!(matches!(&cmd.args[0], SCPIArgValue::Scalar(Value::Bool(true))));
+        assert!(matches!(&cmd.args[1], SCPIArgValue::Scalar(Value::Bool(false))));
+    }
+
+    #[test]
+    fn test_scpi_command_nested_multiline() {
+        let mut input = b"CMD <multiline.cmd>\nSUB1 arg1\nSUB2 arg2\n</multiline.cmd>\n" as &[u8];
+        let cmd = parse_scpi_command(&mut input).unwrap();
+        assert_eq!(cmd.args.len(), 1);
+        if let SCPIArgValue::CommandBlock(cmds) = &cmd.args[0] {
+            assert_eq!(cmds.len(), 2);
+            assert_eq!(cmds[0].command, "SUB1");
+            assert_eq!(cmds[1].command, "SUB2");
+        } else {
+            panic!("Expected CommandBlock, got {:?}", cmd.args[0]);
+        }
     }
 }

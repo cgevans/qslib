@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: 2021-2023 Constantine Evans <qslib@mb.costi.net>
 # SPDX-License-Identifier: EUPL-1.2
 
+from pathlib import Path
+
 import pytest
 
 from qslib import Experiment, Protocol, Stage, Step
@@ -63,21 +65,73 @@ def test_all_filters_no_data() -> None:
 
 def test_available_data_with_data():
     """Test available_data method with experiment loaded from test.eds file."""
-    exp = Experiment.from_file("tests/test.eds")
+    exp = Experiment.from_file(Path(__file__).parent / "test.eds")
     available = exp.available_data()
     
     # test.eds should have all these data types available
-    expected_data = ["filter_data", "multicomponent_data", "amplification_data", "analysis_result", "temperatures"]
-    
+    expected_data = ["filter_data", "multicomponent_data", "amplification_data", "analysis_result", "temperatures", "quant_data", "calibrations"]
+
     assert set(available) == set(expected_data)
-    assert len(available) == 5
+    assert len(available) == 7
 
 
 def test_available_data_no_data():
     """Test available_data method with newly-created experiment (no data)."""
     exp = Experiment(name="test_no_data", protocol=Protocol([Stage([Step(30, 25)])]))
     available = exp.available_data()
-    
+
     # New experiment should have no data available
     assert available == []
     assert len(available) == 0
+
+
+def test_multicomponent_sample_temperatures_whitespace():
+    """Test that SampleTemperatures parsing handles both tab and space separators."""
+    import numpy as np
+    from qslib.data import _parse_multicomponent_data_v1
+    import xml.etree.ElementTree as ET
+    import zipfile
+
+    # Parse the real multicomponent data from test.eds (tab-separated)
+    with zipfile.ZipFile(Path(__file__).parent / "test.eds") as z:
+        with z.open("apldbio/sds/multicomponentdata.xml") as f:
+            tree = ET.parse(f)
+
+    result_original = _parse_multicomponent_data_v1(tree)
+    assert "temperature" in result_original.columns
+    assert len(result_original) > 0
+    # Temperatures should all be positive and reasonable
+    temps = result_original["temperature"].dropna()
+    assert len(temps) > 0
+    assert (temps > 0).all()
+    assert (temps < 150).all()
+
+    # Now modify the XML to use space-separated values (simulating server aggregation)
+    with zipfile.ZipFile(Path(__file__).parent / "test.eds") as z:
+        with z.open("apldbio/sds/multicomponentdata.xml") as f:
+            tree2 = ET.parse(f)
+
+    st_elem = tree2.find("SampleTemperatures")
+    original_text = st_elem.text
+    # Replace tabs with spaces (what server aggregation does)
+    st_elem.text = " ".join(original_text.split())
+
+    result_space = _parse_multicomponent_data_v1(tree2)
+    assert np.array_equal(
+        result_original["temperature"].values,
+        result_space["temperature"].values,
+    )
+
+
+def test_create_96_well_plate():
+    """Test that default experiment creates a 96-well plate."""
+    exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
+    assert exp.plate_type == 96
+
+
+def test_create_384_well_plate():
+    """Test that 384-well plate can be created via plate_setup."""
+    from qslib.plate_setup import PlateSetup
+    ps = PlateSetup(plate_type=384)
+    exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]), plate_setup=ps)
+    assert exp.plate_type == 384

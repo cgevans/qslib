@@ -3,6 +3,7 @@
 
 import os
 import sys
+from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
@@ -10,6 +11,7 @@ from click.testing import CliRunner
 from qslib import Experiment
 from qslib.cli import cli
 
+_TESTS_DIR = Path(__file__).parent
 
 # Check if a test machine is configured
 TEST_MACHINE = os.environ.get("QSLIB_TEST_MACHINE")
@@ -21,7 +23,7 @@ requires_machine = pytest.mark.skipif(
 
 @pytest.fixture(scope="module")
 def exp():
-    return Experiment.from_file("tests/test.eds")
+    return Experiment.from_file(_TESTS_DIR / "test.eds")
 
 
 @pytest.fixture(scope="module")
@@ -32,7 +34,7 @@ def runner():
 def test_info(exp, runner: CliRunner):
     result = runner.invoke(
         cli,
-        ["info", "tests/test.eds"],
+        ["info", str(_TESTS_DIR / "test.eds")],
     )
     assert exp.info().rstrip() == result.output.rstrip()
 
@@ -44,7 +46,7 @@ def test_html(exp, tmp_path_factory: pytest.TempPathFactory, runner: CliRunner):
     tp = tmp_path_factory.mktemp("temp_html")
     runner.invoke(
         cli,
-        ["info-html", "-o", str(tp / "test.html"), "--no-open", "tests/test.eds"],
+        ["info-html", "-o", str(tp / "test.html"), "--no-open", str(_TESTS_DIR / "test.eds")],
     )
     assert exp.info_html()[0:100] == open(tp / "test.html").read()[0:100]
 
@@ -66,14 +68,14 @@ def test_help(runner: CliRunner):
 
 def test_protocol_desc(runner: CliRunner):
     """Test protocol-desc command outputs protocol info."""
-    result = runner.invoke(cli, ["protocol-desc", "tests/test.eds"])
+    result = runner.invoke(cli, ["protocol-desc", str(_TESTS_DIR / "test.eds")])
     assert result.exit_code == 0
     assert "Stage" in result.output
 
 
 def test_export_data(runner: CliRunner):
     """Test export-data outputs CSV."""
-    result = runner.invoke(cli, ["export-data", "tests/test.eds"])
+    result = runner.invoke(cli, ["export-data", str(_TESTS_DIR / "test.eds")])
     assert result.exit_code == 0
     lines = result.output.strip().split('\n')
     assert len(lines) > 1  # header + data
@@ -82,7 +84,7 @@ def test_export_data(runner: CliRunner):
 
 def test_export_temperatures(runner: CliRunner):
     """Test export-temperatures outputs CSV."""
-    result = runner.invoke(cli, ["export-temperatures", "tests/test.eds"])
+    result = runner.invoke(cli, ["export-temperatures", str(_TESTS_DIR / "test.eds")])
     assert result.exit_code == 0
     assert "," in result.output
 
@@ -92,7 +94,7 @@ def test_protocol_plot_pdf(tmp_path, runner: CliRunner):
     output = tmp_path / "plot.pdf"
     result = runner.invoke(
         cli,
-        ["protocol-plot", "-o", str(output), "--no-open", "tests/test.eds"],
+        ["protocol-plot", "-o", str(output), "--no-open", str(_TESTS_DIR / "test.eds")],
     )
     assert result.exit_code == 0
     assert output.exists()
@@ -104,7 +106,7 @@ def test_protocol_plot_png(tmp_path, runner: CliRunner):
     output = tmp_path / "plot.png"
     result = runner.invoke(
         cli,
-        ["protocol-plot", "-o", str(output), "-f", "png", "--no-open", "tests/test.eds"],
+        ["protocol-plot", "-o", str(output), "-f", "png", "--no-open", str(_TESTS_DIR / "test.eds")],
     )
     assert result.exit_code == 0
     assert output.exists()
@@ -116,7 +118,7 @@ def test_protocol_plot_svg(tmp_path, runner: CliRunner):
     output = tmp_path / "plot.svg"
     result = runner.invoke(
         cli,
-        ["protocol-plot", "-o", str(output), "-f", "svg", "--no-open", "tests/test.eds"],
+        ["protocol-plot", "-o", str(output), "-f", "svg", "--no-open", str(_TESTS_DIR / "test.eds")],
     )
     assert result.exit_code == 0
     assert output.exists()

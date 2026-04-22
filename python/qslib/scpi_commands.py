@@ -9,15 +9,12 @@ from __future__ import annotations
 import textwrap
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from enum import Enum
-from typing import Any, Sequence, Type, TypeVar, cast
+
+from typing import Any, Sequence, Type, TypeVar
 
 import numpy as np
-import pyparsing as pp
-from pyparsing import ParserElement
-from pyparsing import pyparsing_common as ppc
 
-from ._qslib import CommandError
+from ._qslib import AccessLevel as AccessLevel, CommandError
 
 
 class NoMatch(CommandError):
@@ -39,103 +36,49 @@ class InsufficientAccess(CommandError):
     """Raised when the current access level is insufficient for an operation."""
     pass
 
-pp.ParserElement.setDefaultWhitespaceChars("")
 
-_ws_or_end = (
-    (pp.Regex(r"[ \t\r]+") | pp.StringEnd() | pp.FollowedBy("\n"))
-    .suppress()
-    .setName("<ws/end>")
-)
-_nl = (
-    (pp.Literal("\n") + pp.Optional(pp.Regex(r"[ \t\r]+")))
-    .suppress()
-    .setName("<newline>")
-)
-_fwe = pp.FollowedBy(_ws_or_end).suppress().setName("<fwe?>")
-_fweqc = pp.FollowedBy(_ws_or_end | "<" | ",").suppress().setName("<fweqc?>")
+class ExclusiveAccessGiven(CommandError):
+    """Raised when another session holds exclusive access."""
+    pass
 
 
-def _make_multi_keyword(kwd_str: str, kwd_value: Any) -> ParserElement:
-    x = pp.oneOf(kwd_str)
-    x.setParseAction(pp.replaceWith(kwd_value))
-    return x
+class AccessGiven(CommandError):
+    """Raised when access has already been given to another session."""
+    pass
+
+
+_ERROR_CLASS_MAP: dict[str, type[CommandError]] = {
+    "NoMatch": NoMatch,
+    "AuthError": AuthError,
+    "AccessLevelExceeded": AccessLevelExceeded,
+    "InsufficientAccess": InsufficientAccess,
+    "ExclusiveAccessGiven": ExclusiveAccessGiven,
+    "AccessGiven": AccessGiven,
+}
+
+
+def specialize_command_error(e: CommandError) -> CommandError:
+    """Re-raise a CommandError as a more specific subclass if possible."""
+    if e.args and isinstance(e.args[0], dict):
+        error_class = e.args[0].get("error", "")
+    else:
+        error_class = str(e)
+    if error_class in _ERROR_CLASS_MAP:
+        specific = _ERROR_CLASS_MAP[error_class](*e.args)
+        specific.__cause__ = e
+        return specific
+    return e
 
 
 def quote_string_if_needed(s: str) -> str:
     """Quote a string if it contains spaces, quotes, or newlines.
-    
+
     Strings with newlines are wrapped in <quote>...</quote> tags.
     Strings with spaces or quotation marks are wrapped in double quotes with
     escaped quotes. Other characters like $, {, } are not escaped.
     """
-    if "\n" in s:
-        return f"<quote>{s}</quote>"
-    if " " in s or '"' in s:
-        return '"' + s.replace('"', '\\"') + '"'
-    return s
-
-
-_pbool = _make_multi_keyword("true True", True) | _make_multi_keyword(
-    "False false", False
-)
-
-_qs = pp.quotedString
-_qs.setParseAction(lambda toks: toks[0][1:-1])
-
-_quote_content = pp.Word(pp.alphanums + "._")
-_quote_open = pp.Combine("<" + _quote_content + ">")
-_quote_close = pp.Combine("</" + pp.matchPreviousExpr(_quote_content) + ">")
-_quote_close_any = pp.Combine("</" + _quote_content + ">")
-
-_command_forward = pp.Forward()
-
-_commands_block = (
-    _quote_open.suppress()
-    + _nl
-    + pp.delimitedList(_command_forward, _nl)
-    + _nl
-    + _quote_close.suppress()
-)
-
-_opt_value_one = (
-    (_pbool + _fweqc)
-    | (ppc.number + _fweqc)
-    | (_quote_open.suppress() + pp.Regex(r"[^<]+") + _quote_close.suppress() + _fweqc)
-    | (pp.Regex(r"[^ \t\n<\",#']+") + _fweqc)
-    | (_qs + _fweqc)
-).setParseAction(lambda toks: toks[0])
-
-_ovcl = pp.delimited_list(_opt_value_one, ",")
-
-_opt_value = (_commands_block | _ovcl | _opt_value_one).setParseAction(
-    lambda toks: (
-        toks[0]
-        if not isinstance(toks[0], SCPICommand) and len(toks) == 1
-        else (list(toks[:]),)
-    )
-)
-
-_opt_kv_pair = (
-    pp.Literal("-").suppress()
-    + ppc.identifier("key")
-    + pp.Literal("=").suppress()
-    + _opt_value.setResultsName("value")
-).setResultsName("opt", listAllMatches=True)
-
-_arg = _opt_value.setResultsName("arg", listAllMatches=True)
-
-_arglist = pp.delimitedList(
-    _opt_kv_pair
-    | (_quote_open.suppress() + _opt_kv_pair + _quote_close.suppress())
-    | _arg,
-    _ws_or_end,
-)
-
-_arglist.setParseAction(
-    lambda toks: ArgList(
-        {k: v for k, v in toks.get("opt", [])}, list(toks.get("arg", []))
-    )
-)
+    from ._qslib import py_quote_string_if_needed
+    return py_quote_string_if_needed(s)
 
 
 @dataclass
@@ -147,87 +90,9 @@ class ArgList:
     @classmethod
     def from_string(cls, argument_string: str) -> ArgList:
         """Parse an SCPI argument string."""
-        return cast(ArgList, _arglist.parseString(argument_string)[0])
-
-
-_NULLIST = ArgList({}, [])
-
-_commentstring: pp.ParserElement = pp.Combine(
-    pp.Regex(r"\s*#\s?").suppress()
-    + pp.Regex(r"[^\n]+")
-    + (pp.StringEnd() | pp.FollowedBy("\n")).suppress()
-)
-
-_command: pp.ParserElement = cast(
-    pp.ParserElement,
-    (
-        pp.Combine(pp.Regex("[A-Za-z:_]+"))("command")
-        + _ws_or_end
-        + pp.Optional(_arglist("arglist"))
-        + pp.Optional(_commentstring("comment"))
-        + _ws_or_end
-    ).setParseAction(
-        lambda toks: SCPICommand(
-            toks["command"],
-            comment=toks.get("comment", None),
-            *toks.get("arglist", _NULLIST).args,  # FIXME
-            **toks.get("arglist", _NULLIST).opts,
-        )
-    ),
-)
-
-_command_forward << _command
-
-
-_accesslevel_order: dict[str, int] = {
-    "Guest": 0,
-    "Observer": 1,
-    "Controller": 2,
-    "Administrator": 3,
-    "Full": 4,
-}
-
-
-class AccessLevel(Enum):
-    """QS machine access level, with comparisons."""
-
-    Guest = "Guest"
-    Observer = "Observer"
-    Controller = "Controller"
-    Administrator = "Administrator"
-    Full = "Full"
-    # value: str
-
-    def __gt__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] > _accesslevel_order[other.value]
-
-    def __ge__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] >= _accesslevel_order[other.value]
-
-    def __lt__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] < _accesslevel_order[other.value]
-
-    def __le__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] <= _accesslevel_order[other.value]
-
-    def __eq__(self, other: object) -> bool:
-        if not isinstance(other, AccessLevel):
-            other = AccessLevel(other)
-        return _accesslevel_order[self.value] == _accesslevel_order[other.value]
-
-    def __hash__(self) -> int:
-        return self.value.__hash__()
-
-    def __str__(self) -> str:
-        return self.value
+        from ._qslib import parse_arglist
+        result = parse_arglist(argument_string)
+        return cls(opts=result.opts, args=list(result.args))
 
 
 T = TypeVar("T")
@@ -365,7 +230,9 @@ class SCPICommand(SCPICommandLike):
     @classmethod
     def from_string(cls, command_string: str) -> SCPICommand:
         """Parse (as SCPICommands) an SCPI command string."""
-        return cast(SCPICommand, _command.parseString(command_string)[0])
+        from ._qslib import SCPICommand as RustSCPICommand
+        rust_cmd = RustSCPICommand.from_string(command_string)
+        return _convert_rust_scpi(rust_cmd)
 
     def specialize(self) -> SCPICommandLike:
         """If possible, convert SCPICommand to QSLib classes for the command."""
@@ -382,6 +249,28 @@ class SCPICommand(SCPICommandLike):
     @classmethod
     def from_scpicommand(cls, com: SCPICommand) -> SCPICommand:
         return com
+
+
+def _convert_rust_scpi(rust_cmd: Any) -> SCPICommand:
+    """Convert a Rust SCPICommand to a Python SCPICommand, recursively converting nested commands."""
+    from ._qslib import SCPICommand as RustSCPICommand
+
+    def convert_arg(arg: Any) -> Any:
+        if isinstance(arg, RustSCPICommand):
+            return _convert_rust_scpi(arg)
+        if isinstance(arg, list):
+            return [convert_arg(item) for item in arg]
+        return arg
+
+    args = tuple(convert_arg(a) for a in rust_cmd.args)
+    opts = {k: convert_arg(v) for k, v in rust_cmd.opts.items()}
+
+    cmd = SCPICommand.__new__(SCPICommand)
+    cmd.command = rust_cmd.command
+    cmd.args = args
+    cmd.opts = opts
+    cmd.comment = rust_cmd.comment
+    return cmd
 
 
 _scpi_command_classes: dict[str, SCPICommandLike] = {}
