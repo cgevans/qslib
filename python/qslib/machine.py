@@ -557,7 +557,7 @@ class Machine:
             SCPICommand(f"{leaf}:READ?", contexts + path, encoding=encoding)
         )
         if not reply.startswith(b"<quote>\n") or not reply.endswith(b"</quote>"):
-            raise ValueError(f"Unexpected reply format: expected <quote>...</quote>")
+            raise ValueError("Unexpected reply format: expected <quote>...</quote>")
         r = reply[8:-8]
         if encoding == "base64":
             return base64.decodebytes(r)
@@ -1055,7 +1055,7 @@ class Machine:
             f"EXP:READ? -encoding={encoding} {shlex.quote(path)}"
         )
         if not reply.startswith(b"<quote>\n") or not reply.endswith(b"</quote>"):
-            raise ValueError(f"Unexpected reply format: expected <quote>...</quote>")
+            raise ValueError("Unexpected reply format: expected <quote>...</quote>")
         r = reply[8:-8]
         if encoding == "base64":
             return base64.decodebytes(r)

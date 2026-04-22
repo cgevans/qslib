@@ -9,6 +9,7 @@ from __future__ import annotations
 import html as html_mod
 from dataclasses import dataclass
 from typing import (
+    Any,
     Dict,
     Iterable,
     Iterator,

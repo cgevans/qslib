@@ -27,11 +27,10 @@ from typing import (
     Tuple,
     Type,
     TypeVar,
-    Union,
     cast,
     overload,
 )
-from typing_extensions import TypeAlias
+from typing_extensions import Self, TypeAlias
 
 import attr
 import numpy as np
