@@ -8,7 +8,7 @@ use matrix_sdk::{
         Emoji, SasState, SasVerification, Verification, VerificationRequest,
         VerificationRequestState, format_emojis,
     },
-    matrix_auth::MatrixSession,
+    authentication::matrix::MatrixSession,
     room::Room,
     ruma::{
         UserId,

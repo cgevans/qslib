@@ -1,3 +1,7 @@
+// Raised for trait-solver recursion when proving `Send` of matrix-sdk's deeply
+// nested async sync() future passed to tokio::spawn. See rust-lang/rust#152942.
+#![recursion_limit = "512"]
+
 use anyhow::Result;
 use clap::Parser;
 use dashmap::DashMap;

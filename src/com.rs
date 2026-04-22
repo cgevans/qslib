@@ -178,10 +178,10 @@ impl ServerCertVerifier for ChainOnlyVerifier {
         )
         .map_err(|e| {
             TLSError::InvalidCertificate(match e {
-                webpki::Error::CertExpired => rustls::CertificateError::Expired,
-                webpki::Error::CertNotValidYet => rustls::CertificateError::NotValidYet,
+                webpki::Error::CertExpired { .. } => rustls::CertificateError::Expired,
+                webpki::Error::CertNotValidYet { .. } => rustls::CertificateError::NotValidYet,
                 webpki::Error::UnknownIssuer => rustls::CertificateError::UnknownIssuer,
-                webpki::Error::CertNotValidForName => rustls::CertificateError::NotValidForName,
+                webpki::Error::CertNotValidForName(..) => rustls::CertificateError::NotValidForName,
                 _ => rustls::CertificateError::BadEncoding,
             })
         })?;

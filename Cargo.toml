@@ -56,7 +56,7 @@ md-5 = "0.10"
 hex = "0.4"
 digest = { version = "0.10.7", default-features = false }
 rustls-pemfile = "2.2.0"
-webpki = { package = "rustls-webpki", version = "0.102" }
+webpki = { package = "rustls-webpki", version = "0.103" }
 shell-words = "1"
 tempfile = "3"
 serde_json = "1"
@@ -79,6 +79,12 @@ base64 = "0.21"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage,coverage_nightly)'] }
+
+# Patched matrix-sdk to add `#![recursion_limit = "512"]`, working around
+# rust-lang/rust#152942 (query depth overflow building matrix-sdk on rustc 1.94+
+# due to nested #[instrument] async fns + one more ManuallyDrop layer).
+[patch.crates-io]
+matrix-sdk = { path = "vendor/matrix-sdk" }
 
 [[bench]]
 name = "msg_recv"
