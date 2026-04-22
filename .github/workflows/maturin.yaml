@@ -111,7 +111,10 @@ jobs:
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          uv pip install --force-reinstall dist/qslib-*.whl
+          ls -la dist/
+          WHL=$(ls dist/qslib-*.whl | head -1)
+          echo "Installing wheel: $WHL"
+          uv pip install --reinstall-package qslib --no-sources "$WHL"
       - name: pytest
         run: just ci-test-python
       - name: Upload coverage
@@ -195,7 +198,10 @@ jobs:
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          uv pip install --force-reinstall dist/qslib-*.whl
+          ls -la dist/
+          WHL=$(ls dist/qslib-*.whl | head -1)
+          echo "Installing wheel: $WHL"
+          uv pip install --reinstall-package qslib --no-sources "$WHL"
       - name: pytest
         shell: bash
         run: just ci-test-python
@@ -277,7 +283,10 @@ jobs:
         run: |
           uv venv
           uv sync --group dev --no-install-project
-          uv pip install --force-reinstall dist/qslib-*.whl
+          ls -la dist/
+          WHL=$(ls dist/qslib-*.whl | head -1)
+          echo "Installing wheel: $WHL"
+          uv pip install --reinstall-package qslib --no-sources "$WHL"
       - name: pytest
         run: just ci-test-python
       - name: Upload coverage
