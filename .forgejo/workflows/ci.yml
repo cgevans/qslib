@@ -1,0 +1,574 @@
+name: CI
+
+# Forgejo Actions workflow, mirroring .github/workflows/maturin.yaml.
+#
+# Runner expectations (adjust `runs-on:` labels if your runners use different ones):
+#   - `docker`            : Linux runner that executes jobs inside a container.
+#                           Wheel-build jobs use a manylinux container directly to
+#                           avoid docker-in-docker for the maturin step. The
+#                           manylinux image has no `node` so a first step installs
+#                           Node 20 from NodeSource (Forgejo Actions invokes JS
+#                           actions like actions/checkout via node).
+#   - `windows`           : Windows host runner (no container). The host PATH
+#                           must include `git.exe` and `node.exe`.
+#   - `macos-arm64`       : Apple Silicon macOS host runner.
+#   - `self-hosted-qpcr`  : optional self-hosted runner with a connection to a
+#                           real or simulated QuantStudio machine, for the
+#                           integration test jobs. Disable those jobs by
+#                           removing them or guarding with `if: false` if no
+#                           such runner is registered.
+#
+# Secrets used (set in Codeberg -> repo -> Settings -> Actions -> Secrets):
+#   - CODECOV_TOKEN    : optional; coverage upload is best-effort.
+#   - PYPI_TOKEN       : required for `python_release` job on tags.
+#   - CRATES_IO_TOKEN  : required for `rust_release` job on tags.
+#   - PACKAGE_TOKEN    : required for mirroring release artifacts to Packages.
+#   - forge.token      : auto-provided by Forgejo (used for the Forgejo release).
+#
+# Caching: the Forgejo runner's built-in cache server (used by
+# `actions/cache` / Swatinem/rust-cache / setup-uv enable-cache) typically
+# isn't reachable from inside the workflow container, so we cache via host
+# volumes mounted on the named volumes below. To allow these mounts the
+# runner's config.yaml must permit them, e.g.:
+#
+#   container:
+#     valid_volumes:
+#       - "qslib-*"
+#
+# (or `["**"]` to allow any). Volumes persist across runs on the host and
+# are shared between jobs.
+
+on:
+  push:
+    branches:
+      - main
+      - master
+    tags:
+      - "*"
+    paths-ignore:
+      - CHANGELOG.md
+      - README.md
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_wheels:
+        description: "Build Python wheels and sdists without publishing"
+        required: false
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust_checks:
+    name: Rust checks
+    runs-on: docker
+    container:
+      image: docker.io/catthehacker/ubuntu:act-22.04
+      volumes:
+        - qslib-cargo:/cache/cargo
+        - qslib-cargo-target:/cache/cargo-target
+    env:
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/cargo-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy,llvm-tools
+      - name: Install just and cargo-llvm-cov
+        uses: https://github.com/taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov
+      - name: Run clippy
+        run: just clippy
+      - name: Run tests with coverage
+        run: just coverage-rust
+      - name: Upload coverage to Codecov
+        continue-on-error: true
+        uses: https://github.com/codecov/codecov-action@v5
+        with:
+          files: coverage-rust.lcov
+          name: rust-linux
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  python_checks:
+    name: Python checks
+    runs-on: docker
+    container:
+      image: docker.io/catthehacker/ubuntu:act-22.04
+      volumes:
+        - qslib-cargo:/cache/cargo
+        - qslib-cargo-target:/cache/cargo-target
+        - qslib-uv:/cache/uv
+    env:
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/cargo-target
+      UV_CACHE_DIR: /cache/uv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: llvm-tools
+      - name: Install uv
+        # Cache lives on the host volume mounted at $UV_CACHE_DIR; we don't
+        # use setup-uv's enable-cache (which talks to the runner cache server).
+        uses: https://github.com/astral-sh/setup-uv@v7
+      - name: Install just and cargo-llvm-cov
+        uses: https://github.com/taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov
+      - name: Run ruff
+        run: just ruff
+      - name: Setup virtual environment
+        run: |
+          uv venv
+          uv sync --group dev --no-install-project
+      - name: Rust coverage from Python tests
+        run: just coverage-rust-from-python
+      - name: Upload coverage to Codecov
+        continue-on-error: true
+        uses: https://github.com/codecov/codecov-action@v5
+        with:
+          files: coverage-rust-from-python.lcov
+          name: rust-from-python-linux
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  linux:
+    name: Python Linux builds
+    if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
+    needs: [python_checks]
+    runs-on: docker
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+      volumes:
+        - qslib-cargo:/cache/cargo
+        - qslib-cargo-target:/cache/cargo-target
+    env:
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/cargo-target
+    strategy:
+      matrix:
+        target: [x86_64]
+    steps:
+      - name: Install Node.js (manylinux image has no node, but JS actions need it)
+        run: |
+          curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+          dnf install -y nodejs
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+      - name: Build wheels
+        run: |
+          PYTHONS="/opt/python/cp310-cp310/bin/python3 \
+                   /opt/python/cp311-cp311/bin/python3 \
+                   /opt/python/cp312-cp312/bin/python3 \
+                   /opt/python/cp313-cp313/bin/python3 \
+                   /opt/python/cp314-cp314/bin/python3"
+          /opt/python/cp312-cp312/bin/pip install maturin
+          /opt/python/cp312-cp312/bin/maturin build --release --out dist \
+            --manylinux 2_28 --target ${{ matrix.target }}-unknown-linux-gnu \
+            -i $PYTHONS
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: wheels-linux-${{ matrix.target }}
+          path: dist
+
+  linux-freethreaded:
+    name: Python Linux free-threaded builds
+    if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
+    needs: [python_checks]
+    runs-on: docker
+    container:
+      image: quay.io/pypa/manylinux_2_28_x86_64
+      volumes:
+        - qslib-cargo:/cache/cargo
+        - qslib-cargo-target:/cache/cargo-target
+    env:
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/cargo-target
+    strategy:
+      matrix:
+        target: [x86_64]
+        python-version: ['3.13t', '3.14t']
+    steps:
+      - name: Install Node.js (manylinux image has no node, but JS actions need it)
+        run: |
+          curl -fsSL https://rpm.nodesource.com/setup_20.x | bash -
+          dnf install -y nodejs
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+      - name: Compute interpreter path
+        id: interp
+        run: |
+          VER="${{ matrix.python-version }}"
+          MM=$(echo "$VER" | tr -d '.t')
+          echo "path=/opt/python/cp${MM}-cp${MM}t/bin/python3" >> "$GITHUB_OUTPUT"
+      - name: Build wheels
+        run: |
+          /opt/python/cp312-cp312/bin/pip install maturin
+          /opt/python/cp312-cp312/bin/maturin build --release --out dist \
+            --interpreter ${{ steps.interp.outputs.path }} \
+            --manylinux 2_28 --target ${{ matrix.target }}-unknown-linux-gnu \
+            --no-default-features --features python
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: wheels-linux-freethreaded-${{ matrix.python-version }}-${{ matrix.target }}
+          path: dist
+
+  windows:
+    name: Python Windows builds
+    if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
+    needs: [python_checks]
+    runs-on: windows
+    env:
+      UV_CACHE_DIR: .uv-cache
+      UV_MANAGED_PYTHON: "1"
+    strategy:
+      matrix:
+        target: [x64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          $rustup = Join-Path ([System.IO.Path]::GetTempPath()) "rustup-init.exe"
+          Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $rustup
+          & $rustup --default-toolchain stable --profile minimal --no-modify-path -y
+          "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Install uv
+        uses: https://github.com/astral-sh/setup-uv@v7
+      - name: Install Python interpreters
+        shell: pwsh
+        run: uv python install 3.10 3.11 3.12 3.13 3.14
+      - name: Build wheels
+        shell: pwsh
+        run: |
+          $pythons = @("3.10", "3.11", "3.12", "3.13", "3.14") | ForEach-Object { uv python find $_ }
+          uvx maturin build --release --out dist --interpreter $pythons
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: wheels-windows-${{ matrix.target }}
+          path: dist
+
+  windows-freethreaded:
+    name: Python Windows free-threaded builds
+    if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
+    needs: [python_checks]
+    runs-on: windows
+    env:
+      UV_CACHE_DIR: .uv-cache
+      UV_MANAGED_PYTHON: "1"
+    strategy:
+      matrix:
+        target: [x64]
+        python-version: ['3.13t', '3.14t']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        shell: pwsh
+        run: |
+          $rustup = Join-Path ([System.IO.Path]::GetTempPath()) "rustup-init.exe"
+          Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $rustup
+          & $rustup --default-toolchain stable --profile minimal --no-modify-path -y
+          "$env:USERPROFILE\.cargo\bin" | Out-File -FilePath $env:GITHUB_PATH -Append
+      - name: Install uv
+        uses: https://github.com/astral-sh/setup-uv@v7
+      - name: Install Python interpreter
+        shell: pwsh
+        run: uv python install ${{ matrix.python-version }}
+      - name: Build wheels
+        shell: pwsh
+        run: |
+          $python = uv python find ${{ matrix.python-version }}
+          uvx maturin build --release --out dist --interpreter $python --no-default-features --features python
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: wheels-windows-freethreaded-${{ matrix.python-version }}-${{ matrix.target }}
+          path: dist
+
+  # macOS jobs run on the `macos-arm64` runner. Intel macOS wheels are intentionally deprecated.
+  macos:
+    name: Python macOS builds
+    if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
+    needs: [python_checks]
+    runs-on: macos-arm64
+    strategy:
+      matrix:
+        target: [aarch64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Build wheels
+        uses: https://github.com/PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --find-interpreter
+          sccache: "true"
+          rust-toolchain: stable
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: wheels-macos-${{ matrix.target }}
+          path: dist
+
+  macos-freethreaded:
+    name: Python macOS free-threaded builds
+    if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
+    needs: [python_checks]
+    runs-on: macos-arm64
+    strategy:
+      matrix:
+        target: [aarch64]
+        python-version: ['3.13t', '3.14t']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Build wheels
+        uses: https://github.com/PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --interpreter python3 --no-default-features --features python
+          sccache: "true"
+          rust-toolchain: stable
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: wheels-macos-freethreaded-${{ matrix.python-version }}-${{ matrix.target }}
+          path: dist
+
+  sdist:
+    name: Build sdist
+    if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
+    needs: [python_checks]
+    runs-on: docker
+    container:
+      image: docker.io/catthehacker/ubuntu:act-22.04
+      volumes:
+        - qslib-cargo:/cache/cargo
+        - qslib-cargo-target:/cache/cargo-target
+    env:
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/cargo-target
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: pip install maturin
+      - name: Build sdist
+        run: maturin sdist --out dist
+      - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
+        with:
+          name: wheels-sdist
+          path: dist
+
+  python_release:
+    name: Python PyPI release
+    runs-on: docker
+    container:
+      image: docker.io/catthehacker/ubuntu:act-22.04
+    if: startsWith(forge.ref, 'refs/tags/')
+    needs: [linux, linux-freethreaded, windows, windows-freethreaded, macos, macos-freethreaded, sdist]
+    steps:
+      - uses: https://code.forgejo.org/forgejo/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Install uv
+        uses: https://github.com/astral-sh/setup-uv@v7
+      - name: Publish to PyPI
+        # PyPI trusted publishing currently doesn't support Codeberg/Forgejo
+        # OIDC, so we use an API token. Set PYPI_TOKEN as a repo secret.
+        env:
+          UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: uv publish --check-url https://pypi.org/simple/ dist/*
+
+  rust_release:
+    name: Rust crates.io release
+    runs-on: docker
+    container:
+      image: docker.io/catthehacker/ubuntu:act-22.04
+      volumes:
+        - qslib-cargo:/cache/cargo
+        - qslib-cargo-target:/cache/cargo-target
+    env:
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/cargo-target
+    if: startsWith(forge.ref, 'refs/tags/')
+    needs: [rust_checks]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish --allow-dirty -p qslib
+
+  forgejo_release:
+    name: Forgejo release
+    runs-on: docker
+    container:
+      image: docker.io/catthehacker/ubuntu:act-22.04
+    if: startsWith(forge.ref, 'refs/tags/')
+    needs: [linux, linux-freethreaded, windows, windows-freethreaded, macos, macos-freethreaded, sdist]
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://code.forgejo.org/forgejo/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Extract changelog for this version
+        run: |
+          TAG="${{ forge.ref_name }}"
+          VERSION="${TAG#v}"
+          NOTES=$(awk -v ver="$VERSION" '
+            BEGIN { found=0 }
+            /^## Version / {
+              if (found) exit
+              header=$0; sub(/^## Version /, "", header)
+              if (header == ver) found=1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md)
+          echo "$NOTES" > /tmp/release-notes.md
+      - name: Create Forgejo release
+        uses: https://code.forgejo.org/actions/forgejo-release@v2
+        with:
+          direction: upload
+          url: ${{ forge.server_url }}
+          repo: ${{ forge.repository }}
+          tag: ${{ forge.ref_name }}
+          title: ${{ forge.ref_name }}
+          release-notes-file: /tmp/release-notes.md
+          release-dir: dist
+          token: ${{ forge.token }}
+
+  package_release:
+    name: Codeberg Packages release mirror
+    runs-on: docker
+    container:
+      image: docker.io/catthehacker/ubuntu:act-22.04
+    if: startsWith(forge.ref, 'refs/tags/')
+    needs: [linux, linux-freethreaded, windows, windows-freethreaded, macos, macos-freethreaded, sdist]
+    steps:
+      - uses: https://code.forgejo.org/forgejo/download-artifact@v4
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Upload release files to Generic Packages
+        env:
+          TOKEN: ${{ secrets.PACKAGE_TOKEN }}
+          OWNER: ${{ forge.repository_owner }}
+          VERSION: ${{ forge.ref_name }}
+          SERVER_URL: ${{ forge.server_url }}
+        run: |
+          set -euo pipefail
+          for file in dist/*; do
+            curl --fail --header "Authorization: token ${TOKEN}" \
+              --upload-file "$file" \
+              "${SERVER_URL}/api/packages/${OWNER}/generic/qslib-dist/${VERSION}/$(basename "$file")"
+          done
+
+  python_tests_real:
+    name: Python tests with machine
+    # Optional: requires a self-hosted runner with the `self-hosted-qpcr` label
+    # connected (directly or via tunnel) to a real or simulated QuantStudio
+    # machine. Remove this job (and rust_integration_tests below) if no such
+    # runner is registered.
+    runs-on: self-hosted-qpcr
+    env:
+      QSLIB_TEST_MACHINE: localhost
+      QSLIB_TEST_PORT: "7000"
+      QSLIB_TEST_PASSWORD: correctpassword
+      QSLIB_TEST_SSL: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: llvm-tools
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - name: Install just and cargo-llvm-cov
+        uses: https://github.com/taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov
+      - name: Setup virtual environment
+        run: |
+          uv venv -p 3.13
+          uv pip install maturin
+          uv sync --group dev --no-install-project
+      - name: Run pytest with Python + Rust coverage
+        run: just coverage-python-full
+      - name: Upload coverage to Codecov
+        continue-on-error: true
+        uses: https://github.com/codecov/codecov-action@v5
+        with:
+          files: coverage-python.xml,coverage-rust-from-python.lcov
+          name: python-self-hosted
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  rust_integration_tests:
+    name: Rust tests with machine
+    runs-on: self-hosted-qpcr
+    env:
+      QSLIB_TEST_MACHINE: localhost
+      QSLIB_TEST_PORT: "7000"
+      QSLIB_TEST_PASSWORD: correctpassword
+      QSLIB_TEST_SSL: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: llvm-tools
+      - name: Install just and cargo-llvm-cov
+        uses: https://github.com/taiki-e/install-action@v2
+        with:
+          tool: just,cargo-llvm-cov
+      - name: Run integration tests with coverage
+        run: just cov-rust-integration
+      - name: Upload coverage to Codecov
+        continue-on-error: true
+        uses: https://github.com/codecov/codecov-action@v5
+        with:
+          files: coverage-integration.lcov
+          name: rust-integration
+          token: ${{ secrets.CODECOV_TOKEN }}
