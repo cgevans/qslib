@@ -144,7 +144,7 @@ jobs:
         run: |
           VER="${{ matrix.python-version }}"
           MM=$(echo "$VER" | tr -d '.t')
-          echo "path=/opt/python/cp${MM}-cp${MM}t/bin/python3" >> "$GITHUB_OUTPUT"
+          echo "path=/opt/python/cp${MM}-cp${MM}t/bin/python${VER}" >> "$GITHUB_OUTPUT"
       - name: Set up Rust cache
         uses: Swatinem/rust-cache@v2
       - name: Build wheels
