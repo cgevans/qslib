@@ -6,6 +6,12 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Version 0.15.1
+
+### Data fixes
+- Fix `welldata` / `filter_data` time columns on v1-spec EDS files. In 0.15.0 the v1 codepath was rewritten to go through `filter_data_polars` (which emits `Datetime[ms, UTC]`) and reformat back to the legacy pandas multi-index; the timestamp conversion assumed `astype("int64")` returned nanoseconds, so it divided by 1e9 and produced timestamps 1e6× too small (and huge negative `seconds`/`hours`). Now uses a time-unit-agnostic subtraction from the Unix epoch.
+- Add `temperatures_polars_wide` for callers that need the 0.14-era wide schema (`timestamp` as `Datetime[ms, UTC]`, one column per `(kind, zone)` — `sample_1..N`, `heatsink`, `cover`, `block_1..N`). `temperatures_polars` itself remains long-format (the intentional 0.15 default), now also with a `time` column derived from `timestamp`.
+
 ## Version 0.15.0
 
 Robustness improvements to communication, consolidation of parsing into Rust, and a new quant/calibration data pipeline:

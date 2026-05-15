@@ -51,6 +51,52 @@ def test_reload(exp: Experiment, exp_reloaded: Experiment) -> None:
     assert exp.plate_setup == exp_reloaded.plate_setup
 
 
+def test_welldata_time_columns_are_unix_seconds(exp: Experiment) -> None:
+    # Regression: in 0.15.0, _filter_data_v1_pandas converted the polars
+    # Datetime[ms] timestamp via .astype("int64") / 1e9, assuming ns precision,
+    # which produced timestamps 1e6× too small and huge negative seconds/hours.
+    wd = exp.welldata
+    assert exp.activestarttime is not None
+    start_ts = exp.activestarttime.timestamp()
+    ts = wd[("time", "timestamp")]
+    secs = wd[("time", "seconds")]
+    hours = wd[("time", "hours")]
+    # Unix timestamps for these files are post-2010 and pre-2040.
+    assert (ts > 1.26e9).all() and (ts < 2.20e9).all()
+    # `seconds` is offset from activestarttime, always non-negative and bounded
+    # by a year (no single run is longer than that).
+    assert (secs >= 0).all() and (secs < 365 * 24 * 3600).all()
+    assert np.allclose(secs, ts - start_ts)
+    assert np.allclose(hours, secs / 3600.0)
+
+
+def test_temperatures_polars_long_schema(exp: Experiment) -> None:
+    # The default temperatures_polars schema in 0.15+ is long format.
+    import polars as pl
+
+    t = exp.temperatures_polars
+    assert set(t.columns) >= {"timestamp", "temperature", "zone", "kind", "time"}
+    assert t.schema["time"] == pl.Datetime(time_unit="ms", time_zone="UTC")
+    # Long format: each (zone, kind) combination contributes its own rows.
+    assert set(t["kind"].unique().to_list()) >= {"sample", "block", "heatsink", "cover"}
+
+
+def test_temperatures_polars_wide_legacy_schema(exp: Experiment) -> None:
+    # Opt-in 0.14-style wide schema for callers that depend on it.
+    import polars as pl
+
+    t = exp.temperatures_polars_wide
+    cols = t.columns
+    assert "timestamp" in cols
+    sample_cols = [c for c in cols if c.startswith("sample_")]
+    block_cols = [c for c in cols if c.startswith("block_")]
+    assert len(sample_cols) >= 1
+    assert len(sample_cols) == len(block_cols)
+    assert "heatsink" in cols
+    assert "cover" in cols
+    assert t.schema["timestamp"] == pl.Datetime(time_unit="ms", time_zone="UTC")
+
+
 def test_plot_ntmpw_smoothmw(exp: Experiment) -> None:
     axf, axt = exp.plot_over_time(process=[SmoothWindowMean(4), NormToMeanPerWell(2)], annotate_stage_lines=False)
     assert axf.get_ylabel() == "fluorescence (window mean 4, norm. to mean)"

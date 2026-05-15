@@ -3,7 +3,7 @@ members = [".", "qs-monitor"]
 resolver = "2"
 
 [workspace.package]
-version = "0.15.0"
+version = "0.15.1"
 
 [package]
 name = "qslib"

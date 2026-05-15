@@ -1870,8 +1870,11 @@ table, th, td {{
 
         start_time = self.activestarttime.timestamp() if self.activestarttime else None
 
-        # Extract timestamp as float seconds from datetime
-        pdf["timestamp"] = pdf["timestamp"].astype("int64") / 1e9
+        # Extract timestamp as float Unix seconds. Time-unit-agnostic:
+        # filter_data_polars emits Datetime[ms, UTC], which to_pandas() preserves
+        # as datetime64[ms, UTC] — so .astype("int64") would yield milliseconds,
+        # not nanoseconds.
+        pdf["timestamp"] = (pdf["timestamp"] - pd.Timestamp(0, tz="UTC")).dt.total_seconds()
 
         group_cols = ["filter_set", "stage", "cycle", "step", "point"]
         groups = pdf.groupby(group_cols, sort=False)
@@ -2214,11 +2217,50 @@ table, th, td {{
     @property
     @cached_method
     def temperatures_polars(self) -> pl.DataFrame:
+        """Long-format temperature log (one row per (timestamp, zone, kind))
+        with columns ``timestamp`` (float seconds since epoch), ``temperature``,
+        ``zone`` (1-indexed, null for heatsink/cover), ``kind`` (one of
+        "sample", "block", "heatsink", "cover"), and ``time``
+        (``Datetime[ms, UTC]``).
+
+        For the 0.14-era wide schema with one column per zone, use
+        :attr:`temperatures_polars_wide`.
+        """
         tl, n_zones = self._temperatures_polars
-        tl = tl.with_columns(
+        return tl.with_columns(
             (pl.col("timestamp") * 1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")).alias("time")
         )
-        return tl
+
+    @property
+    @cached_method
+    def temperatures_polars_wide(self) -> pl.DataFrame:
+        """Wide-format temperature log matching the 0.14 schema: a single row
+        per timestamp with one column per (kind, zone) — ``sample_1..N``,
+        ``heatsink``, ``cover``, ``block_1..N`` — and ``timestamp`` as
+        ``Datetime[ms, UTC]``.
+
+        The default :attr:`temperatures_polars` is long-format (one row per
+        zone × kind); use this accessor if you need the legacy wide shape.
+        """
+        tl, n_zones = self._temperatures_polars
+        colname = (
+            pl.when(pl.col("kind").is_in(["sample", "block"]))
+            .then(pl.col("kind") + pl.lit("_") + pl.col("zone").cast(pl.Utf8))
+            .otherwise(pl.col("kind"))
+            .alias("colname")
+        )
+        wide = (
+            tl.with_columns(colname)
+            .pivot(on="colname", index="timestamp", values="temperature")
+            .with_columns((pl.col("timestamp") * 1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")))
+        )
+        ordered = (
+            ["timestamp"]
+            + [f"sample_{i}" for i in range(1, n_zones + 1)]
+            + ["heatsink", "cover"]
+            + [f"block_{i}" for i in range(1, n_zones + 1)]
+        )
+        return wide.select(ordered)
 
     def _temperatures_from_log(self) -> tuple[pd.DataFrame, int]:
         temperatures_polars, num_zones = self._temperatures_polars
