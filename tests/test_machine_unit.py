@@ -66,7 +66,6 @@ def test_gen_auth_response():
     assert result != _gen_auth_response("otherpassword", "123456")
 
 
-
 # --- asdict ---
 
 
@@ -143,9 +142,7 @@ def test_block_setter_invalid():
 def test_filter_data_filename_roundtrip():
     from qslib.machine import FilterDataFilename
 
-    fn = FilterDataFilename.fromstring(
-        "S01_C003_T02_P0001_M4_X1_filterdata.xml"
-    )
+    fn = FilterDataFilename.fromstring("S01_C003_T02_P0001_M4_X1_filterdata.xml")
     assert fn.stage == 1
     assert fn.cycle == 3
     assert fn.step == 2
@@ -156,15 +153,9 @@ def test_filter_data_filename_roundtrip():
 def test_filter_data_filename_is_same_point():
     from qslib.machine import FilterDataFilename
 
-    fn1 = FilterDataFilename.fromstring(
-        "S01_C003_T02_P0001_M4_X1_filterdata.xml"
-    )
-    fn2 = FilterDataFilename.fromstring(
-        "S01_C003_T02_P0001_M3_X2_filterdata.xml"
-    )
-    fn3 = FilterDataFilename.fromstring(
-        "S01_C003_T02_P0002_M4_X1_filterdata.xml"
-    )
+    fn1 = FilterDataFilename.fromstring("S01_C003_T02_P0001_M4_X1_filterdata.xml")
+    fn2 = FilterDataFilename.fromstring("S01_C003_T02_P0001_M3_X2_filterdata.xml")
+    fn3 = FilterDataFilename.fromstring("S01_C003_T02_P0002_M4_X1_filterdata.xml")
     assert fn1.is_same_point(fn2)  # Same point, different filter
     assert not fn1.is_same_point(fn3)  # Different point
 

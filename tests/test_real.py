@@ -19,8 +19,7 @@ TEST_PASSWORD = os.environ.get("QSLIB_TEST_PASSWORD", "")
 TEST_SSL = os.environ.get("QSLIB_TEST_SSL", "true").lower() in ("true", "1", "yes")
 
 requires_machine = pytest.mark.skipif(
-    os.environ.get("QSLIB_TEST_MACHINE") is None,
-    reason="No test machine configured (set QSLIB_TEST_MACHINE env var)"
+    os.environ.get("QSLIB_TEST_MACHINE") is None, reason="No test machine configured (set QSLIB_TEST_MACHINE env var)"
 )
 
 
@@ -106,11 +105,7 @@ def test_file_read_write_default(encoding):
 @pytest.mark.asyncio
 async def test_real_experiment():
     proto = Protocol(
-        [
-            Stage.stepped_ramp(
-                50, [30, 31, 32, 33, 34, 35], 240, n_steps=10, collect=True
-            )
-        ],
+        [Stage.stepped_ramp(50, [30, 31, 32, 33, 34, 35], 240, n_steps=10, collect=True)],
         filters=["x1-m4", "x3-m5"],
     )
 
@@ -120,22 +115,16 @@ async def test_real_experiment():
 
     exp.run(m, require_drawer_check=False)
 
-
     exp.pause_now()
 
-    with pytest.raises(
-        MachineBusyError, match=rf"Machine {TEST_MACHINE}:[^ ]+ is currently busy: .*"
-    ):
+    with pytest.raises(MachineBusyError, match=rf"Machine {TEST_MACHINE}:[^ ]+ is currently busy: .*"):
         exp.run(m)
-
 
     exp.sync_from_machine(m)
 
     proto2 = Protocol(
         [
-            Stage.stepped_ramp(
-                50, [30, 31, 32, 33, 34, 35], 240, n_steps=10, collect=True
-            ),
+            Stage.stepped_ramp(50, [30, 31, 32, 33, 34, 35], 240, n_steps=10, collect=True),
             Stage.stepped_ramp(30, 50, 120, n_steps=5, collect=True),
         ],
         filters=["x1-m4", "x3-m5"],
@@ -161,7 +150,6 @@ async def test_real_experiment():
     while rs.name != "-":
         await asyncio.sleep(1)
         rs = m.run_status()
-
 
     exp.sync_from_machine(m)
 

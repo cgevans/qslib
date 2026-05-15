@@ -19,31 +19,37 @@ from ._qslib import AccessLevel as AccessLevel, CommandError
 
 class NoMatch(CommandError):
     """Raised when a file or pattern match finds no results."""
+
     pass
 
 
 class AuthError(CommandError):
     """Raised when authentication fails (wrong password)."""
+
     pass
 
 
 class AccessLevelExceeded(CommandError):
     """Raised when the requested access level exceeds what is allowed."""
+
     pass
 
 
 class InsufficientAccess(CommandError):
     """Raised when the current access level is insufficient for an operation."""
+
     pass
 
 
 class ExclusiveAccessGiven(CommandError):
     """Raised when another session holds exclusive access."""
+
     pass
 
 
 class AccessGiven(CommandError):
     """Raised when access has already been given to another session."""
+
     pass
 
 
@@ -78,12 +84,14 @@ def quote_string_if_needed(s: str) -> str:
     escaped quotes. Other characters like $, {, } are not escaped.
     """
     from ._qslib import py_quote_string_if_needed
+
     return py_quote_string_if_needed(s)
 
 
 @dataclass
 class ArgList:
     "A representation of an SCPI list of options (-key=value) and arguments."
+
     opts: dict[str, bool | int | float | str]
     args: list[bool | int | float | str]
 
@@ -91,6 +99,7 @@ class ArgList:
     def from_string(cls, argument_string: str) -> ArgList:
         """Parse an SCPI argument string."""
         from ._qslib import parse_arglist
+
         result = parse_arglist(argument_string)
         return cls(opts=result.opts, args=list(result.args))
 
@@ -121,20 +130,11 @@ class SCPICommand(SCPICommandLike):
 
     command: str
     args: Sequence[
-        str
-        | int
-        | float
-        | np.number[Any]
-        | Sequence[str | int | float | np.number[Any]]
-        | Sequence["SCPICommand"]
+        str | int | float | np.number[Any] | Sequence[str | int | float | np.number[Any]] | Sequence["SCPICommand"]
     ]
     opts: dict[
         str,
-        str
-        | int
-        | float
-        | np.number[Any]
-        | Sequence[str | int | float | np.number[Any]],
+        str | int | float | np.number[Any] | Sequence[str | int | float | np.number[Any]],
     ]
     comment: str | None
 
@@ -142,11 +142,7 @@ class SCPICommand(SCPICommandLike):
         if not isinstance(other, SCPICommand):
             return False
 
-        return (
-            (self.command == other.command)
-            and (self.args == other.args)
-            and (self.opts == other.opts)
-        )
+        return (self.command == other.command) and (self.args == other.args) and (self.opts == other.opts)
 
     def __init__(
         self,
@@ -158,13 +154,7 @@ class SCPICommand(SCPICommandLike):
         | Sequence[str | int | float | np.number[Any]]
         | Sequence["SCPICommand"],
         comment: str | None = None,
-        **kwargs: (
-            str
-            | int
-            | float
-            | np.number[Any]
-            | Sequence[str | int | float | np.number[Any]]
-        ),
+        **kwargs: (str | int | float | np.number[Any] | Sequence[str | int | float | np.number[Any]]),
     ) -> None:
         if " " in command:
             if args or comment or kwargs:
@@ -202,11 +192,7 @@ class SCPICommand(SCPICommandLike):
         if isinstance(opt_val, (Sequence, np.ndarray)):
             if isinstance(opt_val[0], SCPICommand):
                 q = "multiline." + self.command.lower()
-                return (
-                    f"<{q}>\n"
-                    + textwrap.indent("".join(str(x) for x in opt_val), "\t")
-                    + f"</{q}>"
-                )
+                return f"<{q}>\n" + textwrap.indent("".join(str(x) for x in opt_val), "\t") + f"</{q}>"
             return ",".join(self._optformat(x) for x in opt_val)
 
         raise TypeError(f"{opt_val}, of type {type(opt_val)}, not understood.")
@@ -231,6 +217,7 @@ class SCPICommand(SCPICommandLike):
     def from_string(cls, command_string: str) -> SCPICommand:
         """Parse (as SCPICommands) an SCPI command string."""
         from ._qslib import SCPICommand as RustSCPICommand
+
         rust_cmd = RustSCPICommand.from_string(command_string)
         return _convert_rust_scpi(rust_cmd)
 

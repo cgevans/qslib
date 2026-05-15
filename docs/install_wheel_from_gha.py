@@ -34,9 +34,7 @@ def _make_request(url: str, token: str) -> dict:
             error_msg = error_data.get("message", error_body)
         except json.JSONDecodeError:
             error_msg = error_body
-        raise RuntimeError(
-            f"GitHub API request failed: {e.code} {e.reason}\n{error_msg}"
-        ) from e
+        raise RuntimeError(f"GitHub API request failed: {e.code} {e.reason}\n{error_msg}") from e
 
 
 def get_artifact_download_url(commit_sha: str, token: str | None = None) -> str:
@@ -81,9 +79,7 @@ def download_and_extract_wheel(download_url: str, token: str) -> str:
             error_msg = error_data.get("message", error_body)
         except json.JSONDecodeError:
             error_msg = error_body
-        raise RuntimeError(
-            f"Failed to download artifact: {e.code} {e.reason}\n{error_msg}"
-        ) from e
+        raise RuntimeError(f"Failed to download artifact: {e.code} {e.reason}\n{error_msg}") from e
 
     with zipfile.ZipFile(io.BytesIO(zip_data)) as zf:
         wheel_files = [n for n in zf.namelist() if n.endswith(".whl")]
@@ -98,9 +94,7 @@ def main():
     commit = os.environ.get("READTHEDOCS_GIT_COMMIT_HASH")
     if not commit:
         print("READTHEDOCS_GIT_COMMIT_HASH not set, falling back to HEAD")
-        commit = subprocess.check_output(
-            ["git", "rev-parse", "HEAD"], text=True
-        ).strip()
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
 
     token = os.environ.get("RTD_GH_TOKEN")
     if not token:
@@ -116,4 +110,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

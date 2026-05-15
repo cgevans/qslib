@@ -4,22 +4,12 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 """Code for handling plate setup."""
+
 from __future__ import annotations
 
 import html as html_mod
 from dataclasses import dataclass
-from typing import (
-    Any,
-    Dict,
-    Iterable,
-    Iterator,
-    List,
-    Literal,
-    Mapping,
-    Sequence,
-    Tuple,
-    TYPE_CHECKING
-)
+from typing import Any, Dict, Iterable, Iterator, List, Literal, Mapping, Sequence, Tuple, TYPE_CHECKING
 
 import numpy as np
 import polars as pl
@@ -46,10 +36,16 @@ _WELLALPHREF_96 = [(x, f"{y}") for x in _ROWALPHAS_96 for y in range(1, 13)]
 _WELLALPHREF_384 = [(x, f"{y}") for x in _ROWALPHAS for y in range(1, 25)]
 
 
-_SORT_WELLS_ROW_OUTER = pl.col("well").str.extract_groups(r"^(?<row>\w)(?<col>\d{1,2})$").struct.with_fields(pl.field("row"), pl.field("col").cast(pl.Int32))
+_SORT_WELLS_ROW_OUTER = (
+    pl.col("well")
+    .str.extract_groups(r"^(?<row>\w)(?<col>\d{1,2})$")
+    .struct.with_fields(pl.field("row"), pl.field("col").cast(pl.Int32))
+)
+
 
 def _color_to_str(x: Tuple[int, int, int, int]) -> str:
     return f"#{x[0]:02x}{x[1]:02x}{x[2]:02x}{x[3]:02x}"
+
 
 _SAMPLE_SCHEMA = {
     "name": pl.String,
@@ -59,6 +55,7 @@ _SAMPLE_SCHEMA = {
     "uuid": pl.String,
     "properties": pl.Struct,
 }
+
 
 class _SampleWellsView(Mapping[str, list[str]]):
     def __init__(self, samples_by_name: Dict[str, Sample]) -> None:
@@ -159,9 +156,7 @@ class PlateSetup:
             samples_or_wells = [samples_or_wells]
 
         for sw in samples_or_wells:
-            if sw.upper() in (
-                _WELLNAMESET_96 if self.plate_type == 96 else _WELLNAMESET_384
-            ):
+            if sw.upper() in (_WELLNAMESET_96 if self.plate_type == 96 else _WELLNAMESET_384):
                 wells.append(sw.upper())
             else:
                 wells += self.sample_wells[sw]
@@ -169,9 +164,7 @@ class PlateSetup:
         return wells
 
     def get_descriptive_string(self, name: str) -> str:
-        if (w := name.upper()) in (
-            _WELLNAMESET_96 if self.plate_type == 96 else _WELLNAMESET_384
-        ):
+        if (w := name.upper()) in (_WELLNAMESET_96 if self.plate_type == 96 else _WELLNAMESET_384):
             return w
         sample = self.samples_by_name[name]
         return sample.description or sample.name
@@ -200,10 +193,11 @@ class PlateSetup:
 
     @classmethod
     def from_array(
-        cls, array: np.ndarray # TODO: tests for this
+        cls,
+        array: np.ndarray,  # TODO: tests for this
     ) -> PlateSetup:
-        """Given an (8,12) or (16,24) array of sample names, create a PlateSetup.  
-           Interprets None, "None", and "null" as empty wells."""
+        """Given an (8,12) or (16,24) array of sample names, create a PlateSetup.
+        Interprets None, "None", and "null" as empty wells."""
         if array.shape != (8, 12) and array.shape != (16, 24):
             raise ValueError("Array must be (8,12) or (16,24)")
         if array.shape == (8, 12):
@@ -212,16 +206,15 @@ class PlateSetup:
             plate_type = 384
         else:
             raise ValueError(f"Array shape {array.shape} must be (8,12) or (16,24)")
-        
+
         wn = _WELLNAMES_96 if plate_type == 96 else _WELLNAMES_384
-        
+
         sample_wells: dict[str, list[str]] = {}
         for idx, s in enumerate(array.flatten()):
             if s is not None and s != "None" and s != "null":
                 sample_wells.setdefault(s, []).append(wn[idx])
-        
-        return cls(sample_wells, plate_type=plate_type)
 
+        return cls(sample_wells, plate_type=plate_type)
 
     def to_table(
         self,
@@ -246,24 +239,35 @@ class PlateSetup:
         tablefmt = format
 
         if format == "markdown":
-            ws = ws.with_columns(pl.when(pl.col("name").is_not_null()).then(pl.col("name").str.replace(".*", "`$0`")).otherwise(pl.lit("")).alias("name"))
+            ws = ws.with_columns(
+                pl.when(pl.col("name").is_not_null())
+                .then(pl.col("name").str.replace(".*", "`$0`"))
+                .otherwise(pl.lit(""))
+                .alias("name")
+            )
             tablefmt = "pipe"
 
         if format == "html" and (showcolors == "auto" or showcolors):
-            def color_style(row):   
+
+            def color_style(row):
                 color = row["color"]
                 return f"color: {color};" if color else ""
+
             ws = ws.with_columns(
-                pl.when(pl.col("name").is_not_null()).then(pl.struct(["name", "color"]).map_elements(
-                    lambda r: f'<span style="{color_style(r)}">{html_mod.escape(str(r["name"]))}</span>',
-                    return_dtype=pl.String
-                ).alias("name"))
+                pl.when(pl.col("name").is_not_null()).then(
+                    pl.struct(["name", "color"])
+                    .map_elements(
+                        lambda r: f'<span style="{color_style(r)}">{html_mod.escape(str(r["name"]))}</span>',
+                        return_dtype=pl.String,
+                    )
+                    .alias("name")
+                )
             )
             tablefmt = "unsafehtml"
 
         headers = [""] + (list(range(1, 13)) if self.plate_type == 96 else list(range(1, 25)))
 
-        ws = ws['name'].to_numpy().reshape((8, 12) if self.plate_type == 96 else (16, 24))
+        ws = ws["name"].to_numpy().reshape((8, 12) if self.plate_type == 96 else (16, 24))
 
         ws_with_rownames = np.insert(ws, 0, [fmt_header(x) for x in showindex], axis=1)
 
@@ -287,16 +291,13 @@ class PlateSetup:
             rust_ps.set_samples(self.samples_by_name)
         else:
             rust_ps = RustPlateSetup.from_samples_and_wells(
-                self.plate_type,
-                {name: (sample, list(sample.wells)) for name, sample in self.samples_by_name.items()}
+                self.plate_type, {name: (sample, list(sample.wells)) for name, sample in self.samples_by_name.items()}
             )
 
         return rust_ps.to_xml_string()
 
     @classmethod
-    def from_machine(
-        cls, c: Machine, runtitle: str | None = None
-    ) -> PlateSetup:
+    def from_machine(cls, c: Machine, runtitle: str | None = None) -> PlateSetup:
         s = c.get_sds_file("plate_setup.xml", runtitle=runtitle)
         return cls.from_xml_string(s)
 
@@ -318,7 +319,9 @@ class PlateSetup:
             return self.to_table(format="markdown")
 
     @classmethod
-    def from_picklist(cls, picklist: 'PickList' | str, plate_name: str | None = None, labware: 'Labware' | None = None) -> 'Self':
+    def from_picklist(
+        cls, picklist: "PickList" | str, plate_name: str | None = None, labware: "Labware" | None = None
+    ) -> "Self":
         """Create a PlateSetup from a Kithairon PickList.
 
         Parameters
@@ -355,12 +358,18 @@ class PlateSetup:
 
         if plate_name is None:
             if len(destplates) > 1:
-                raise ValueError("Multiple destination plates found; please specify one: " + ", ".join(destplates["Destination Plate Name"].to_list()))
+                raise ValueError(
+                    "Multiple destination plates found; please specify one: "
+                    + ", ".join(destplates["Destination Plate Name"].to_list())
+                )
             plate_name = destplates["Destination Plate Name"][0]
             plate_type = destplates["Destination Plate Type"][0]
         else:
             if plate_name not in destplates["Destination Plate Name"].to_list():
-                raise ValueError(f"Destination plate {plate_name} not a destination.  Destinations are: " + ", ".join(destplates["Destination Plate Name"].to_list()))
+                raise ValueError(
+                    f"Destination plate {plate_name} not a destination.  Destinations are: "
+                    + ", ".join(destplates["Destination Plate Name"].to_list())
+                )
             plate_type = destplates.filter(pl.col("Destination Plate Name") == plate_name)["Destination Plate Type"][0]
 
         if labware is None:
@@ -379,16 +388,14 @@ class PlateSetup:
             plate_type = 384
         else:
             raise ValueError(f"Plate shape {plate.shape} not supported")
-        
+
         if plate.usage != "DEST":
             raise ValueError(f"Plate {plate_name} is not a destination plate type")
-        
+
         plate = picklist.data.filter(pl.col("Destination Plate Name") == plate_name)
-        
+
         u = pl.col("Destination Sample Name").unique()
-        sample_names = plate.group_by("Destination Well").agg(
-            u.alias("sample_names"), u.len().alias("n_sample_names")
-        )
+        sample_names = plate.group_by("Destination Well").agg(u.alias("sample_names"), u.len().alias("n_sample_names"))
 
         errs = sample_names.filter(pl.col("n_sample_names") > 1).sort("Destination Well")
         if not errs.is_empty():
@@ -397,10 +404,7 @@ class PlateSetup:
 
         return cls(
             samples=[
-                Sample(r["sample_names"][0], wells=r["Destination Well"])
-                for r in sample_names.iter_rows(named=True)
+                Sample(r["sample_names"][0], wells=r["Destination Well"]) for r in sample_names.iter_rows(named=True)
             ],
-            plate_type=plate_type
+            plate_type=plate_type,
         )
-
-

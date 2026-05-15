@@ -26,10 +26,7 @@ def test_unknown_type():
 
 
 def test_comment():
-    assert (
-        SCPICommand.from_string("EXPOSURE m4,x1,quant,500 # test comment\n").comment
-        == "test comment"
-    )
+    assert SCPICommand.from_string("EXPOSURE m4,x1,quant,500 # test comment\n").comment == "test comment"
 
     assert SCPICommand.from_string("COMMAND '#' b").comment is None
 
@@ -103,6 +100,7 @@ def test_specialize_command_error():
     e = CommandError({"error": "InsufficientAccess", "message": "Not allowed"})
     se = specialize_command_error(e)
     from qslib.scpi_commands import InsufficientAccess
+
     assert isinstance(se, InsufficientAccess)
 
     # Test unknown error class stays as CommandError

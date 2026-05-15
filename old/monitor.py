@@ -30,9 +30,7 @@ from qslib.scpi_commands import AccessLevel, ArgList
 
 log = logging.getLogger("monitor")
 
-LEDSTATUS = re.compile(
-    rb"Temperature:([+\-\d.]+) Current:([+\-\d.]+) Voltage:([+\-\d.]+) JuncTemp:([+\-\d.]+)"
-)
+LEDSTATUS = re.compile(rb"Temperature:([+\-\d.]+) Current:([+\-\d.]+) Voltage:([+\-\d.]+) JuncTemp:([+\-\d.]+)")
 
 
 @dataclass
@@ -148,15 +146,11 @@ class MachineState:
     def refresh(self, c: Machine) -> None:
         targmsg = ArgList.from_string(c.run_command("TBC:SETT?"))
         self.cover_target = cast(float, targmsg.opts["Cover"])
-        self.zone_targets = cast(
-            List[float], [targmsg.opts[f"Zone{i}"] for i in range(1, 7)]
-        )
+        self.zone_targets = cast(List[float], [targmsg.opts[f"Zone{i}"] for i in range(1, 7)])
 
         contmsg = ArgList.from_string(c.run_command("TBC:CONT?"))
         self.cover_control = cast(bool, contmsg.opts["Cover"])
-        self.zone_controls = cast(
-            List[bool], [contmsg.opts[f"Zone{i}"] for i in range(1, 7)]
-        )
+        self.zone_controls = cast(List[bool], [contmsg.opts[f"Zone{i}"] for i in range(1, 7)])
 
         self.drawer = c.run_command("DRAW?")
 
@@ -213,9 +207,7 @@ class Collector:
             self.idbw = None
 
         if self.config.matrix:
-            self.matrix_config = AsyncClientConfig(
-                encryption_enabled=self.config.matrix.encryption
-            )
+            self.matrix_config = AsyncClientConfig(encryption_enabled=self.config.matrix.encryption)
 
             self.matrix_client = AsyncClient(
                 self.config.matrix.host,
@@ -228,9 +220,7 @@ class Collector:
 
         self.run_log_file: TextIO | None = None
 
-    def inject(
-        self, t: str | Iterable[str | Point] | Point, flush: bool = False
-    ) -> None:
+    def inject(self, t: str | Iterable[str | Point] | Point, flush: bool = False) -> None:
         if self.idbw:
             self.idbw.write(bucket=self.config.influxdb.bucket, record=t)  # type:ignore
             if flush:
@@ -364,9 +354,7 @@ class Collector:
         connection: Machine,
     ) -> None:
         if state.run.plate_setup:
-            pa: npt.NDArray[np.object_] | None = (
-                state.run.plate_setup.well_samples_as_array()
-            )
+            pa: npt.NDArray[np.object_] | None = state.run.plate_setup.well_samples_as_array()
         else:
             pa = None
 
@@ -382,8 +370,7 @@ class Collector:
         pl = [
             FilterDataFilename.fromstring(x)
             for x in connection.get_expfile_list(
-                "{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}"
-                "_T{step:02}_P{point:04}_*_filterdata.xml".format(
+                "{run}/apldbio/sds/filter/S{stage:02}_C{cycle:03}_T{step:02}_P{point:04}_*_filterdata.xml".format(
                     run=run, **cast(Dict[str, int], args)
                 ),
                 allow_nomatch=True,
@@ -402,16 +389,12 @@ class Collector:
             ).exists()
         ):
             for fdf in toget:
-                fdr, files_one = connection.get_filterdata_one(
-                    fdf, return_files=True
-                )
+                fdr, files_one = connection.get_filterdata_one(fdf, return_files=True)
                 lp += fdr.to_lineprotocol(run_name=run, sample_array=pa)
                 files += files_one
         else:
             for fdf in toget:
-                lp += (connection.get_filterdata_one(fdf)).to_lineprotocol(
-                    run_name=run, sample_array=pa
-                )
+                lp += (connection.get_filterdata_one(fdf)).to_lineprotocol(run_name=run, sample_array=pa)
 
         self.inject(lp, flush=True)
 
@@ -507,12 +490,13 @@ class Collector:
             )
         elif action == "Holding":
             self.inject(
-                f'run_action,type=Holding holdtime={msg.opts["time"]} {timestamp}'  # noqa: E501
+                f"run_action,type=Holding holdtime={msg.opts['time']} {timestamp}"  # noqa: E501
             )
         elif action == "Ramping":
             # TODO: check zones
             state.machine.zone_targets = [
-                float(x) for x in cast(list[float], msg.opts["targets"][0])  # type: ignore
+                float(x)
+                for x in cast(list[float], msg.opts["targets"][0])  # type: ignore
             ]
             self.inject(
                 f'run_action,type={action} run_name="{state.run.name}" {timestamp}'  # noqa: E501
@@ -540,9 +524,7 @@ class Collector:
                     if compdir != "":
                         # This will need to compile and sync
                         loop = asyncio.get_event_loop()
-                        loop.run_in_executor(
-                            None, self.sync_completed, c, state.run.name
-                        )
+                        loop.run_in_executor(None, self.sync_completed, c, state.run.name)
                     else:
                         # No sync; just compile
                         loop = asyncio.get_event_loop()
@@ -584,16 +566,12 @@ class Collector:
         self.inject(state.run.statemsg(str(timestamp)))
 
         if state.run.plate_setup:
-            self.inject(
-                state.run.plate_setup.to_lineprotocol(timestamp, state.run.name)
-            )
+            self.inject(state.run.plate_setup.to_lineprotocol(timestamp, state.run.name))
 
         if self.idbw:
             self.idbw.flush()
 
-    def handle_led(
-        self, topic: bytes, message: bytes, timestamp: float | None
-    ) -> None:
+    def handle_led(self, topic: bytes, message: bytes, timestamp: float | None) -> None:
         # Are we logging?
         if self.run_log_file is not None:
             self.run_log_file.write(f"{topic.decode()} {timestamp} {message.decode()}")
@@ -639,14 +617,8 @@ class Collector:
                 recs.append(
                     f"temperature,loc=zones,zone={i} sample={s},block={b},target={t} {int(1e9 * timestamp)}"  # noqa: E501
                 )
-            recs.append(
-                Point("temperature").tag("loc", "cover").field("cover", args["cover"])
-            )
-            recs.append(
-                Point("temperature")
-                .tag("loc", "heatsink")
-                .field("heatsink", args["heatsink"])
-            )
+            recs.append(Point("temperature").tag("loc", "cover").field("cover", args["cover"]))
+            recs.append(Point("temperature").tag("loc", "heatsink").field("heatsink", args["heatsink"]))
             self.inject(recs)
         elif topic == b"Time":
             p = Point("run_time")
@@ -672,11 +644,7 @@ class Collector:
 
         with Machine(
             host=self.config.machine.host,
-            port=(
-                int(self.config.machine.port)
-                if self.config.machine.port is not None
-                else None
-            ),
+            port=(int(self.config.machine.port) if self.config.machine.port is not None else None),
             ssl=self.config.machine.ssl,
             password=self.config.machine.password,
         ) as c:
@@ -688,11 +656,7 @@ class Collector:
             self.inject(state.run.statemsg(str(time.time_ns())))
 
             if state.run.plate_setup:
-                self.inject(
-                    state.run.plate_setup.to_lineprotocol(
-                        time.time_ns(), state.run.name
-                    )
-                )
+                self.inject(state.run.plate_setup.to_lineprotocol(time.time_ns(), state.run.name))
 
             if self.idbw:
                 self.idbw.flush()
@@ -705,12 +669,8 @@ class Collector:
             log.debug("subscriptions made")
 
             for t in [b"Temperature", b"Time"]:
-                c._protocol.topic_handlers[t] = functools.partial(
-                    self.handle_msg, state, c
-                )
-            c._protocol.topic_handlers[b"Run"] = functools.partial(
-                self.handle_run_msg, state, c
-            )
+                c._protocol.topic_handlers[t] = functools.partial(self.handle_msg, state, c)
+            c._protocol.topic_handlers[b"Run"] = functools.partial(self.handle_run_msg, state, c)
 
             c._protocol.topic_handlers[b"LEDStatus"] = self.handle_led
 
@@ -739,15 +699,11 @@ class Collector:
                 try:
                     await c.run_command_bytes_with_timeout(b"ISTAT?", 30)
                 except TimeoutError:
-                    log.error(
-                        "No data received in 5 minutes and ISTAT? test timed out.  Trying to disconnect."
-                    )
+                    log.error("No data received in 5 minutes and ISTAT? test timed out.  Trying to disconnect.")
                     c.disconnect()
                     raise TimeoutError
 
-    async def reliable_monitor(
-        self, connected_fut: asyncio.Future[bool] | None = None
-    ) -> None:
+    async def reliable_monitor(self, connected_fut: asyncio.Future[bool] | None = None) -> None:
         log.info("starting reconnectable monitoring")
 
         restart = True
@@ -763,8 +719,8 @@ class Collector:
             except Exception as e:
                 if self.config.machine.retries - successive_failures > 0:
                     log.error(
-                        f"Error {repr(e)}\nRetrying {self.config.machine.retries-successive_failures} times",
-                        exc_info=True
+                        f"Error {repr(e)}\nRetrying {self.config.machine.retries - successive_failures} times",
+                        exc_info=True,
                     )
                     successive_failures += 1
                 else:
@@ -776,8 +732,8 @@ class Collector:
                                 message_type="m.room.message",
                                 content={
                                     "msgtype": "m.text",
-                                    "body": f"Unrecoverable error in QS monitoring (tried 3 times), giving up: {e}, {e.__traceback__}"
-                                }
+                                    "body": f"Unrecoverable error in QS monitoring (tried 3 times), giving up: {e}, {e.__traceback__}",
+                                },
                             )
                         except Exception as matrix_e:
                             log.error(f"Failed to send Matrix message: {matrix_e}")

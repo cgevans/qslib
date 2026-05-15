@@ -32,9 +32,7 @@ def exp() -> Experiment:
 
 
 @pytest.fixture(scope="module")
-def exp_reloaded(
-    exp: Experiment, tmp_path_factory: pytest.TempPathFactory
-) -> Experiment:
+def exp_reloaded(exp: Experiment, tmp_path_factory: pytest.TempPathFactory) -> Experiment:
     tmp_path = tmp_path_factory.mktemp("exp")
     exp.save_file(tmp_path / "test_loaded.eds")
     return Experiment.from_file(tmp_path / "test_loaded.eds")
@@ -54,9 +52,7 @@ def test_reload(exp: Experiment, exp_reloaded: Experiment) -> None:
 
 
 def test_plot_ntmpw_smoothmw(exp: Experiment) -> None:
-    axf, axt = exp.plot_over_time(
-        process=[SmoothWindowMean(4), NormToMeanPerWell(2)], annotate_stage_lines=False
-    )
+    axf, axt = exp.plot_over_time(process=[SmoothWindowMean(4), NormToMeanPerWell(2)], annotate_stage_lines=False)
     assert axf.get_ylabel() == "fluorescence (window mean 4, norm. to mean)"
 
 
@@ -69,21 +65,15 @@ def test_plot_emw_maxperwell(exp: Experiment) -> None:
 
 
 def test_plot_subtrbymean(exp: Experiment) -> None:
-    axf, axt = exp.plot_over_time(
-        process=SubtractByMeanPerWell(2), annotate_stage_lines=False
-    )
+    axf, axt = exp.plot_over_time(process=SubtractByMeanPerWell(2), annotate_stage_lines=False)
     assert axf.get_ylabel() == "fluorescence (subtr. by mean)"
 
 
 def test_plots(exp: Experiment) -> None:
-    axf, axt = exp.plot_over_time(
-        legend=False, figure_kw={"constrained_layout": False}, annotate_stage_lines=True
-    )
+    axf, axt = exp.plot_over_time(legend=False, figure_kw={"constrained_layout": False}, annotate_stage_lines=True)
 
-    assert len(axf.get_lines()) == 5 * len(exp.all_filters) # + 2 # No +2, because stage lines are outside of plot
-    assert np.allclose(
-        axf.get_xlim(), (0.0287576, 0.089), atol=0.01
-    )
+    assert len(axf.get_lines()) == 5 * len(exp.all_filters)  # + 2 # No +2, because stage lines are outside of plot
+    assert np.allclose(axf.get_xlim(), (0.0287576, 0.089), atol=0.01)
 
     with pytest.raises(ValueError, match="Samples not found"):
         exp.plot_over_time("Sampl(e|a)")
@@ -134,38 +124,29 @@ def test_plots(exp: Experiment) -> None:
 
 def test_all_filters(exp: Experiment) -> None:
     """Test that all_filters returns the expected filter sets."""
-    expected_filters = {
-        "x1-m1", "x1-m2", "x2-m2", "x2-m3", "x3-m3", 
-        "x3-m4", "x4-m4", "x4-m5", "x5-m5", "x5-m6"
-    }
-    
+    expected_filters = {"x1-m1", "x1-m2", "x2-m2", "x2-m3", "x3-m3", "x3-m4", "x4-m4", "x4-m5", "x5-m5", "x5-m6"}
+
     actual_filters = {str(f) for f in exp.all_filters}
-    
+
     assert actual_filters == expected_filters
     assert len(exp.all_filters) == 10
 
 
 def test_filter_strings(exp: Experiment) -> None:
     """Test that filter_strings returns the expected filter strings."""
-    expected_filter_strings = [
-        "x1-m1", "x1-m2", "x2-m2", "x2-m3", "x3-m3", 
-        "x3-m4", "x4-m4", "x4-m5", "x5-m5", "x5-m6"
-    ]
-    
+    expected_filter_strings = ["x1-m1", "x1-m2", "x2-m2", "x2-m3", "x3-m3", "x3-m4", "x4-m4", "x4-m5", "x5-m5", "x5-m6"]
+
     actual_filter_strings = exp.filter_strings
-    
+
     # Convert to sets for comparison since order might vary
     assert set(actual_filter_strings) == set(expected_filter_strings)
     assert len(actual_filter_strings) == 10
-    
+
     # Verify that filter_strings matches string conversion of all_filters
     assert set(actual_filter_strings) == {str(f) for f in exp.all_filters}
 
 
-
-
-
-def test_save_file_with_dots(exp: Experiment, tmp_path_factory: pytest.TempPathFactory) -> None: # test for issue #33
+def test_save_file_with_dots(exp: Experiment, tmp_path_factory: pytest.TempPathFactory) -> None:  # test for issue #33
     tmp_path = tmp_path_factory.mktemp("exp")
     original_name = exp.name
 
@@ -192,22 +173,21 @@ def test_save_file_with_dots(exp: Experiment, tmp_path_factory: pytest.TempPathF
     finally:
         exp.name = original_name
 
+
 def test_mid_run_eds():
     exp = Experiment.from_file(_TESTS_DIR / "mid-run.eds")
 
     assert exp.runstate == "RUNNING"
     assert exp.activeendtime is None
-    assert exp.activestarttime == datetime.datetime(2025, 11, 18, 1, 52, 11, 949000, tzinfo=datetime.timezone.utc) # datetime.datetime(2025, 11, 18, 1, 52, 11, 949000, tzinfo=datetime.timezone.utc)
+    assert exp.activestarttime == datetime.datetime(
+        2025, 11, 18, 1, 52, 11, 949000, tzinfo=datetime.timezone.utc
+    )  # datetime.datetime(2025, 11, 18, 1, 52, 11, 949000, tzinfo=datetime.timezone.utc)
 
     # ps = qslib.PlateSetup({
     #     "s1": ["A1"],
     #     "s2": ["A2", "B4"],
     # })
-    prot = qslib.Protocol(
-        [
-            qslib.Stage.hold_at(25, "5min", "60s", collect=True)
-        ], filters=["x1-m1", "x3-m5", "x2-m2"]
-    )
+    prot = qslib.Protocol([qslib.Stage.hold_at(25, "5min", "60s", collect=True)], filters=["x1-m1", "x3-m5", "x2-m2"])
 
     # assert exp.plate_setup == ps
     assert exp.protocol == prot
@@ -217,9 +197,9 @@ def test_mid_run_eds():
     # Test that analysis data is not available for mid-run experiments
     with pytest.raises(DataNotAvailableError):
         exp.multicomponent_data
-    
+
     with pytest.raises(DataNotAvailableError):
         exp.analysis_result
-    
+
     with pytest.raises(DataNotAvailableError):
         exp.amplification_data

@@ -18,9 +18,7 @@ import sys
 
 # -- Path setup --------------------------------------------------------------
 
-__location__ = os.path.join(
-    os.getcwd(), os.path.dirname(inspect.getfile(inspect.currentframe()))
-)
+__location__ = os.path.join(os.getcwd(), os.path.dirname(inspect.getfile(inspect.currentframe())))
 
 # If extensions (or modules to document with autodoc) are in another directory,
 # add these directories to sys.path here. If the directory is relative to the
@@ -46,9 +44,7 @@ except FileNotFoundError:
 try:
     import sphinx
 
-    cmd_line_template = (
-        "sphinx-apidoc --implicit-namespaces -f -o {outputdir} {moduledir}"
-    )
+    cmd_line_template = "sphinx-apidoc --implicit-namespaces -f -o {outputdir} {moduledir}"
     cmd_line = cmd_line_template.format(outputdir=output_dir, moduledir=module_dir)
 
     args = cmd_line.split(" ")
@@ -249,9 +245,7 @@ latex_elements = {
 
 # Grouping the document tree into LaTeX files. List of tuples
 # (source start file, target name, title, author, documentclass [howto/manual]).
-latex_documents = [
-    ("index", "user_guide.tex", "qslib Documentation", "Constantine Evans", "manual")
-]
+latex_documents = [("index", "user_guide.tex", "qslib Documentation", "Constantine Evans", "manual")]
 
 # The name of an image file (relative to this directory) to place at the top of
 # the title page.

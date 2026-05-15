@@ -86,9 +86,7 @@ def _filterdata_df_v2(
 
     fdd = pd.DataFrame(dfd)
     fdd.set_index(["filter_set", "stage", "cycle", "step", "point"], inplace=True)
-    fdd.columns = pd.MultiIndex.from_tuples(
-        [("exposure", "exposure")] + [(x, "fl") for x in wellnames]
-    )
+    fdd.columns = pd.MultiIndex.from_tuples([("exposure", "exposure")] + [(x, "fl") for x in wellnames])
 
     wrt = pd.DataFrame(
         np.array(dft).repeat(int(plate_type / len(dft[0])), axis=1),
@@ -98,6 +96,7 @@ def _filterdata_df_v2(
 
     if quant_files_path is not None:
         from ._qslib import QuantFile
+
         timestamps = []
         for filter_set, stage, cycle, step, point in fdd.index:
             filename = (
@@ -134,16 +133,12 @@ def _parse_multicomponent_data_v1(root: ET.ElementTree):
     elif n_wells == 384:
         wellnames = _WELLNAMES_384
     else:
-        raise ValueError(
-            f"Unsupported number of wells in multicomponent data: {n_wells}"
-        )
+        raise ValueError(f"Unsupported number of wells in multicomponent data: {n_wells}")
 
     cycle_count = int(_find_text_or_raise(root, "CycleCount"))
 
     welldyes = {
-        int(dd.attrib["WellIndex"]): _parse_strlist(
-            _find_text_or_raise(dd, "DyeList")
-        )  # fixme
+        int(dd.attrib["WellIndex"]): _parse_strlist(_find_text_or_raise(dd, "DyeList"))  # fixme
         for dd in root.findall("DyeData")
     }
 
@@ -168,9 +163,7 @@ def _parse_multicomponent_data_v1(root: ET.ElementTree):
 
     temperatures = pd.Series(
         np.array(_find_text_or_raise(root, "SampleTemperatures").split(), dtype=np.float64),
-        index=pd.MultiIndex.from_product(
-            [wellnames, range(1, cycle_count + 1)], names=["well", "collection_cycle"]
-        ),
+        index=pd.MultiIndex.from_product([wellnames, range(1, cycle_count + 1)], names=["well", "collection_cycle"]),
         name="temperature",
     )
 
@@ -203,16 +196,12 @@ def _parse_multicomponent_data_v2(jd: dict, plate_type: int):
     elif plate_type == 384:
         wellnames = _WELLNAMES_384
     else:
-        raise ValueError(
-            f"Unsupported number of wells in multicomponent data: {plate_type}"
-        )
+        raise ValueError(f"Unsupported number of wells in multicomponent data: {plate_type}")
 
     cycle_count = len(jd["collectionPoints"])
 
     wellcycdata = {
-        int(d["wellIndex"]): {
-            dd["dyeName"]: np.array(dd["fluorescences"]) for dd in d["dyeData"]
-        }
+        int(d["wellIndex"]): {dd["dyeName"]: np.array(dd["fluorescences"]) for dd in d["dyeData"]}
         | {"temperature": d["temperatures"]}
         for d in jd["wellData"]
     }

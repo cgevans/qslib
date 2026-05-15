@@ -63,9 +63,7 @@ a single temperature to a per-zone list. Query the actual count from the
 server with ``Machine.get_zone_count()`` (sends ``TBC:ControlZones?``).
 """
 
-UR: pint.UnitRegistry = pint.UnitRegistry(
-    autoconvert_offset_to_baseunit=True, auto_reduce_dimensions=True
-)
+UR: pint.UnitRegistry = pint.UnitRegistry(autoconvert_offset_to_baseunit=True, auto_reduce_dimensions=True)
 
 Q_ = UR.Quantity
 
@@ -165,9 +163,7 @@ def _wrap_degC_or_none(
 
 
 def _wrapunitmaybelist_degC(
-    val: (
-        int | float | str | PlainQuantity | Sequence[int | float | str | PlainQuantity]
-    ),
+    val: (int | float | str | PlainQuantity | Sequence[int | float | str | PlainQuantity]),
 ) -> PlainQuantity:
     unit: pint.Unit = UR.Unit("degC")
 
@@ -275,9 +271,7 @@ class Ramp(ProtoCommand):
         if self.cover is not None:
             opts["cover"] = self.cover.to("degC").magnitude
 
-        return SCPICommand(
-            "RAMP", *self.temperature.to("degC").magnitude, comment=None, **opts
-        )
+        return SCPICommand("RAMP", *self.temperature.to("degC").magnitude, comment=None, **opts)
 
     @classmethod
     def from_scpicommand(cls, sc: SCPICommand) -> Ramp:
@@ -326,9 +320,7 @@ class HACFILT(ProtoCommand):
     _default_filters: Sequence[FilterSet] = attr.field(factory=lambda: [])
     _names: ClassVar[Sequence[str]] = ("HoldAndCollectFILTer", "HACFILT")
 
-    def to_scpicommand(
-        self, default_filters: Sequence[FilterSet] | None = None, **kwargs: None
-    ) -> SCPICommand:
+    def to_scpicommand(self, default_filters: Sequence[FilterSet] | None = None, **kwargs: None) -> SCPICommand:
         if default_filters is None:
             default_filters = []
         if not default_filters and not self.filters:
@@ -370,9 +362,7 @@ def _maybe_quantity_to_seconds_int(q: PlainQuantity | int | None) -> int | None:
 class HoldAndCollect(ProtoCommand):
     """A protocol hold (for a time) and collect (set by HACFILT) command."""
 
-    time: PlainQuantity = attr.field(
-        converter=_wrap_seconds, on_setattr=attr.setters.convert
-    )
+    time: PlainQuantity = attr.field(converter=_wrap_seconds, on_setattr=attr.setters.convert)
     increment: PlainQuantity = attr.field(
         default=_ZERO_SECONDS, converter=_wrap_seconds, on_setattr=attr.setters.convert
     )
@@ -410,9 +400,7 @@ class HoldAndCollect(ProtoCommand):
 class Hold(ProtoCommand):
     """A protocol hold (for a time) command."""
 
-    time: PlainQuantity | None = attr.field(
-        converter=_maybe_wrap_seconds, on_setattr=attr.setters.convert
-    )
+    time: PlainQuantity | None = attr.field(converter=_maybe_wrap_seconds, on_setattr=attr.setters.convert)
     increment: PlainQuantity = attr.field(
         converter=_wrap_seconds, on_setattr=attr.setters.convert, default=_ZERO_SECONDS
     )
@@ -512,16 +500,11 @@ class CustomStep(ProtoCommand):
             s = f"{index}. "
         else:
             s = "- "
-        s += f"Step{' '+str(self._identifier) if self._identifier is not None else ''} of commands:\n"
-        s += "\n".join(
-            f"  {i+1}. " + c.to_scpicommand().to_string()
-            for i, c in enumerate(self._body)
-        )
+        s += f"Step{' ' + str(self._identifier) if self._identifier is not None else ''} of commands:\n"
+        s += "\n".join(f"  {i + 1}. " + c.to_scpicommand().to_string() for i, c in enumerate(self._body))
         return s
 
-    def duration_at_cycle_point(
-        self, cycle: int, point: int = 1
-    ) -> IntQuantity:  # cycle from 1
+    def duration_at_cycle_point(self, cycle: int, point: int = 1) -> IntQuantity:  # cycle from 1
         return Q_(0, "second")
 
     def temperatures_at_cycle(self, cycle: int) -> list[ArrayQuantity]:
@@ -567,6 +550,7 @@ class CustomStep(ProtoCommand):
 
         return SCPICommand("STEP", *args, **opts)  # type: ignore
 
+
 def _filterlist(y: Iterable[FilterSet | str]) -> Sequence[FilterSet]:
     return [FilterSet.fromstring(x) for x in y]
 
@@ -606,12 +590,8 @@ class Step(CustomStep):
     This currently does not support step-level repeats, which do exist on the machine.
     """
 
-    time: PlainQuantity = attr.field(
-        converter=_wrap_seconds, on_setattr=attr.setters.convert
-    )
-    temperature: PlainQuantity = attr.field(
-        converter=_wrapunitmaybelist_degC, on_setattr=attr.setters.convert
-    )
+    time: PlainQuantity = attr.field(converter=_wrap_seconds, on_setattr=attr.setters.convert)
+    temperature: PlainQuantity = attr.field(converter=_wrapunitmaybelist_degC, on_setattr=attr.setters.convert)
     collect: bool | None = None
     temp_increment: FloatQuantity = attr.field(
         default=_ZEROTEMPDELTA,
@@ -715,31 +695,25 @@ class Step(CustomStep):
 
         if not np.all(temps_c1p1 == temps_cep1) or not np.all(temps_cep1 == temps_cepe):
             if not np.all(temps_cep1 == temps_cepe):
-                tempstr += (
-                    f" to ({_temp_format(temps_cep1)} to {_temp_format(temps_cepe)})"
-                )
+                tempstr += f" to ({_temp_format(temps_cep1)} to {_temp_format(temps_cepe)})"
             else:
                 tempstr += f" to {_temp_format(temps_cep1)}"
 
         time_c1p1 = self.duration_at_cycle_point(1, 1)
-        time_c1pe = self.duration_at_cycle_point(
-            1, self.repeat if self.repeat is not None else 1
-        )
+        time_c1pe = self.duration_at_cycle_point(1, self.repeat if self.repeat is not None else 1)
         time_cep1 = self.duration_at_cycle_point(repeats, 1)
-        time_cepe = self.duration_at_cycle_point(
-            repeats, self.repeat if self.repeat is not None else 1
-        )
+        time_cepe = self.duration_at_cycle_point(repeats, self.repeat if self.repeat is not None else 1)
 
         if self.repeat > 1:
             if np.all(time_c1p1 == time_c1pe) and np.all(time_c1p1 == time_cep1):
                 tempstr += (
                     f" for {self.repeat} points at {_durformat(time_c1p1)}/point"
-                    f" ({_durformat(time_c1p1*self.repeat)}/cycle)"
+                    f" ({_durformat(time_c1p1 * self.repeat)}/cycle)"
                 )
             elif np.all(time_c1p1 == time_c1pe):
                 tempstr += (
                     f" for {self.repeat} points at {_durformat(time_c1p1)}/point to {_durformat(time_cep1)}/point"
-                    f" ({_durformat(time_c1p1*self.repeat)}/cycle to {_durformat(time_cep1*self.repeat)}/cycle)"
+                    f" ({_durformat(time_c1p1 * self.repeat)}/cycle to {_durformat(time_cep1 * self.repeat)}/cycle)"
                 )
             elif np.all(time_c1p1 == time_cep1):
                 tempstr += (
@@ -800,9 +774,7 @@ class Step(CustomStep):
         return s
 
     def total_duration(self, repeats: int = 1) -> PlainQuantity:
-        return sum(
-            (self.duration_of_cycle(c) for c in range(1, repeats + 1)), 0 * UR.seconds
-        )
+        return sum((self.duration_of_cycle(c) for c in range(1, repeats + 1)), 0 * UR.seconds)
 
     def duration_at_cycle_point(self, cycle: int, point: int = 1) -> PlainQuantity:
         "Durations of the step at `cycle` (from 1)"
@@ -815,10 +787,7 @@ class Step(CustomStep):
 
     def durations_at_cycle(self, cycle: int) -> list[PlainQuantity]:  # cycle from 1
         "Duration of the step (excluding ramp) at `cycle` (from 1)"
-        return [
-            self.duration_at_cycle_point(cycle, point)
-            for point in range(1, self.repeat + 1)
-        ]
+        return [self.duration_at_cycle_point(cycle, point) for point in range(1, self.repeat + 1)]
 
     def temperatures_at_cycle_point(self, cycle: int, point: int) -> ArrayQuantity:
         "Temperatures of the step at `cycle` (from 1)"
@@ -828,10 +797,7 @@ class Step(CustomStep):
 
     def temperatures_at_cycle(self, cycle: int) -> list[ArrayQuantity]:
         "Temperatures of the step at `cycle` (from 1)"
-        return [
-            self.temperatures_at_cycle_point(cycle, point)
-            for point in range(1, self.repeat + 1)
-        ]
+        return [self.temperatures_at_cycle_point(cycle, point) for point in range(1, self.repeat + 1)]
 
     @property
     def identifier(self) -> int | str | None:
@@ -934,17 +900,9 @@ class Stage(ProtoCommand):
             return False
         if self.__class__ != other.__class__:
             return False
-        if (
-            (self.index is not None)
-            and (other.index is not None)
-            and self.index != other.index
-        ):
+        if (self.index is not None) and (other.index is not None) and self.index != other.index:
             return False
-        if (
-            (self.label is not None)
-            and (other.label is not None)
-            and self.label != other.label
-        ):
+        if (self.label is not None) and (other.label is not None) and self.label != other.label:
             return False
         return self.steps == other.steps
 
@@ -1032,42 +990,26 @@ class Stage(ProtoCommand):
                 autoset_step = False
 
             n_steps = max(
-                abs(round((max_delta / temperature_step).to("").magnitude))
-                + (0 if start_increment else 1),
+                abs(round((max_delta / temperature_step).to("").magnitude)) + (0 if start_increment else 1),
                 1,
             )
 
-            real_max_temperature_step = abs(
-                max_delta / (n_steps - (0 if start_increment else 1))
-            )
+            real_max_temperature_step = abs(max_delta / (n_steps - (0 if start_increment else 1)))
 
-            change = (
-                ((real_max_temperature_step - temperature_step) / temperature_step)
-                .to("")
-                .magnitude
-            )
+            change = ((real_max_temperature_step - temperature_step) / temperature_step).to("").magnitude
 
             if (abs(change) > 0.05) and not autoset_step:
                 warnings.warn(
-                    f"Desired temperature step {temperature_step} differs by {100*change}% "
+                    f"Desired temperature step {temperature_step} differs by {100 * change}% "
                     f"from actual {real_max_temperature_step}."
                 )
 
         elif temperature_step is not None:
             temperature_step = abs(_wrap_delta_degC(temperature_step))  # type: ignore
-            if (
-                abs(round((max_delta / temperature_step).to("").magnitude))
-                + (0 if start_increment else 1)
-                != n_steps
-            ):
-                raise ValueError(
-                    "Both n_steps and temperature_step set, and calculated steps don't match set steps."
-                )
+            if abs(round((max_delta / temperature_step).to("").magnitude)) + (0 if start_increment else 1) != n_steps:
+                raise ValueError("Both n_steps and temperature_step set, and calculated steps don't match set steps.")
 
-        temp_increment = (
-            (to_temperature - from_temperature)
-            / (n_steps - (0 if start_increment else 1))
-        ).round(4)
+        temp_increment = ((to_temperature - from_temperature) / (n_steps - (0 if start_increment else 1))).round(4)
 
         # If the temp_increment is entirely equal, we are not multistep, and we should
         # have only a single temp_increment.
@@ -1102,8 +1044,7 @@ class Stage(ProtoCommand):
             [
                 Step(
                     step_time / points_per_step,
-                    from_temperature
-                    + (step_i + (1 if start_increment else 0)) * temp_increment,
+                    from_temperature + (step_i + (1 if start_increment else 0)) * temp_increment,
                     collect=collect,
                     filters=filters,
                     repeat=points_per_step,
@@ -1160,9 +1101,7 @@ class Stage(ProtoCommand):
         total_time = _wrap_seconds(total_time)
 
         if step_time > total_time:
-            raise ValueError(
-                f"Step time {step_time} > total time {total_time}.  Did you mix up the parameter order?"
-            )
+            raise ValueError(f"Step time {step_time} > total time {total_time}.  Did you mix up the parameter order?")
 
         repeat = round((total_time / step_time).to("").magnitude)
 
@@ -1173,11 +1112,11 @@ class Stage(ProtoCommand):
         if abs(chg) > 0.1:
             warnings.warn(
                 f"Stage will have total time {real_total_time}, with {repeat} steps, "
-                f"{100*chg} different from desired time {total_time}."
+                f"{100 * chg} different from desired time {total_time}."
             )
 
         return cls(
-             [
+            [
                 Step(
                     step_time,
                     _wrapunitmaybelist_degC(temperature),
@@ -1207,9 +1146,7 @@ class Stage(ProtoCommand):
         s += ")"
         return s
 
-    def dataframe(
-        self, start_time: float = 0, previous_temperatures: list[float] | None = None
-    ) -> pd.DataFrame:
+    def dataframe(self, start_time: float = 0, previous_temperatures: list[float] | None = None) -> pd.DataFrame:
         """
         Create a dataframe of the steps in this stage.
 
@@ -1243,7 +1180,7 @@ class Stage(ProtoCommand):
             ]
         )
         ramp_rates = [
-            1.6 # FIXME: should this be 1.56?
+            1.6  # FIXME: should this be 1.56?
             for _ in range(1, self.repeat + 1)
             for step in self.steps
             for point in range(1, step.repeat + 1)
@@ -1252,33 +1189,21 @@ class Stage(ProtoCommand):
         #    [step.ramp_rate for _ in range(1, self.repeat + 1) for step in self.body]
         # )
         collect_data = np.array(
-            [
-                step.collects
-                for _ in range(1, self.repeat + 1)
-                for step in self.steps
-                for _ in range(1, step.repeat + 1)
-            ]
+            [step.collects for _ in range(1, self.repeat + 1) for step in self.steps for _ in range(1, step.repeat + 1)]
         )
 
         # FIXME: is this how ramp rates actually work?
 
         ramp_durations = np.zeros(len(durations))
         if previous_temperatures is not None:
-            ramp_durations[0] = (
-                np.max(np.abs(temperatures[0] - previous_temperatures)) / ramp_rates[0]
-            )
-            ramp_durations[1:] = (
-                np.max(np.abs(temperatures[1:] - temperatures[:-1]), axis=1)
-                / ramp_rates[1:]
-            )
+            ramp_durations[0] = np.max(np.abs(temperatures[0] - previous_temperatures)) / ramp_rates[0]
+            ramp_durations[1:] = np.max(np.abs(temperatures[1:] - temperatures[:-1]), axis=1) / ramp_rates[1:]
 
         tot_durations = durations + ramp_durations
 
         start_times = start_time + np.zeros(len(durations))
         start_times[0] = start_time + ramp_durations[0]
-        start_times[1:] = (
-            start_time + np.cumsum(tot_durations[:-1]) + ramp_durations[1:]
-        )
+        start_times[1:] = start_time + np.cumsum(tot_durations[:-1]) + ramp_durations[1:]
 
         end_times = start_time + np.cumsum(tot_durations)
 
@@ -1292,9 +1217,7 @@ class Stage(ProtoCommand):
 
         data["temperature_avg"] = np.average(temperatures, axis=1)
 
-        for i in range(
-            0, temperatures.shape[1]
-        ):  # pylint: disable=unsubscriptable-object
+        for i in range(0, temperatures.shape[1]):  # pylint: disable=unsubscriptable-object
             data["temperature_{}".format(i + 1)] = temperatures[:, i]
 
         data["cycle"] = [
@@ -1320,9 +1243,7 @@ class Stage(ProtoCommand):
 
         return data
 
-    def to_scpicommand(
-        self, stageindex: int | str | None = None, **kwargs: Any
-    ) -> SCPICommand:
+    def to_scpicommand(self, stageindex: int | str | None = None, **kwargs: Any) -> SCPICommand:
         opts = {}
         args: list[int | str | list[SCPICommand]] = []
         if self.repeat != 1:
@@ -1335,12 +1256,7 @@ class Stage(ProtoCommand):
             raise ValueError("No index.")
         args.append(index_to_use)
         args.append(self.label or f"STAGE_{index_to_use}")
-        args.append(
-            [
-                step.to_scpicommand(stepindex=i + 1, **kwargs)
-                for i, step in enumerate(self.steps)
-            ]
-        )
+        args.append([step.to_scpicommand(stepindex=i + 1, **kwargs) for i, step in enumerate(self.steps)])
 
         return SCPICommand("STAGe", *args, comment=None, **opts)
 
@@ -1351,8 +1267,7 @@ class Stage(ProtoCommand):
             adds = ""
         stagestr = f"{index}. Stage with {self.repeat} cycle{adds}"
         stepstrs = [
-            textwrap.indent(f"{step.info_str(i+1, self.repeat)}", "    ")
-            for i, step in enumerate(self.steps)
+            textwrap.indent(f"{step.info_str(i + 1, self.repeat)}", "    ") for i, step in enumerate(self.steps)
         ]
         try:
             tot_dur = sum(
@@ -1436,12 +1351,12 @@ class Protocol(ProtoCommand):
         Sets PRERUN.  *DO NOT USE THIS UNLESS YOU KNOW WHAT YOU ARE DOING*.
     postrun: Sequence[SCPICommand]
         Sets POSTRUN. *DO NOT USE THIS UNLESS YOU KNOW WHAT YOU ARE DOING*.
-    
+
     Notes
     -----
-    Protocol equality is based on functional attributes (stages, volume, runmode, 
-    filters, covertemperature, prerun, postrun) but excludes the name. This means 
-    two protocols with identical configurations but different names are considered 
+    Protocol equality is based on functional attributes (stages, volume, runmode,
+    filters, covertemperature, prerun, postrun) but excludes the name. This means
+    two protocols with identical configurations but different names are considered
     equal.
     """
 
@@ -1474,6 +1389,7 @@ class Protocol(ProtoCommand):
     def _to_rust_step(self, step: Step) -> Any:
         """Convert a Python Step to a Rust RustStep."""
         from ._qslib import RustStep
+
         temp_mag = step.temperature.to("degC").magnitude
         if isinstance(temp_mag, np.ndarray):
             temp_list = temp_mag.tolist()
@@ -1499,6 +1415,7 @@ class Protocol(ProtoCommand):
     def _to_rust_stage(self, stage: Stage, stage_index: int) -> Any:
         """Convert a Python Stage to a Rust RustStage."""
         from ._qslib import RustStage
+
         rust_steps = []
         custom_step_scpi: list[tuple[int, str]] = []
         for i, step in enumerate(stage.steps):
@@ -1506,9 +1423,7 @@ class Protocol(ProtoCommand):
                 rust_steps.append(self._to_rust_step(step))
             else:
                 # CustomStep — serialize body commands to SCPI string for Rust
-                body_scpi = "".join(
-                    com.to_scpicommand().to_string() for com in step.body
-                )
+                body_scpi = "".join(com.to_scpicommand().to_string() for com in step.body)
                 # Position accounts for standard steps already added
                 custom_step_scpi.append((len(rust_steps), body_scpi))
         return RustStage(
@@ -1522,6 +1437,7 @@ class Protocol(ProtoCommand):
     def _to_rust_protocol(self) -> Any:
         """Convert this Python Protocol to a Rust Protocol object."""
         from ._qslib import Protocol as RustProtocol
+
         rust_stages = []
         for i, stage in enumerate(self.stages):
             rs = self._to_rust_stage(stage, i + 1)
@@ -1556,21 +1472,15 @@ class Protocol(ProtoCommand):
         args.append(self.name)
         stages: list[SCPICommand] = []
         if self.prerun:
-            stages.append(
-                SCPICommand("PRERun", [s.to_scpicommand() for s in self.prerun])
-            )
+            stages.append(SCPICommand("PRERun", [s.to_scpicommand() for s in self.prerun]))
 
         stages += [
-            stage.to_scpicommand(
-                filters=self.filters, stageindex=i + 1, default_filters=self.filters
-            )
+            stage.to_scpicommand(filters=self.filters, stageindex=i + 1, default_filters=self.filters)
             for i, stage in enumerate(self.stages)
         ]
 
         if self.postrun:
-            stages.append(
-                SCPICommand("POSTRun", [s.to_scpicommand() for s in self.postrun])
-            )
+            stages.append(SCPICommand("POSTRun", [s.to_scpicommand() for s in self.postrun]))
 
         args.append(stages)
 
@@ -1580,6 +1490,7 @@ class Protocol(ProtoCommand):
     def from_scpi_string(cls: Type[Protocol], text: str) -> Protocol:
         """Parse a Protocol from an SCPI command string."""
         from ._qslib import Protocol as RustProtocol
+
         rust_proto = RustProtocol.from_scpi_string(text)
         return cls._from_rust_protocol(rust_proto)
 
@@ -1686,7 +1597,7 @@ class Protocol(ProtoCommand):
         p2 = [
             ax.plot(
                 cast("pd.Series['float']", dc["end_time"]) / 3600.0,
-                dc[f"temperature_{i+1}"],
+                dc[f"temperature_{i + 1}"],
                 ".",
                 color=p.get_color(),
             )[0]
@@ -1703,6 +1614,7 @@ class Protocol(ProtoCommand):
     @classmethod
     def from_xml(cls, e: ET.Element) -> Protocol:
         from ._qslib import Protocol as RustProtocol
+
         xml_str = ET.tostring(e, encoding="unicode")
         rust_proto = RustProtocol.from_xml_string(xml_str)
         return cls._from_rust_protocol(rust_proto)
@@ -1739,7 +1651,8 @@ class Protocol(ProtoCommand):
                     # Custom step: data is the SCPI body string
                     body_cmds = [
                         cast(ProtoCommand, SCPICommand.from_string(line).specialize())
-                        for line in cast(str, data).split("\n") if line.strip()
+                        for line in cast(str, data).split("\n")
+                        if line.strip()
                     ]
                     steps.append(CustomStep(body_cmds))
             stage = Stage(steps, rs.repeat)
@@ -1769,9 +1682,7 @@ class Protocol(ProtoCommand):
             postrun=postrun,
         )
 
-    def to_xml(
-        self, covertemperature: float = 105.0
-    ) -> tuple[ET.ElementTree, ET.ElementTree]:
+    def to_xml(self, covertemperature: float = 105.0) -> tuple[ET.ElementTree, ET.ElementTree]:
         rust_proto = self._to_rust_protocol()
         tc, qstc = rust_proto.to_xml_pair(covertemperature, __version__)
         return ET.ElementTree(ET.fromstring(tc)), ET.ElementTree(ET.fromstring(qstc))
@@ -1792,16 +1703,11 @@ class Protocol(ProtoCommand):
         begin += ":\n"
         if self.filters:
             begin += (
-                "(default filters "
-                + _oxfordlist(FilterSet.fromstring(f).lowerform for f in self.filters)
-                + ")\n\n"
+                "(default filters " + _oxfordlist(FilterSet.fromstring(f).lowerform for f in self.filters) + ")\n\n"
             )
         else:
             begin += "\n"
-        stagestrs = [
-            textwrap.indent(stage.info_str(i + 1), "  ")
-            for i, stage in enumerate(self.stages)
-        ]
+        stagestrs = [textwrap.indent(stage.info_str(i + 1), "  ") for i, stage in enumerate(self.stages)]
 
         return begin + "\n".join(stagestrs)
 
@@ -1836,14 +1742,10 @@ class Protocol(ProtoCommand):
         # assert self.name == new.name
 
         for i, (oldstage, newstage) in enumerate(zip_longest(self.stages, new.stages)):
-            if (
-                i + 1 < status.stage
-            ):  # If the stage has already passed, we must be equal
+            if i + 1 < status.stage:  # If the stage has already passed, we must be equal
                 if oldstage != newstage:
                     raise ValueError
-            elif (
-                i + 1 == status.stage
-            ):  # Current stage.  Only change is # cycles, >= current
+            elif i + 1 == status.stage:  # Current stage.  Only change is # cycles, >= current
                 if newstage.repeat < status.cycle:
                     raise ValueError
                 oldstage.repeat = newstage.repeat  # for comparison
@@ -1884,8 +1786,7 @@ class Protocol(ProtoCommand):
                     stage.index = i + 1
                 else:
                     raise ValueError(
-                        "Stage %s is at index %d of protocol, but has set index %d."
-                        % (stage, i + 1, stage.index)
+                        "Stage %s is at index %d of protocol, but has set index %d." % (stage, i + 1, stage.index)
                     )
 
             if stage.label is not None:
@@ -1899,7 +1800,7 @@ class Protocol(ProtoCommand):
                             int(m[1]),
                             i + 1,
                         )
-                        stage.label = f"STAGE_{i+1}"
+                        stage.label = f"STAGE_{i + 1}"
                     else:
                         raise ValueError(
                             "Stage %s has label %s, which implies index %d, but is at index %d of protocol."

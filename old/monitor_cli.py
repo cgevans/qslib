@@ -29,17 +29,13 @@ _logger = logging.getLogger(__name__)
 
 
 def parse_args(args: List[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="QuantStudio qPCR data monitor for InfluxDB"
-    )
+    parser = argparse.ArgumentParser(description="QuantStudio qPCR data monitor for InfluxDB")
     parser.add_argument(
         "--version",
         action="version",
         version="qs-monitor {ver}".format(ver=__version__),
     )
-    parser.add_argument(
-        dest="config", help="configuration file", type=Path, metavar="CONFIG_TOML"
-    )
+    parser.add_argument(dest="config", help="configuration file", type=Path, metavar="CONFIG_TOML")
     parser.add_argument(
         "-v",
         "--verbose",
@@ -67,9 +63,7 @@ def setup_logging(loglevel):
     """
 
     logformat = "[%(asctime)s] %(levelname)s:%(name)s: %(message)s"
-    logging.basicConfig(
-        level=loglevel, stream=sys.stdout, format=logformat, datefmt="%Y-%m-%dT%H:%M:%S"
-    )
+    logging.basicConfig(level=loglevel, stream=sys.stdout, format=logformat, datefmt="%Y-%m-%dT%H:%M:%S")
 
 
 def main(args: List[str]):

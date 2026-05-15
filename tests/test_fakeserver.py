@@ -5,15 +5,11 @@ import asyncio
 import re
 
 
-
-
 def crcb(crlist):
     async def _fakeserver_runner(sr: asyncio.StreamReader, sw: asyncio.StreamWriter):
         acc = "Guest"
 
-        sw.write(
-            b"READy -session=12345 -product=QuantStudio3_5 -version=1.3.0 -build=001 -capabilities=Index\n"
-        )
+        sw.write(b"READy -session=12345 -product=QuantStudio3_5 -version=1.3.0 -build=001 -capabilities=Index\n")
         await sw.drain()
 
         while not sr.at_eof():
@@ -25,12 +21,7 @@ def crcb(crlist):
                 continue
 
             if x := re.match(rb"(\d+) ACC?", line, re.IGNORECASE):
-                sw.write(
-                    b"OK "
-                    + x.group(1)
-                    + f" -stealth=False -exclusive=False {acc}".encode()
-                    + b"\n"
-                )
+                sw.write(b"OK " + x.group(1) + f" -stealth=False -exclusive=False {acc}".encode() + b"\n")
                 continue
 
             if x := re.match(rb"(\d+) QUIT", line, re.IGNORECASE):

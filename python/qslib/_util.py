@@ -14,11 +14,12 @@ from typing import Sequence
 from functools import wraps
 from typing import Any, Callable, TypeVar
 
-T = TypeVar('T')
+T = TypeVar("T")
+
 
 def cached_method(f: Callable[..., T]) -> Callable[..., T]:
     """Decorator that caches method results on the instance.  Needs the following added to class:
-    
+
     ```python
     def _clear_cache(self: Any) -> None:
         "Clear all method caches on this instance."
@@ -28,36 +29,31 @@ def cached_method(f: Callable[..., T]) -> Callable[..., T]:
                     delattr(self, cache_name)
             self._cached_methods.clear()
     ```
-    
+
     """
-    cache_name = f'_cache_{f.__name__}'
-    
+    cache_name = f"_cache_{f.__name__}"
+
     @wraps(f)
     def wrapper(self: Any, *args: Any, **kwargs: Any) -> T:
         # Add _cached_methods and _clear_cache to instance if needed
-        if not hasattr(self, '_cached_methods'):
+        if not hasattr(self, "_cached_methods"):
             self._cached_methods = set()
-            
+
         if not hasattr(self, cache_name):
             setattr(self, cache_name, {})
             self._cached_methods.add(cache_name)
-            
+
         cache = getattr(self, cache_name)
         key = (args, tuple(sorted(kwargs.items())))
-        
+
         if key not in cache:
             cache[key] = f(self, *args, **kwargs)
         return cache[key]
-    
+
     return wrapper
 
 
-
-
-
-def _find_or_create(
-    element: ElTr.Element | ElTr.ElementTree, path: str
-) -> ElTr.Element:
+def _find_or_create(element: ElTr.Element | ElTr.ElementTree, path: str) -> ElTr.Element:
     """Find the element at path, or create it."""
     if isinstance(element, ElTr.ElementTree):
         element = element.getroot()

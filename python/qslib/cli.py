@@ -186,9 +186,7 @@ def machine_power(machine: str, state: str) -> None:
         mn = m.run_command("SYST:SETT:NICK?")
 
         if rs.state != "Idle":
-            raise click.UsageError(
-                f"Machine {mn} is currently running {rs.name}, not changing power state during run."
-            )
+            raise click.UsageError(f"Machine {mn} is currently running {rs.name}, not changing power state during run.")
         else:
             with m.at_access("Controller"):
                 m.power = {"on": True, "off": False}[state]
@@ -240,35 +238,21 @@ def machine_status(machine: str) -> None:
         state = click.style(state, fg="red")
 
     click.echo(f"Machine {mn} is {state}.")
-    click.echo(
-        f"Drawer is {drawer}, cover is {cover}, and lamp is {lamp} and {ms.led_temperature:.2f} °C."
-    )
+    click.echo(f"Drawer is {drawer}, cover is {cover}, and lamp is {lamp} and {ms.led_temperature:.2f} °C.")
 
     click.echo(f"Cover temperature is {ms.cover_temperature:.2f} °C", nl=False)
     if ms.target_controlled["Cover"]:
-        click.echo(
-            f" and is controlled with a target of {ms.target_temperatures['Cover']:.2f} °C."
-        )
+        click.echo(f" and is controlled with a target of {ms.target_temperatures['Cover']:.2f} °C.")
     else:
         click.echo(" and is uncontrolled.")
 
-    click.echo(
-        "Block temperatures are "
-        + ", ".join("{:.2f}".format(x) for x in ms.block_temperatures)
-        + " °C."
-    )
-    click.echo(
-        "Sample temperatures are "
-        + ", ".join("{:.2f}".format(x) for x in ms.sample_temperatures)
-        + " °C."
-    )
+    click.echo("Block temperatures are " + ", ".join("{:.2f}".format(x) for x in ms.block_temperatures) + " °C.")
+    click.echo("Sample temperatures are " + ", ".join("{:.2f}".format(x) for x in ms.sample_temperatures) + " °C.")
 
     if all(ms.target_controlled[f"Zone{i}"] for i in range(1, 7)):
         click.echo(
             "Zone temperatures are controlled with a target of "
-            + ", ".join(
-                "{:.2f}".format(ms.target_temperatures[f"Zone{i}"]) for i in range(1, 7)
-            )
+            + ", ".join("{:.2f}".format(ms.target_temperatures[f"Zone{i}"]) for i in range(1, 7))
             + " °C."
         )
     else:
@@ -276,37 +260,42 @@ def machine_status(machine: str) -> None:
 
     if rs.state != "Idle":
         click.echo(
-            f"Run {rs.name}. Stage {rs.stage}/{rs.num_stages},"
-            f" cycle {rs.cycle}/{rs.num_cycles}, and step {rs.step}."
+            f"Run {rs.name}. Stage {rs.stage}/{rs.num_stages}, cycle {rs.cycle}/{rs.num_cycles}, and step {rs.step}."
         )
 
     del m
 
+
 @cli.command(name="list-stored")
 @click.argument("machine_path", nargs=-1)
 @click.option("-v", "--verbose", is_flag=True, help="Show detailed file information")
-@click.option("-s", "--sort", type=click.Choice(['name', 'time', 'size', 'created']), default='name',
-              help="Sort by name, modification time, creation time, or file size")
+@click.option(
+    "-s",
+    "--sort",
+    type=click.Choice(["name", "time", "size", "created"]),
+    default="name",
+    help="Sort by name, modification time, creation time, or file size",
+)
 @click.option("-r", "--reverse", is_flag=True, help="Reverse the sort order")
 @click.option("-U", "--created", is_flag=True, help="Use creation time instead of modification time")
 def list_stored(machine_path: tuple[str, ...], verbose: bool, sort: str, reverse: bool, created: bool) -> None:
     """List experiments stored on a machine.
-    
+
     MACHINE_PATH can be either just a machine name/address, or machine:pattern where
     pattern is used to filter results using shell-style wildcards (*, ?, etc)."""
-    
+
     for mp in machine_path:
         if mp.startswith("["):
             # Handle IPv6 address in brackets
             closing_bracket = mp.find("]")
             if closing_bracket == -1:
                 raise click.UsageError("Missing closing bracket for IPv6 address")
-        
+
             machine = mp[1:closing_bracket]
             if len(mp) > closing_bracket + 1:
                 if mp[closing_bracket + 1] != ":":
                     raise click.UsageError("Expected ':' after IPv6 address")
-                pattern = mp[closing_bracket + 2:]
+                pattern = mp[closing_bracket + 2 :]
             else:
                 pattern = "*"
         elif ":" in mp:
@@ -330,20 +319,25 @@ def list_stored(machine_path: tuple[str, ...], verbose: bool, sort: str, reverse
                 continue
 
             # Sort the files according to the specified criteria
-            if sort == 'name':
-                files.sort(key=lambda x: x['path'], reverse=reverse)
-            elif sort == 'time':
-                files.sort(key=lambda x: x['mtime'] if not created else x['ctime'], reverse=reverse)
-            elif sort == 'size':
-                files.sort(key=lambda x: x['size'], reverse=reverse)
+            if sort == "name":
+                files.sort(key=lambda x: x["path"], reverse=reverse)
+            elif sort == "time":
+                files.sort(key=lambda x: x["mtime"] if not created else x["ctime"], reverse=reverse)
+            elif sort == "size":
+                files.sort(key=lambda x: x["size"], reverse=reverse)
 
             for f in files:
                 if verbose:
-                    size_str = f"{f['size']/1000/1000:.1f}M" if f['size'] > 1000*1000 else f"{f['size']/1000:.1f}k"
-                    time_str = f['ctime'].strftime("%Y-%m-%d %H:%M") if created else f['mtime'].strftime("%Y-%m-%d %H:%M")
+                    size_str = (
+                        f"{f['size'] / 1000 / 1000:.1f}M" if f["size"] > 1000 * 1000 else f"{f['size'] / 1000:.1f}k"
+                    )
+                    time_str = (
+                        f["ctime"].strftime("%Y-%m-%d %H:%M") if created else f["mtime"].strftime("%Y-%m-%d %H:%M")
+                    )
                     click.echo(f"{size_str:>8}  {time_str}  {f['path']}")
                 else:
-                    click.echo(f['path'])
+                    click.echo(f["path"])
+
 
 @cli.command()
 @click.argument("machine")
@@ -367,6 +361,7 @@ def copy(
         exp = Experiment.from_machine(m, experiment)
         exp.save_file(output, update_files=False)
 
+
 @cli.command()
 @click.argument("path", nargs=-1)
 @click.option("-f", "--force/--no-force", default=False, help="Overwrite existing files")
@@ -374,7 +369,7 @@ def copy(
 @click.option("-o", "--output-dir", type=click.Path(), help="Output directory for saved files")
 def get_eds(path: tuple[str, ...], force: bool, quiet: bool, output_dir: str | None) -> None:
     """Get all experiments matching a name from the machine.
-    
+
     Each argument should be of the form machine:name, where machine is the machine address
     and name is the glob pattern to match experiment names against.
     """
@@ -409,10 +404,11 @@ def get_eds(path: tuple[str, ...], force: bool, quiet: bool, output_dir: str | N
                 if not quiet:
                     click.echo(f"skipping, {output_file} already exists")
                 continue
-                
+
             if not quiet:
                 click.echo(f"saving to {output_file}")
             exp.save_file(output_file, update_files=False)
+
 
 @dataclass
 class OutP:
@@ -499,9 +495,7 @@ def check_access(
     errs: list[CommandError] = []
     if controller_pw is not None:
         p.out("Checking controller password (machine LED should turn yellow): ")
-        m = Machine(
-            host, max_access_level=AccessLevel.Controller, password=controller_pw
-        )
+        m = Machine(host, max_access_level=AccessLevel.Controller, password=controller_pw)
         try:
             with m.ensured_connection(AccessLevel.Controller):
                 m.run_command("LED:YELLOWON")
@@ -526,9 +520,7 @@ def check_access(
             errs.append(e)
 
     if default_controller:
-        p.out(
-            "Checking passwordless controller access (machine LED should turn green): "
-        )
+        p.out("Checking passwordless controller access (machine LED should turn green): ")
         m = Machine(host, max_access_level=AccessLevel.Controller)
         try:
             with m.ensured_connection(AccessLevel.Controller):
@@ -592,9 +584,7 @@ def setup_machine(
 ):
     p = OutP(verbose)
 
-    m = Machine(
-        host, password=current_password, max_access_level=AccessLevel.Controller
-    )
+    m = Machine(host, password=current_password, max_access_level=AccessLevel.Controller)
 
     try:
         with m.ensured_connection(AccessLevel.Controller):
@@ -611,9 +601,7 @@ def setup_machine(
         if verbose:
             p.error(str(e))
     except InsufficientAccess as e:
-        p.error(
-            "Current password was valid, but insufficient.  This script needs at least Controller access."
-        )
+        p.error("Current password was valid, but insufficient.  This script needs at least Controller access.")
         p.error(str(e))
 
     try:
@@ -625,9 +613,7 @@ def setup_machine(
     except NoNewAccess:
         # Do we have *any* access?
         try:
-            with Machine(
-                host, password=current_password, max_access_level=AccessLevel.Controller
-            ) as m:
+            with Machine(host, password=current_password, max_access_level=AccessLevel.Controller) as m:
                 stop_ssh_backup(m, p)
         except Exception as e:
             p.error("Access failed even with old password.")

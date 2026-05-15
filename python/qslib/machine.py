@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     pass
 
 
-
 from qslib.scpi_commands import AccessLevel, SCPICommand, ArgList, specialize_command_error
 
 from ._util import _unwrap_tags
@@ -32,8 +31,10 @@ from .protocol import Protocol
 
 from ._qslib import MachineStatus, RunStatus  # noqa: E402
 
+
 class FileListInfo(TypedDict, total=False):
     """Information about a file when verbose=True"""
+
     path: str
     type: str
     size: int
@@ -46,8 +47,8 @@ class FileListInfo(TypedDict, total=False):
 
 def _gen_auth_response(password: str, challenge_string: str) -> str:
     import hmac
-    return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
 
+    return hmac.digest(password.encode(), challenge_string.encode(), "md5").hex()
 
 
 class AlreadyCollectedError(Exception): ...
@@ -281,15 +282,14 @@ class Machine:
                 self.set_access_level(self._initial_access_level)
             except CommandError as e:
                 from .scpi_commands import InsufficientAccess
+
                 se = specialize_command_error(e)
                 if isinstance(se, InsufficientAccess):
                     raise InsufficientAccess(
-                        "Authentication required for remote connections. "
-                        "Provide a password to the Machine constructor."
+                        "Authentication required for remote connections. Provide a password to the Machine constructor."
                     ) from e
                 raise
         self._current_access_level = self.get_access_level()[0]
-
 
     @property
     def connected(self) -> bool:
@@ -338,7 +338,6 @@ class Machine:
                 return str(self.connection.run_command(command.to_string()).get_response())
             case _:
                 raise ValueError(f"Invalid command: {command}")
-        
 
     @_ensure_connection(AccessLevel.Guest)
     def run_command_to_bytes(self, command: str | SCPICommand) -> bytes:
@@ -378,7 +377,7 @@ class Machine:
             raise ConnectionError(f"Not connected to {self.host}")
         try:
             return self.connection.run_command(command).get_ack()
-        except ValueError as e: # FIXME
+        except ValueError as e:  # FIXME
             e.__traceback__ = None
             raise e
 
@@ -446,7 +445,6 @@ class Machine:
 
         return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-8])))
 
-
     @overload
     def list_files(
         self,
@@ -491,9 +489,7 @@ class Machine:
                 raise NotImplementedError
             return (self.run_command(f"{leaf}:LIST? {path}")).split("\n")[1:-1]
         else:
-            v = (self.run_command(f"{leaf}:LIST? -verbose {path}")).split("\n")[
-                1:-1
-            ]
+            v = (self.run_command(f"{leaf}:LIST? -verbose {path}")).split("\n")[1:-1]
             ret: list[FileListInfo] = []
             for x in v:
                 rm = re.match(
@@ -521,9 +517,7 @@ class Machine:
                                 val = val.lower() == "true"
                             d[om.group(1)] = val
                 if d["type"] == "folder" and recursive:
-                    ret += self.list_files(
-                        cast(str, d["path"]), leaf=leaf, verbose=True, recursive=True
-                    )
+                    ret += self.list_files(cast(str, d["path"]), leaf=leaf, verbose=True, recursive=True)
                 else:
                     ret.append(cast(FileListInfo, d))
             return ret
@@ -553,9 +547,7 @@ class Machine:
             contexts = context
         else:
             contexts = context + ":"
-        reply = self.run_command_to_bytes(
-            SCPICommand(f"{leaf}:READ?", contexts + path, encoding=encoding)
-        )
+        reply = self.run_command_to_bytes(SCPICommand(f"{leaf}:READ?", contexts + path, encoding=encoding))
         if not reply.startswith(b"<quote>\n") or not reply.endswith(b"</quote>"):
             raise ValueError("Unexpected reply format: expected <quote>...</quote>")
         r = reply[8:-8]
@@ -570,11 +562,7 @@ class Machine:
             data = data.encode()
 
         self.run_command_bytes(
-            b"FILE:WRITE "
-            + path.encode()
-            + b" <quote.base64>\n"
-            + base64.encodebytes(data)
-            + b"\n</quote.base64>"
+            b"FILE:WRITE " + path.encode() + b" <quote.base64>\n" + base64.encodebytes(data) + b"\n</quote.base64>"
         )
 
     @overload
@@ -587,9 +575,7 @@ class Machine:
     def list_runs_in_storage(self, glob: str = "*", *, verbose: bool = False) -> list[str] | list[FileListInfo]: ...
 
     @_ensure_connection(AccessLevel.Observer)
-    def list_runs_in_storage(
-        self, glob: str = "*", *, verbose: bool = False
-    ) -> list[str] | list[FileListInfo]:
+    def list_runs_in_storage(self, glob: str = "*", *, verbose: bool = False) -> list[str] | list[FileListInfo]:
         """List runs in machine storage.
 
         Returns
@@ -605,15 +591,13 @@ class Machine:
             filelist = self.list_files(f"public_run_complete:{glob}", verbose=verbose)
         except CommandError as e:
             from .scpi_commands import NoMatch
+
             se = specialize_command_error(e)
             if isinstance(se, NoMatch):
                 return []
             raise se from e
         if not verbose:
-            return [
-                re.sub("^public_run_complete:", "", s)[:-4]
-                for s in filelist
-            ]
+            return [re.sub("^public_run_complete:", "", s)[:-4] for s in filelist]
         else:
             a = filelist
             for e in a:
@@ -629,9 +613,7 @@ class Machine:
         return Experiment.from_machine_storage(self, path)
 
     @_ensure_connection(AccessLevel.Guest)
-    def save_run_from_storage(
-        self, machine_path: str, download_path: str | IO[bytes], overwrite: bool = False
-    ) -> None:
+    def save_run_from_storage(self, machine_path: str, download_path: str | IO[bytes], overwrite: bool = False) -> None:
         """Download a file from run storage on the machine.
 
         Parameters
@@ -692,12 +674,11 @@ class Machine:
             " '\\</quote.base64\\>\\\\n', None))".encode(),
         )
 
-
         logcommand.get_response()
 
         logres = log_responder.get_response()
 
-        return base64.decodebytes(logres[15:-16].encode()) # FIXME: don't encode/decode, and make this more robust
+        return base64.decodebytes(logres[15:-16].encode())  # FIXME: don't encode/decode, and make this more robust
 
     @_ensure_connection(AccessLevel.Observer)
     def run_status(self) -> RunStatus:
@@ -714,9 +695,7 @@ class Machine:
     @_ensure_connection(AccessLevel.Observer)
     def get_running_protocol(self) -> Protocol:
         p = _unwrap_tags(self.run_command("PROT? ${Protocol}"))
-        pn, svs, rm = self.run_command(
-            "RET ${Protocol} ${SampleVolume} ${RunMode}"
-        ).split()
+        pn, svs, rm = self.run_command("RET ${Protocol} ${SampleVolume} ${RunMode}").split()
         p = f"PROT -volume={svs} -runmode={rm} {pn} " + p
         return Protocol.from_scpi_string(p)
 
@@ -735,9 +714,7 @@ class Machine:
             )
 
         try:
-            self.run_command(
-                f"ACC -stealth={stealth} -exclusive={exclusive} {access_level}"
-            )
+            self.run_command(f"ACC -stealth={stealth} -exclusive={exclusive} {access_level}")
         except CommandError as e:
             raise specialize_command_error(e) from e
         log.debug(f"Took access level {access_level} {exclusive=} {stealth=}")
@@ -988,14 +965,10 @@ class Machine:
             yield self
         finally:
             self.set_access_level(fac, fex, fst)
-            log.debug(
-                f"Dropped access level {access_level}, returning to {fac} exclusive={fex} stealth={fst}."
-            )
+            log.debug(f"Dropped access level {access_level}, returning to {fac} exclusive={fex} stealth={fst}.")
 
     @contextmanager
-    def ensured_connection(
-        self, access_level: AccessLevel = AccessLevel.Observer
-    ) -> Generator[Machine, None, None]:
+    def ensured_connection(self, access_level: AccessLevel = AccessLevel.Observer) -> Generator[Machine, None, None]:
         if self.automatic:
             was_connected = self.connected
             old_access = self._current_access_level
@@ -1038,22 +1011,14 @@ class Machine:
         if ("collected" in res) and res["collected"]:
             raise AlreadyCollectedError(res)
 
-        self.run_command(
-            f'exp:run -asynchronous <block> zip "{run_name}.eds" "{run_name}" </block>'
-        )
+        self.run_command(f'exp:run -asynchronous <block> zip "{run_name}.eds" "{run_name}" </block>')
 
-        self.run_command(
-            f'file:move "experiments:{run_name}.eds" "public_run_complete:{run_name}.eds"'
-        )
+        self.run_command(f'file:move "experiments:{run_name}.eds" "public_run_complete:{run_name}.eds"')
 
         self.run_command(f'exp:attr= "{run_name}" collected True')
 
-    def get_exp_file(
-        self, path: str, encoding: Literal["plain", "base64"] = "base64"
-    ) -> bytes:
-        reply = self.run_command_to_bytes(
-            f"EXP:READ? -encoding={encoding} {shlex.quote(path)}"
-        )
+    def get_exp_file(self, path: str, encoding: Literal["plain", "base64"] = "base64") -> bytes:
+        reply = self.run_command_to_bytes(f"EXP:READ? -encoding={encoding} {shlex.quote(path)}")
         if not reply.startswith(b"<quote>\n") or not reply.endswith(b"</quote>"):
             raise ValueError("Unexpected reply format: expected <quote>...</quote>")
         r = reply[8:-8]
@@ -1118,13 +1083,8 @@ class Machine:
         plate_data = fdc.plate_point_data[0].plate_data[0]
 
         # Build quant filename from the reference
-        reading_str = (
-            f"S{ref.stage:02}_C{ref.cycle:03}_T{ref.step:02}_"
-            f"P{ref.point:04}_{ref.filterset.upperform}"
-        )
-        ql = self.get_expfile_list(
-            f"{run}/apldbio/sds/quant/{reading_str}_E*.quant"
-        )[-1]
+        reading_str = f"S{ref.stage:02}_C{ref.cycle:03}_T{ref.step:02}_P{ref.point:04}_{ref.filterset.upperform}"
+        ql = self.get_expfile_list(f"{run}/apldbio/sds/quant/{reading_str}_E*.quant")[-1]
         qf_bytes = self.get_exp_file(ql)
         qf = QuantFile.parse(qf_bytes.decode())
         plate_data.timestamp = qf.conditions.timestamp
@@ -1138,9 +1098,7 @@ class Machine:
         else:
             return plate_data
 
-    def get_all_filterdata(
-        self, run: str | None = None, as_list: bool = False
-    ) -> Any:
+    def get_all_filterdata(self, run: str | None = None, as_list: bool = False) -> Any:
         """Fetch all filterdata from the machine.
 
         Returns a list of Rust PlateData objects (as_list=True) or a Polars DataFrame.
@@ -1150,24 +1108,21 @@ class Machine:
 
         plate_data_list = [
             self.get_filterdata_one(FilterDataFilename.fromstring(x), run=run)
-            for x in self.get_expfile_list(
-                f"{run}/apldbio/sds/filter/*_filterdata.xml"
-            )
+            for x in self.get_expfile_list(f"{run}/apldbio/sds/filter/*_filterdata.xml")
         ]
 
         if as_list:
             return plate_data_list
 
         import polars as pl_mod
+
         frames = [p.to_polars() for p in plate_data_list]
         return pl_mod.concat(frames)
 
-    def get_expfile_list(
-        self, glob: str, allow_nomatch: bool = False
-    ) -> list[str]:
+    def get_expfile_list(self, glob: str, allow_nomatch: bool = False) -> list[str]:
         try:
             fl = self.run_command(SCPICommand("EXP:LIST?", glob))
-        except ValueError as ce: # FIXME
+        except ValueError as ce:  # FIXME
             if allow_nomatch:
                 return []
             else:

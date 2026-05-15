@@ -1,4 +1,3 @@
-
 # SPDX-FileCopyrightText: 2021-2023 Constantine Evans <qslib@mb.costi.net>
 # SPDX-License-Identifier: EUPL-1.2
 
@@ -19,15 +18,19 @@ from qslib.plate_setup import (
 
 
 def test_plate_setup_equality():
-    ps = PlateSetup({
-        "s1": ["A1"],
-        "s2": ["A2", "B4"],
-    })
+    ps = PlateSetup(
+        {
+            "s1": ["A1"],
+            "s2": ["A2", "B4"],
+        }
+    )
 
-    ps2 = PlateSetup({
-        "s1": ["A1"],
-        "s2": ["A2", "B4"],
-    })
+    ps2 = PlateSetup(
+        {
+            "s1": ["A1"],
+            "s2": ["A2", "B4"],
+        }
+    )
     assert ps == ps2
 
 

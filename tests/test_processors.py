@@ -29,8 +29,7 @@ def _make_test_data() -> pl.LazyFrame:
             "cycle": list(range(1, 11)) * 2,
             "step": [1] * 20,
             "point": [1] * 20,
-            "fluorescence": [100.0 + i for i in range(10)]
-                + [200.0 + i for i in range(10)],
+            "fluorescence": [100.0 + i for i in range(10)] + [200.0 + i for i in range(10)],
         }
     ).lazy()
 
@@ -70,9 +69,7 @@ def test_norm_to_mean_per_well():
     proc = NormToMeanPerWell()
     result = proc._process_polars(data).collect()
     # After normalization, mean of processed_fluorescence per well should be 1.0
-    means = result.group_by("well").agg(
-        pl.col("processed_fluorescence").mean().alias("mean")
-    )
+    means = result.group_by("well").agg(pl.col("processed_fluorescence").mean().alias("mean"))
     for row in means.iter_rows(named=True):
         assert abs(row["mean"] - 1.0) < 1e-10
 
@@ -85,9 +82,7 @@ def test_norm_to_max_per_well():
     proc = NormToMaxPerWell()
     result = proc._process_polars(data).collect()
     # After normalization, max of processed_fluorescence per well should be 1.0
-    maxes = result.group_by("well").agg(
-        pl.col("processed_fluorescence").max().alias("max")
-    )
+    maxes = result.group_by("well").agg(pl.col("processed_fluorescence").max().alias("max"))
     for row in maxes.iter_rows(named=True):
         assert abs(row["max"] - 1.0) < 1e-10
 
@@ -100,9 +95,7 @@ def test_subtract_by_mean_per_well():
     proc = SubtractByMeanPerWell()
     result = proc._process_polars(data).collect()
     # After subtraction, mean of processed_fluorescence per well should be ~0
-    means = result.group_by("well").agg(
-        pl.col("processed_fluorescence").mean().alias("mean")
-    )
+    means = result.group_by("well").agg(pl.col("processed_fluorescence").mean().alias("mean"))
     for row in means.iter_rows(named=True):
         assert abs(row["mean"]) < 1e-10
 
@@ -159,9 +152,7 @@ def test_match_expr_cycle_range():
 
 def test_match_expr_combined():
     expr = match_expr(stage=1, cycle=2)
-    df = pl.DataFrame(
-        {"stage": [1, 1, 2], "cycle": [1, 2, 2], "val": [10, 20, 30]}
-    ).lazy()
+    df = pl.DataFrame({"stage": [1, 1, 2], "cycle": [1, 2, 2], "val": [10, 20, 30]}).lazy()
     result = df.filter(expr).collect()
     assert result.height == 1
     assert result["val"][0] == 20
@@ -181,9 +172,7 @@ def test_polars_process_chain():
     data = _make_test_data()
     result = polars_process(data, [NormRaw(), SubtractByMeanPerWell()])
     collected = result.collect()
-    means = collected.group_by("well").agg(
-        pl.col("processed_fluorescence").mean().alias("mean")
-    )
+    means = collected.group_by("well").agg(pl.col("processed_fluorescence").mean().alias("mean"))
     for row in means.iter_rows(named=True):
         assert abs(row["mean"]) < 1e-10
 

@@ -2,8 +2,8 @@
 #
 # SPDX-License-Identifier: EUPL-1.2
 
-"""Experiment class and related.
-"""
+"""Experiment class and related."""
+
 from __future__ import annotations
 
 import base64
@@ -114,8 +114,7 @@ class AlreadyStartedError(ValueError):
 
     def __str__(self) -> str:
         return (
-            f"Experiment {self.name} is recorded as already having started."
-            f"Current state of the object is {self.state}."
+            f"Experiment {self.name} is recorded as already having started.Current state of the object is {self.state}."
         )
 
 
@@ -140,15 +139,13 @@ class NotRunningError(MachineError):
     current: RunStatus
 
     def __str__(self) -> str:
-        return (
-            f"{self.run} is not running on {self.host}."
-            f" Current status is {self.current}."
-        )
+        return f"{self.run} is not running on {self.host}. Current status is {self.current}."
 
 
 @dataclass
 class MachineBusyError(MachineError):
     "The machine is busy."
+
     current: RunStatus
 
     def __str__(self) -> str:
@@ -158,6 +155,7 @@ class MachineBusyError(MachineError):
 @dataclass
 class AlreadyExistsError(MachineError):
     "A run already exists with the same name."
+
     name: str
 
     def __str__(self) -> str:
@@ -167,6 +165,7 @@ class AlreadyExistsError(MachineError):
 @dataclass
 class AlreadyExistsWorkingError(AlreadyExistsError):
     "A run already exists in uncollected (experiment:) with the same name."
+
     name: str
 
     def __str__(self) -> str:
@@ -179,6 +178,7 @@ class AlreadyExistsWorkingError(AlreadyExistsError):
 @dataclass
 class AlreadyExistsCompleteError(AlreadyExistsError):
     "A run already exists in uncollected (experiment:) with the same name."
+
     name: str
 
     def __str__(self) -> str:
@@ -187,24 +187,29 @@ class AlreadyExistsCompleteError(AlreadyExistsError):
             "a failed previous run.  Start run with `overwrite=True` to overwrite."
         )
 
+
 @dataclass
 class DataNotAvailableError(Exception):
     """The data is not available."""
+
     name: str
     message: str
 
     def __str__(self) -> str:
         return f"{self.name} is not available: {self.message}"
 
+
 @dataclass
 class DataLoadingError(Exception):
     """The data could not be loaded."""
+
     name: str
     message: str
     cause: Exception
 
     def __str__(self) -> str:
         return f"{self.name} could not be loaded: {self.message}. Cause: {self.cause}"
+
 
 def _find_or_raise(e: ET.ElementTree | ET.Element, path: str) -> ET.Element:
     "Find an element at path and return it, or raise an error."
@@ -346,14 +351,13 @@ class Experiment:
     A string describing the software and version used to write the file.
     """
 
-
     num_zones: int
     """The number of temperature zones (excluding cover), or -1 if not known."""
     spec_major_version: int = 1
 
     def _clear_cache(self: Any) -> None:
         "Clear all method caches on this instance."
-        if hasattr(self, '_cached_methods'):
+        if hasattr(self, "_cached_methods"):
             for cache_name in self._cached_methods:
                 if hasattr(self, cache_name):
                     delattr(self, cache_name)
@@ -366,8 +370,8 @@ class Experiment:
         If the experiment has data, this is based on the existing data.  Otherwise, it is based
         on the experiment protocol.
         """
-        if 'filter_data' in self.available_data():
-            return [FilterSet.fromstring(f) for f in self.filter_data_polars['filter_set'].unique()]
+        if "filter_data" in self.available_data():
+            return [FilterSet.fromstring(f) for f in self.filter_data_polars["filter_set"].unique()]
         else:
             return self.protocol.all_filters
 
@@ -405,7 +409,7 @@ class Experiment:
         warnings.warn(
             "welldata is deprecated and will be removed in a future version. Use filter_data instead.",
             DeprecationWarning,
-            stacklevel=2
+            stacklevel=2,
         )
         try:
             return self.filter_data
@@ -414,7 +418,6 @@ class Experiment:
                 raise DataNotAvailableError("welldata", "Run hasn't started yet: no data available.")
             else:
                 raise DataNotAvailableError("welldata", "Experiment data is not available")
-
 
     def summary(self, format: str = "markdown", plate: str = "list") -> str:
         return self.info(format, plate)
@@ -579,9 +582,7 @@ table, th, td {{
     ) -> Machine:
         if isinstance(machine, Machine):
             self.machine = machine
-            self.machine.max_access_level = max(
-                self.machine.max_access_level, needed_level
-            )
+            self.machine.max_access_level = max(self.machine.max_access_level, needed_level)
             return machine
         elif isinstance(machine, str):
             self.machine = Machine(
@@ -594,9 +595,7 @@ table, th, td {{
             c.max_access_level = max(c.max_access_level, needed_level)
             return c
         else:
-            raise ValueError(
-                "No stored machine info for this experiment: please provide some."
-            )
+            raise ValueError("No stored machine info for this experiment: please provide some.")
 
     def _ensure_running(self, machine: Machine) -> RunStatus:
         crt = machine.run_status()
@@ -664,9 +663,7 @@ table, th, td {{
                     if not overwrite:
                         raise AlreadyExistsWorkingError(machine, self.runtitle_safe)
                     else:
-                        log.warning(
-                            f"Found incomplete run folder, deleting per overwrite={overwrite}."
-                        )
+                        log.warning(f"Found incomplete run folder, deleting per overwrite={overwrite}.")
                         machine.run_command(f"EXP:DELETE {self.runtitle_safe}")
 
                 # Check existence of previous completed run:
@@ -676,9 +673,7 @@ table, th, td {{
                     if (not overwrite) or (overwrite == "incomplete"):
                         raise AlreadyExistsCompleteError(machine, self.runtitle_safe)
                     else:
-                        log.warning(
-                            f"Found complete run, but overwriting per overwrite={overwrite}."
-                        )
+                        log.warning(f"Found complete run, but overwriting per overwrite={overwrite}.")
                         machine.run_command(f"FILE:REMOVE {reds}")
 
                 log.debug("Powering on machine and ensuring drawer/cover is closed.")
@@ -789,9 +784,7 @@ table, th, td {{
             return self._ensure_running(machine)
 
     @classmethod
-    def _from_running_via_sync(
-        cls, machine: MachineReference, include_tiffs: bool = False
-    ) -> "Experiment":
+    def _from_running_via_sync(cls, machine: MachineReference, include_tiffs: bool = False) -> "Experiment":
         exp = cls(_create_xml=False)
 
         exp.root_dir.mkdir(parents=True)
@@ -806,9 +799,7 @@ table, th, td {{
 
             exp.name = crt
 
-            exp.sync_from_machine(
-                machine, log_method="copy", include_tiffs=include_tiffs
-            )
+            exp.sync_from_machine(machine, log_method="copy", include_tiffs=include_tiffs)
 
             exp._update_from_files()
 
@@ -829,9 +820,7 @@ table, th, td {{
 
         with machine.ensured_connection(AccessLevel.Observer):
             # Get a list of all the files in the experiment folder
-            machine_files = machine.list_files(
-                f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True
-            )
+            machine_files = machine.list_files(f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True)
 
             # Transfer anything we don't have
             for f in machine_files:
@@ -840,13 +829,9 @@ table, th, td {{
                 if name.lower().endswith("tiff") and not include_tiffs:
                     continue
 
-                sdspath = self._sdspath(
-                    re.sub(".*/apldbio/sds/(.*)$", r"\1", f["path"])
-                )
+                sdspath = self._sdspath(re.sub(".*/apldbio/sds/(.*)$", r"\1", f["path"]))
                 log.debug(f"checking {f['path']} mtime {f['mtime']} to {sdspath}")
-                if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(
-                    f["mtime"].timestamp()
-                ):
+                if os.path.exists(sdspath) and os.path.getmtime(sdspath) >= float(f["mtime"].timestamp()):
                     log.debug(f"{sdspath} has {os.path.getmtime(sdspath)}")
                     continue
                 from pathlib import Path  # FIXME
@@ -881,9 +866,7 @@ table, th, td {{
 
                             assert b.seek(0, 1) == curpos
 
-                            rdat = machine._get_log_from_byte(
-                                self.runtitle_safe, curpos - 20
-                            )
+                            rdat = machine._get_log_from_byte(self.runtitle_safe, curpos - 20)
 
                             if rdat[0:20] == checklocal:
                                 b.write(rdat[20:])
@@ -901,9 +884,7 @@ table, th, td {{
             # The message log is tricky. Ideally we'd use rsync or wc+tail. TODO
             self._update_from_files()
 
-    def change_protocol_from_now(
-        self, new_stages: Sequence[Stage], machine: MachineReference | None = None
-    ) -> None:
+    def change_protocol_from_now(self, new_stages: Sequence[Stage], machine: MachineReference | None = None) -> None:
         """
         For a running experiment, change the remaining stages to be the provided :param:`new_stages` list.
         This is a convenience function that:
@@ -1058,7 +1039,7 @@ table, th, td {{
         else:
             path = Path(path_or_stream)
             if path.is_dir():
-                path = (path / (self.runtitle_safe + ".eds"))
+                path = path / (self.runtitle_safe + ".eds")
 
         with zipfile.ZipFile(path, mode) as z:
             for root, _, files in os.walk(self._dir_base):
@@ -1080,7 +1061,9 @@ table, th, td {{
     @cached_method
     def temperature_ramps_polars(self) -> pl.DataFrame:
         m = self._msglog_path().read_bytes()
-        r = re.compile(rb"Info (?P<timestamp>[\d.]+)(?: TBC:SETTing)? [rR]amping \"Zone(?P<zone>\d+)\" from (?P<from>[\d.]+) to (?P<to>[\d.]+) \(rate=(?P<rate>[\d.]+), timeout=(?P<timeout>[\d.]+), msgid=0x(?P<msgid>\w+)\)")
+        r = re.compile(
+            rb"Info (?P<timestamp>[\d.]+)(?: TBC:SETTing)? [rR]amping \"Zone(?P<zone>\d+)\" from (?P<from>[\d.]+) to (?P<to>[\d.]+) \(rate=(?P<rate>[\d.]+), timeout=(?P<timeout>[\d.]+), msgid=0x(?P<msgid>\w+)\)"
+        )
 
         tbc_events = pl.from_records(
             [
@@ -1088,10 +1071,10 @@ table, th, td {{
                 for t, z, f, tt, r, to, mid in r.findall(m)
             ],
             schema=["timestamp", "zone", "from", "to", "rate", "timeout", "msgid"],
-            orient="row"
+            orient="row",
         )
         tbc_events = tbc_events.with_columns(
-            timestamp = (pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC"))
+            timestamp=(pl.col("timestamp") * 1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC"))
         )
         return tbc_events
 
@@ -1111,8 +1094,8 @@ table, th, td {{
         eevent = sandeevent.select(timestamp=pl.col("end_timestamp"), zone=pl.col("zone"), temperature=pl.col("to"))
 
         sett = pl.concat([sevent, eevent], how="diagonal").sort("timestamp")
-        
-        sett = sett.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")))
+
+        sett = sett.with_columns((pl.col("timestamp") * 1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")))
         return sett.collect()
 
     @property
@@ -1145,14 +1128,14 @@ table, th, td {{
 
         if name is not None:
             # Check if name looks like a file path and warn if it's an existing file
-            if isinstance(name, str) and ('/' in name or '\\' in name or name.endswith('.eds')):
+            if isinstance(name, str) and ("/" in name or "\\" in name or name.endswith(".eds")):
                 try:
                     if Path(name).is_file():
                         warn(
                             f"The name '{name}' appears to be a file path to an existing file. "
                             f"Did you mean to use Experiment.from_file('{name}') instead of Experiment('{name}')?",
                             UserWarning,
-                            stacklevel=2
+                            stacklevel=2,
                         )
                 except (OSError, ValueError):
                     # Path validation failed, continue with normal behavior
@@ -1190,6 +1173,7 @@ table, th, td {{
 
     def _new_xml_files(self) -> None:
         from ._qslib import EdsArchive
+
         self._eds_archive = EdsArchive.create_new(self.plate_type or 96, __version__)
         self._dir_base = Path(self._eds_archive.base_dir)
         self._dir_eds = self._dir_base / "apldbio" / "sds"
@@ -1216,11 +1200,7 @@ table, th, td {{
         elif self.spec_major_version == 2:
             manifest = _get_manifest_info(self.root_dir, checkinfo=False)
             self.spec_version = manifest["Specification-Version"]
-            self.writesoftware = (
-                manifest["Implementation-Title"]
-                + " "
-                + manifest["Implementation-Version"]
-            )
+            self.writesoftware = manifest["Implementation-Title"] + " " + manifest["Implementation-Version"]
             self._update_from_expdata_v2()
             if (p / "run" / "messages.log").is_file():
                 self._update_from_log()
@@ -1342,9 +1322,7 @@ table, th, td {{
         return exp
 
     @classmethod
-    def from_uncollected(
-        cls, machine: MachineReference, name: str, move: bool = False
-    ) -> Experiment:
+    def from_uncollected(cls, machine: MachineReference, name: str, move: bool = False) -> Experiment:
         """Create an experiment from the uncollected (not yet compressed)
         storage.
 
@@ -1371,13 +1349,11 @@ table, th, td {{
 
             try:
                 z = machine.read_dir_as_zip(_safe_exp_name(name), leaf="EXP")
-            except IOError: # FIXME
+            except IOError:  # FIXME
                 try:
                     z = machine.read_dir_as_zip(name, leaf="EXP")
                 except IOError:
-                    raise ValueError(
-                        f"Could not find experiment {name} in uncollect runs on {machine}."
-                    )
+                    raise ValueError(f"Could not find experiment {name} in uncollect runs on {machine}.")
 
             _safe_extractall(z, exp._dir_base)
 
@@ -1391,8 +1367,8 @@ table, th, td {{
             return Experiment.from_running(machine)
         except ValueError:
             m = machine.list_runs_in_storage(verbose=True)
-            m.sort(key = lambda k: k['mtime'])
-            return Experiment.from_machine_storage(machine, m[-1]['path'])
+            m.sort(key=lambda k: k["mtime"])
+            return Experiment.from_machine_storage(machine, m[-1]["path"])
 
     @classmethod
     def from_machine_storage(cls, machine: MachineReference, name: str) -> Experiment:
@@ -1482,7 +1458,7 @@ table, th, td {{
         return exp
 
     def _update_experiment_xml(self) -> None:
-        eds = getattr(self, '_eds_archive', None)
+        eds = getattr(self, "_eds_archive", None)
         if eds is not None:
             eds.update_experiment_xml(
                 name=self.name,
@@ -1505,26 +1481,16 @@ table, th, td {{
         else:
             if (e := exml.find("Operator")) is not None:
                 exml.getroot().remove(e)
-        _set_or_create(
-            exml, "CreatedTime", str(int(self.createdtime.timestamp() * 1000))
-        )
-        _set_or_create(
-            exml, "ModifiedTime", str(int(datetime.now().timestamp() * 1000))
-        )
+        _set_or_create(exml, "CreatedTime", str(int(self.createdtime.timestamp() * 1000)))
+        _set_or_create(exml, "ModifiedTime", str(int(datetime.now().timestamp() * 1000)))
         if self.runstarttime:
-            _set_or_create(
-                exml, "RunStartTime", str(int(self.runstarttime.timestamp() * 1000))
-            )
+            _set_or_create(exml, "RunStartTime", str(int(self.runstarttime.timestamp() * 1000)))
         if self.runendtime:
-            _set_or_create(
-                exml, "RunEndTime", str(int(self.runendtime.timestamp() * 1000))
-            )
+            _set_or_create(exml, "RunEndTime", str(int(self.runendtime.timestamp() * 1000)))
 
         _set_or_create(exml, "RunState", self.runstate)
 
-        sinfo = exml.find(
-            "ExperimentProperty[@type='RunInfo']/PropertyValue[@key='softwareVersion']/String"
-        )
+        sinfo = exml.find("ExperimentProperty[@type='RunInfo']/PropertyValue[@key='softwareVersion']/String")
         if sinfo is None:
             if not (e := exml.find("ExperimentProperty[@type='RunInfo']")):
                 e = ET.SubElement(exml.getroot(), "ExperimentProperty", type="RunInfo")
@@ -1543,7 +1509,7 @@ table, th, td {{
         self.user = exml.findtext("Operator") or None
         self.createdtime = datetime.fromtimestamp(
             float(_find_or_raise(exml, "CreatedTime").text) / 1000.0,  # type: ignore
-            tz=timezone.utc
+            tz=timezone.utc,
         )
         self.runstate = exml.findtext("RunState") or "UNKNOWN"  # type: ignore
 
@@ -1556,9 +1522,7 @@ table, th, td {{
             self.plate_type = None
 
         self.writesoftware = (
-            exml.findtext(
-                "ExperimentProperty[@type='RunInfo']/PropertyValue[@key='softwareVersion']/String"
-            )
+            exml.findtext("ExperimentProperty[@type='RunInfo']/PropertyValue[@key='softwareVersion']/String")
             or "UNKNOWN"
         )
         if x := exml.findtext("RunStartTime"):
@@ -1574,9 +1538,7 @@ table, th, td {{
         self.name = summary.get("name", "unknown")
 
         self.runstate = summary.get("runStatus", "UNKNOWN")
-        self.createdtime = datetime.fromtimestamp(
-            summary.get("createdTime", 0) / 1000.0, tz=timezone.utc
-        )
+        self.createdtime = datetime.fromtimestamp(summary.get("createdTime", 0) / 1000.0, tz=timezone.utc)
 
         self._plate_type_id = summary["blockType"]
         if self._plate_type_id == "BLOCK_384W":
@@ -1594,9 +1556,7 @@ table, th, td {{
                 machine_toml = toml.dumps(m2d)
 
             rust_proto = self.protocol._to_rust_protocol()
-            tc_str, qstc_str = rust_proto.to_xml_pair(
-                self.protocol.covertemperature, __version__, machine_toml
-            )
+            tc_str, qstc_str = rust_proto.to_xml_pair(self.protocol.covertemperature, __version__, machine_toml)
             with open(self.root_dir / "tcprotocol.xml", "w") as f:
                 f.write(tc_str)
             with open(self.root_dir / "qsl-tcprotocol.xml", "w") as f:
@@ -1694,18 +1654,16 @@ table, th, td {{
         puredye = cals.get("puredye")
 
         if uniformity is None or background is None:
-            raise DataNotAvailableError(
-                "filterdata", "Missing uniformity or background calibration"
-            )
+            raise DataNotAvailableError("filterdata", "Missing uniformity or background calibration")
 
         return reconstruct_filterdata(qdc, uniformity, background, puredye)
 
-    def filter_data_polars_lazy(self) -> 'pl.LazyFrame':
+    def filter_data_polars_lazy(self) -> "pl.LazyFrame":
         if self.spec_major_version == 2:
             return self._filter_data_polars_lazy_v2()
         return self._filter_data_polars_lazy_v1()
 
-    def _filter_data_polars_lazy_v2(self) -> 'pl.LazyFrame':
+    def _filter_data_polars_lazy_v2(self) -> "pl.LazyFrame":
         from ._qslib import parse_filterdata_v2_json
 
         fdp = os.path.join(self._dir_base, "run/filter_data.json")
@@ -1724,10 +1682,12 @@ table, th, td {{
         if self.plate_setup:
             d = d.join(
                 self.plate_setup.to_polars_by_well().lazy().select("well", pl.col("name").alias("sample")),
-                on="well", how="left")
+                on="well",
+                how="left",
+            )
         return d
 
-    def _filter_data_polars_lazy_v1(self) -> 'pl.LazyFrame':
+    def _filter_data_polars_lazy_v1(self) -> "pl.LazyFrame":
         fdc = self._get_filterdata_collection_v1()
         d = fdc.to_polars().lazy()
 
@@ -1750,18 +1710,37 @@ table, th, td {{
 
         d = d.sort("timestamp")
 
-        duration = (1000 * (pl.col("from") - pl.col("to")).abs() / pl.col("rate")).alias("duration").cast(pl.Duration(time_unit="ms"))
+        duration = (
+            (1000 * (pl.col("from") - pl.col("to")).abs() / pl.col("rate"))
+            .alias("duration")
+            .cast(pl.Duration(time_unit="ms"))
+        )
         time_since_ramp = (pl.col("timestamp") - pl.col("timestamp_ramp")).alias("time_since_ramp")
 
-        d = d.join_asof(self.temperature_ramps_polars.lazy().select("timestamp", "zone", "from", "to", "rate"), on="timestamp", by="zone", suffix="_ramp", coalesce=False).with_columns(
-            pl.when(time_since_ramp > duration).then(pl.col("to")).otherwise(pl.col("from") + (time_since_ramp / duration) * (pl.col("to") - pl.col("from"))).alias("set_temperature")
-             ).drop("timestamp_ramp", "to", "from")
+        d = (
+            d.join_asof(
+                self.temperature_ramps_polars.lazy().select("timestamp", "zone", "from", "to", "rate"),
+                on="timestamp",
+                by="zone",
+                suffix="_ramp",
+                coalesce=False,
+            )
+            .with_columns(
+                pl.when(time_since_ramp > duration)
+                .then(pl.col("to"))
+                .otherwise(pl.col("from") + (time_since_ramp / duration) * (pl.col("to") - pl.col("from")))
+                .alias("set_temperature")
+            )
+            .drop("timestamp_ramp", "to", "from")
+        )
         if self.plate_setup:
             d = d.join(
                 self.plate_setup.to_polars_by_well().lazy().select("well", pl.col("name").alias("sample")),
-                on="well", how="left")
+                on="well",
+                how="left",
+            )
         return d
-    
+
     @property
     @cached_method
     def quant_data_polars(self) -> pl.DataFrame:
@@ -1773,6 +1752,7 @@ table, th, td {{
         quant_dir = Path(self._dir_eds) / "quant"
         images_dir = Path(self._dir_eds) / "images"
         from ._qslib import QuantDataCollection
+
         if quant_dir.is_dir() and any(quant_dir.glob("*.quant")):
             return QuantDataCollection.from_directory(str(self._dir_eds)).to_polars()
         elif images_dir.is_dir() and any(images_dir.glob("*.tiff")):
@@ -1792,6 +1772,7 @@ table, th, td {{
         if not images_dir.is_dir() or not any(images_dir.glob("*.tiff")):
             raise DataNotAvailableError("quant_data_from_tiffs", "No TIFF images found")
         from ._qslib import QuantDataCollection
+
         return QuantDataCollection.from_tiffs_in_directory(str(self._dir_eds)).to_polars()
 
     @property
@@ -1799,6 +1780,7 @@ table, th, td {{
     def roi_calibration(self):
         """ROI calibration data parsed from roi.ini."""
         from ._qslib import RoiCalibration
+
         cal_dir = Path(self._dir_eds) / "calibrations"
         roi_path = cal_dir / "roi.ini"
         if not roi_path.is_file():
@@ -1816,6 +1798,7 @@ table, th, td {{
         if not images_dir.is_dir() or not any(images_dir.glob("*.tiff")):
             raise DataNotAvailableError("tiff_images", "No TIFF images found")
         from ._qslib import FilterSet, decode_tiff
+
         result = {}
         for tiff_path in sorted(images_dir.glob("*.tiff")):
             parts = tiff_path.stem.split("_")
@@ -1839,6 +1822,7 @@ table, th, td {{
         Returns a dict with keys 'uniformity', 'background', and optionally 'puredye'.
         """
         from ._qslib import UniformityCalibration, BackgroundCalibration, PureDyeCalibration
+
         cal_dir = Path(self._dir_eds) / "calibrations"
         if not cal_dir.is_dir():
             raise DataNotAvailableError("calibrations", "No calibration data found")
@@ -1860,7 +1844,7 @@ table, th, td {{
     @cached_method
     def filter_data_polars(self) -> pl.DataFrame:
         return self.filter_data_polars_lazy().collect()
-    
+
     @property
     @cached_method
     def filter_data(self) -> pd.DataFrame:
@@ -1876,11 +1860,7 @@ table, th, td {{
                         json.load(f),
                         self.plate_type,
                         quant_files_path=(Path(self.root_dir) / "run/quant"),
-                        start_time=(
-                            self.activestarttime.timestamp()
-                            if self.activestarttime
-                            else None
-                        ),
+                        start_time=(self.activestarttime.timestamp() if self.activestarttime else None),
                     )
             raise DataNotAvailableError("filter_data", "Filter data file not found")
 
@@ -1898,6 +1878,7 @@ table, th, td {{
 
         # Determine well order from plate type
         from .plate_setup import _WELLNAMES_96, _WELLNAMES_384
+
         pt = self.plate_type or 96
         wellnames = _WELLNAMES_96 if pt == 96 else _WELLNAMES_384
 
@@ -1913,7 +1894,11 @@ table, th, td {{
             for w in wellnames:
                 row_data[(w, "fl")] = grp.loc[w, "fluorescence"]
                 row_data[(w, "rt")] = grp.loc[w, "sample_temperature"]
-                row_data[(w, "st")] = grp.loc[w, "set_temperature"] if "set_temperature" in grp.columns else grp.loc[w, "sample_temperature"]
+                row_data[(w, "st")] = (
+                    grp.loc[w, "set_temperature"]
+                    if "set_temperature" in grp.columns
+                    else grp.loc[w, "sample_temperature"]
+                )
             rows.append(row_data)
             index_tuples.append(key)
 
@@ -1967,7 +1952,6 @@ table, th, td {{
             with open(mdp, "r") as f:
                 return _parse_multicomponent_data_v2(json.load(f), self.plate_type)
 
-
     @property
     @cached_method
     def analysis_result(self) -> pd.DataFrame:
@@ -1982,7 +1966,10 @@ table, th, td {{
                 with open(adp, "r") as f:
                     return _parse_analysis_result(f.read(), plate_type=self.plate_type)[0]
         else:
-            raise DataNotAvailableError("analysis_result", "Analysis result is not available for spec version 2. You might find data in _analysis_dict_v2")
+            raise DataNotAvailableError(
+                "analysis_result",
+                "Analysis result is not available for spec version 2. You might find data in _analysis_dict_v2",
+            )
 
     @property
     @cached_method
@@ -1996,7 +1983,10 @@ table, th, td {{
             with open(adp, "r") as f:
                 return _parse_analysis_result(f.read(), plate_type=self.plate_type)[1]
         else:
-            raise DataNotAvailableError("amplification_data", "Amplification data is not available for spec version 2. You might find data in _analysis_dict_v2")
+            raise DataNotAvailableError(
+                "amplification_data",
+                "Amplification data is not available for spec version 2. You might find data in _analysis_dict_v2",
+            )
 
     @property
     @cached_method
@@ -2044,12 +2034,10 @@ table, th, td {{
         pd.Dataframe
             Slice of welldata.  Will have multiple wells if sample is in multiple wells.
         """
-        wells = ["time"] + [
-            f"{x[0]}{int(x[1:])}" for x in self.plate_setup.sample_wells[sample]
-        ]
+        wells = ["time"] + [f"{x[0]}{int(x[1:])}" for x in self.plate_setup.sample_wells[sample]]
         x = self.filter_data.loc[:, wells]
         return x
-    
+
     def _msglog_path(self) -> Path:
         if self.spec_major_version == 1:
             return Path(self._dir_eds) / "messages.log"
@@ -2066,19 +2054,29 @@ table, th, td {{
         self.runstarttime = datetime.fromtimestamp(ms.runstarttime, tz=timezone.utc) if ms.runstarttime else None
         self.runendtime = datetime.fromtimestamp(ms.runendtime, tz=timezone.utc) if ms.runendtime else None
         self.prerunstart = datetime.fromtimestamp(ms.prerunstart, tz=timezone.utc) if ms.prerunstart else None
-        self.activestarttime = datetime.fromtimestamp(ms.activestarttime, tz=timezone.utc) if ms.activestarttime else None
+        self.activestarttime = (
+            datetime.fromtimestamp(ms.activestarttime, tz=timezone.utc) if ms.activestarttime else None
+        )
         self.activeendtime = datetime.fromtimestamp(ms.activeendtime, tz=timezone.utc) if ms.activeendtime else None
         self.runstate = ms.runstate
 
-        self.stages = pl.DataFrame({
-            "stage": ms.stage_names,
-            "start_time": [datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_start_times],
-            "end_time": [datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_end_times] + ([None] if len(ms.stage_end_times) < len(ms.stage_start_times) else []), # FIXME
-        }).with_row_index("stage_index")
+        self.stages = pl.DataFrame(
+            {
+                "stage": ms.stage_names,
+                "start_time": [
+                    datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_start_times
+                ],
+                "end_time": [
+                    datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_end_times
+                ]
+                + ([None] if len(ms.stage_end_times) < len(ms.stage_start_times) else []),  # FIXME
+            }
+        ).with_row_index("stage_index")
 
         if self.activestarttime:
             self.stages = self.stages.with_columns(
-                start_seconds=(pl.col("start_time") - self.activestarttime).dt.total_milliseconds().cast(pl.Float64) / 1000,
+                start_seconds=(pl.col("start_time") - self.activestarttime).dt.total_milliseconds().cast(pl.Float64)
+                / 1000,
                 end_seconds=(pl.col("end_time") - self.activestarttime).dt.total_milliseconds().cast(pl.Float64) / 1000,
             )
 
@@ -2093,7 +2091,7 @@ table, th, td {{
             ):
                 prot_u = m[1].decode("utf-8")
                 # Remove extraneous blank lines that can cause parsing failures
-                prot_u = re.sub(r'\n\s*\n', '\n', prot_u)
+                prot_u = re.sub(r"\n\s*\n", "\n", prot_u)
                 # We can get the prot name too, and sample volume! FIXME: not from qslib runs!
                 rp = re.search(
                     rb"NEXT RP (?:-CoverTemperature=(?P<ct>[\d.]+) )?"
@@ -2103,15 +2101,11 @@ table, th, td {{
                 )
                 if rp:
                     pname_u = rp["protoname"].decode("utf-8")
-                    prot = Protocol.from_scpi_string(
-                        f"PROT {pname_u} {prot_u}"
-                    )
+                    prot = Protocol.from_scpi_string(f"PROT {pname_u} {prot_u}")
                     if rp[1]:
                         prot.volume = float(rp["sv"])
                 else:
-                    prot = Protocol.from_scpi_string(
-                        f"PROT unknown_name {prot_u}"
-                    )
+                    prot = Protocol.from_scpi_string(f"PROT unknown_name {prot_u}")
                 self._protocol_from_log = prot
 
                 # Now that we know the protocol name, we can search for whether the protocol was changed later:
@@ -2122,7 +2116,7 @@ table, th, td {{
                 ):
                     prot_text = mm[1].decode("utf-8").replace("\nc:", "\n")
                     # Remove extraneous blank lines that can cause parsing failures
-                    prot_text = re.sub(r'\n\s*\n', '\n', prot_text)
+                    prot_text = re.sub(r"\n\s*\n", "\n", prot_text)
                     newprot = Protocol.from_scpi_string(prot_text)
                     # if newprot.name == prot.name:
                     self._protocol_from_log = newprot
@@ -2137,23 +2131,22 @@ table, th, td {{
             msglog = self._msglog_path().read_bytes()
         except FileNotFoundError:
             raise ValueError("no events data")
-        
+
         events = []
-        for m in re.finditer(
-            rb"^Debug ([\d.]+) (Drawer|Cover) (.+)$", msglog, re.MULTILINE
-        ):
-            events.append((int(float(m[1])*1000), m[2].decode("utf-8"), m[3].decode("utf-8")))
+        for m in re.finditer(rb"^Debug ([\d.]+) (Drawer|Cover) (.+)$", msglog, re.MULTILINE):
+            events.append((int(float(m[1]) * 1000), m[2].decode("utf-8"), m[3].decode("utf-8")))
 
         events = pl.DataFrame(
-            events, schema={"time": pl.Datetime("ms", "UTC"), "type": pl.Categorical, "message": pl.Categorical}, orient="row"
+            events,
+            schema={"time": pl.Datetime("ms", "UTC"), "type": pl.Categorical, "message": pl.Categorical},
+            orient="row",
         )
 
         if self.activestarttime:
-            events = events.with_columns(
-                (pl.col("time") - self.activestarttime).alias("seconds")).with_columns(
+            events = events.with_columns((pl.col("time") - self.activestarttime).alias("seconds")).with_columns(
                 (pl.col("seconds") / 3600.0).alias("hours")
             )
-        
+
         return events
 
     @property
@@ -2193,7 +2186,7 @@ table, th, td {{
         if temps is None:
             raise ValueError("Could not load temperatures")
         return temps
-    
+
     @property
     @cached_method
     def num_zones(self) -> int:
@@ -2201,12 +2194,12 @@ table, th, td {{
         if temps is None:
             raise ValueError("Could not load temperatures")
         return num_zones
-    
 
     @property
     @cached_method
     def _temperatures_polars(self) -> tuple[pl.DataFrame, int]:
         from ._qslib import TemperatureLog, get_n_zones
+
         try:
             b = self._msglog_path().read_bytes()
         except FileNotFoundError:
@@ -2218,28 +2211,33 @@ table, th, td {{
         tl = TemperatureLog.parse_to_polars(b)
         return tl, n_zones
 
-
     @property
     @cached_method
     def temperatures_polars(self) -> pl.DataFrame:
         tl, n_zones = self._temperatures_polars
-        tl = tl.with_columns((pl.col("timestamp")*1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")).alias("time"))
+        tl = tl.with_columns(
+            (pl.col("timestamp") * 1000).cast(pl.Datetime(time_unit="ms", time_zone="UTC")).alias("time")
+        )
         return tl
 
     def _temperatures_from_log(self) -> tuple[pd.DataFrame, int]:
         temperatures_polars, num_zones = self._temperatures_polars
 
         # Convert from long to wide format:
-        temperatures_polars = (temperatures_polars
-                        .with_columns(pl.col("zone").fill_null("null")) # see https://github.com/pola-rs/polars/issues/14445
-                        .pivot(index="timestamp", values="temperature", on=["kind", "zone"]))
+        temperatures_polars = temperatures_polars.with_columns(
+            pl.col("zone").fill_null("null")
+        ).pivot(  # see https://github.com/pola-rs/polars/issues/14445
+            index="timestamp", values="temperature", on=["kind", "zone"]
+        )
 
-        temperatures = pd.DataFrame(columns=pd.MultiIndex.from_tuples(
-            [(cast(str, "time"), cast(Union[str, int], "timestamp"))]
-            + [("sample", n) for n in range(1, num_zones + 1)]
-            + [("other", "heatsink"), ("other", "cover")]
-            + [("block", n) for n in range(1, num_zones + 1)]
-        ))
+        temperatures = pd.DataFrame(
+            columns=pd.MultiIndex.from_tuples(
+                [(cast(str, "time"), cast(Union[str, int], "timestamp"))]
+                + [("sample", n) for n in range(1, num_zones + 1)]
+                + [("other", "heatsink"), ("other", "cover")]
+                + [("block", n) for n in range(1, num_zones + 1)]
+            )
+        )
         temperatures[("time", "timestamp")] = temperatures_polars["timestamp"]
         for zone in range(1, num_zones + 1):
             temperatures[("sample", zone)] = temperatures_polars[f'{{"sample","{zone}"}}']
@@ -2248,19 +2246,10 @@ table, th, td {{
         temperatures[("other", "cover")] = temperatures_polars['{"cover","null"}']
 
         if self.activestarttime:
-            temperatures[("time", "seconds")] = (
-                temperatures[("time", "timestamp")]
-                - self.activestarttime.timestamp()
-            )
-            temperatures[("time", "hours")] = (
-                temperatures[("time", "seconds")] / 3600.0
-            )
-        temperatures[("sample", "avg")] = temperatures["sample"].mean(
-            axis=1
-        )
-        temperatures[("block", "avg")] = temperatures["block"].mean(
-            axis=1
-        )
+            temperatures[("time", "seconds")] = temperatures[("time", "timestamp")] - self.activestarttime.timestamp()
+            temperatures[("time", "hours")] = temperatures[("time", "seconds")] / 3600.0
+        temperatures[("sample", "avg")] = temperatures["sample"].mean(axis=1)
+        temperatures[("block", "avg")] = temperatures["block"].mean(axis=1)
 
         return temperatures, num_zones
 
@@ -2268,22 +2257,16 @@ table, th, td {{
         anneal_stages = []
         for i, stage in enumerate(self.protocol.stages):
             if any(
-                getattr(step, "collect", False)
-                and (getattr(step, "temp_increment", 0.0) < 0.0)
-                for step in stage.steps
+                getattr(step, "collect", False) and (getattr(step, "temp_increment", 0.0) < 0.0) for step in stage.steps
             ):
                 anneal_stages.append(i + 1)
         return anneal_stages
 
-    def _find_melt_stages(
-        self, anneal_stages: Sequence[int] | None
-    ) -> tuple[list[int], list[int]]:
+    def _find_melt_stages(self, anneal_stages: Sequence[int] | None) -> tuple[list[int], list[int]]:
         melt_stages = []
         for i, stage in enumerate(self.protocol.stages):
             if any(
-                getattr(step, "collect", False)
-                and (getattr(step, "temp_increment", 0.0) > 0.0)
-                for step in stage.steps
+                getattr(step, "collect", False) and (getattr(step, "temp_increment", 0.0) > 0.0) for step in stage.steps
             ):
                 melt_stages.append(i + 1)
 
@@ -2293,9 +2276,7 @@ table, th, td {{
             and (len(melt_stages) > 0)
             and (max(anneal_stages) + 1 < min(melt_stages))
         ):
-            between_stages = [
-                x for x in range(max(anneal_stages) + 1, min(melt_stages))
-            ]
+            between_stages = [x for x in range(max(anneal_stages) + 1, min(melt_stages))]
         else:
             between_stages = []
 
@@ -2392,9 +2373,7 @@ table, th, td {{
         if process is None:
             process = [normalization or NormRaw()]
         elif normalization:
-            raise ValueError(
-                "Can't specify both process and normalization (include normalization in process list)."
-            )
+            raise ValueError("Can't specify both process and normalization (include normalization in process list).")
         if isinstance(process, PolarsProcessor):
             process = [process]
 
@@ -2427,20 +2406,14 @@ table, th, td {{
             between_stages = list(between_stages)
 
         if ax is None:
-            ax = plt.figure(
-                **(
-                    {"constrained_layout": True}
-                    | (({} if figure_kw is None else figure_kw))
-                )
-            ).add_subplot()
+            ax = plt.figure(**({"constrained_layout": True} | ({} if figure_kw is None else figure_kw))).add_subplot()
 
         data = self.filter_data_polars.lazy()
 
         all_wells = self.plate_setup.get_wells(samples)
 
         reduceddata = data.filter(
-            pl.col("filter_set").is_in([f.lowerform for f in filters]) &
-            pl.col("well").is_in(all_wells)
+            pl.col("filter_set").is_in([f.lowerform for f in filters]) & pl.col("well").is_in(all_wells)
         )
 
         reduceddata, ylabel = polars_process(reduceddata, process, ylabel="fluorescence")
@@ -2458,14 +2431,13 @@ table, th, td {{
                 for well in wells:
                     # Filter data for this specific filter, sample, and well
                     well_data = reduceddata.filter(
-                        (pl.col("filter_set") == filter.lowerform) &
-                        (pl.col("well") == well)
+                        (pl.col("filter_set") == filter.lowerform) & (pl.col("well") == well)
                     )
 
                     # Separate data by stage type
                     annealdat = well_data.filter(pl.col("stage").is_in(anneal_stages))
                     meltdat = well_data.filter(pl.col("stage").is_in(melt_stages))
-                    
+
                     if len(between_stages) > 0:
                         betweendat = well_data.filter(pl.col("stage").is_in(between_stages))
                     else:
@@ -2547,11 +2519,7 @@ table, th, td {{
             if samples in self.plate_setup.sample_wells:
                 samples = [samples]
             else:
-                samples = [
-                    k
-                    for k in self.plate_setup.sample_wells
-                    if re.match(samples + "$", k)
-                ]
+                samples = [k for k in self.plate_setup.sample_wells if re.match(samples + "$", k)]
                 if not samples:
                     raise ValueError("Samples not found")
         elif samples is None:
@@ -2571,10 +2539,7 @@ table, th, td {{
         marker: str | None = None,
         stage_lines: bool | Literal["fluorescence", "temperature"] = True,
         annotate_stage_lines: (
-            bool
-            | float
-            | Literal["fluorescence", "temperature"]
-            | Tuple[Literal["fluorescence", "temperature"], float]
+            bool | float | Literal["fluorescence", "temperature"] | Tuple[Literal["fluorescence", "temperature"], float]
         ) = True,
         annotate_events: bool = True,
         figure_kw: dict[str, Any] | None = None,
@@ -2672,9 +2637,7 @@ table, th, td {{
         if process is None:
             process = [normalization or NormRaw()]
         elif normalization:
-            raise ValueError(
-                "Can't specify both process and normalization (include normalization in process list)."
-            )
+            raise ValueError("Can't specify both process and normalization (include normalization in process list).")
         if filters is None:
             filters = self.all_filters
 
@@ -2694,10 +2657,7 @@ table, th, td {{
                     1,
                     sharex="all",
                     gridspec_kw={"height_ratios": [3, 1]},
-                    **(
-                        cast(dict[str, Any], {"constrained_layout": True})
-                        | (({} if figure_kw is None else figure_kw))
-                    ),
+                    **(cast(dict[str, Any], {"constrained_layout": True}) | ({} if figure_kw is None else figure_kw)),
                 )
                 ax = list(ax_arr)
             else:
@@ -2711,7 +2671,7 @@ table, th, td {{
 
         data = self.filter_data_polars.lazy()
 
-        data = data.with_columns(time = self._time_after_activestart_pl("timestamp", time_units))
+        data = data.with_columns(time=self._time_after_activestart_pl("timestamp", time_units))
 
         all_wells = data.filter(pl.col("sample").is_in(samples) | pl.col("well").is_in(samples))
 
@@ -2721,20 +2681,18 @@ table, th, td {{
 
         print(ylabel)
 
-
         lines = []
         reduceddata = reduceddata.collect()
         for (filter, sample, well), group in reduceddata.group_by(["filter_set", "sample", "well"]):
             label = _gen_label(
-                sample, #self.plate_setup.get_descriptive_string(sample), # FIXME
+                sample,  # self.plate_setup.get_descriptive_string(sample), # FIXME
                 well,
                 filter,
                 samples,
-                [], # self.plate_setup.get_wells(sample), # FIXME
+                [],  # self.plate_setup.get_wells(sample), # FIXME
                 filters,
             )
 
-        
             lines.append(
                 ax[0].plot(
                     group["time"],
@@ -2791,9 +2749,7 @@ table, th, td {{
             t_sl = stage_lines
             fl_sl = stage_lines
 
-        self._annotate_stages(
-            ax[0], fl_sl, fl_asl, (xlims[1] - xlims[0]) * 3600.0, stages=stages
-        )
+        self._annotate_stages(ax[0], fl_sl, fl_asl, (xlims[1] - xlims[0]) * 3600.0, stages=stages)
 
         if annotate_events:
             self._annotate_events(ax[0], stages=stages)
@@ -2830,9 +2786,7 @@ table, th, td {{
 
         return ax
 
-    def plot_protocol(
-        self, ax: Optional[Axes] = None
-    ) -> "Tuple[Axes, Tuple[List[Line2D], List[Line2D]]]":
+    def plot_protocol(self, ax: Optional[Axes] = None) -> "Tuple[Axes, Tuple[List[Line2D], List[Line2D]]]":
         """A plot of the temperature and data collection points in the experiment's protocol."""
 
         return self.protocol.plot_protocol(ax)
@@ -2867,7 +2821,7 @@ table, th, td {{
 
         time_units
             The units of the time range, and units to plot.  "h" for hours, "m" for minutes, "s" for seconds.
-            
+
         ax
             Optional.  An axes to put the plot on.  If not provided, the function will
             create a new figure, by default with constrained_layout=True, though this
@@ -2901,7 +2855,7 @@ table, th, td {{
         from matplotlib.axes import Axes
 
         temps = self.temperatures_polars.with_columns(
-            time = self._time_after_activestart_pl("time", time_units),
+            time=self._time_after_activestart_pl("time", time_units),
         )
 
         if sel is None:
@@ -2916,6 +2870,7 @@ table, th, td {{
 
         if method == "matplotlib":
             import matplotlib.pyplot as plt
+
             if ax is None:
                 _, ax = plt.subplots(**(figure_kw or {}))
 
@@ -2932,9 +2887,7 @@ table, th, td {{
 
             tot_time = temps["time"].max() - temps["time"].min()
 
-            self._annotate_stages(
-                ax, stage_lines, annotate_stage_lines, tot_time, stages=False
-            )
+            self._annotate_stages(ax, stage_lines, annotate_stage_lines, tot_time, stages=False)
 
             if annotate_events:
                 self._annotate_events(ax, stages=False)
@@ -2948,6 +2901,7 @@ table, th, td {{
             return ax
         elif method == "altair":
             import altair as alt
+
             alt.data_transformers.enable("vegafusion")
 
             temps = temps.filter(pl.col("kind") == "sample")
@@ -2962,7 +2916,6 @@ table, th, td {{
                 color="zone:N",
                 tooltip=["time", "zone", "temperature"],
             )
-
 
             # # Create a selection that chooses the nearest point & selects based on x-value
             # nearest = alt.selection_point(nearest=True, on="pointerover",
@@ -2987,7 +2940,6 @@ table, th, td {{
             #     tooltip=[alt.Tooltip(c, type="quantitative") for c in columns],
             # ).add_params(nearest)
 
-
             return line
 
     def _annotate_stages(
@@ -3009,8 +2961,8 @@ table, th, td {{
             xlim = ax.get_xlim()
 
             stages = self.stages.with_columns(
-                start_time = self._time_after_activestart_pl("start_time", x_units),
-                end_time = self._time_after_activestart_pl("end_time", x_units),
+                start_time=self._time_after_activestart_pl("start_time", x_units),
+                end_time=self._time_after_activestart_pl("end_time", x_units),
             )
 
             for s in stages.iter_rows(named=True):
@@ -3021,7 +2973,7 @@ table, th, td {{
                     s["start_time"],
                     linestyle="dotted",
                     color="black",
-                    linewidth=0.5, 
+                    linewidth=0.5,
                 )
                 durfrac = (s["end_time"] - s["start_time"]) / tot_time
                 if annotate_stage_lines and (durfrac > annotate_frac):
@@ -3039,98 +2991,118 @@ table, th, td {{
     def _open_ranges(self) -> pl.DataFrame:
         x = self.events.filter(pl.col("type") == "Cover")
 
-        a = x.filter(pl.col("message") == "Lowered").join_asof(
-            x.filter(pl.col("message") == "Raising"), on="time", coalesce=False).select(
+        a = (
+            x.filter(pl.col("message") == "Lowered")
+            .join_asof(x.filter(pl.col("message") == "Raising"), on="time", coalesce=False)
+            .select(
                 pl.col("time_right").alias("open_time"),
                 pl.col("time").alias("close_time"),
             )
+        )
 
-        b = x.filter(pl.col("message") == "Raising").join_asof(
-            x.filter(pl.col("message") == "Lowered"), on="time", strategy="forward", coalesce=False).select(
+        b = (
+            x.filter(pl.col("message") == "Raising")
+            .join_asof(x.filter(pl.col("message") == "Lowered"), on="time", strategy="forward", coalesce=False)
+            .select(
                 pl.col("time").alias("open_time"),
                 pl.col("time_right").alias("close_time"),
             )
+        )
 
-        q=  pl.concat([a, b], how="diagonal").unique().with_columns(type=pl.lit("Cover"))
+        q = pl.concat([a, b], how="diagonal").unique().with_columns(type=pl.lit("Cover"))
 
         x = self.events.filter(pl.col("type") == "Drawer")
 
-        a = x.filter(pl.col("message") == "Opening").join_asof(
-            x.filter(pl.col("message") == "Closed"), on="time", coalesce=False).select(
+        a = (
+            x.filter(pl.col("message") == "Opening")
+            .join_asof(x.filter(pl.col("message") == "Closed"), on="time", coalesce=False)
+            .select(
                 pl.col("time_right").alias("open_time"),
                 pl.col("time").alias("close_time"),
             )
+        )
 
-        b = x.filter(pl.col("message") == "Closed").join_asof(
-            x.filter(pl.col("message") == "Opening"), on="time", strategy="forward", coalesce=False).select(
+        b = (
+            x.filter(pl.col("message") == "Closed")
+            .join_asof(x.filter(pl.col("message") == "Opening"), on="time", strategy="forward", coalesce=False)
+            .select(
                 pl.col("time").alias("open_time"),
                 pl.col("time_right").alias("close_time"),
             )
+        )
 
-        return q.extend(pl.concat([a, b], how="diagonal").unique().with_columns(type=pl.lit("Drawer"))).sort("open_time")
-
+        return q.extend(pl.concat([a, b], how="diagonal").unique().with_columns(type=pl.lit("Drawer"))).sort(
+            "open_time"
+        )
 
     def _time_after_activestart_pl(self, col: str = "time", units: Literal["h", "m", "s", "ms"] = "h") -> pl.Expr:
         match units:
             case "h":
-                return (pl.col(col)-pl.lit(self.activestarttime)).dt.total_microseconds() / 3600000000.0
+                return (pl.col(col) - pl.lit(self.activestarttime)).dt.total_microseconds() / 3600000000.0
             case "m":
-                return (pl.col(col)-pl.lit(self.activestarttime)).dt.total_microseconds() / 60000000.0
+                return (pl.col(col) - pl.lit(self.activestarttime)).dt.total_microseconds() / 60000000.0
             case "s":
-                return (pl.col(col)-pl.lit(self.activestarttime)).dt.total_microseconds() / 1000000.0
+                return (pl.col(col) - pl.lit(self.activestarttime)).dt.total_microseconds() / 1000000.0
             case "ms":
-                return (pl.col(col)-pl.lit(self.activestarttime)).dt.total_microseconds() / 1000.0
+                return (pl.col(col) - pl.lit(self.activestarttime)).dt.total_microseconds() / 1000.0
             case _:
                 raise ValueError(f"Invalid units: {units}")
 
-    def _annotate_events(self, ax, stages: slice | Sequence[int] | bool = slice(None), x_units: Literal["h", "m", "s"] = "h"):
-        open_ranges = self._open_ranges().with_columns(
-            pl.col("open_time").fill_null(pl.lit(self.activestarttime)),
-            pl.col("close_time").fill_null(pl.lit(self.activeendtime)),
-        ).with_columns(
-            open_time=self._time_after_activestart_pl("open_time", x_units),
-            close_time=self._time_after_activestart_pl("close_time", x_units),
+    def _annotate_events(
+        self, ax, stages: slice | Sequence[int] | bool = slice(None), x_units: Literal["h", "m", "s"] = "h"
+    ):
+        open_ranges = (
+            self._open_ranges()
+            .with_columns(
+                pl.col("open_time").fill_null(pl.lit(self.activestarttime)),
+                pl.col("close_time").fill_null(pl.lit(self.activeendtime)),
+            )
+            .with_columns(
+                open_time=self._time_after_activestart_pl("open_time", x_units),
+                close_time=self._time_after_activestart_pl("close_time", x_units),
+            )
         )
 
         xlim = ax.get_xlim()
 
-        for ev in open_ranges.filter(pl.col("type") == "Cover").iter_rows(named=True):                
-                ax.axvspan(
-                    ev["open_time"],
-                    ev["close_time"],
-                    alpha=0.5,
-                    color="yellow",
-                )
+        for ev in open_ranges.filter(pl.col("type") == "Cover").iter_rows(named=True):
+            ax.axvspan(
+                ev["open_time"],
+                ev["close_time"],
+                alpha=0.5,
+                color="yellow",
+            )
 
-        for ev in open_ranges.filter(pl.col("type") == "Drawer").iter_rows(named=True):                
-                ax.axvspan(
-                    ev["open_time"],
-                    ev["close_time"],
-                    alpha=0.5,
-                    color="red",
-                )
+        for ev in open_ranges.filter(pl.col("type") == "Drawer").iter_rows(named=True):
+            ax.axvspan(
+                ev["open_time"],
+                ev["close_time"],
+                alpha=0.5,
+                color="red",
+            )
 
         ax.set_xlim(xlim)
 
     def plot_over_time_altair(
-            self,
-            samples: str | Sequence[str] | None = None,
-            filters: str | FilterSet | Collection[str | FilterSet] | None = None,
-            stages: slice | int | Sequence[int] | None = None,
-            process = (),
-            start_time: Literal['experiment', 'stage'] = 'experiment',
-            duration_units: Literal["hours", "minutes", "seconds"] = "hours",
-            show_legend: bool = True,
+        self,
+        samples: str | Sequence[str] | None = None,
+        filters: str | FilterSet | Collection[str | FilterSet] | None = None,
+        stages: slice | int | Sequence[int] | None = None,
+        process=(),
+        start_time: Literal["experiment", "stage"] = "experiment",
+        duration_units: Literal["hours", "minutes", "seconds"] = "hours",
+        show_legend: bool = True,
     ):
         import altair as alt
+
         alt.data_transformers.enable("vegafusion")
 
         d = self.filter_data_polars.lazy()
 
         ylabel = "fluorescence"
-        
+
         d, ylabel = polars_process(d, process, ylabel)
-        
+
         match samples:
             case None:
                 pass
@@ -3152,7 +3124,7 @@ table, th, td {{
                 d = d.filter(pl.col("filter_set").is_in(x))
             case _:
                 raise ValueError(f"Invalid filters: {filters}")
-            
+
         match stages:
             case slice():
                 start = 1 if stages.start is None else stages.start
@@ -3160,7 +3132,7 @@ table, th, td {{
                 step = 1 if stages.step is None else stages.step
                 stages = slice(start, stop, step)
                 d = d.filter(pl.col("stage").is_in(range(stages.start, stages.stop, stages.step)))
-                first_stage = stages.start  
+                first_stage = stages.start
             case int():
                 d = d.filter(pl.col("stage") == stages)
                 first_stage = stages
@@ -3173,17 +3145,16 @@ table, th, td {{
                 raise ValueError(f"Invalid stages: {stages}")
 
         match start_time:
-            case 'experiment':
+            case "experiment":
                 d = d.with_columns((pl.col("timestamp") - pl.lit(self.activestarttime)).alias("time_since_mark"))
                 start_time_descr = "experiment start"
-            case 'stage':
-                first_stage_start = self.stages.loc[first_stage, 'start_time']
+            case "stage":
+                first_stage_start = self.stages.loc[first_stage, "start_time"]
                 print(first_stage_start, first_stage)
                 d = d.with_columns((pl.col("timestamp") - pl.lit(first_stage_start)).alias("time_since_mark"))
                 start_time_descr = f"stage {first_stage} start"
             case _:
                 raise ValueError(f"Invalid start_time: {start_time}")
-        
 
         d = d.with_columns(time_since_mark_float=pl.col("time_since_mark").cast(pl.Float64))
 
@@ -3198,12 +3169,29 @@ table, th, td {{
                 raise ValueError(f"Invalid duration_units: {duration_units}")
 
         d = d.collect()
-        
-        return alt.Chart(d).mark_line(point=True).encode(
-            alt.X("time_since_mark_float:Q", axis=alt.Axis(title=f"Time since {start_time_descr} ({duration_units})")),
-            alt.Y("processed_fluorescence:Q", axis=alt.Axis(title="Fluorescence")).scale(zero=False),
-            color=alt.Color("sample:N", legend=alt.Legend(title="Sample") if show_legend else None),
-            tooltip=["time_since_mark_float", "fluorescence", "processed_fluorescence", "sample", "filter_set", "sample_temperature", "set_temperature", "stage", "step", "cycle"]
+
+        return (
+            alt.Chart(d)
+            .mark_line(point=True)
+            .encode(
+                alt.X(
+                    "time_since_mark_float:Q", axis=alt.Axis(title=f"Time since {start_time_descr} ({duration_units})")
+                ),
+                alt.Y("processed_fluorescence:Q", axis=alt.Axis(title="Fluorescence")).scale(zero=False),
+                color=alt.Color("sample:N", legend=alt.Legend(title="Sample") if show_legend else None),
+                tooltip=[
+                    "time_since_mark_float",
+                    "fluorescence",
+                    "processed_fluorescence",
+                    "sample",
+                    "filter_set",
+                    "sample_temperature",
+                    "set_temperature",
+                    "stage",
+                    "step",
+                    "cycle",
+                ],
+            )
         )
 
 
@@ -3279,36 +3267,21 @@ def _get_manifest_info(f: zipfile.ZipFile | os.PathLike[str] | str, checkinfo=Tr
             raise ValueError("No EDS manifest file found. Is this a valid EDS?")
 
     # Manifest files for EDS archives should just be splittable by : into key/value pairs
-    manifest_properties = dict(
-        line.decode("utf-8").rstrip().split(": ", 1)
-        for line in m.readlines()
-        if len(line) > 2
-    )
+    manifest_properties = dict(line.decode("utf-8").rstrip().split(": ", 1) for line in m.readlines() if len(line) > 2)
     m.close()
 
     if not checkinfo:
         return manifest_properties
 
-    if (
-        v := manifest_properties.get("Specification-Title")
-    ) != "Experiment Document Specification":
-        raise ValueError(
-            f"Manifest file does not appear to be for an EDS (Specification-Title is {v})"
-        )
+    if (v := manifest_properties.get("Specification-Title")) != "Experiment Document Specification":
+        raise ValueError(f"Manifest file does not appear to be for an EDS (Specification-Title is {v})")
 
     sv = manifest_properties["Specification-Version"]
     if sv[0] not in ("1", "2"):
-        raise ValueError(
-            f"QSLib does not support EDS files of specification version {sv}"
-        )
+        raise ValueError(f"QSLib does not support EDS files of specification version {sv}")
     elif sv[0] == "2":
-        warn(
-            f"QSLib support for EDS specification version 2 is preliminary.  This file is version {sv}"
-        )
+        warn(f"QSLib support for EDS specification version 2 is preliminary.  This file is version {sv}")
     elif sv not in ("1.3.0", "1.3.1", "1.3.2"):
-        warn(
-            f"{sv} is an EDS specification version QSLib hasn't been specifically tested with."
-        )
+        warn(f"{sv} is an EDS specification version QSLib hasn't been specifically tested with.")
 
     return manifest_properties
-

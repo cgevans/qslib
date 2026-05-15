@@ -88,9 +88,7 @@ def test_proto() -> None:
             ),
             Stage(Step(5 * 60 * 60 * 60 * 60, temperatures, collect=True), repeat=20),
             Stage(
-                Step(
-                    "24 hours", temperatures, collect=True, filters=["x1-m4", "x3-m5"]
-                ),
+                Step("24 hours", temperatures, collect=True, filters=["x1-m4", "x3-m5"]),
                 repeat=20,
             ),
             Stage(
@@ -199,10 +197,7 @@ def test_exp_saveload_proto(tmp_path: pathlib.Path) -> None:
     exp2 = Experiment.from_file(tmp_path / "test_proto.eds")
 
     # Compare via Rust serialization for consistent formatting (int vs float)
-    assert (
-        exp.protocol.to_scpi_string()
-        == exp2.protocol.to_scpi_string()
-    )
+    assert exp.protocol.to_scpi_string() == exp2.protocol.to_scpi_string()
 
 
 def test_stepped_ramp_down():
@@ -240,9 +235,7 @@ def test_exposure_roundtrip():
 def test_stepped_ramp_multi_same_increment():
     p1 = Protocol(
         [
-            Stage.stepped_ramp(
-                [50, 50, 50, 40, 40, 40], [40, 40, 40, 30, 30, 30], "11 min"
-            ),
+            Stage.stepped_ramp([50, 50, 50, 40, 40, 40], [40, 40, 40, 30, 30, 30], "11 min"),
             Stage.stepped_ramp(
                 [40, 40, 40, 30, 30, 30],
                 [30, 30, 30, 20, 20, 20.0],
@@ -257,26 +250,16 @@ def test_stepped_ramp_multi_same_increment():
 
     p1.to_scpicommand()
 
-    assert (
-        (p1.dataframe.loc[:, "temperature_1":"temperature_6"].diff()[1:] == -1)
-        .all()
-        .all()
-    )
+    assert (p1.dataframe.loc[:, "temperature_1":"temperature_6"].diff()[1:] == -1).all().all()
     assert (p1.dataframe.start_time.diff()[1:] == 60.625).all()
     assert (p1.dataframe.end_time.diff()[1:] == 60.625).all()
 
 
 def test_delta_unit_conversion():
     assert (
-        Stage.stepped_ramp(
-            "50 °C", "20 °C", total_time="30 min", temperature_step="2 °C"
-        )
-        == Stage.stepped_ramp(
-            "50 °C", "20 °C", total_time="30 min", temperature_step="2 delta_degC"
-        )
-        == Stage.stepped_ramp(
-            "50 °C", "20 °C", total_time="30 min", temperature_step="3.6 degF"
-        )
+        Stage.stepped_ramp("50 °C", "20 °C", total_time="30 min", temperature_step="2 °C")
+        == Stage.stepped_ramp("50 °C", "20 °C", total_time="30 min", temperature_step="2 delta_degC")
+        == Stage.stepped_ramp("50 °C", "20 °C", total_time="30 min", temperature_step="3.6 degF")
     )
 
 
@@ -284,22 +267,15 @@ def test_hold():
     h = Stage.hold_at("60 °C", "1 hour", "10 minutes")
     assert h == Stage(Step("10 min", "60 °C"), 6)
 
-    assert Stage.hold_at("50 °C", total_time="1 hour").steps[0].duration_at_cycle_point(
-        0
-    ) == Q_("1 hour")
+    assert Stage.hold_at("50 °C", total_time="1 hour").steps[0].duration_at_cycle_point(0) == Q_("1 hour")
+
 
 def test_protocol_equality():
-    """Test that protocols are equal if they have the same stages, filters, and 
-       volume, even if the names are different"""
-    prot = Protocol(
-        [
-            Stage.hold_at(25, "3min", "30s", collect=True)
-        ], filters=["x1-m1", "x3-m5", "x2-m2"]
-    )
+    """Test that protocols are equal if they have the same stages, filters, and
+    volume, even if the names are different"""
+    prot = Protocol([Stage.hold_at(25, "3min", "30s", collect=True)], filters=["x1-m1", "x3-m5", "x2-m2"])
     prot2 = Protocol(
-        [
-            Stage.hold_at(25, "3min", "30s", collect=True)
-        ], filters=["x1-m1", "x3-m5", "x2-m2"], name="prot2"
+        [Stage.hold_at(25, "3min", "30s", collect=True)], filters=["x1-m1", "x3-m5", "x2-m2"], name="prot2"
     )
     assert prot == prot2
 
@@ -314,12 +290,12 @@ def test_durformat_basic_units():
     assert _durformat(Q_(30, "seconds")) == "30s"
     assert _durformat(Q_(59, "seconds")) == "59s"
     assert _durformat(Q_(120, "seconds")) == "120s"  # 2 minutes, stays as seconds
-    
+
     # Minutes (> 2 minutes)
     assert _durformat(Q_(180, "seconds")) == "3m"  # 3 minutes
     assert _durformat(Q_(3600, "seconds")) == "60m"  # 1 hour
     assert _durformat(Q_(7200, "seconds")) == "120m"  # 2 hours, stays as minutes
-    
+
     # Hours (> 2 hours, <= 3 days)
     assert _durformat(Q_(10800, "seconds")) == "3h"  # 3 hours
     assert _durformat(Q_(86400, "seconds")) == "24h"  # 1 day exactly
@@ -333,7 +309,7 @@ def test_durformat_exact_day_durations():
     assert _durformat(Q_(86400, "seconds")) == "24h"  # 1 day
     assert _durformat(Q_(172800, "seconds")) == "48h"  # 2 days
     assert _durformat(Q_(259200, "seconds")) == "72h"  # 3 days
-    
+
     # Days > 3 days should show in days format
     assert _durformat(Q_(345600, "seconds")) == "4d"  # 4 days
     assert _durformat(Q_(432000, "seconds")) == "5d"  # 5 days
@@ -345,11 +321,11 @@ def test_durformat_mixed_durations():
     # Seconds + minutes
     assert _durformat(Q_(61, "seconds")) == "61s"  # 1m1s, but <= 2 minutes
     assert _durformat(Q_(181, "seconds")) == "3m1s"  # 3m1s
-    
+
     # Minutes + hours
     assert _durformat(Q_(3661, "seconds")) == "61m1s"  # 1h1m1s, but <= 2 hours
     assert _durformat(Q_(10861, "seconds")) == "3h1m1s"  # 3h1m1s
-    
+
     # Hours + days (> 3 days)
     assert _durformat(Q_(349200, "seconds")) == "4d1h"  # 4d1h
     assert _durformat(Q_(349260, "seconds")) == "4d1h1m"  # 4d1h1m
@@ -361,10 +337,10 @@ def test_durformat_boundary_conditions():
     # Exactly at boundaries
     assert _durformat(Q_(120, "seconds")) == "120s"  # Exactly 2 minutes
     assert _durformat(Q_(121, "seconds")) == "2m1s"  # Just over 2 minutes
-    
+
     assert _durformat(Q_(7200, "seconds")) == "120m"  # Exactly 2 hours
     assert _durformat(Q_(7201, "seconds")) == "2h1s"  # Just over 2 hours
-    
+
     assert _durformat(Q_(259200, "seconds")) == "72h"  # Exactly 3 days
     assert _durformat(Q_(259201, "seconds")) == "3d1s"  # Just over 3 days
 
@@ -373,16 +349,29 @@ def test_durformat_no_empty_strings():
     """Test that _durformat never returns empty strings"""
     # Test a range of values that could potentially cause issues
     test_values = [
-        1, 60, 120, 3600, 7200, 86400, 172800, 259200, 345600, 432000,
-        86401, 90000, 349200, 349261  # Mixed values
+        1,
+        60,
+        120,
+        3600,
+        7200,
+        86400,
+        172800,
+        259200,
+        345600,
+        432000,
+        86401,
+        90000,
+        349200,
+        349261,  # Mixed values
     ]
-    
+
     for seconds in test_values:
         result = _durformat(Q_(seconds, "seconds"))
         assert result != "", f"Empty string returned for {seconds} seconds"
         assert len(result.strip()) > 0, f"Whitespace-only string for {seconds} seconds"
-        assert result.replace("d", "").replace("h", "").replace("m", "").replace("s", "").isdigit() or \
-               any(c.isdigit() for c in result), f"No digits in result '{result}' for {seconds} seconds"
+        assert result.replace("d", "").replace("h", "").replace("m", "").replace("s", "").isdigit() or any(
+            c.isdigit() for c in result
+        ), f"No digits in result '{result}' for {seconds} seconds"
 
 
 def test_durformat_stage_integration():
@@ -393,12 +382,12 @@ def test_durformat_stage_integration():
     info_1day = stage_1day.info_str(1)
     assert "total duration 24h" in info_1day
     assert "total duration )" not in info_1day  # No empty duration
-    
+
     step_2day = Step(temperature=95.0, time=172800, repeat=1)  # 2 days
     stage_2day = Stage([step_2day], repeat=1)
     info_2day = stage_2day.info_str(1)
     assert "total duration 48h" in info_2day
-    
+
     step_4day = Step(temperature=95.0, time=345600, repeat=1)  # 4 days
     stage_4day = Stage([step_4day], repeat=1)
     info_4day = stage_4day.info_str(1)
@@ -409,6 +398,7 @@ def test_rust_serialization_roundtrip():
     """Test that the Rust serialization path produces a valid protocol string
     that can be parsed back into an equivalent protocol."""
     import numpy as np
+
     temperatures = list(np.linspace(51.2, 49.4, num=6))
     prot = Protocol(
         name="test_rust",
@@ -461,6 +451,7 @@ def test_rust_serialization_default_filters():
 def test_rust_protocol_from_scpi_string():
     """Test creating a Rust Protocol from an SCPI string."""
     from qslib._qslib import Protocol as RustProtocol
+
     rust_prot = RustProtocol.from_scpi_string(PROTSTRING)
     assert rust_prot.name == "testproto"
     assert rust_prot.volume == 30.0

@@ -16,8 +16,7 @@ _TESTS_DIR = Path(__file__).parent
 # Check if a test machine is configured
 TEST_MACHINE = os.environ.get("QSLIB_TEST_MACHINE")
 requires_machine = pytest.mark.skipif(
-    TEST_MACHINE is None,
-    reason="No test machine configured (set QSLIB_TEST_MACHINE env var)"
+    TEST_MACHINE is None, reason="No test machine configured (set QSLIB_TEST_MACHINE env var)"
 )
 
 
@@ -39,9 +38,7 @@ def test_info(exp, runner: CliRunner):
     assert exp.info().rstrip() == result.output.rstrip()
 
 
-@pytest.mark.skipif(
-    sys.platform.startswith("win"), reason="HTML output not identical on Windows."
-)
+@pytest.mark.skipif(sys.platform.startswith("win"), reason="HTML output not identical on Windows.")
 def test_html(exp, tmp_path_factory: pytest.TempPathFactory, runner: CliRunner):
     tp = tmp_path_factory.mktemp("temp_html")
     runner.invoke(
@@ -77,7 +74,7 @@ def test_export_data(runner: CliRunner):
     """Test export-data outputs CSV."""
     result = runner.invoke(cli, ["export-data", str(_TESTS_DIR / "test.eds")])
     assert result.exit_code == 0
-    lines = result.output.strip().split('\n')
+    lines = result.output.strip().split("\n")
     assert len(lines) > 1  # header + data
     assert "," in lines[0]  # CSV format
 
@@ -127,6 +124,7 @@ def test_protocol_plot_svg(tmp_path, runner: CliRunner):
 
 # Error handling tests
 
+
 def test_info_missing_file(runner: CliRunner):
     """Test info command with non-existent file."""
     result = runner.invoke(cli, ["info", "nonexistent.eds"])
@@ -146,6 +144,7 @@ def test_export_data_missing_file(runner: CliRunner):
 
 
 # Machine-dependent tests (skipped without QSLIB_TEST_MACHINE env var)
+
 
 @requires_machine
 def test_machine_status(runner: CliRunner):

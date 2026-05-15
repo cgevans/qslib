@@ -256,9 +256,7 @@ class NormToMeanPerWell(Processor):
 
     def _process_pandas(self, data: "pd.DataFrame") -> "pd.DataFrame":
         normdata = data.copy()
-        means = (
-            data.loc[(slice(None), *self._pandas_selection), (slice(None), "fl")].groupby("filter_set").mean()
-        )
+        means = data.loc[(slice(None), *self._pandas_selection), (slice(None), "fl")].groupby("filter_set").mean()
         normdata.loc[:, (slice(None), "fl")] /= means
         return normdata
 
@@ -366,9 +364,7 @@ class SubtractByMeanPerWell(Processor):
 
     def _process_pandas(self, data: "pd.DataFrame") -> "pd.DataFrame":
         normdata = data.copy()
-        means = (
-            data.loc[(slice(None), *self._pandas_selection), (slice(None), "fl")].groupby("filter_set").mean()
-        )
+        means = data.loc[(slice(None), *self._pandas_selection), (slice(None), "fl")].groupby("filter_set").mean()
         normdata.loc[:, (slice(None), "fl")] -= means
         return normdata
 

@@ -13,21 +13,11 @@ invalid = 5
 def test_access():
     for l1 in levels:
         for l2 in levels:
-            assert (AccessLevel(l1) < AccessLevel(l2)) == (
-                levels.index(l1) < levels.index(l2)
-            )
-            assert (AccessLevel(l1) <= AccessLevel(l2)) == (
-                levels.index(l1) <= levels.index(l2)
-            )
-            assert (AccessLevel(l1) > AccessLevel(l2)) == (
-                levels.index(l1) > levels.index(l2)
-            )
-            assert (AccessLevel(l1) >= AccessLevel(l2)) == (
-                levels.index(l1) >= levels.index(l2)
-            )
-            assert (AccessLevel(l1) == AccessLevel(l2)) == (
-                levels.index(l1) == levels.index(l2)
-            )
+            assert (AccessLevel(l1) < AccessLevel(l2)) == (levels.index(l1) < levels.index(l2))
+            assert (AccessLevel(l1) <= AccessLevel(l2)) == (levels.index(l1) <= levels.index(l2))
+            assert (AccessLevel(l1) > AccessLevel(l2)) == (levels.index(l1) > levels.index(l2))
+            assert (AccessLevel(l1) >= AccessLevel(l2)) == (levels.index(l1) >= levels.index(l2))
+            assert (AccessLevel(l1) == AccessLevel(l2)) == (levels.index(l1) == levels.index(l2))
             assert (AccessLevel(l1) < l2) == (levels.index(l1) < levels.index(l2))
             assert (AccessLevel(l1) <= l2) == (levels.index(l1) <= levels.index(l2))
             assert (AccessLevel(l1) > l2) == (levels.index(l1) > levels.index(l2))
