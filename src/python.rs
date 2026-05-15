@@ -1,24 +1,32 @@
-use crate::com::{QSConnection, ConnectionType, ResponseReceiver, TlsConfig};
+use crate::com::{ConnectionError, QSConnectionError, SendCommandError};
+use crate::com::{ConnectionType, QSConnection, ResponseReceiver, TlsConfig};
 use crate::parser::Command;
-use crate::parser::{LogMessage, MessageResponse, MessageIdent};
+use crate::parser::ParseError;
+use crate::parser::{LogMessage, MessageIdent, MessageResponse};
 use crate::protocol::{Protocol, Stage, StageStep, Step};
-use pyo3::exceptions::{PyTimeoutError, PyValueError, PyException};
+use pyo3::exceptions::{PyException, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::PyErr;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::select;
 use tokio::time::Duration;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::{StreamExt, StreamMap};
-use crate::com::{ConnectionError, QSConnectionError, SendCommandError};
-use crate::parser::ParseError;
-use pyo3::PyErr;
 
 pyo3::create_exception!("qslib._qslib", QslibException, PyException);
 pyo3::create_exception!("qslib._qslib", CommandResponseError, QslibException);
 pyo3::create_exception!("qslib._qslib", CommandError, CommandResponseError);
-pyo3::create_exception!("qslib._qslib", UnexpectedMessageResponse, CommandResponseError);
-pyo3::create_exception!("qslib._qslib", DisconnectedBeforeResponse, CommandResponseError);
+pyo3::create_exception!(
+    "qslib._qslib",
+    UnexpectedMessageResponse,
+    CommandResponseError
+);
+pyo3::create_exception!(
+    "qslib._qslib",
+    DisconnectedBeforeResponse,
+    CommandResponseError
+);
 
 #[pyclass(module = "qslib._qslib")]
 #[pyo3(name = "RustStep")]
@@ -72,35 +80,65 @@ impl PyStep {
     }
 
     #[getter]
-    fn time(&self) -> i64 { self.step.time }
+    fn time(&self) -> i64 {
+        self.step.time
+    }
     #[getter]
-    fn temperature(&self) -> Vec<f64> { self.step.temperature.clone() }
+    fn temperature(&self) -> Vec<f64> {
+        self.step.temperature.clone()
+    }
     #[getter]
-    fn collect(&self) -> Option<bool> { self.step.collect }
+    fn collect(&self) -> Option<bool> {
+        self.step.collect
+    }
     #[getter]
-    fn temp_increment(&self) -> f64 { self.step.temp_increment }
+    fn temp_increment(&self) -> f64 {
+        self.step.temp_increment
+    }
     #[getter]
-    fn temp_incrementcycle(&self) -> i64 { self.step.temp_incrementcycle }
+    fn temp_incrementcycle(&self) -> i64 {
+        self.step.temp_incrementcycle
+    }
     #[getter]
-    fn temp_incrementpoint(&self) -> Option<i64> { self.step.temp_incrementpoint }
+    fn temp_incrementpoint(&self) -> Option<i64> {
+        self.step.temp_incrementpoint
+    }
     #[getter]
-    fn time_increment(&self) -> i64 { self.step.time_increment }
+    fn time_increment(&self) -> i64 {
+        self.step.time_increment
+    }
     #[getter]
-    fn time_incrementcycle(&self) -> i64 { self.step.time_incrementcycle }
+    fn time_incrementcycle(&self) -> i64 {
+        self.step.time_incrementcycle
+    }
     #[getter]
-    fn time_incrementpoint(&self) -> Option<i64> { self.step.time_incrementpoint }
+    fn time_incrementpoint(&self) -> Option<i64> {
+        self.step.time_incrementpoint
+    }
     #[getter]
-    fn filters(&self) -> Vec<String> { self.step.filters.clone() }
+    fn filters(&self) -> Vec<String> {
+        self.step.filters.clone()
+    }
     #[getter]
-    fn pcr(&self) -> bool { self.step.pcr }
+    fn pcr(&self) -> bool {
+        self.step.pcr
+    }
     #[getter]
-    fn quant(&self) -> bool { self.step.quant }
+    fn quant(&self) -> bool {
+        self.step.quant
+    }
     #[getter]
-    fn tiff(&self) -> bool { self.step.tiff }
+    fn tiff(&self) -> bool {
+        self.step.tiff
+    }
     #[getter]
-    fn repeat(&self) -> i64 { self.step.repeat }
+    fn repeat(&self) -> i64 {
+        self.step.repeat
+    }
     #[getter]
-    fn default_filters(&self) -> Vec<String> { self.step.default_filters.clone() }
+    fn default_filters(&self) -> Vec<String> {
+        self.step.default_filters.clone()
+    }
 
     fn to_scpi_string(&self, step_index: i64, default_filters: Vec<String>) -> String {
         self.step.to_scpi_string(step_index, &default_filters)
@@ -111,8 +149,10 @@ impl PyStep {
     }
 
     fn __repr__(&self) -> String {
-        format!("RustStep(time={}, temperature={:?}, collect={:?})",
-                self.step.time, self.step.temperature, self.step.collect)
+        format!(
+            "RustStep(time={}, temperature={:?}, collect={:?})",
+            self.step.time, self.step.temperature, self.step.collect
+        )
     }
 }
 
@@ -133,7 +173,8 @@ impl PyStage {
         label: Option<String>,
         custom_step_scpi: Vec<(usize, String)>,
     ) -> PyResult<Self> {
-        let mut rust_steps: Vec<StageStep> = steps.iter()
+        let mut rust_steps: Vec<StageStep> = steps
+            .iter()
             .map(|s| StageStep::Standard(s.step.clone()))
             .collect();
         // Insert custom steps at specified positions
@@ -142,18 +183,27 @@ impl PyStage {
             let mut cmds = Vec::new();
             while !input.is_empty() {
                 // Skip blank lines / whitespace between commands
-                while !input.is_empty() && (input[0] == b'\n' || input[0] == b'\r' || input[0] == b' ' || input[0] == b'\t') {
+                while !input.is_empty()
+                    && (input[0] == b'\n'
+                        || input[0] == b'\r'
+                        || input[0] == b' '
+                        || input[0] == b'\t')
+                {
                     input = &input[1..];
                 }
                 if input.is_empty() {
                     break;
                 }
-                let remaining_preview: String = String::from_utf8_lossy(&input[..input.len().min(200)]).to_string();
+                let remaining_preview: String =
+                    String::from_utf8_lossy(&input[..input.len().min(200)]).to_string();
                 match Command::parse(&mut input) {
                     Ok(cmd) => cmds.push(cmd),
-                    Err(e) => return Err(PyValueError::new_err(
-                        format!("Failed to parse custom step SCPI at: {:?}\nError: {}", remaining_preview, e)
-                    )),
+                    Err(e) => {
+                        return Err(PyValueError::new_err(format!(
+                            "Failed to parse custom step SCPI at: {:?}\nError: {}",
+                            remaining_preview, e
+                        )))
+                    }
                 }
             }
             if pos <= rust_steps.len() {
@@ -174,44 +224,74 @@ impl PyStage {
     }
 
     #[getter]
-    fn repeat(&self) -> i64 { self.stage.repeat }
+    fn repeat(&self) -> i64 {
+        self.stage.repeat
+    }
     #[getter]
-    fn index(&self) -> Option<i64> { self.stage.index }
+    fn index(&self) -> Option<i64> {
+        self.stage.index
+    }
     #[getter]
-    fn label(&self) -> Option<String> { self.stage.label.clone() }
+    fn label(&self) -> Option<String> {
+        self.stage.label.clone()
+    }
     #[getter]
-    fn default_filters(&self) -> Vec<String> { self.stage.default_filters.clone() }
+    fn default_filters(&self) -> Vec<String> {
+        self.stage.default_filters.clone()
+    }
 
     #[getter]
     fn steps(&self) -> Vec<PyStep> {
-        self.stage.steps.iter().filter_map(|s| match s {
-            StageStep::Standard(step) => Some(PyStep { step: step.clone() }),
-            StageStep::Custom(_) => None,
-        }).collect()
+        self.stage
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                StageStep::Standard(step) => Some(PyStep { step: step.clone() }),
+                StageStep::Custom(_) => None,
+            })
+            .collect()
     }
 
     #[getter]
     fn has_custom_steps(&self) -> bool {
-        self.stage.steps.iter().any(|s| matches!(s, StageStep::Custom(_)))
+        self.stage
+            .steps
+            .iter()
+            .any(|s| matches!(s, StageStep::Custom(_)))
     }
 
     /// Returns all steps as a list of ("standard", PyStep) or ("custom", scpi_body_string) tuples,
     /// preserving their original order (including interleaved custom steps).
     fn all_steps(&self, py: Python<'_>) -> Vec<(String, PyObject)> {
-        self.stage.steps.iter().map(|s| match s {
-            StageStep::Standard(step) => (
-                "standard".to_string(),
-                PyStep { step: step.clone() }.into_pyobject(py).unwrap().into_any().unbind(),
-            ),
-            StageStep::Custom(cmds) => {
-                let body = cmds.iter().map(|c| {
-                    let mut buf = Vec::new();
-                    c.write_bytes(&mut buf).unwrap();
-                    String::from_utf8(buf).unwrap()
-                }).collect::<Vec<_>>().join("\n");
-                ("custom".to_string(), body.into_pyobject(py).unwrap().into_any().unbind())
-            }
-        }).collect()
+        self.stage
+            .steps
+            .iter()
+            .map(|s| match s {
+                StageStep::Standard(step) => (
+                    "standard".to_string(),
+                    PyStep { step: step.clone() }
+                        .into_pyobject(py)
+                        .unwrap()
+                        .into_any()
+                        .unbind(),
+                ),
+                StageStep::Custom(cmds) => {
+                    let body = cmds
+                        .iter()
+                        .map(|c| {
+                            let mut buf = Vec::new();
+                            c.write_bytes(&mut buf).unwrap();
+                            String::from_utf8(buf).unwrap()
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    (
+                        "custom".to_string(),
+                        body.into_pyobject(py).unwrap().into_any().unbind(),
+                    )
+                }
+            })
+            .collect()
     }
 
     fn to_scpi_string(&self, stage_index: i64, default_filters: Vec<String>) -> String {
@@ -223,11 +303,25 @@ impl PyStage {
     }
 
     fn __repr__(&self) -> String {
-        let custom = self.stage.steps.iter().filter(|s| matches!(s, StageStep::Custom(_))).count();
+        let custom = self
+            .stage
+            .steps
+            .iter()
+            .filter(|s| matches!(s, StageStep::Custom(_)))
+            .count();
         if custom > 0 {
-            format!("RustStage(repeat={}, steps={}, custom={})", self.stage.repeat, self.stage.steps.len(), custom)
+            format!(
+                "RustStage(repeat={}, steps={}, custom={})",
+                self.stage.repeat,
+                self.stage.steps.len(),
+                custom
+            )
         } else {
-            format!("RustStage(repeat={}, steps={})", self.stage.repeat, self.stage.steps.len())
+            format!(
+                "RustStage(repeat={}, steps={})",
+                self.stage.repeat,
+                self.stage.steps.len()
+            )
         }
     }
 }
@@ -245,8 +339,13 @@ impl PyProtocol {
     }
 
     fn __repr__(&self) -> String {
-        format!("Protocol(name='{}', volume={}, runmode='{}', stages={})",
-                self.protocol.name, self.protocol.volume, self.protocol.runmode, self.protocol.stages.len())
+        format!(
+            "Protocol(name='{}', volume={}, runmode='{}', stages={})",
+            self.protocol.name,
+            self.protocol.volume,
+            self.protocol.runmode,
+            self.protocol.stages.len()
+        )
     }
 
     #[getter]
@@ -281,25 +380,37 @@ impl PyProtocol {
 
     #[getter]
     fn stages(&self) -> Vec<PyStage> {
-        self.protocol.stages.iter().map(|s| PyStage { stage: s.clone() }).collect()
+        self.protocol
+            .stages
+            .iter()
+            .map(|s| PyStage { stage: s.clone() })
+            .collect()
     }
 
     #[getter]
     fn prerun(&self) -> Vec<String> {
-        self.protocol.prerun.iter().map(|c| {
-            let mut buf = Vec::new();
-            c.write_bytes(&mut buf).unwrap();
-            String::from_utf8(buf).unwrap()
-        }).collect()
+        self.protocol
+            .prerun
+            .iter()
+            .map(|c| {
+                let mut buf = Vec::new();
+                c.write_bytes(&mut buf).unwrap();
+                String::from_utf8(buf).unwrap()
+            })
+            .collect()
     }
 
     #[getter]
     fn postrun(&self) -> Vec<String> {
-        self.protocol.postrun.iter().map(|c| {
-            let mut buf = Vec::new();
-            c.write_bytes(&mut buf).unwrap();
-            String::from_utf8(buf).unwrap()
-        }).collect()
+        self.protocol
+            .postrun
+            .iter()
+            .map(|c| {
+                let mut buf = Vec::new();
+                c.write_bytes(&mut buf).unwrap();
+                String::from_utf8(buf).unwrap()
+            })
+            .collect()
     }
 
     /// Serialize to SCPI command string.
@@ -315,15 +426,15 @@ impl PyProtocol {
         version: &str,
         machine_toml: Option<&str>,
     ) -> (String, String) {
-        self.protocol.to_xml_pair(cover_temperature, version, machine_toml)
+        self.protocol
+            .to_xml_pair(cover_temperature, version, machine_toml)
     }
 
     /// Parse a Protocol from tcprotocol.xml content.
     #[staticmethod]
     fn from_xml_string(xml: &str) -> PyResult<PyProtocol> {
-        let protocol = Protocol::from_xml_str(xml).map_err(|e| {
-            PyValueError::new_err(format!("Failed to parse tcprotocol XML: {}", e))
-        })?;
+        let protocol = Protocol::from_xml_str(xml)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse tcprotocol XML: {}", e)))?;
         Ok(PyProtocol { protocol })
     }
 
@@ -342,12 +453,10 @@ impl PyProtocol {
     /// Parse a protocol from an SCPI command string.
     #[staticmethod]
     fn from_scpi_string(s: &str) -> PyResult<PyProtocol> {
-        let cmd = Command::try_from(s).map_err(|e| {
-            PyValueError::new_err(format!("Failed to parse SCPI command: {}", e))
-        })?;
-        let protocol = Protocol::from_scpicommand(&cmd).map_err(|e| {
-            PyValueError::new_err(format!("Failed to parse protocol: {}", e))
-        })?;
+        let cmd = Command::try_from(s)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse SCPI command: {}", e)))?;
+        let protocol = Protocol::from_scpicommand(&cmd)
+            .map_err(|e| PyValueError::new_err(format!("Failed to parse protocol: {}", e)))?;
         Ok(PyProtocol { protocol })
     }
 
@@ -379,12 +488,16 @@ impl PyProtocol {
                     if input.is_empty() {
                         break;
                     }
-                    let remaining_preview: String = String::from_utf8_lossy(&input[..input.len().min(200)]).to_string();
+                    let remaining_preview: String =
+                        String::from_utf8_lossy(&input[..input.len().min(200)]).to_string();
                     match Command::parse(&mut input) {
                         Ok(cmd) => cmds.push(cmd),
-                        Err(e) => return Err(PyValueError::new_err(
-                            format!("Failed to parse SCPI command at: {:?}\nError: {}", remaining_preview, e)
-                        )),
+                        Err(e) => {
+                            return Err(PyValueError::new_err(format!(
+                                "Failed to parse SCPI command at: {:?}\nError: {}",
+                                remaining_preview, e
+                            )))
+                        }
                     }
                 }
             }
@@ -433,15 +546,27 @@ impl PyMessageResponse {
         loop {
             let ret = self.rt.block_on(self.rx.recv());
             match ret {
-                Some(x) => {
-                    match x {
-                        MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => return Ok(message.to_bytes()),
-                        MessageResponse::CommandError { ident: _, error } => return Err(CommandError::new_err(error)),
-                        MessageResponse::Next { ident: _ } => continue,
-                        MessageResponse::Message(message) => return Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message))),
+                Some(x) => match x {
+                    MessageResponse::Ok { ident: _, message }
+                    | MessageResponse::Warning { ident: _, message } => {
+                        return Ok(message.to_bytes())
+                    }
+                    MessageResponse::CommandError { ident: _, error } => {
+                        return Err(CommandError::new_err(error))
+                    }
+                    MessageResponse::Next { ident: _ } => continue,
+                    MessageResponse::Message(message) => {
+                        return Err(UnexpectedMessageResponse::new_err(format!(
+                            "Received log message as response to command: {:?}",
+                            message
+                        )))
                     }
                 },
-                None => return Err(DisconnectedBeforeResponse::new_err("Disconnected before response")),
+                None => {
+                    return Err(DisconnectedBeforeResponse::new_err(
+                        "Disconnected before response",
+                    ))
+                }
             }
         }
     }
@@ -462,18 +587,24 @@ impl PyMessageResponse {
         let x = self.rt.block_on(self.rx.recv());
         match x {
             Some(x) => match x {
-                MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => {
-                    Err(UnexpectedMessageResponse::new_err(format!("OK message received as acknowledgment: {:?}", message)))
+                MessageResponse::Ok { ident: _, message }
+                | MessageResponse::Warning { ident: _, message } => {
+                    Err(UnexpectedMessageResponse::new_err(format!(
+                        "OK message received as acknowledgment: {:?}",
+                        message
+                    )))
                 }
                 MessageResponse::CommandError { ident: _, error } => {
                     Err(CommandError::new_err(error.to_string()))
                 }
                 MessageResponse::Next { ident: _ } => Ok(()),
-                MessageResponse::Message(message) => {
-                    Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message)))
-                }
+                MessageResponse::Message(message) => Err(UnexpectedMessageResponse::new_err(
+                    format!("Received log message as response to command: {:?}", message),
+                )),
             },
-            None => Err(DisconnectedBeforeResponse::new_err("Disconnected before response")),
+            None => Err(DisconnectedBeforeResponse::new_err(
+                "Disconnected before response",
+            )),
         }
     }
 
@@ -499,18 +630,21 @@ impl PyMessageResponse {
         })?;
         match x {
             Some(x) => match x {
-                MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => Ok(message.to_string()),
+                MessageResponse::Ok { ident: _, message }
+                | MessageResponse::Warning { ident: _, message } => Ok(message.to_string()),
                 MessageResponse::CommandError { ident: _, error } => {
                     Err(CommandError::new_err(error.to_string()))
                 }
                 MessageResponse::Next { ident: _ } => {
                     Err(UnexpectedMessageResponse::new_err("Next message received"))
                 }
-                MessageResponse::Message(message) => {
-                    Err(UnexpectedMessageResponse::new_err(format!("Received log message as response to command: {:?}", message)))
-                }
+                MessageResponse::Message(message) => Err(UnexpectedMessageResponse::new_err(
+                    format!("Received log message as response to command: {:?}", message),
+                )),
             },
-            None => Err(DisconnectedBeforeResponse::new_err("Disconnected before response")),
+            None => Err(DisconnectedBeforeResponse::new_err(
+                "Disconnected before response",
+            )),
         }
     }
 }
@@ -536,7 +670,6 @@ impl PyLogReceiver {
         self.__next__()
     }
 }
-
 
 #[derive(Debug, Clone, FromPyObject)]
 enum CommandInput {
@@ -594,9 +727,18 @@ impl PyQSConnection {
 
         let conn = match timeout {
             Some(timeout) => rt.block_on(QSConnection::connect_with_timeout_and_config(
-                host, port, connection_type, Duration::from_secs(timeout), tls_config
+                host,
+                port,
+                connection_type,
+                Duration::from_secs(timeout),
+                tls_config,
             ))?,
-            None => rt.block_on(QSConnection::connect_with_config(host, port, connection_type, tls_config))?,
+            None => rt.block_on(QSConnection::connect_with_config(
+                host,
+                port,
+                connection_type,
+                tls_config,
+            ))?,
         };
         Ok(Self {
             conn,
@@ -604,7 +746,7 @@ impl PyQSConnection {
         })
     }
 
-    /// Send a command 
+    /// Send a command
     ///
     /// Args:
     ///     command: Command string or bytes to send
@@ -634,7 +776,7 @@ impl PyQSConnection {
         })
     }
 
-    /// Send a raw bytes command 
+    /// Send a raw bytes command
     ///
     /// Args:
     ///     bytes: Raw command bytes to send
@@ -708,17 +850,17 @@ impl PyQSConnection {
     fn authenticate(&mut self, py: Python<'_>, password: &str) -> PyResult<()> {
         use crate::parser::Value;
         use bstr::ByteSlice;
-        
+
         // Get challenge
-        let rx = self.rt.block_on(
-            self.conn.send_command_bytes(b"CHAL?".as_bstr())
-        )?;
+        let rx = self
+            .rt
+            .block_on(self.conn.send_command_bytes(b"CHAL?".as_bstr()))?;
         let mut challenge_response = PyMessageResponse {
             rx,
             rt: self.rt.clone(),
         };
         let challenge = challenge_response.get_response()?;
-        
+
         // Generate auth response using Python's hmac module
         let hmac_module = PyModule::import(py, "hmac")?;
         let digest_func = hmac_module.getattr("digest")?;
@@ -728,7 +870,7 @@ impl PyQSConnection {
             .call1((password_bytes, challenge_bytes, "md5"))?
             .extract()?;
         let auth_response = hex::encode(auth_response_bytes);
-        
+
         // Send authentication
         let mut auth_cmd = Command::new("AUTH");
         auth_cmd.args.push(Value::String(auth_response));
@@ -738,7 +880,7 @@ impl PyQSConnection {
             rt: self.rt.clone(),
         };
         auth_response_recv.get_response()?;
-        
+
         Ok(())
     }
 
@@ -757,7 +899,12 @@ impl PyQSConnection {
             "Controller" => AccessLevel::Controller,
             "Administrator" => AccessLevel::Administrator,
             "Full" => AccessLevel::Full,
-            _ => return Err(PyValueError::new_err(format!("Invalid access level: {}", level))),
+            _ => {
+                return Err(PyValueError::new_err(format!(
+                    "Invalid access level: {}",
+                    level
+                )))
+            }
         };
         let result = self.rt.block_on(self.conn.set_access_level(access_level));
         match result {
@@ -781,7 +928,6 @@ impl PyQSConnection {
         }
     }
 }
-
 
 impl From<ConnectionError> for PyErr {
     fn from(e: ConnectionError) -> Self {

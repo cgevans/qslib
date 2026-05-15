@@ -55,7 +55,9 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> Comma
         loop {
             match self.response.recv().await {
                 None => return Err(ReceiveOkResponseError::ConnectionClosed),
-                Some(MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. }) => return Ok(Ok(message.try_into()?)),
+                Some(
+                    MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. },
+                ) => return Ok(Ok(message.try_into()?)),
                 Some(MessageResponse::CommandError { error, .. }) => return Ok(Err(error.into())),
                 Some(MessageResponse::Next { .. }) => (),
                 Some(MessageResponse::Message(message)) => {
@@ -70,9 +72,9 @@ impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> Comma
             None => Err(ReceiveNextResponseError::ConnectionClosed),
             Some(MessageResponse::CommandError { error, .. }) => Ok(Err(error.into())),
             Some(MessageResponse::Next { .. }) => Ok(Ok(())),
-            Some(MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. }) => {
-                Err(ReceiveNextResponseError::UnexpectedOk(message))
-            }
+            Some(
+                MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. },
+            ) => Err(ReceiveNextResponseError::UnexpectedOk(message)),
             Some(MessageResponse::Message(message)) => {
                 Err(ReceiveNextResponseError::UnexpectedMessage(message))
             }
@@ -164,7 +166,6 @@ impl TryFrom<OkResponse> for () {
         }
     }
 }
-
 
 #[derive(Debug, Clone)]
 pub struct Subscribe {
@@ -274,8 +275,15 @@ impl TryFrom<String> for AccessLevel {
 impl TryFrom<OkResponse> for AccessLevel {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        let level = value.args.first()
-            .ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing access level argument".to_string()))?
+        let level = value
+            .args
+            .first()
+            .ok_or_else(|| {
+                OkParseError::UnexpectedValues(
+                    value.clone(),
+                    "missing access level argument".to_string(),
+                )
+            })?
             .clone()
             .try_into_string()?;
         AccessLevel::try_from(level).map_err(|_| {
@@ -295,9 +303,10 @@ impl AccessLevel {
                 return Ok(level);
             }
         }
-        Err(pyo3::exceptions::PyValueError::new_err(
-            format!("Cannot compare AccessLevel with {:?}", other)
-        ))
+        Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Cannot compare AccessLevel with {:?}",
+            other
+        )))
     }
 }
 
@@ -316,9 +325,10 @@ impl AccessLevel {
                 pyo3::exceptions::PyValueError::new_err(format!("Invalid access level: {}", value))
             });
         }
-        Err(pyo3::exceptions::PyValueError::new_err(
-            format!("Invalid access level: {:?}", value)
-        ))
+        Err(pyo3::exceptions::PyValueError::new_err(format!(
+            "Invalid access level: {:?}",
+            value
+        )))
     }
 
     fn __str__(&self) -> String {
@@ -389,7 +399,11 @@ pub struct AccessLevelSet {
 
 impl AccessLevelSet {
     pub fn new(level: AccessLevel) -> Self {
-        Self { level, exclusive: false, stealth: false }
+        Self {
+            level,
+            exclusive: false,
+            stealth: false,
+        }
     }
 
     pub fn with_exclusive(mut self, exclusive: bool) -> Self {
@@ -767,8 +781,12 @@ impl CommandBuilder for DrawerStatusQuery {
 impl TryFrom<OkResponse> for CoverHeatStatus {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
-        let first = value.args.first()
-            .ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing cover position argument".to_string()))?;
+        let first = value.args.first().ok_or_else(|| {
+            OkParseError::UnexpectedValues(
+                value.clone(),
+                "missing cover position argument".to_string(),
+            )
+        })?;
         // The parser may interpret "On"/"Off" as Bool(true)/Bool(false)
         let on = match first {
             Value::Bool(b) => *b,
@@ -789,8 +807,15 @@ impl TryFrom<OkResponse> for CoverHeatStatus {
                 ))
             }
         };
-        let temperature = value.args.get(1)
-            .ok_or_else(|| OkParseError::UnexpectedValues(value.clone(), "missing temperature argument".to_string()))?
+        let temperature = value
+            .args
+            .get(1)
+            .ok_or_else(|| {
+                OkParseError::UnexpectedValues(
+                    value.clone(),
+                    "missing temperature argument".to_string(),
+                )
+            })?
             .clone()
             .try_into_f64()?;
         Ok(CoverHeatStatus { on, temperature })
@@ -826,7 +851,7 @@ impl TryFrom<OkResponse> for QuickStatus {
         if args_len < REQUIRED_ARGS {
             return Err(OkParseError::UnexpectedValues(
                 value,
-                format!("expected {} arguments, got {}", REQUIRED_ARGS, args_len)
+                format!("expected {} arguments, got {}", REQUIRED_ARGS, args_len),
             ));
         }
 
@@ -870,7 +895,6 @@ impl TryFrom<OkResponse> for QuickStatus {
         })
     }
 }
-
 
 impl std::fmt::Display for QuickStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -958,7 +982,8 @@ impl QuickStatus {
                 .join(", "),
             match &self.runprogress {
                 PossibleRunProgress::Running(progress) => {
-                    let escaped_title = progress.run_title
+                    let escaped_title = progress
+                        .run_title
                         .replace('&', "&amp;")
                         .replace('<', "&lt;")
                         .replace('>', "&gt;")
@@ -967,7 +992,7 @@ impl QuickStatus {
                         "Running {}: Stage {}, Cycle {}, Step {}",
                         escaped_title, progress.stage, progress.cycle, progress.step
                     )
-                },
+                }
                 PossibleRunProgress::NotRunning(_) => "Not Running".to_string(),
             }
         )
@@ -1009,30 +1034,50 @@ impl TryFrom<OkResponse> for SetTemperatures {
 
         for (key, value) in resp.options.iter() {
             if let Some(zone_num) = key.strip_prefix("Zone") {
-                let zone_num = zone_num.parse::<usize>()
-                    .map_err(|_| OkParseError::UnexpectedValues(resp.clone(), format!("Invalid zone number: {}", zone_num)))?;
+                let zone_num = zone_num.parse::<usize>().map_err(|_| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Invalid zone number: {}", zone_num),
+                    )
+                })?;
                 if zone_num != zones.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
                         format!("Zone {} is out of range", zone_num),
                     ));
                 }
-                zones.push(value.clone().try_into_f64()
-                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse zone temperature: {}", e)))?);
+                zones.push(value.clone().try_into_f64().map_err(|e| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Failed to parse zone temperature: {}", e),
+                    )
+                })?);
             } else if let Some(fan_num) = key.strip_prefix("Fan") {
-                let fan_num = fan_num.parse::<usize>()
-                    .map_err(|_| OkParseError::UnexpectedValues(resp.clone(), format!("Invalid fan number: {}", fan_num)))?;
+                let fan_num = fan_num.parse::<usize>().map_err(|_| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Invalid fan number: {}", fan_num),
+                    )
+                })?;
                 if fan_num != fans.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
                         format!("Fan {} is out of range", fan_num),
                     ));
                 }
-                fans.push(value.clone().try_into_f64()
-                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse fan temperature: {}", e)))?);
+                fans.push(value.clone().try_into_f64().map_err(|e| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Failed to parse fan temperature: {}", e),
+                    )
+                })?);
             } else if key == "Cover" {
-                cover = value.clone().try_into_f64()
-                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse cover temperature: {}", e)))?;
+                cover = value.clone().try_into_f64().map_err(|e| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Failed to parse cover temperature: {}", e),
+                    )
+                })?;
             }
         }
 
@@ -1076,30 +1121,50 @@ impl TryFrom<OkResponse> for TemperatureControlStatus {
 
         for (key, value) in resp.options.iter() {
             if let Some(zone_num) = key.strip_prefix("Zone") {
-                let zone_num = zone_num.parse::<usize>()
-                    .map_err(|_| OkParseError::UnexpectedValues(resp.clone(), format!("Invalid zone number: {}", zone_num)))?;
+                let zone_num = zone_num.parse::<usize>().map_err(|_| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Invalid zone number: {}", zone_num),
+                    )
+                })?;
                 if zone_num != zones.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
                         format!("Zone {} is out of range", zone_num),
                     ));
                 }
-                zones.push(value.clone().try_into_bool()
-                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse zone control: {}", e)))?);
+                zones.push(value.clone().try_into_bool().map_err(|e| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Failed to parse zone control: {}", e),
+                    )
+                })?);
             } else if let Some(fan_num) = key.strip_prefix("Fan") {
-                let fan_num = fan_num.parse::<usize>()
-                    .map_err(|_| OkParseError::UnexpectedValues(resp.clone(), format!("Invalid fan number: {}", fan_num)))?;
+                let fan_num = fan_num.parse::<usize>().map_err(|_| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Invalid fan number: {}", fan_num),
+                    )
+                })?;
                 if fan_num != fans.len() + 1 {
                     return Err(OkParseError::UnexpectedValues(
                         resp.clone(),
                         format!("Fan {} is out of range", fan_num),
                     ));
                 }
-                fans.push(value.clone().try_into_bool()
-                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse fan control: {}", e)))?);
+                fans.push(value.clone().try_into_bool().map_err(|e| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Failed to parse fan control: {}", e),
+                    )
+                })?);
             } else if key == "Cover" {
-                cover = value.clone().try_into_bool()
-                    .map_err(|e| OkParseError::UnexpectedValues(resp.clone(), format!("Failed to parse cover control: {}", e)))?;
+                cover = value.clone().try_into_bool().map_err(|e| {
+                    OkParseError::UnexpectedValues(
+                        resp.clone(),
+                        format!("Failed to parse cover control: {}", e),
+                    )
+                })?;
             }
         }
 
@@ -1223,19 +1288,28 @@ impl RunStatus {
     pub fn parse(response: &[u8]) -> Result<Self, OkParseError> {
         let s = std::str::from_utf8(response).map_err(|e| {
             OkParseError::UnexpectedValues(
-                OkResponse { args: vec![], options: ArgMap::new() },
+                OkResponse {
+                    args: vec![],
+                    options: ArgMap::new(),
+                },
                 format!("invalid UTF-8: {}", e),
             )
         })?;
         let tokens = shell_words::split(s).map_err(|e| {
             OkParseError::UnexpectedValues(
-                OkResponse { args: vec![], options: ArgMap::new() },
+                OkResponse {
+                    args: vec![],
+                    options: ArgMap::new(),
+                },
                 format!("shell split error: {}", e),
             )
         })?;
         if tokens.len() < 8 {
             return Err(OkParseError::UnexpectedValues(
-                OkResponse { args: vec![], options: ArgMap::new() },
+                OkResponse {
+                    args: vec![],
+                    options: ArgMap::new(),
+                },
                 format!("expected 8 tokens, got {}", tokens.len()),
             ));
         }
@@ -1245,7 +1319,11 @@ impl RunStatus {
             .replace_all(&tokens[0], "$2")
             .to_string();
         let parse_stage = |s: &str| -> i64 {
-            if s == "PRERUN" || s == "POSTRun" { 0 } else { s.parse().unwrap_or(-1) }
+            if s == "PRERUN" || s == "POSTRun" {
+                0
+            } else {
+                s.parse().unwrap_or(-1)
+            }
         };
         Ok(RunStatus {
             name,
@@ -1275,9 +1353,7 @@ impl std::fmt::Display for RunStatus {
 impl RunStatus {
     #[staticmethod]
     fn from_bytes(response: &[u8]) -> PyResult<Self> {
-        Self::parse(response).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("{}", e))
-        })
+        Self::parse(response).map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
     }
 
     fn __repr__(&self) -> String {
@@ -1317,25 +1393,36 @@ impl MachineStatus {
     pub fn parse(response: &[u8]) -> Result<Self, OkParseError> {
         let s = std::str::from_utf8(response).map_err(|e| {
             OkParseError::UnexpectedValues(
-                OkResponse { args: vec![], options: ArgMap::new() },
+                OkResponse {
+                    args: vec![],
+                    options: ArgMap::new(),
+                },
                 format!("invalid UTF-8: {}", e),
             )
         })?;
         let tokens = shell_words::split(s).map_err(|e| {
             OkParseError::UnexpectedValues(
-                OkResponse { args: vec![], options: ArgMap::new() },
+                OkResponse {
+                    args: vec![],
+                    options: ArgMap::new(),
+                },
                 format!("shell split error: {}", e),
             )
         })?;
         if tokens.len() < 9 {
             return Err(OkParseError::UnexpectedValues(
-                OkResponse { args: vec![], options: ArgMap::new() },
+                OkResponse {
+                    args: vec![],
+                    options: ArgMap::new(),
+                },
                 format!("expected 9 tokens, got {}", tokens.len()),
             ));
         }
 
         let parse_floats = |s: &str| -> Vec<f64> {
-            s.split_whitespace().filter_map(|v| v.parse().ok()).collect()
+            s.split_whitespace()
+                .filter_map(|v| v.parse().ok())
+                .collect()
         };
 
         let kv_re = regex::Regex::new(r"-(\w+)=([\d.eE+-]+)").unwrap();
@@ -1387,29 +1474,45 @@ impl std::fmt::Display for MachineStatus {
 impl MachineStatus {
     #[staticmethod]
     fn from_bytes(response: &[u8]) -> PyResult<Self> {
-        Self::parse(response).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("{}", e))
-        })
+        Self::parse(response).map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
     }
 
     #[getter]
-    fn get_drawer(&self) -> &str { &self.drawer }
+    fn get_drawer(&self) -> &str {
+        &self.drawer
+    }
     #[getter]
-    fn get_cover(&self) -> &str { &self.cover }
+    fn get_cover(&self) -> &str {
+        &self.cover
+    }
     #[getter]
-    fn get_lamp_status(&self) -> &str { &self.lamp_status }
+    fn get_lamp_status(&self) -> &str {
+        &self.lamp_status
+    }
     #[getter]
-    fn get_sample_temperatures(&self) -> Vec<f64> { self.sample_temperatures.clone() }
+    fn get_sample_temperatures(&self) -> Vec<f64> {
+        self.sample_temperatures.clone()
+    }
     #[getter]
-    fn get_block_temperatures(&self) -> Vec<f64> { self.block_temperatures.clone() }
+    fn get_block_temperatures(&self) -> Vec<f64> {
+        self.block_temperatures.clone()
+    }
     #[getter]
-    fn get_cover_temperature(&self) -> f64 { self.cover_temperature }
+    fn get_cover_temperature(&self) -> f64 {
+        self.cover_temperature
+    }
     #[getter]
-    fn get_target_temperatures(&self) -> HashMap<String, f64> { self.target_temperatures.clone() }
+    fn get_target_temperatures(&self) -> HashMap<String, f64> {
+        self.target_temperatures.clone()
+    }
     #[getter]
-    fn get_target_controlled(&self) -> HashMap<String, bool> { self.target_controlled.clone() }
+    fn get_target_controlled(&self) -> HashMap<String, bool> {
+        self.target_controlled.clone()
+    }
     #[getter]
-    fn get_led_temperature(&self) -> f64 { self.led_temperature }
+    fn get_led_temperature(&self) -> f64 {
+        self.led_temperature
+    }
 
     fn __repr__(&self) -> String {
         self.to_string()
@@ -1897,11 +2000,26 @@ mod tests {
 
     #[test]
     fn test_access_level_from_string() {
-        assert!(matches!(AccessLevel::try_from("guest".to_string()), Ok(AccessLevel::Guest)));
-        assert!(matches!(AccessLevel::try_from("OBSERVER".to_string()), Ok(AccessLevel::Observer)));
-        assert!(matches!(AccessLevel::try_from("Controller".to_string()), Ok(AccessLevel::Controller)));
-        assert!(matches!(AccessLevel::try_from("administrator".to_string()), Ok(AccessLevel::Administrator)));
-        assert!(matches!(AccessLevel::try_from("full".to_string()), Ok(AccessLevel::Full)));
+        assert!(matches!(
+            AccessLevel::try_from("guest".to_string()),
+            Ok(AccessLevel::Guest)
+        ));
+        assert!(matches!(
+            AccessLevel::try_from("OBSERVER".to_string()),
+            Ok(AccessLevel::Observer)
+        ));
+        assert!(matches!(
+            AccessLevel::try_from("Controller".to_string()),
+            Ok(AccessLevel::Controller)
+        ));
+        assert!(matches!(
+            AccessLevel::try_from("administrator".to_string()),
+            Ok(AccessLevel::Administrator)
+        ));
+        assert!(matches!(
+            AccessLevel::try_from("full".to_string()),
+            Ok(AccessLevel::Full)
+        ));
         assert!(AccessLevel::try_from("invalid".to_string()).is_err());
     }
 
@@ -1931,7 +2049,12 @@ mod tests {
 
     // --- QuickStatus Display and to_html ---
 
-    fn make_quick_status(running: bool, cover_on: bool, num_zones: usize, num_fans: usize) -> QuickStatus {
+    fn make_quick_status(
+        running: bool,
+        cover_on: bool,
+        num_zones: usize,
+        num_fans: usize,
+    ) -> QuickStatus {
         let runprogress = if running {
             PossibleRunProgress::Running(RunProgress {
                 run_mode: "Standard".to_string(),
@@ -1952,7 +2075,10 @@ mod tests {
         QuickStatus {
             power: PowerStatus::On,
             drawer: DrawerStatus::Closed,
-            cover: CoverHeatStatus { on: cover_on, temperature: 105.0 },
+            cover: CoverHeatStatus {
+                on: cover_on,
+                temperature: 105.0,
+            },
             temperature_control: TemperatureControlStatus {
                 zones: vec![true; num_zones],
                 fans: vec![false; num_fans],
@@ -2231,7 +2357,10 @@ mod tests {
         };
         let result = SetTemperatures::try_from(ok_response);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid zone number"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid zone number"));
     }
 
     #[test]
@@ -2244,7 +2373,10 @@ mod tests {
         };
         let result = SetTemperatures::try_from(ok_response);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid fan number"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid fan number"));
     }
 
     #[test]

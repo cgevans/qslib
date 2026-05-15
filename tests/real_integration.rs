@@ -42,16 +42,26 @@ async fn connect_authenticated(host: &str, port: u16, conn_type: ConnectionType)
 #[ignore]
 async fn test_real_tcp_connection() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
-    
-    assert!(connection.is_ok(), "TCP connection failed: {:?}", connection.err());
+
+    assert!(
+        connection.is_ok(),
+        "TCP connection failed: {:?}",
+        connection.err()
+    );
     let conn = connection.unwrap();
-    
+
     assert!(conn.is_connected().await, "Connection should be active");
     assert_eq!(conn.connection_type, ConnectionType::TCP);
-    
+
     // Verify ready message has expected fields
-    assert!(conn.ready_message.args.get("product").is_some(), "Missing product in ready message");
-    assert!(conn.ready_message.args.get("version").is_some(), "Missing version in ready message");
+    assert!(
+        conn.ready_message.args.get("product").is_some(),
+        "Missing product in ready message"
+    );
+    assert!(
+        conn.ready_message.args.get("version").is_some(),
+        "Missing version in ready message"
+    );
 }
 
 /// Test SSL connection to the real machine
@@ -59,10 +69,14 @@ async fn test_real_tcp_connection() {
 #[ignore]
 async fn test_real_ssl_connection() {
     let connection = QSConnection::connect(SSL_HOST, SSL_PORT, ConnectionType::SSL).await;
-    
-    assert!(connection.is_ok(), "SSL connection failed: {:?}", connection.err());
+
+    assert!(
+        connection.is_ok(),
+        "SSL connection failed: {:?}",
+        connection.err()
+    );
     let conn = connection.unwrap();
-    
+
     assert!(conn.is_connected().await, "Connection should be active");
     assert_eq!(conn.connection_type, ConnectionType::SSL);
 }
@@ -72,8 +86,12 @@ async fn test_real_ssl_connection() {
 #[ignore]
 async fn test_real_auto_tcp() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::Auto).await;
-    
-    assert!(connection.is_ok(), "Auto TCP connection failed: {:?}", connection.err());
+
+    assert!(
+        connection.is_ok(),
+        "Auto TCP connection failed: {:?}",
+        connection.err()
+    );
     let conn = connection.unwrap();
     assert_eq!(conn.connection_type, ConnectionType::TCP);
 }
@@ -83,8 +101,12 @@ async fn test_real_auto_tcp() {
 #[ignore]
 async fn test_real_auto_ssl() {
     let connection = QSConnection::connect(SSL_HOST, SSL_PORT, ConnectionType::Auto).await;
-    
-    assert!(connection.is_ok(), "Auto SSL connection failed: {:?}", connection.err());
+
+    assert!(
+        connection.is_ok(),
+        "Auto SSL connection failed: {:?}",
+        connection.err()
+    );
     let conn = connection.unwrap();
     assert_eq!(conn.connection_type, ConnectionType::SSL);
 }
@@ -98,9 +120,14 @@ async fn test_real_connection_timeout() {
         TCP_PORT,
         ConnectionType::TCP,
         Duration::from_secs(10),
-    ).await;
-    
-    assert!(connection.is_ok(), "Connection with timeout failed: {:?}", connection.err());
+    )
+    .await;
+
+    assert!(
+        connection.is_ok(),
+        "Connection with timeout failed: {:?}",
+        connection.err()
+    );
 }
 
 /// Test HELP? command (available at all access levels)
@@ -110,12 +137,12 @@ async fn test_real_help_command() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
-    
+
     let mut response = connection
         .send_command_bytes(b"HELP?")
         .await
         .expect("Failed to send command");
-    
+
     let result = response.get_response().await;
     assert!(result.is_ok(), "HELP? command failed: {:?}", result.err());
 }
@@ -125,18 +152,22 @@ async fn test_real_help_command() {
 #[ignore]
 async fn test_real_power_query() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
-    
+
     let response = PowerQuery
         .send(&connection)
         .await
         .expect("Failed to send power query")
         .receive_response()
         .await;
-    
+
     assert!(response.is_ok(), "Power query failed: {:?}", response.err());
     let power_status = response.unwrap();
     // Should be either Ok(On) or Ok(Off)
-    assert!(power_status.is_ok(), "Power query returned error: {:?}", power_status.err());
+    assert!(
+        power_status.is_ok(),
+        "Power query returned error: {:?}",
+        power_status.err()
+    );
 }
 
 /// Test access level query
@@ -146,15 +177,19 @@ async fn test_real_access_level_query() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
-    
+
     let response = AccessLevelQuery
         .send(&connection)
         .await
         .expect("Failed to send access level query")
         .receive_response()
         .await;
-    
-    assert!(response.is_ok(), "Access level query failed: {:?}", response.err());
+
+    assert!(
+        response.is_ok(),
+        "Access level query failed: {:?}",
+        response.err()
+    );
 }
 
 /// Test authentication
@@ -164,17 +199,32 @@ async fn test_real_authentication() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
-    
+
     // Authenticate
     let auth_result = connection.authenticate(TEST_PASSWORD).await;
-    assert!(auth_result.is_ok(), "Authentication failed: {:?}", auth_result.err());
-    
+    assert!(
+        auth_result.is_ok(),
+        "Authentication failed: {:?}",
+        auth_result.err()
+    );
+
     // Verify we can now set higher access levels
     let set_result = connection.set_access_level(AccessLevel::Controller).await;
-    assert!(set_result.is_ok(), "Failed to set Controller after auth: {:?}", set_result.err());
-    
-    let level = connection.get_access_level().await.expect("Failed to get access level");
-    assert!(matches!(level, AccessLevel::Controller), "Expected Controller, got {:?}", level);
+    assert!(
+        set_result.is_ok(),
+        "Failed to set Controller after auth: {:?}",
+        set_result.err()
+    );
+
+    let level = connection
+        .get_access_level()
+        .await
+        .expect("Failed to get access level");
+    assert!(
+        matches!(level, AccessLevel::Controller),
+        "Expected Controller, got {:?}",
+        level
+    );
 }
 
 /// Test authentication with wrong password fails
@@ -184,9 +234,12 @@ async fn test_real_authentication_wrong_password() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
-    
+
     let auth_result = connection.authenticate("wrongpassword").await;
-    assert!(auth_result.is_err(), "Authentication with wrong password should fail");
+    assert!(
+        auth_result.is_err(),
+        "Authentication with wrong password should fail"
+    );
 }
 
 /// Test setting access level (without password - basic level)
@@ -196,7 +249,7 @@ async fn test_real_set_access_level() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
-    
+
     // Try to set access level to Observer (doesn't require password)
     let response = AccessLevelSet::new(AccessLevel::Observer)
         .send(&connection)
@@ -204,10 +257,10 @@ async fn test_real_set_access_level() {
         .expect("Failed to send access level set")
         .receive_response()
         .await;
-    
+
     // Observer level should be settable without password
     println!("Access level set response: {:?}", response);
-    
+
     // Verify current access level
     let verify = AccessLevelQuery
         .send(&connection)
@@ -215,8 +268,12 @@ async fn test_real_set_access_level() {
         .expect("Failed to send verification query")
         .receive_response()
         .await;
-    
-    assert!(verify.is_ok(), "Verification query failed: {:?}", verify.err());
+
+    assert!(
+        verify.is_ok(),
+        "Verification query failed: {:?}",
+        verify.err()
+    );
 }
 
 /// Test setting Controller access level (requires authentication on real machine)
@@ -226,19 +283,31 @@ async fn test_real_controller_access() {
     let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Failed to connect");
-    
+
     // Authenticate first
-    connection.authenticate(TEST_PASSWORD)
+    connection
+        .authenticate(TEST_PASSWORD)
         .await
         .expect("Failed to authenticate");
-    
+
     // Now set controller access level
     let result = connection.set_access_level(AccessLevel::Controller).await;
-    assert!(result.is_ok(), "Failed to set Controller access: {:?}", result.err());
-    
+    assert!(
+        result.is_ok(),
+        "Failed to set Controller access: {:?}",
+        result.err()
+    );
+
     // Verify
-    let level = connection.get_access_level().await.expect("Failed to get access level");
-    assert!(matches!(level, AccessLevel::Controller), "Expected Controller, got {:?}", level);
+    let level = connection
+        .get_access_level()
+        .await
+        .expect("Failed to get access level");
+    assert!(
+        matches!(level, AccessLevel::Controller),
+        "Expected Controller, got {:?}",
+        level
+    );
 }
 
 /// Test subscribing to log messages
@@ -246,15 +315,18 @@ async fn test_real_controller_access() {
 #[ignore]
 async fn test_real_log_subscription() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
-    
-    Subscribe::topic("Temperature").send(&connection).await.unwrap();
+
+    Subscribe::topic("Temperature")
+        .send(&connection)
+        .await
+        .unwrap();
 
     // Subscribe to all messages
     let mut stream = connection.subscribe_log(&["Temperature"]).await;
-    
+
     // Wait for at least one message (with timeout)
     let timeout = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
-    
+
     assert!(timeout.is_ok(), "Timed out waiting for log messages");
     let message = timeout.unwrap();
     assert!(message.is_some(), "Should receive at least one log message");
@@ -265,9 +337,9 @@ async fn test_real_log_subscription() {
 #[ignore]
 async fn test_real_run_title_no_run() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
-    
+
     let result = connection.get_current_run_name().await;
-    
+
     assert!(result.is_ok(), "Run title query failed: {:?}", result.err());
     // When no run is active, should return None or "-"
     let run_name = result.unwrap();
@@ -280,18 +352,26 @@ async fn test_real_run_title_no_run() {
 #[ignore]
 async fn test_real_temperature_setpoints() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
-    
+
     let result = connection.get_current_temperature_setpoints().await;
-    
-    assert!(result.is_ok(), "Temperature setpoints query failed: {:?}", result.err());
+
+    assert!(
+        result.is_ok(),
+        "Temperature setpoints query failed: {:?}",
+        result.err()
+    );
     let (zones, fans, cover) = result.unwrap();
-    
+
     // Should have 6 zone temperatures
     assert_eq!(zones.len(), 6, "Should have 6 zone temperatures");
     // Should have at least 1 fan temperature
     assert!(!fans.is_empty(), "Should have fan temperatures");
     // Cover temperature should be reasonable
-    assert!(cover > 0.0 && cover < 200.0, "Cover temperature {} seems unreasonable", cover);
+    assert!(
+        cover > 0.0 && cover < 200.0,
+        "Cover temperature {} seems unreasonable",
+        cover
+    );
 }
 
 /// Test file listing
@@ -299,9 +379,9 @@ async fn test_real_temperature_setpoints() {
 #[ignore]
 async fn test_real_file_list() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
-    
+
     let result = connection.get_expfile_list("*").await;
-    
+
     // This might succeed or fail depending on the machine state
     // We just want to make sure the command runs without panicking
     println!("File list result: {:?}", result);
@@ -312,23 +392,29 @@ async fn test_real_file_list() {
 #[ignore]
 async fn test_real_concurrent_commands() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
-    
+
     // Send multiple commands concurrently
     let power_fut = PowerQuery.send(&connection);
     let access_fut = AccessLevelQuery.send(&connection);
-    
+
     let (power_resp, access_resp) = tokio::join!(power_fut, access_fut);
-    
+
     let mut power = power_resp.expect("Power query send failed");
     let mut access = access_resp.expect("Access query send failed");
-    
-    let (power_result, access_result) = tokio::join!(
-        power.receive_response(),
-        access.receive_response()
+
+    let (power_result, access_result) =
+        tokio::join!(power.receive_response(), access.receive_response());
+
+    assert!(
+        power_result.is_ok(),
+        "Power query failed: {:?}",
+        power_result.err()
     );
-    
-    assert!(power_result.is_ok(), "Power query failed: {:?}", power_result.err());
-    assert!(access_result.is_ok(), "Access query failed: {:?}", access_result.err());
+    assert!(
+        access_result.is_ok(),
+        "Access query failed: {:?}",
+        access_result.err()
+    );
 }
 
 /// Test raw command bytes
@@ -336,13 +422,13 @@ async fn test_real_concurrent_commands() {
 #[ignore]
 async fn test_real_raw_command() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
-    
+
     // Send a raw RUNTitle? command
     let mut response = connection
         .send_command_bytes(b"RUNTitle?")
         .await
         .expect("Failed to send command");
-    
+
     let result = response.get_response().await;
     assert!(result.is_ok(), "Raw command failed: {:?}", result.err());
 }
@@ -352,7 +438,7 @@ async fn test_real_raw_command() {
 #[ignore]
 async fn test_real_ssl_commands() {
     let connection = connect_authenticated(SSL_HOST, SSL_PORT, ConnectionType::SSL).await;
-    
+
     // Test a simple command over SSL
     let response = PowerQuery
         .send(&connection)
@@ -360,7 +446,7 @@ async fn test_real_ssl_commands() {
         .expect("Failed to send command")
         .receive_response()
         .await;
-    
+
     assert!(response.is_ok(), "SSL command failed: {:?}", response.err());
 }
 
@@ -372,20 +458,20 @@ async fn test_real_reconnection() {
     let conn1 = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("First connection failed");
-    
+
     assert!(conn1.is_connected().await);
-    
+
     // Second connection while first is still active
     let conn2 = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
         .await
         .expect("Second connection failed");
-    
+
     assert!(conn2.is_connected().await);
-    
+
     // Both should work
     let r1 = conn1.send_command_bytes(b"HELP?").await;
     let r2 = conn2.send_command_bytes(b"HELP?").await;
-    
+
     assert!(r1.is_ok(), "First connection command failed");
     assert!(r2.is_ok(), "Second connection command failed");
 }
@@ -412,9 +498,17 @@ async fn test_real_drawer_query() {
         .receive_response()
         .await;
 
-    assert!(response.is_ok(), "Drawer status query failed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Drawer status query failed: {:?}",
+        response.err()
+    );
     let status = response.unwrap();
-    assert!(status.is_ok(), "Drawer status returned error: {:?}", status.err());
+    assert!(
+        status.is_ok(),
+        "Drawer status returned error: {:?}",
+        status.err()
+    );
 }
 
 /// Test cover position query
@@ -430,9 +524,17 @@ async fn test_real_cover_query() {
         .receive_response()
         .await;
 
-    assert!(response.is_ok(), "Cover position query failed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Cover position query failed: {:?}",
+        response.err()
+    );
     let position = response.unwrap();
-    assert!(position.is_ok(), "Cover position returned error: {:?}", position.err());
+    assert!(
+        position.is_ok(),
+        "Cover position returned error: {:?}",
+        position.err()
+    );
 }
 
 /// Test cover heat status query - verify temperature is reasonable
@@ -448,9 +550,17 @@ async fn test_real_cover_heat_query() {
         .receive_response()
         .await;
 
-    assert!(response.is_ok(), "Cover heat status query failed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Cover heat status query failed: {:?}",
+        response.err()
+    );
     let status = response.unwrap();
-    assert!(status.is_ok(), "Cover heat status returned error: {:?}", status.err());
+    assert!(
+        status.is_ok(),
+        "Cover heat status returned error: {:?}",
+        status.err()
+    );
     let heat_status = status.unwrap();
     assert!(
         heat_status.temperature > 0.0 && heat_status.temperature < 200.0,
@@ -472,9 +582,17 @@ async fn test_real_quick_status() {
         .receive_response()
         .await;
 
-    assert!(response.is_ok(), "Quick status query failed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Quick status query failed: {:?}",
+        response.err()
+    );
     let status = response.unwrap();
-    assert!(status.is_ok(), "Quick status returned error: {:?}", status.err());
+    assert!(
+        status.is_ok(),
+        "Quick status returned error: {:?}",
+        status.err()
+    );
     let quick_status = status.unwrap();
     assert!(
         !quick_status.sample_temperatures.is_empty(),
@@ -498,16 +616,33 @@ async fn test_real_control_zones() {
         .expect("Failed to send control zones query");
 
     let result = response.get_response().await;
-    assert!(result.is_ok(), "Control zones query failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Control zones query failed: {:?}",
+        result.err()
+    );
     let ok_result = result.unwrap();
-    assert!(ok_result.is_ok(), "Control zones returned error: {:?}", ok_result.err());
+    assert!(
+        ok_result.is_ok(),
+        "Control zones returned error: {:?}",
+        ok_result.err()
+    );
     let ok_response = ok_result.unwrap();
     // The response args should contain the zone count as a value
-    assert!(!ok_response.args.is_empty(), "Control zones response should have args");
+    assert!(
+        !ok_response.args.is_empty(),
+        "Control zones response should have args"
+    );
     let zones_str = ok_response.to_string();
-    let zone_count: usize = zones_str.trim().parse()
+    let zone_count: usize = zones_str
+        .trim()
+        .parse()
         .unwrap_or_else(|_| panic!("Failed to parse zone count as number from '{}'", zones_str));
-    assert!(zone_count >= 1, "Zone count should be >= 1, got {}", zone_count);
+    assert!(
+        zone_count >= 1,
+        "Zone count should be >= 1, got {}",
+        zone_count
+    );
 }
 
 /// Test subscribing to temperature topic and receiving a message
@@ -516,7 +651,10 @@ async fn test_real_control_zones() {
 async fn test_real_subscribe_temperature() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
 
-    Subscribe::topic("Temperature").send(&connection).await.unwrap();
+    Subscribe::topic("Temperature")
+        .send(&connection)
+        .await
+        .unwrap();
 
     let mut stream = connection.subscribe_log(&["Temperature"]).await;
 
@@ -524,7 +662,10 @@ async fn test_real_subscribe_temperature() {
 
     assert!(timeout.is_ok(), "Timed out waiting for Temperature message");
     let message = timeout.unwrap();
-    assert!(message.is_some(), "Should receive at least one Temperature message");
+    assert!(
+        message.is_some(),
+        "Should receive at least one Temperature message"
+    );
     let (topic, msg_result) = message.unwrap();
     assert!(msg_result.is_ok(), "Stream message should be Ok");
     assert_eq!(topic, "Temperature", "Message topic should be Temperature");
@@ -536,15 +677,24 @@ async fn test_real_subscribe_temperature() {
 async fn test_real_subscribe_multiple() {
     let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
 
-    Subscribe::topics(&["Temperature", "Status"]).send(&connection).await.unwrap();
+    Subscribe::topics(&["Temperature", "Status"])
+        .send(&connection)
+        .await
+        .unwrap();
 
     let mut stream = connection.subscribe_log(&["Temperature", "Status"]).await;
 
     let timeout = tokio::time::timeout(Duration::from_secs(5), stream.next()).await;
 
-    assert!(timeout.is_ok(), "Timed out waiting for messages on Temperature/Status");
+    assert!(
+        timeout.is_ok(),
+        "Timed out waiting for messages on Temperature/Status"
+    );
     let message = timeout.unwrap();
-    assert!(message.is_some(), "Should receive at least one message from subscribed topics");
+    assert!(
+        message.is_some(),
+        "Should receive at least one message from subscribed topics"
+    );
 }
 
 /// Test sample temperatures query
@@ -560,11 +710,23 @@ async fn test_real_sample_temperatures() {
         .receive_response()
         .await;
 
-    assert!(response.is_ok(), "Sample temperatures query failed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Sample temperatures query failed: {:?}",
+        response.err()
+    );
     let temps_result = response.unwrap();
-    assert!(temps_result.is_ok(), "Sample temperatures returned error: {:?}", temps_result.err());
+    assert!(
+        temps_result.is_ok(),
+        "Sample temperatures returned error: {:?}",
+        temps_result.err()
+    );
     let temps = temps_result.unwrap();
-    assert!(temps.len() >= 1, "Should have at least 1 sample temperature, got {}", temps.len());
+    assert!(
+        temps.len() >= 1,
+        "Should have at least 1 sample temperature, got {}",
+        temps.len()
+    );
 }
 
 /// Test block temperatures query
@@ -580,11 +742,23 @@ async fn test_real_block_temperatures() {
         .receive_response()
         .await;
 
-    assert!(response.is_ok(), "Block temperatures query failed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Block temperatures query failed: {:?}",
+        response.err()
+    );
     let temps_result = response.unwrap();
-    assert!(temps_result.is_ok(), "Block temperatures returned error: {:?}", temps_result.err());
+    assert!(
+        temps_result.is_ok(),
+        "Block temperatures returned error: {:?}",
+        temps_result.err()
+    );
     let temps = temps_result.unwrap();
-    assert!(temps.len() >= 1, "Should have at least 1 block temperature, got {}", temps.len());
+    assert!(
+        temps.len() >= 1,
+        "Should have at least 1 block temperature, got {}",
+        temps.len()
+    );
 }
 
 /// Test temperature control status query - verify zones and fans are non-empty
@@ -600,9 +774,17 @@ async fn test_real_temperature_control_status() {
         .receive_response()
         .await;
 
-    assert!(response.is_ok(), "Temperature control status query failed: {:?}", response.err());
+    assert!(
+        response.is_ok(),
+        "Temperature control status query failed: {:?}",
+        response.err()
+    );
     let status_result = response.unwrap();
-    assert!(status_result.is_ok(), "Temperature control status returned error: {:?}", status_result.err());
+    assert!(
+        status_result.is_ok(),
+        "Temperature control status returned error: {:?}",
+        status_result.err()
+    );
     let status = status_result.unwrap();
     assert!(
         !status.zones.is_empty(),
@@ -613,4 +795,3 @@ async fn test_real_temperature_control_status() {
         "Temperature control status should have fans"
     );
 }
-

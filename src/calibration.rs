@@ -59,7 +59,9 @@ fn le(input: &mut &[u8]) -> ModalResult<()> {
 fn skip_blank_lines(input: &mut &[u8]) -> ModalResult<()> {
     loop {
         let checkpoint = *input;
-        if space0::<_, winnow::error::ContextError>.parse_next(input).is_ok()
+        if space0::<_, winnow::error::ContextError>
+            .parse_next(input)
+            .is_ok()
             && le(input).is_ok()
         {
             continue;
@@ -87,7 +89,9 @@ fn skip_blanks_and_comments(input: &mut &[u8]) -> ModalResult<()> {
         }
         *input = checkpoint;
         // Try blank line (whitespace-only line)
-        if space0::<_, winnow::error::ContextError>.parse_next(input).is_ok()
+        if space0::<_, winnow::error::ContextError>
+            .parse_next(input)
+            .is_ok()
             && le(input).is_ok()
         {
             continue;
@@ -121,8 +125,7 @@ fn matrix_row(input: &mut &[u8]) -> ModalResult<Vec<f64>> {
 
 /// Parse a matrix entry: `key=<<eof\n rows \neof\n`.
 fn matrix_entry(input: &mut &[u8]) -> ModalResult<(String, IniValue)> {
-    let key = take_till(1.., |c: u8| c == b'=' || c == b'\n' || c == b'\r')
-        .parse_next(input)?;
+    let key = take_till(1.., |c: u8| c == b'=' || c == b'\n' || c == b'\r').parse_next(input)?;
     let key = String::from_utf8_lossy(key).trim().to_string();
     space0.parse_next(input)?;
     b"=".parse_next(input)?;
@@ -136,17 +139,18 @@ fn matrix_entry(input: &mut &[u8]) -> ModalResult<(String, IniValue)> {
     loop {
         let checkpoint = *input;
         // Check for eof terminator
-        space0::<_, winnow::error::ContextError>.parse_next(input).ok();
+        space0::<_, winnow::error::ContextError>
+            .parse_next(input)
+            .ok();
         if input.starts_with(b"eof") {
             let after_eof = &input[3..];
             // eof must be followed by newline, EOF, or whitespace+newline
-            if after_eof.is_empty()
-                || after_eof[0] == b'\n'
-                || after_eof[0] == b'\r'
-            {
+            if after_eof.is_empty() || after_eof[0] == b'\n' || after_eof[0] == b'\r' {
                 // Consume "eof" and the newline
                 *input = &input[3..];
-                space0::<_, winnow::error::ContextError>.parse_next(input).ok();
+                space0::<_, winnow::error::ContextError>
+                    .parse_next(input)
+                    .ok();
                 opt(le).parse_next(input)?;
                 break;
             }
@@ -170,8 +174,7 @@ fn matrix_entry(input: &mut &[u8]) -> ModalResult<(String, IniValue)> {
 
 /// Parse a scalar entry: `key = value\n`. Value must not start with `<<eof`.
 fn scalar_entry(input: &mut &[u8]) -> ModalResult<(String, IniValue)> {
-    let key = take_till(1.., |c: u8| c == b'=' || c == b'\n' || c == b'\r')
-        .parse_next(input)?;
+    let key = take_till(1.., |c: u8| c == b'=' || c == b'\n' || c == b'\r').parse_next(input)?;
     let key = String::from_utf8_lossy(key).trim().to_string();
     b"=".parse_next(input)?;
     space0.parse_next(input)?;
@@ -245,8 +248,7 @@ pub fn parse_ini(input: &[u8]) -> Result<IniFile, CalibrationError> {
     let mut rest = input;
     let inp = &mut rest;
 
-    skip_blanks_and_comments(inp)
-        .map_err(|e| CalibrationError::ParseError(format!("{}", e)))?;
+    skip_blanks_and_comments(inp).map_err(|e| CalibrationError::ParseError(format!("{}", e)))?;
 
     let mut file = IniFile::new();
     while !inp.is_empty() {
@@ -393,12 +395,13 @@ impl UniformityCalibration {
         let signal_norm_section = ini
             .get("signal_norm")
             .ok_or_else(|| CalibrationError::MissingSection("signal_norm".to_string()))?;
-        let factor = signal_norm_section
-            .get("factor")
-            .ok_or_else(|| CalibrationError::MissingKey {
-                section: "signal_norm".to_string(),
-                key: "factor".to_string(),
-            })?;
+        let factor =
+            signal_norm_section
+                .get("factor")
+                .ok_or_else(|| CalibrationError::MissingKey {
+                    section: "signal_norm".to_string(),
+                    key: "factor".to_string(),
+                })?;
         let signal_norm = match factor {
             IniValue::Scalar(s) => s.parse::<f64>().map_err(|_| {
                 CalibrationError::ParseError(format!("Invalid signal_norm factor: {}", s))
@@ -528,10 +531,7 @@ impl PureDyeCalibration {
     }
 
     fn __repr__(&self) -> String {
-        format!(
-            "PureDyeCalibration(filters={})",
-            self.color_balance.len()
-        )
+        format!("PureDyeCalibration(filters={})", self.color_balance.len())
     }
 
     fn get_color_balance(&self, filter_set: &FilterSet) -> f64 {
@@ -655,7 +655,10 @@ impl RoiCalibration {
     /// Find the filter set that uses the given emission filter number.
     /// E.g., emission=4 finds x1-m4 from the filter_sets list.
     pub fn get_for_emission(&self, emission: u8) -> Option<FilterSet> {
-        self.filter_sets.iter().find(|fs| fs.em == emission).copied()
+        self.filter_sets
+            .iter()
+            .find(|fs| fs.em == emission)
+            .copied()
     }
 }
 
@@ -750,8 +753,7 @@ mod tests {
     use std::io::Read;
 
     fn read_from_test_eds(path: &str) -> String {
-        let eds_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test.eds");
+        let eds_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test.eds");
         let file = std::fs::File::open(eds_path).expect("test.eds not found");
         let mut archive = ::zip::ZipArchive::new(file).expect("invalid zip");
         let mut entry = archive.by_name(path).expect("file not found in EDS");
@@ -879,11 +881,7 @@ mod tests {
 
     #[test]
     fn test_well_matrix_indexing() {
-        let wm = WellMatrix::from_rows(&[
-            vec![1.0, 2.0, 3.0],
-            vec![4.0, 5.0, 6.0],
-        ])
-        .unwrap();
+        let wm = WellMatrix::from_rows(&[vec![1.0, 2.0, 3.0], vec![4.0, 5.0, 6.0]]).unwrap();
         assert_eq!(wm.n_rows, 2);
         assert_eq!(wm.n_cols, 3);
         assert_eq!(wm.get(0, 0), 1.0);
@@ -894,10 +892,7 @@ mod tests {
 
     #[test]
     fn test_well_matrix_invalid() {
-        let result = WellMatrix::from_rows(&[
-            vec![1.0, 2.0],
-            vec![3.0],
-        ]);
+        let result = WellMatrix::from_rows(&[vec![1.0, 2.0], vec![3.0]]);
         assert!(result.is_err());
     }
 

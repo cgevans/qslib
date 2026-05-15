@@ -194,8 +194,16 @@ impl EdsArchive {
         } else if self.spec_major_version == 2 {
             self.parse_summary_json()?;
             // Also update write_software from manifest
-            let title = self.manifest.get("Implementation-Title").cloned().unwrap_or_default();
-            let version = self.manifest.get("Implementation-Version").cloned().unwrap_or_default();
+            let title = self
+                .manifest
+                .get("Implementation-Title")
+                .cloned()
+                .unwrap_or_default();
+            let version = self
+                .manifest
+                .get("Implementation-Version")
+                .cloned()
+                .unwrap_or_default();
             if !title.is_empty() {
                 self.write_software = Some(format!("{} {}", title, version));
             }
@@ -233,9 +241,7 @@ impl EdsArchive {
 
                     if tag == "ExperimentProperty" {
                         for attr in e.attributes().flatten() {
-                            if attr.key.as_ref() == b"type"
-                                && attr.value.as_ref() == b"RunInfo"
-                            {
+                            if attr.key.as_ref() == b"type" && attr.value.as_ref() == b"RunInfo" {
                                 in_run_info = true;
                             }
                         }
@@ -261,7 +267,10 @@ impl EdsArchive {
                     depth -= 1;
                 }
                 Ok(Event::Text(ref e)) => {
-                    let text = std::str::from_utf8(e.as_ref()).unwrap_or_default().trim().to_string();
+                    let text = std::str::from_utf8(e.as_ref())
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string();
                     if text.is_empty() {
                         continue;
                     }
@@ -314,10 +323,7 @@ impl EdsArchive {
         let summary: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| EdsError::Format(format!("summary.json parse error: {}", e)))?;
 
-        self.name = summary["name"]
-            .as_str()
-            .unwrap_or("unknown")
-            .to_string();
+        self.name = summary["name"].as_str().unwrap_or("unknown").to_string();
         self.run_state = summary["runStatus"]
             .as_str()
             .unwrap_or("UNKNOWN")
@@ -350,8 +356,7 @@ impl EdsArchive {
     /// Read a file from the archive as bytes.
     pub fn read_file(&self, relative_path: &str) -> Result<Vec<u8>, EdsError> {
         let path = self.base_dir.join(relative_path);
-        std::fs::read(&path)
-            .map_err(|e| EdsError::Io(format!("read {}: {}", path.display(), e)))
+        std::fs::read(&path).map_err(|e| EdsError::Io(format!("read {}: {}", path.display(), e)))
     }
 
     /// Read a file from the EDS subdirectory as a string.
@@ -426,8 +431,7 @@ impl EdsArchive {
     pub fn write_eds_file(&self, filename: &str, content: &str) -> Result<(), EdsError> {
         let path = self.eds_dir().join(filename);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| EdsError::Io(format!("mkdir: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| EdsError::Io(format!("mkdir: {}", e)))?;
         }
         std::fs::write(&path, content)
             .map_err(|e| EdsError::Io(format!("write {}: {}", path.display(), e)))
@@ -437,8 +441,7 @@ impl EdsArchive {
     pub fn write_file(&self, relative_path: &str, data: &[u8]) -> Result<(), EdsError> {
         let path = self.base_dir.join(relative_path);
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| EdsError::Io(format!("mkdir: {}", e)))?;
+            std::fs::create_dir_all(parent).map_err(|e| EdsError::Io(format!("mkdir: {}", e)))?;
         }
         std::fs::write(&path, data)
             .map_err(|e| EdsError::Io(format!("write {}: {}", path.display(), e)))
@@ -454,8 +457,7 @@ impl EdsArchive {
             .map_err(|e| EdsError::Io(format!("Failed to create temp dir: {}", e)))?;
         let base_dir = tmp_dir.path().to_path_buf();
         let eds_dir = base_dir.join("apldbio").join("sds");
-        std::fs::create_dir_all(&eds_dir)
-            .map_err(|e| EdsError::Io(format!("mkdir: {}", e)))?;
+        std::fs::create_dir_all(&eds_dir).map_err(|e| EdsError::Io(format!("mkdir: {}", e)))?;
 
         // Write template files
         let experiment_xml = experiment_xml::new_experiment_xml(plate_type);
@@ -578,8 +580,7 @@ fn walkdir(dir: &Path) -> Result<Vec<PathBuf>, EdsError> {
         for entry in std::fs::read_dir(dir)
             .map_err(|e| EdsError::Io(format!("readdir {}: {}", dir.display(), e)))?
         {
-            let entry =
-                entry.map_err(|e| EdsError::Io(format!("readdir entry: {}", e)))?;
+            let entry = entry.map_err(|e| EdsError::Io(format!("readdir entry: {}", e)))?;
             let path = entry.path();
             entries.push(path.clone());
             if path.is_dir() {
@@ -782,9 +783,16 @@ impl EdsArchive {
         software_version: &str,
     ) -> PyResult<()> {
         self.update_experiment_xml(
-            name, operator, created_time_ms, modified_time_ms,
-            run_start_time_ms, run_end_time_ms, run_state, software_version,
-        ).map_err(|e| e.into())
+            name,
+            operator,
+            created_time_ms,
+            modified_time_ms,
+            run_start_time_ms,
+            run_end_time_ms,
+            run_state,
+            software_version,
+        )
+        .map_err(|e| e.into())
     }
 
     /// Write tcprotocol.xml and qsl-tcprotocol.xml from a Protocol.
@@ -853,7 +861,11 @@ mod tests {
         if test_path.exists() {
             let data = std::fs::read(test_path).unwrap();
             let archive = EdsArchive::from_bytes(&data);
-            assert!(archive.is_ok(), "Failed to load from bytes: {:?}", archive.err());
+            assert!(
+                archive.is_ok(),
+                "Failed to load from bytes: {:?}",
+                archive.err()
+            );
             let archive = archive.unwrap();
             assert!(!archive.name.is_empty());
         }

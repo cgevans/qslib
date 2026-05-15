@@ -6,10 +6,10 @@ pub mod commands;
 pub mod data;
 pub mod eds;
 pub mod experiment_xml;
+pub mod message_log;
 pub mod message_receiver;
 pub mod parser;
 pub mod plate_setup;
-pub mod message_log;
 pub mod protocol;
 pub mod quant;
 pub mod tiff;
@@ -212,5 +212,4 @@ mod qslib {
             pyo3::exceptions::PyValueError::new_err(format!("Failed to parse Value: {}", e))
         })
     }
-
 }

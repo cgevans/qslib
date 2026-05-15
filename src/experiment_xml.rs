@@ -239,8 +239,7 @@ pub fn update_experiment_xml(
 
                         if tag == "ExperimentProperty" {
                             for attr in e.attributes().flatten() {
-                                if attr.key.as_ref() == b"type"
-                                    && attr.value.as_ref() == b"RunInfo"
+                                if attr.key.as_ref() == b"type" && attr.value.as_ref() == b"RunInfo"
                                 {
                                     in_run_info = true;
                                 }
@@ -260,8 +259,8 @@ pub fn update_experiment_xml(
                         suppress_text = false;
                         if depth == 2 {
                             match tag.as_str() {
-                                "Name" | "CreatedTime" | "ModifiedTime"
-                                | "RunStartTime" | "RunEndTime" | "RunState" | "Operator" => {
+                                "Name" | "CreatedTime" | "ModifiedTime" | "RunStartTime"
+                                | "RunEndTime" | "RunState" | "Operator" => {
                                     suppress_text = true;
                                 }
                                 _ => {}
@@ -271,9 +270,9 @@ pub fn update_experiment_xml(
                             suppress_text = true;
                         }
 
-                        writer.write_event(Event::Start(e.clone())).map_err(|e| {
-                            EdsError::Xml(format!("write error: {}", e))
-                        })?;
+                        writer
+                            .write_event(Event::Start(e.clone()))
+                            .map_err(|e| EdsError::Xml(format!("write error: {}", e)))?;
 
                         // Write new text content for intercepted elements
                         if depth == 2 && suppress_text {
@@ -327,9 +326,9 @@ pub fn update_experiment_xml(
                         }
 
                         suppress_text = false;
-                        writer.write_event(Event::End(e.clone())).map_err(|e| {
-                            EdsError::Xml(format!("write error: {}", e))
-                        })?;
+                        writer
+                            .write_event(Event::End(e.clone()))
+                            .map_err(|e| EdsError::Xml(format!("write error: {}", e)))?;
                         depth -= 1;
                     }
                     Event::Text(_) | Event::GeneralRef(_) if suppress_text => {
@@ -337,9 +336,9 @@ pub fn update_experiment_xml(
                         continue;
                     }
                     _ => {
-                        writer.write_event(event.into_owned()).map_err(|e| {
-                            EdsError::Xml(format!("write error: {}", e))
-                        })?;
+                        writer
+                            .write_event(event.into_owned())
+                            .map_err(|e| EdsError::Xml(format!("write error: {}", e)))?;
                     }
                 }
             }
@@ -370,43 +369,50 @@ fn emit_missing_elements(
     let write_err = |e| EdsError::Xml(format!("write error: {}", e));
 
     if !seen.contains("Name") {
-        writer.create_element("Name")
+        writer
+            .create_element("Name")
             .write_text_content(BytesText::new(name))
             .map_err(write_err)?;
     }
     if !seen.contains("Operator") {
         if let Some(op) = operator {
-            writer.create_element("Operator")
+            writer
+                .create_element("Operator")
                 .write_text_content(BytesText::new(op))
                 .map_err(write_err)?;
         }
     }
     if !seen.contains("CreatedTime") {
-        writer.create_element("CreatedTime")
+        writer
+            .create_element("CreatedTime")
             .write_text_content(BytesText::new(&created_time_ms.to_string()))
             .map_err(write_err)?;
     }
     if !seen.contains("ModifiedTime") {
-        writer.create_element("ModifiedTime")
+        writer
+            .create_element("ModifiedTime")
             .write_text_content(BytesText::new(&modified_time_ms.to_string()))
             .map_err(write_err)?;
     }
     if !seen.contains("RunStartTime") {
         if let Some(t) = run_start_time_ms {
-            writer.create_element("RunStartTime")
+            writer
+                .create_element("RunStartTime")
                 .write_text_content(BytesText::new(&t.to_string()))
                 .map_err(write_err)?;
         }
     }
     if !seen.contains("RunEndTime") {
         if let Some(t) = run_end_time_ms {
-            writer.create_element("RunEndTime")
+            writer
+                .create_element("RunEndTime")
                 .write_text_content(BytesText::new(&t.to_string()))
                 .map_err(write_err)?;
         }
     }
     if !seen.contains("RunState") {
-        writer.create_element("RunState")
+        writer
+            .create_element("RunState")
             .write_text_content(BytesText::new(run_state))
             .map_err(write_err)?;
     }
@@ -420,12 +426,17 @@ fn emit_missing_elements(
         pv.push_attribute(("key", "softwareVersion"));
         writer.write_event(Event::Start(pv)).map_err(write_err)?;
 
-        writer.create_element("String")
+        writer
+            .create_element("String")
             .write_text_content(BytesText::new(software_version))
             .map_err(write_err)?;
 
-        writer.write_event(Event::End(BytesEnd::new("PropertyValue"))).map_err(write_err)?;
-        writer.write_event(Event::End(BytesEnd::new("ExperimentProperty"))).map_err(write_err)?;
+        writer
+            .write_event(Event::End(BytesEnd::new("PropertyValue")))
+            .map_err(write_err)?;
+        writer
+            .write_event(Event::End(BytesEnd::new("ExperimentProperty")))
+            .map_err(write_err)?;
     }
 
     Ok(())
@@ -541,10 +552,9 @@ mod tests {
   <RunState>INIT</RunState>
 </Experiment>"#;
 
-        let updated = update_experiment_xml(
-            original, "test", None, 1000, 2000, None, None, "INIT", "v1",
-        )
-        .unwrap();
+        let updated =
+            update_experiment_xml(original, "test", None, 1000, 2000, None, None, "INIT", "v1")
+                .unwrap();
 
         assert!(!updated.contains("<Operator>"));
         assert!(!updated.contains("old_user"));
@@ -562,7 +572,15 @@ mod tests {
 </Experiment>"#;
 
         let updated = update_experiment_xml(
-            original, "test", None, 1000, 2000, None, None, "INIT", "QSLib 0.14.0",
+            original,
+            "test",
+            None,
+            1000,
+            2000,
+            None,
+            None,
+            "INIT",
+            "QSLib 0.14.0",
         )
         .unwrap();
 
@@ -574,11 +592,27 @@ mod tests {
     fn test_roundtrip_update() {
         let template = new_experiment_xml(96);
         let updated1 = update_experiment_xml(
-            &template, "exp1", Some("user1"), 1000, 2000, Some(1500), None, "RUNNING", "v1",
+            &template,
+            "exp1",
+            Some("user1"),
+            1000,
+            2000,
+            Some(1500),
+            None,
+            "RUNNING",
+            "v1",
         )
         .unwrap();
         let updated2 = update_experiment_xml(
-            &updated1, "exp1", Some("user1"), 1000, 3000, Some(1500), Some(2500), "COMPLETE", "v2",
+            &updated1,
+            "exp1",
+            Some("user1"),
+            1000,
+            3000,
+            Some(1500),
+            Some(2500),
+            "COMPLETE",
+            "v2",
         )
         .unwrap();
 

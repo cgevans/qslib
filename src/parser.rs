@@ -61,7 +61,10 @@ impl ArgMap {
         self
     }
 
-    pub fn extract_with_default<'a, T>(&'a self, key: &str, default: T) -> Result<T, ParseError> where T: TryFrom<&'a Value, Error = ParseError> {
+    pub fn extract_with_default<'a, T>(&'a self, key: &str, default: T) -> Result<T, ParseError>
+    where
+        T: TryFrom<&'a Value, Error = ParseError>,
+    {
         match self.get(key) {
             Some(v) => Ok(v.try_into()?),
             None => Ok(default),
@@ -104,7 +107,7 @@ impl<'py> IntoPyObject<'py> for ArgMap {
 impl<'py> FromPyObject<'py> for ArgMap {
     fn extract_bound(ob: &Bound<'py, pyo3::PyAny>) -> PyResult<Self> {
         use pyo3::types::PyDict;
-        
+
         if let Ok(dict) = ob.downcast::<PyDict>() {
             let mut arg_map = ArgMap::new();
             for (key, value) in dict.iter() {
@@ -119,12 +122,11 @@ impl<'py> FromPyObject<'py> for ArgMap {
             Ok(arg_map)
         } else {
             Err(pyo3::exceptions::PyTypeError::new_err(
-                "Expected a dictionary for ArgMap conversion"
+                "Expected a dictionary for ArgMap conversion",
             ))
         }
     }
 }
-
 
 #[derive(PartialEq, Clone)]
 pub enum Value {
@@ -160,7 +162,7 @@ impl<'py> IntoPyObject<'py> for Value {
 impl<'py> FromPyObject<'py> for Value {
     fn extract_bound(ob: &Bound<'py, pyo3::PyAny>) -> PyResult<Self> {
         use pyo3::types::{PyBool, PyBytes, PyFloat, PyInt, PyString};
-        
+
         if let Ok(b) = ob.downcast::<PyBool>() {
             Ok(Value::Bool(b.is_true()))
         } else if let Ok(i) = ob.downcast::<PyInt>() {
@@ -170,9 +172,9 @@ impl<'py> FromPyObject<'py> for Value {
         } else if let Ok(s) = ob.downcast::<PyString>() {
             let string_val: String = s.extract()?;
             if string_val.contains('\n') {
-                Ok(Value::XmlString { 
-                    value: BString::from(string_val.as_bytes()), 
-                    tag: "quote".to_string() 
+                Ok(Value::XmlString {
+                    value: BString::from(string_val.as_bytes()),
+                    tag: "quote".to_string(),
                 })
             } else if string_val.contains(' ') {
                 Ok(Value::QuotedString(string_val))
@@ -181,16 +183,16 @@ impl<'py> FromPyObject<'py> for Value {
             }
         } else if let Ok(b) = ob.downcast::<PyBytes>() {
             let bytes: Vec<u8> = b.extract()?;
-            Ok(Value::XmlString { 
-                value: BString::from(bytes), 
-                tag: String::new() 
+            Ok(Value::XmlString {
+                value: BString::from(bytes),
+                tag: String::new(),
             })
         } else {
             let s: String = ob.str()?.extract()?;
             if s.contains('\n') {
-                Ok(Value::XmlString { 
-                    value: BString::from(s.as_bytes()), 
-                    tag: "quote".to_string() 
+                Ok(Value::XmlString {
+                    value: BString::from(s.as_bytes()),
+                    tag: "quote".to_string(),
                 })
             } else if s.contains(' ') {
                 Ok(Value::QuotedString(s))
@@ -200,7 +202,6 @@ impl<'py> FromPyObject<'py> for Value {
         }
     }
 }
-
 
 impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -341,8 +342,8 @@ impl Value {
                 .context(StrContext::Label("xml")),
             // Handle double-quoted strings with backslash escape support
             parse_quoted_string
-            .map(|val| Value::QuotedString(val))
-            .context(StrContext::Label("quoted")),
+                .map(|val| Value::QuotedString(val))
+                .context(StrContext::Label("quoted")),
             // Handle single-quoted strings (no escape processing)
             delimited(
                 literal(b'\''),
@@ -631,7 +632,17 @@ impl Command {
 
     pub fn parse(input: &mut &[u8]) -> ModalResult<Command> {
         let comm = take_while(1.., |c: u8| {
-            c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*' || c == b'=' || c == b'+' || c == b'-' || c == b'~' || c == b'<'        })
+            c.is_ascii_alphanumeric()
+                || c == b'.'
+                || c == b':'
+                || c == b'?'
+                || c == b'*'
+                || c == b'='
+                || c == b'+'
+                || c == b'-'
+                || c == b'~'
+                || c == b'<'
+        })
         .context(StrContext::Label("command"))
         .parse_next(input)?;
         space0
@@ -702,7 +713,7 @@ impl Command {
     fn __repr__(&self) -> String {
         let command_str = String::from_utf8_lossy(&self.command);
         let mut repr = format!("Command(command='{}', options={{", command_str);
-        
+
         let mut first_option = true;
         for (key, value) in &self.options {
             if !first_option {
@@ -711,9 +722,9 @@ impl Command {
             first_option = false;
             repr.push_str(&format!("'{}': {:?}", key, value));
         }
-        
+
         repr.push_str("}, args=[");
-        
+
         let mut first_arg = true;
         for arg in &self.args {
             if !first_arg {
@@ -722,7 +733,7 @@ impl Command {
             first_arg = false;
             repr.push_str(&format!("{:?}", arg));
         }
-        
+
         repr.push_str("])");
         repr
     }
@@ -801,7 +812,6 @@ impl Display for OkResponse {
     }
 }
 
-
 impl OkResponse {
     pub fn parse(input: &mut &[u8]) -> ModalResult<OkResponse> {
         let kv = parse_options(input)?;
@@ -850,22 +860,28 @@ impl From<OkResponse> for String {
 impl OkResponse {
     #[getter]
     fn opts(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyAny>> {
-        Ok(self.options.clone().into_pyobject(py).unwrap().into_any().unbind())
+        Ok(self
+            .options
+            .clone()
+            .into_pyobject(py)
+            .unwrap()
+            .into_any()
+            .unbind())
     }
 
     #[getter]
     fn args(&self, py: Python<'_>) -> PyResult<Vec<Py<pyo3::types::PyAny>>> {
-        self.args.iter().map(|v| {
-            Ok(v.clone().into_pyobject(py).unwrap().into_any().unbind())
-        }).collect()
+        self.args
+            .iter()
+            .map(|v| Ok(v.clone().into_pyobject(py).unwrap().into_any().unbind()))
+            .collect()
     }
 
     #[staticmethod]
     #[pyo3(name = "from_string")]
     fn py_from_string(s: String) -> PyResult<Self> {
-        OkResponse::try_from(s).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse: {}", e))
-        })
+        OkResponse::try_from(s)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("Failed to parse: {}", e)))
     }
 
     fn __repr__(&self) -> String {
@@ -1039,11 +1055,9 @@ impl Ready {
     /// Returns an error message if the capability is missing.
     pub fn validate_capabilities(&self) -> Result<(), String> {
         if !self.has_capability("Index") {
-            return Err(
-                "Server does not advertise 'Index' capability. \
+            return Err("Server does not advertise 'Index' capability. \
                  Command indexing may not work correctly."
-                .to_string()
-            );
+                .to_string());
         }
         Ok(())
     }
@@ -1087,9 +1101,11 @@ impl LogMessage {
 fn parse_message(input: &mut &[u8]) -> ModalResult<MessageResponse> {
     let _: &[u8] = literal(b"MESSage").parse_next(input)?;
     let _: &[u8] = space1.parse_next(input)?;
-    let topic: String = take_while(1.., |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*')
-        .map(|val: &[u8]| String::from_utf8_lossy(val).to_string())
-        .parse_next(input)?;
+    let topic: String = take_while(1.., |c: u8| {
+        c.is_ascii_alphanumeric() || c == b'.' || c == b':' || c == b'?' || c == b'*'
+    })
+    .map(|val: &[u8]| String::from_utf8_lossy(val).to_string())
+    .parse_next(input)?;
     let _: &[u8] = space1.parse_next(input)?;
 
     // Try to parse an optional timestamp (float) before the message text.
@@ -1110,12 +1126,23 @@ fn parse_message(input: &mut &[u8]) -> ModalResult<MessageResponse> {
         None => (None, rest),
     };
 
-    Ok(MessageResponse::Message(LogMessage { topic, timestamp, message }))
+    Ok(MessageResponse::Message(LogMessage {
+        topic,
+        timestamp,
+        message,
+    }))
 }
 
 impl MessageResponse {
     pub fn parse(input: &mut &[u8]) -> ModalResult<MessageResponse> {
-        alt((parse_ok, parse_warning, parse_error, parse_next, parse_message)).parse_next(input)
+        alt((
+            parse_ok,
+            parse_warning,
+            parse_error,
+            parse_next,
+            parse_message,
+        ))
+        .parse_next(input)
     }
 }
 
@@ -1136,7 +1163,9 @@ impl TryFrom<&[u8]> for MessageResponse {
 pub fn parse_tag<'s>(input: &mut &'s [u8]) -> ModalResult<&'s [u8]> {
     delimited(
         literal(b'<'),
-        take_while(1.., |c: u8| c.is_ascii_alphanumeric() || c == b'.' || c == b'_'),
+        take_while(1.., |c: u8| {
+            c.is_ascii_alphanumeric() || c == b'.' || c == b'_'
+        }),
         literal(b'>'),
     )
     .parse_next(input)
@@ -1266,14 +1295,20 @@ fn scpi_value_one(input: &mut &[u8]) -> ModalResult<Value> {
         // XML-delimited quoted content (not command blocks - those use multiline. prefix)
         xml_delimited
             .verify(|(tag, _): &(&[u8], &[u8])| !tag.starts_with(b"multiline."))
-            .map(|(_, val)| {
-                Value::String(String::from_utf8_lossy(val).to_string())
-            })
+            .map(|(_, val)| Value::String(String::from_utf8_lossy(val).to_string()))
             .context(StrContext::Label("xml_quoted")),
         // Unquoted value (stops at whitespace, comma, <, #)
-        take_till(1.., |c: u8| c == b' ' || c == b'\t' || c == b'\n' || c == b'\r' || c == b',' || c == b'<' || c == b'#')
-            .map(|val: &[u8]| Value::String(String::from_utf8_lossy(val).to_string()))
-            .context(StrContext::Label("unquoted")),
+        take_till(1.., |c: u8| {
+            c == b' '
+                || c == b'\t'
+                || c == b'\n'
+                || c == b'\r'
+                || c == b','
+                || c == b'<'
+                || c == b'#'
+        })
+        .map(|val: &[u8]| Value::String(String::from_utf8_lossy(val).to_string()))
+        .context(StrContext::Label("unquoted")),
     ))
     .parse_next(input)?;
     // Convert string to bool/int/float
@@ -1308,8 +1343,10 @@ fn scpi_opt_value(input: &mut &[u8]) -> ModalResult<SCPIArgValue> {
                 let mut cmds = Vec::new();
                 let mut inner = content;
                 loop {
-                    let _: &[u8] = take_while(0.., |c: u8| c == b' ' || c == b'\t' || c == b'\n' || c == b'\r')
-                        .parse_next(&mut inner)?;
+                    let _: &[u8] = take_while(0.., |c: u8| {
+                        c == b' ' || c == b'\t' || c == b'\n' || c == b'\r'
+                    })
+                    .parse_next(&mut inner)?;
                     if inner.is_empty() {
                         break;
                     }
@@ -1386,7 +1423,7 @@ pub fn parse_scpi_command(input: &mut &[u8]) -> ModalResult<SCPICommand> {
         // Check for comment
         if input[0] == b'#' {
             *input = &input[1..]; // skip #
-            // Skip optional space after #
+                                  // Skip optional space after #
             let _: &[u8] = take_while(0.., |c: u8| c == b' ').parse_next(input)?;
             let comment_text: &[u8] = take_till(0.., |c: u8| c == b'\n').parse_next(input)?;
             comment = Some(String::from_utf8_lossy(comment_text).to_string());
@@ -1434,7 +1471,10 @@ impl SCPICommand {
     fn py_from_string(s: &str) -> PyResult<Self> {
         let mut input = s.as_bytes();
         parse_scpi_command(&mut input).map_err(|e| {
-            pyo3::exceptions::PyValueError::new_err(format!("Failed to parse SCPICommand from {:?}: {}", s, e))
+            pyo3::exceptions::PyValueError::new_err(format!(
+                "Failed to parse SCPICommand from {:?}: {}",
+                s, e
+            ))
         })
     }
 
@@ -1463,7 +1503,9 @@ impl SCPICommand {
     /// Get positional args as a Python tuple.
     #[getter]
     fn args(&self, py: Python<'_>) -> PyResult<Py<pyo3::types::PyAny>> {
-        let items: Vec<Py<pyo3::types::PyAny>> = self.args.iter()
+        let items: Vec<Py<pyo3::types::PyAny>> = self
+            .args
+            .iter()
             .map(|v| scpi_arg_to_py(py, v))
             .collect::<PyResult<_>>()?;
         let tuple = pyo3::types::PyTuple::new(py, items)?;
@@ -1471,8 +1513,10 @@ impl SCPICommand {
     }
 
     fn __repr__(&self) -> String {
-        format!("SCPICommand(command='{}', args={:?}, opts={:?}, comment={:?})",
-            self.command, self.args, self.opts, self.comment)
+        format!(
+            "SCPICommand(command='{}', args={:?}, opts={:?}, comment={:?})",
+            self.command, self.args, self.opts, self.comment
+        )
     }
 
     fn __eq__(&self, other: &Self) -> bool {
@@ -1496,18 +1540,18 @@ pub fn py_quote_string_if_needed(s: &str) -> String {
 #[cfg(feature = "python")]
 fn scpi_arg_to_py(py: Python<'_>, val: &SCPIArgValue) -> PyResult<Py<pyo3::types::PyAny>> {
     match val {
-        SCPIArgValue::Scalar(v) => {
-            Ok(v.clone().into_pyobject(py).unwrap().into_any().unbind())
-        }
+        SCPIArgValue::Scalar(v) => Ok(v.clone().into_pyobject(py).unwrap().into_any().unbind()),
         SCPIArgValue::List(items) => {
-            let py_items: Vec<Py<pyo3::types::PyAny>> = items.iter()
+            let py_items: Vec<Py<pyo3::types::PyAny>> = items
+                .iter()
                 .map(|v| Ok(v.clone().into_pyobject(py).unwrap().into_any().unbind()))
                 .collect::<PyResult<_>>()?;
             let list = pyo3::types::PyList::new(py, py_items)?;
             Ok(list.into_any().unbind())
         }
         SCPIArgValue::CommandBlock(cmds) => {
-            let py_cmds: Vec<Py<SCPICommand>> = cmds.iter()
+            let py_cmds: Vec<Py<SCPICommand>> = cmds
+                .iter()
                 .map(|cmd| Py::new(py, cmd.clone()))
                 .collect::<PyResult<_>>()?;
             let list = pyo3::types::PyList::new(py, py_cmds)?;
@@ -1690,7 +1734,10 @@ mod tests {
         let result = Command::parse(&mut &input[..]).unwrap();
         assert_eq!(String::from_utf8_lossy(&result.command), "CMD");
         assert_eq!(result.options.get("opt1").unwrap().to_string(), "value1");
-        assert!(matches!(result.options.get("opt2").unwrap(), Value::Int(42)));
+        assert!(matches!(
+            result.options.get("opt2").unwrap(),
+            Value::Int(42)
+        ));
     }
 
     #[test]
@@ -1718,10 +1765,10 @@ mod tests {
         let cmd = Command::new("TEST")
             .with_option("opt", Value::Int(42))
             .with_arg("arg1");
-        
+
         let mut output = Vec::new();
         cmd.write_bytes(&mut output).unwrap();
-        
+
         let output_str = String::from_utf8_lossy(&output);
         assert!(output_str.contains("TEST"));
         assert!(output_str.contains("-opt=42"));
@@ -1753,10 +1800,10 @@ mod tests {
     fn test_command_roundtrip() {
         let original = "CMD -opt1=value -opt2=3.14 arg1 arg2";
         let cmd = Command::try_from(original).unwrap();
-        
+
         let mut output = Vec::new();
         cmd.write_bytes(&mut output).unwrap();
-        
+
         let reparsed = Command::parse(&mut &output[..]).unwrap();
         assert_eq!(
             String::from_utf8_lossy(&cmd.command),
@@ -1803,7 +1850,7 @@ mod tests {
     fn test_parse_ok_response() {
         let input = b"OK 123 -opt=val arg1\n";
         let result = MessageResponse::try_from(&input[..]).unwrap();
-        
+
         match result {
             MessageResponse::Ok { ident, message } => {
                 assert!(matches!(ident, MessageIdent::Number(123)));
@@ -1818,7 +1865,7 @@ mod tests {
     fn test_parse_error_response() {
         let input = b"ERRor 456 [AuthenticationError] Invalid password\n";
         let result = MessageResponse::try_from(&input[..]).unwrap();
-        
+
         match result {
             MessageResponse::CommandError { ident, error } => {
                 assert!(matches!(ident, MessageIdent::Number(456)));
@@ -1832,7 +1879,7 @@ mod tests {
     fn test_parse_next_response() {
         let input = b"NEXT 789\n";
         let result = MessageResponse::try_from(&input[..]).unwrap();
-        
+
         match result {
             MessageResponse::Next { ident } => {
                 assert!(matches!(ident, MessageIdent::Number(789)));
@@ -1847,7 +1894,10 @@ mod tests {
         let result = Ready::parse(&mut &input[..]).unwrap();
 
         assert_eq!(result.args.get("session").unwrap().to_string(), "474800");
-        assert_eq!(result.args.get("product").unwrap().to_string(), "QuantStudio3_5");
+        assert_eq!(
+            result.args.get("product").unwrap().to_string(),
+            "QuantStudio3_5"
+        );
         assert_eq!(result.args.get("version").unwrap().to_string(), "1.3.0");
         assert_eq!(result.args.get("build").unwrap().to_string(), "1");
     }
@@ -1927,23 +1977,22 @@ mod tests {
     fn test_argmap_operations() {
         let mut map = ArgMap::new();
         assert!(map.is_empty());
-        
+
         map.insert("key1", Value::Int(42));
         assert_eq!(map.len(), 1);
         assert!(!map.is_empty());
-        
+
         assert!(matches!(map.get("key1").unwrap(), Value::Int(42)));
         assert!(map.get("nonexistent").is_none());
     }
 
     #[test]
     fn test_argmap_extract_with_default() {
-        let map = ArgMap::new()
-            .with("existing", Value::Int(42));
-        
+        let map = ArgMap::new().with("existing", Value::Int(42));
+
         let result: i64 = map.extract_with_default("existing", 0).unwrap();
         assert_eq!(result, 42);
-        
+
         let result: i64 = map.extract_with_default("missing", 99).unwrap();
         assert_eq!(result, 99);
     }
@@ -1956,10 +2005,10 @@ mod tests {
                 .with("opt2", Value::String("val".to_string())),
             args: vec![Value::String("arg1".to_string()), Value::Float(3.2)],
         };
-        
+
         let bytes = response.to_bytes();
         let reparsed = OkResponse::parse(&mut &bytes[..]).unwrap();
-        
+
         assert_eq!(
             reparsed.options.get("opt1").unwrap().to_string(),
             response.options.get("opt1").unwrap().to_string()
@@ -1968,15 +2017,14 @@ mod tests {
 
     #[test]
     fn test_command_with_xml_arg() {
-        let cmd = Command::new("PROT")
-            .with_arg(Value::XmlString {
-                value: "STAGE 1\nTEST".into(),
-                tag: "multiline.protocol".to_string(),
-            });
-        
+        let cmd = Command::new("PROT").with_arg(Value::XmlString {
+            value: "STAGE 1\nTEST".into(),
+            tag: "multiline.protocol".to_string(),
+        });
+
         let mut output = Vec::new();
         cmd.write_bytes(&mut output).unwrap();
-        
+
         let output_str = String::from_utf8_lossy(&output);
         assert!(output_str.contains("<multiline.protocol>"));
         assert!(output_str.contains("</multiline.protocol>"));
@@ -1988,7 +2036,7 @@ mod tests {
         // Commands with dots
         let cmd = Command::try_from("TBC:SETT?").unwrap();
         assert_eq!(String::from_utf8_lossy(&cmd.command), "TBC:SETT?");
-        
+
         // Commands with asterisks
         let cmd = Command::try_from("IDN*").unwrap();
         assert_eq!(String::from_utf8_lossy(&cmd.command), "IDN*");
@@ -2002,7 +2050,7 @@ mod tests {
 
         let xml = Value::XmlString {
             value: "content".into(),
-            tag: "tag".to_string()
+            tag: "tag".to_string(),
         };
         assert_eq!(xml.to_string(), "content");
     }
@@ -2051,7 +2099,12 @@ mod tests {
         for s in ["open", "opened", "Open", "close", "closed", "Closed"] {
             let mut inp = s.as_bytes();
             let v = Value::parse(&mut inp).unwrap();
-            assert!(matches!(v, Value::String(_)), "Expected string for '{}', got {:?}", s, v);
+            assert!(
+                matches!(v, Value::String(_)),
+                "Expected string for '{}', got {:?}",
+                s,
+                v
+            );
         }
     }
 
@@ -2191,7 +2244,9 @@ mod tests {
         assert_eq!(cmd.args.len(), 3);
         assert!(matches!(&cmd.args[0], SCPIArgValue::Scalar(Value::String(s)) if s == "arg1"));
         assert!(matches!(&cmd.args[1], SCPIArgValue::Scalar(Value::Int(42))));
-        assert!(matches!(&cmd.args[2], SCPIArgValue::Scalar(Value::Float(f)) if (*f - 3.14).abs() < 0.001));
+        assert!(
+            matches!(&cmd.args[2], SCPIArgValue::Scalar(Value::Float(f)) if (*f - 3.14).abs() < 0.001)
+        );
     }
 
     #[test]
@@ -2200,8 +2255,14 @@ mod tests {
         let cmd = parse_scpi_command(&mut input).unwrap();
         assert_eq!(cmd.command, "CMD");
         assert!(cmd.args.is_empty());
-        assert!(matches!(cmd.opts.get("stage"), Some(SCPIArgValue::Scalar(Value::Int(3)))));
-        assert!(matches!(cmd.opts.get("cycle"), Some(SCPIArgValue::Scalar(Value::Int(10)))));
+        assert!(matches!(
+            cmd.opts.get("stage"),
+            Some(SCPIArgValue::Scalar(Value::Int(3)))
+        ));
+        assert!(matches!(
+            cmd.opts.get("cycle"),
+            Some(SCPIArgValue::Scalar(Value::Int(10)))
+        ));
     }
 
     #[test]
@@ -2232,8 +2293,13 @@ mod tests {
         let cmd = parse_scpi_command(&mut input).unwrap();
         assert_eq!(cmd.command, "CMD");
         assert_eq!(cmd.args.len(), 2);
-        assert!(matches!(cmd.opts.get("opt"), Some(SCPIArgValue::Scalar(Value::String(s))) if s == "val"));
-        assert!(matches!(cmd.opts.get("opt2"), Some(SCPIArgValue::Scalar(Value::Int(42)))));
+        assert!(
+            matches!(cmd.opts.get("opt"), Some(SCPIArgValue::Scalar(Value::String(s))) if s == "val")
+        );
+        assert!(matches!(
+            cmd.opts.get("opt2"),
+            Some(SCPIArgValue::Scalar(Value::Int(42)))
+        ));
     }
 
     #[test]
@@ -2241,7 +2307,9 @@ mod tests {
         let mut input = b"CMD \"hello world\"\n" as &[u8];
         let cmd = parse_scpi_command(&mut input).unwrap();
         assert_eq!(cmd.args.len(), 1);
-        assert!(matches!(&cmd.args[0], SCPIArgValue::Scalar(Value::QuotedString(s)) if s == "hello world"));
+        assert!(
+            matches!(&cmd.args[0], SCPIArgValue::Scalar(Value::QuotedString(s)) if s == "hello world")
+        );
     }
 
     #[test]
@@ -2264,8 +2332,14 @@ mod tests {
         let mut input = b"CMD true false\n" as &[u8];
         let cmd = parse_scpi_command(&mut input).unwrap();
         assert_eq!(cmd.args.len(), 2);
-        assert!(matches!(&cmd.args[0], SCPIArgValue::Scalar(Value::Bool(true))));
-        assert!(matches!(&cmd.args[1], SCPIArgValue::Scalar(Value::Bool(false))));
+        assert!(matches!(
+            &cmd.args[0],
+            SCPIArgValue::Scalar(Value::Bool(true))
+        ));
+        assert!(matches!(
+            &cmd.args[1],
+            SCPIArgValue::Scalar(Value::Bool(false))
+        ));
     }
 
     #[test]

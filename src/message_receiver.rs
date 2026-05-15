@@ -7,8 +7,9 @@ use thiserror::Error;
 #[cfg(feature = "simd")]
 use memchr::memchr3;
 
-static TAG_REGEX: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"^<(/?)([A-Za-z0-9_.-]*)(>|$)").expect("Invalid TAG_REGEX pattern"));
+static TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^<(/?)([A-Za-z0-9_.-]*)(>|$)").expect("Invalid TAG_REGEX pattern")
+});
 
 /*
 This isn't quite right: the quote mismatchees for InstrumentServer appear to be at a line level.
@@ -326,7 +327,7 @@ mod tests {
         let mut receiver = MsgRecv::new();
         let ready = receiver.push_data(b"OK 1 success\n");
         assert!(ready, "Should signal message ready");
-        
+
         let msg = receiver.try_get_msg().unwrap().unwrap();
         assert_eq!(&msg, b"OK 1 success\n");
     }
@@ -336,7 +337,7 @@ mod tests {
         let mut receiver = MsgRecv::new();
         let ready = receiver.push_data(b"OK 1 success");
         assert!(!ready, "Should not signal ready without newline");
-        
+
         let msg = receiver.try_get_msg().unwrap();
         assert!(msg.is_none(), "Should not have a message yet");
     }
@@ -346,7 +347,7 @@ mod tests {
         let mut receiver = MsgRecv::new();
         let ready = receiver.push_data(b"\n");
         assert!(ready, "Empty line is still a complete message");
-        
+
         let msg = receiver.try_get_msg().unwrap().unwrap();
         assert_eq!(&msg, b"\n");
     }
@@ -355,7 +356,7 @@ mod tests {
     fn test_xml_preserves_internal_newlines() {
         let mut receiver = MsgRecv::new();
         receiver.push_data(b"OK 1 <quote>line1\nline2\nline3</quote>\n");
-        
+
         let msg = receiver.try_get_msg().unwrap().unwrap();
         assert!(String::from_utf8_lossy(&msg).contains("line1\nline2\nline3"));
     }
@@ -364,16 +365,17 @@ mod tests {
     fn test_nested_xml_tags() {
         let mut receiver = MsgRecv::new();
         receiver.push_data(b"OK 1 <outer><inner>content\nwith\nnewlines</inner></outer>\n");
-        
+
         let msg = receiver.try_get_msg().unwrap().unwrap();
-        assert!(String::from_utf8_lossy(&msg).contains("<outer><inner>content\nwith\nnewlines</inner></outer>"));
+        assert!(String::from_utf8_lossy(&msg)
+            .contains("<outer><inner>content\nwith\nnewlines</inner></outer>"));
     }
 
     #[test]
     fn test_mismatched_close_tag_error() {
         let mut receiver = MsgRecv::new();
         receiver.push_data(b"<tag1>content</tag2>\n");
-        
+
         let result = receiver.try_get_msg();
         assert!(result.is_err(), "Mismatched tags should produce an error");
     }
@@ -382,25 +384,28 @@ mod tests {
     fn test_unexpected_close_tag_error() {
         let mut receiver = MsgRecv::new();
         receiver.push_data(b"</unexpected>content\n");
-        
+
         let result = receiver.try_get_msg();
-        assert!(result.is_err(), "Unexpected close tag should produce an error");
+        assert!(
+            result.is_err(),
+            "Unexpected close tag should produce an error"
+        );
     }
 
     #[test]
     fn test_multiple_messages_in_one_push() {
         let mut receiver = MsgRecv::new();
         receiver.push_data(b"msg1\nmsg2\nmsg3\n");
-        
+
         let msg1 = receiver.try_get_msg().unwrap().unwrap();
         assert_eq!(&msg1, b"msg1\n");
-        
+
         let msg2 = receiver.try_get_msg().unwrap().unwrap();
         assert_eq!(&msg2, b"msg2\n");
-        
+
         let msg3 = receiver.try_get_msg().unwrap().unwrap();
         assert_eq!(&msg3, b"msg3\n");
-        
+
         assert!(receiver.try_get_msg().unwrap().is_none());
     }
 
@@ -410,7 +415,7 @@ mod tests {
         let long_content = "x".repeat(10000);
         let input = format!("OK 1 <data>{}</data>\n", long_content);
         receiver.push_data(input.as_bytes());
-        
+
         let msg = receiver.try_get_msg().unwrap().unwrap();
         assert!(msg.len() > 10000);
     }
@@ -418,11 +423,11 @@ mod tests {
     #[test]
     fn test_receiver_reset_after_error() {
         let mut receiver = MsgRecv::new();
-        
+
         // First, cause an error
         receiver.push_data(b"</unexpected>error\n");
         let _ = receiver.try_get_msg(); // Consume the error
-        
+
         // Should work normally after
         receiver.push_data(b"OK 1 success\n");
         let msg = receiver.try_get_msg().unwrap().unwrap();
@@ -433,7 +438,7 @@ mod tests {
     fn test_special_xml_tag_names() {
         let mut receiver = MsgRecv::new();
         receiver.push_data(b"OK 1 <multiline.protocol>content</multiline.protocol>\n");
-        
+
         let msg = receiver.try_get_msg().unwrap().unwrap();
         assert!(String::from_utf8_lossy(&msg).contains("multiline.protocol"));
     }
@@ -454,7 +459,13 @@ mod tests {
 
         let msg = receiver.try_get_msg().unwrap().unwrap();
         let msg_str = String::from_utf8_lossy(&msg);
-        assert!(msg_str.contains("<LOOPBACK,UP,LOWER_UP>"), "Should preserve angle brackets in content");
-        assert!(msg_str.contains("<BROADCAST,MULTICAST,UP>"), "Should preserve angle brackets in content");
+        assert!(
+            msg_str.contains("<LOOPBACK,UP,LOWER_UP>"),
+            "Should preserve angle brackets in content"
+        );
+        assert!(
+            msg_str.contains("<BROADCAST,MULTICAST,UP>"),
+            "Should preserve angle brackets in content"
+        );
     }
 }

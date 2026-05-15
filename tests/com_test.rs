@@ -1060,10 +1060,7 @@ async fn test_run_title_no_run() {
         .await
         .unwrap();
 
-    let mut response = connection
-        .send_command_bytes(b"RUNTitle?")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"RUNTitle?").await.unwrap();
     let msg = response.recv().await.unwrap();
     match msg {
         MessageResponse::Ok { message, .. } => {
@@ -1082,10 +1079,7 @@ async fn test_error_response_handling() {
         .await
         .unwrap();
 
-    let mut response = connection
-        .send_command_bytes(b"ERRTEST")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"ERRTEST").await.unwrap();
     let msg = response.recv().await.unwrap();
     match msg {
         MessageResponse::CommandError { error, .. } => {
@@ -1146,10 +1140,8 @@ async fn test_concurrent_commands() {
     let mut power = power_resp.unwrap();
     let mut drawer = drawer_resp.unwrap();
 
-    let (power_result, drawer_result) = tokio::join!(
-        power.receive_response(),
-        drawer.receive_response()
-    );
+    let (power_result, drawer_result) =
+        tokio::join!(power.receive_response(), drawer.receive_response());
 
     assert!(power_result.is_ok());
     assert!(drawer_result.is_ok());
@@ -1312,7 +1304,11 @@ async fn test_authenticate_and_set_access_level() {
     let result = connection
         .authenticate_and_set_access_level(MOCK_PASSWORD, AccessLevel::Controller)
         .await;
-    assert!(result.is_ok(), "Auth+access should succeed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "Auth+access should succeed: {:?}",
+        result.err()
+    );
 
     // Verify access level was set
     let level = connection.get_access_level().await;
@@ -1331,10 +1327,7 @@ async fn test_response_next_then_ok() {
         .await
         .unwrap();
 
-    let mut response = connection
-        .send_command_bytes(b"NEXTTHENOK")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"NEXTTHENOK").await.unwrap();
     let result = response.get_response().await;
     assert!(result.is_ok());
     let ok = result.unwrap();
@@ -1350,10 +1343,7 @@ async fn test_response_next_then_error() {
         .await
         .unwrap();
 
-    let mut response = connection
-        .send_command_bytes(b"NEXTTHERR")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"NEXTTHERR").await.unwrap();
     let result = response.get_response().await;
     assert!(result.is_ok());
     let inner = result.unwrap();
@@ -1371,10 +1361,7 @@ async fn test_response_direct_error() {
         .await
         .unwrap();
 
-    let mut response = connection
-        .send_command_bytes(b"ERRTEST")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"ERRTEST").await.unwrap();
     let result = response.get_response().await;
     assert!(result.is_ok());
     let inner = result.unwrap();
@@ -1391,10 +1378,7 @@ async fn test_response_timeout() {
         .await
         .unwrap();
 
-    let mut response = connection
-        .send_command_bytes(b"SILENCE")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"SILENCE").await.unwrap();
 
     let result = response
         .get_response_with_timeout(Duration::from_millis(100))
@@ -1411,10 +1395,7 @@ async fn test_response_with_timeout_ok() {
         .await
         .unwrap();
 
-    let mut response = connection
-        .send_command_bytes(b"POW?")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"POW?").await.unwrap();
 
     let result = response
         .get_response_with_timeout(Duration::from_secs(5))
@@ -1432,15 +1413,16 @@ async fn test_warning_response() {
         .await
         .unwrap();
 
-    let mut response = connection
-        .send_command_bytes(b"WARNTEST")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"WARNTEST").await.unwrap();
     let result = response.get_response().await;
     assert!(result.is_ok(), "get_response failed: {:?}", result.err());
     let inner = result.unwrap();
     // Warnings are treated like OK
-    assert!(inner.is_ok(), "Expected OK-like response from warning, got: {:?}", inner);
+    assert!(
+        inner.is_ok(),
+        "Expected OK-like response from warning, got: {:?}",
+        inner
+    );
 
     _server.abort();
 }
@@ -1453,15 +1435,12 @@ async fn test_get_response_with_next_and_ok_timeout() {
         .unwrap();
 
     // NEXTTHENOK sends NEXT then OK after 50ms
-    let mut response = connection
-        .send_command_bytes(b"NEXTTHENOK")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"NEXTTHENOK").await.unwrap();
 
     let result = response
         .get_response_with_next_and_ok_timeout(
-            Duration::from_secs(2),   // initial: should get NEXT quickly
-            Duration::from_secs(2),   // next_to_ok: should get OK within 50ms
+            Duration::from_secs(2), // initial: should get NEXT quickly
+            Duration::from_secs(2), // next_to_ok: should get OK within 50ms
         )
         .await;
     assert!(result.is_ok());
@@ -1524,10 +1503,7 @@ async fn test_quit_command_succeeds() {
     assert!(connection.is_connected().await);
 
     // Send QUIT — should get OK response
-    let mut response = connection
-        .send_command_bytes(b"QUIT")
-        .await
-        .unwrap();
+    let mut response = connection.send_command_bytes(b"QUIT").await.unwrap();
     let result = response.get_response().await;
     assert!(result.is_ok(), "QUIT should get OK response");
 
@@ -1544,7 +1520,11 @@ async fn test_get_current_temperature_setpoints_mock() {
         .unwrap();
 
     let result = connection.get_current_temperature_setpoints().await;
-    assert!(result.is_ok(), "get_current_temperature_setpoints failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "get_current_temperature_setpoints failed: {:?}",
+        result.err()
+    );
     let (zones, fans, cover) = result.unwrap();
     assert_eq!(zones.len(), 6);
     assert_eq!(fans.len(), 1);

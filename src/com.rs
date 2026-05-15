@@ -29,9 +29,9 @@ use tokio_stream::StreamMap;
 use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError};
 use crate::data::{FilterDataCollection, PlateData};
 use crate::message_receiver::{MsgReceiveError, MsgRecv};
+use crate::parser::Command;
 use crate::plate_setup::PlateSetup;
 use crate::protocol::Protocol;
-use crate::parser::Command;
 
 use lazy_static::lazy_static;
 use std::fs::File;
@@ -78,7 +78,8 @@ lazy_static! {
     static ref BASE64: data_encoding::Encoding = {
         let mut dec = data_encoding::BASE64.specification();
         dec.ignore.push('\n');
-        dec.encoding().expect("Failed to create BASE64 encoding - this should never happen")
+        dec.encoding()
+            .expect("Failed to create BASE64 encoding - this should never happen")
     };
     static ref FILTER_DATA_FILENAME_RE: regex::Regex =
         regex::Regex::new(r"S(\d+)_C(\d+)_T(\d+)_P(\d+)_M(\d)_X(\d)_filterdata\.xml$")
@@ -162,9 +163,8 @@ impl ServerCertVerifier for ChainOnlyVerifier {
         now: UnixTime,
     ) -> Result<ServerCertVerified, TLSError> {
         // Parse the end entity certificate
-        let cert = webpki::EndEntityCert::try_from(end_entity).map_err(|_| {
-            TLSError::InvalidCertificate(rustls::CertificateError::BadEncoding)
-        })?;
+        let cert = webpki::EndEntityCert::try_from(end_entity)
+            .map_err(|_| TLSError::InvalidCertificate(rustls::CertificateError::BadEncoding))?;
 
         // Verify the certificate chain against our trusted roots
         cert.verify_for_usage(
@@ -351,7 +351,10 @@ impl QSConnectionInner {
                                     Err(_) => {
                                         // Receiver dropped, remove from HashMap to prevent leak
                                         self.messagechannels.remove(&ident_clone);
-                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
+                                        trace!(
+                                            "Removed channel for ident {:?} after send failure",
+                                            ident_clone
+                                        );
                                     }
                                 }
                             } else {
@@ -373,17 +376,22 @@ impl QSConnectionInner {
                                     Err(_) => {
                                         // Receiver dropped, remove channel anyway
                                         self.messagechannels.remove(&ident_clone);
-                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
+                                        trace!(
+                                            "Removed channel for ident {:?} after send failure",
+                                            ident_clone
+                                        );
                                     }
                                 }
                             } else {
                                 trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
-                        Ok(msg @ MessageResponse::Ok { .. }) | Ok(msg @ MessageResponse::Warning { .. }) => {
+                        Ok(msg @ MessageResponse::Ok { .. })
+                        | Ok(msg @ MessageResponse::Warning { .. }) => {
                             // OK/Warning is final response, always remove channel
                             let ident_clone = match &msg {
-                                MessageResponse::Ok { ident, .. } | MessageResponse::Warning { ident, .. } => ident.clone(),
+                                MessageResponse::Ok { ident, .. }
+                                | MessageResponse::Warning { ident, .. } => ident.clone(),
                                 _ => unreachable!(),
                             };
                             if let Some(channel) = self.messagechannels.get_mut(&ident_clone) {
@@ -395,7 +403,10 @@ impl QSConnectionInner {
                                     Err(_) => {
                                         // Receiver dropped, remove channel anyway
                                         self.messagechannels.remove(&ident_clone);
-                                        trace!("Removed channel for ident {:?} after send failure", ident_clone);
+                                        trace!(
+                                            "Removed channel for ident {:?} after send failure",
+                                            ident_clone
+                                        );
                                     }
                                 }
                             } else {
@@ -446,12 +457,12 @@ impl QSConnectionInner {
                             "Message ident is None"
                         )
                     })?.clone();
-                    
+
                     if self.messagechannels.contains_key(&ident) {
                         error!("Message ident collision detected: {:?}. This should not happen with auto-generated idents.", ident);
                     }
                     self.messagechannels.insert(ident, tx);
-                    
+
                     let mut bytes = Vec::new();
                     if msg.content.is_some() {
                         msg.write_bytes(&mut bytes)?;
@@ -537,9 +548,13 @@ impl ResponseReceiver {
     pub async fn get_response(
         &mut self,
     ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
-        let initial = self.initial_timeout.ok_or(ReceiveOkResponseError::ConnectionClosed)?;
-        let next_to_ok = self.next_to_ok_timeout.ok_or(ReceiveOkResponseError::ConnectionClosed)?;
-        
+        let initial = self
+            .initial_timeout
+            .ok_or(ReceiveOkResponseError::ConnectionClosed)?;
+        let next_to_ok = self
+            .next_to_ok_timeout
+            .ok_or(ReceiveOkResponseError::ConnectionClosed)?;
+
         // Wait for first message (NEXT or OK/Error) with initial timeout
         let first_msg = match timeout(initial, self.recv()).await {
             Ok(Some(msg)) => msg,
@@ -548,7 +563,8 @@ impl ResponseReceiver {
         };
 
         match first_msg {
-            MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => Ok(Ok(message)),
+            MessageResponse::Ok { ident: _, message }
+            | MessageResponse::Warning { ident: _, message } => Ok(Ok(message)),
             MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
             MessageResponse::Next { .. } => {
                 // Received NEXT, now wait for OK/Error with next_to_ok_timeout
@@ -556,7 +572,8 @@ impl ResponseReceiver {
                     match timeout(next_to_ok, self.recv()).await {
                         Ok(Some(msg)) => {
                             match msg {
-                                MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => {
+                                MessageResponse::Ok { ident: _, message }
+                                | MessageResponse::Warning { ident: _, message } => {
                                     return Ok(Ok(message));
                                 }
                                 MessageResponse::CommandError { ident: _, error } => {
@@ -576,7 +593,9 @@ impl ResponseReceiver {
                     }
                 }
             }
-            MessageResponse::Message(message) => Err(ReceiveOkResponseError::UnexpectedMessage(message)),
+            MessageResponse::Message(message) => {
+                Err(ReceiveOkResponseError::UnexpectedMessage(message))
+            }
         }
     }
 
@@ -590,13 +609,16 @@ impl ResponseReceiver {
             match timeout(timeout_duration, self.recv()).await {
                 Ok(Some(msg)) => {
                     match msg {
-                        MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => return Ok(Ok(message)),
+                        MessageResponse::Ok { ident: _, message }
+                        | MessageResponse::Warning { ident: _, message } => return Ok(Ok(message)),
                         MessageResponse::CommandError { ident: _, error } => return Ok(Err(error)),
                         MessageResponse::Next { .. } => {
                             // Continue waiting with same timeout
                             continue;
                         }
-                        MessageResponse::Message(message) => return Err(ReceiveOkResponseError::UnexpectedMessage(message)),
+                        MessageResponse::Message(message) => {
+                            return Err(ReceiveOkResponseError::UnexpectedMessage(message))
+                        }
                     }
                 }
                 Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
@@ -619,7 +641,8 @@ impl ResponseReceiver {
         };
 
         match first_msg {
-            MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => Ok(Ok(message)),
+            MessageResponse::Ok { ident: _, message }
+            | MessageResponse::Warning { ident: _, message } => Ok(Ok(message)),
             MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
             MessageResponse::Next { .. } => {
                 // Received NEXT, now wait for OK/Error with next_to_ok timeout
@@ -627,7 +650,8 @@ impl ResponseReceiver {
                     match timeout(next_to_ok, self.recv()).await {
                         Ok(Some(msg)) => {
                             match msg {
-                                MessageResponse::Ok { ident: _, message } | MessageResponse::Warning { ident: _, message } => {
+                                MessageResponse::Ok { ident: _, message }
+                                | MessageResponse::Warning { ident: _, message } => {
                                     return Ok(Ok(message));
                                 }
                                 MessageResponse::CommandError { ident: _, error } => {
@@ -647,7 +671,9 @@ impl ResponseReceiver {
                     }
                 }
             }
-            MessageResponse::Message(message) => Err(ReceiveOkResponseError::UnexpectedMessage(message)),
+            MessageResponse::Message(message) => {
+                Err(ReceiveOkResponseError::UnexpectedMessage(message))
+            }
         }
     }
 }
@@ -799,7 +825,14 @@ impl QSConnection {
         connection_type: ConnectionType,
         timeout: Duration,
     ) -> Result<QSConnection, ConnectionError> {
-        Self::connect_with_timeout_and_config(host, port, connection_type, timeout, TlsConfig::default()).await
+        Self::connect_with_timeout_and_config(
+            host,
+            port,
+            connection_type,
+            timeout,
+            TlsConfig::default(),
+        )
+        .await
     }
 
     pub async fn connect_with_timeout_and_config(
@@ -941,10 +974,7 @@ impl QSConnection {
         };
 
         // Determine the server name for SNI and (if applicable) hostname verification
-        let sni_server_name = tls_config
-            .tls_server_name
-            .as_deref()
-            .unwrap_or(host);
+        let sni_server_name = tls_config.tls_server_name.as_deref().unwrap_or(host);
 
         let connector = TlsConnector::from(Arc::new(config));
         let stream = TcpStream::connect((host, port)).await?;
@@ -968,18 +998,22 @@ impl QSConnection {
                 break;
             }
         }
-        let ready_bytes = receiver.try_get_msg()
-            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to receive ready message: {}", e)
-            )))?
+        let ready_bytes = receiver
+            .try_get_msg()
+            .map_err(|e| {
+                ConnectionError::IOError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to receive ready message: {}", e),
+                ))
+            })?
             .ok_or(ConnectionError::Timeout)?;
         trace!("Ready message: {:?}", String::from_utf8_lossy(&ready_bytes));
-        let msg = parser::Ready::parse(&mut ready_bytes.as_slice())
-            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
+        let msg = parser::Ready::parse(&mut ready_bytes.as_slice()).map_err(|e| {
+            ConnectionError::IOError(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Failed to parse ready message: {}", e)
-            )))?;
+                format!("Failed to parse ready message: {}", e),
+            ))
+        })?;
         trace!("Ready message: {:?}", msg);
         if let Err(warning) = msg.validate_capabilities() {
             warn!("{}", warning);
@@ -1037,18 +1071,22 @@ impl QSConnection {
                 Err(e) => return Err(ConnectionError::IOError(e)),
             }
         }
-        let ready_bytes = receiver.try_get_msg()
-            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("Failed to receive ready message: {}", e)
-            )))?
+        let ready_bytes = receiver
+            .try_get_msg()
+            .map_err(|e| {
+                ConnectionError::IOError(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("Failed to receive ready message: {}", e),
+                ))
+            })?
             .ok_or(ConnectionError::Timeout)?;
         trace!("Ready message: {:?}", String::from_utf8_lossy(&ready_bytes));
-        let msg = parser::Ready::parse(&mut ready_bytes.as_slice())
-            .map_err(|e| ConnectionError::IOError(std::io::Error::new(
+        let msg = parser::Ready::parse(&mut ready_bytes.as_slice()).map_err(|e| {
+            ConnectionError::IOError(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("Failed to parse ready message: {}", e)
-            )))?;
+                format!("Failed to parse ready message: {}", e),
+            ))
+        })?;
         trace!("Ready message: {:?}", msg);
         if let Err(warning) = msg.validate_capabilities() {
             warn!("{}", warning);
@@ -1211,7 +1249,10 @@ impl QSConnection {
         Ok(title_str)
     }
 
-    pub async fn get_plate_setup(&self, run: Option<String>) -> Result<PlateSetup, CommandError<ErrorResponse>> {
+    pub async fn get_plate_setup(
+        &self,
+        run: Option<String>,
+    ) -> Result<PlateSetup, CommandError<ErrorResponse>> {
         let path = match run {
             Some(r) => format!("{}/apldbio/sds/plate_setup.xml", r),
             None => "${LogFolder}/plate_setup.xml".to_string(),
@@ -1224,7 +1265,9 @@ impl QSConnection {
         Ok(plate_setup)
     }
 
-    pub async fn get_current_run_name(&self) -> Result<Option<String>, CommandError<ErrorResponse>> {
+    pub async fn get_current_run_name(
+        &self,
+    ) -> Result<Option<String>, CommandError<ErrorResponse>> {
         let mut response = self.send_command_bytes(b"RUNTitle?".as_bstr()).await?;
         let response = response.get_response().await??;
         let title = response
@@ -1248,23 +1291,25 @@ impl QSConnection {
         }
 
         // Get protocol content
-        let mut response = self.send_command_bytes(b"PROT? ${Protocol}".as_bstr()).await?;
+        let mut response = self
+            .send_command_bytes(b"PROT? ${Protocol}".as_bstr())
+            .await?;
         let response = response.get_response().await??;
         let protocol_content = response
             .args
             .first()
-            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No protocol content returned")))?
+            .ok_or_else(|| {
+                CommandError::InternalError(anyhow::anyhow!("No protocol content returned"))
+            })?
             .to_string();
 
         // Get protocol name, volume, and runmode
-        let mut response = self.send_command_bytes(b"RET ${Protocol} ${SampleVolume} ${RunMode}".as_bstr()).await?;
+        let mut response = self
+            .send_command_bytes(b"RET ${Protocol} ${SampleVolume} ${RunMode}".as_bstr())
+            .await?;
         let response = response.get_response().await??;
-        let parts: Vec<String> = response
-            .args
-            .iter()
-            .map(|v| v.to_string())
-            .collect();
-        
+        let parts: Vec<String> = response.args.iter().map(|v| v.to_string()).collect();
+
         if parts.len() < 3 {
             return Err(CommandError::InternalError(anyhow::anyhow!(
                 "No protocol is currently running (RET command returned {} values instead of 3)",
@@ -1275,7 +1320,6 @@ impl QSConnection {
         let protocol_name = parts[0].clone();
         let sample_volume = parts[1].clone();
         let run_mode = parts[2].clone();
-
 
         // Construct full PROT command string
         let prot_command = format!(
@@ -1290,34 +1334,63 @@ impl QSConnection {
         let prot_command = self.get_running_protocol_string().await?;
 
         // Parse into Command and then Protocol
-        let cmd = Command::try_from(prot_command.clone())
-            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol command: {}", e)))?;
-        
-        Protocol::from_scpicommand(&cmd)
-            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol: {}", e)))
-    }
+        let cmd = Command::try_from(prot_command.clone()).map_err(|e| {
+            CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol command: {}", e))
+        })?;
 
+        Protocol::from_scpicommand(&cmd).map_err(|e| {
+            CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol: {}", e))
+        })
+    }
 
     // In [8]: m.run_command("TBC:SETT?")
     // Out[8]: '-Zone1=25 -Zone2=25 -Zone3=25 -Zone4=25 -Zone5=25 -Zone6=25 -Fan1=44 -Cover=105'
-    pub async fn get_current_temperature_setpoints(&self) -> Result<(Vec<f64>, Vec<f64>, f64), CommandError<ErrorResponse>> {
+    pub async fn get_current_temperature_setpoints(
+        &self,
+    ) -> Result<(Vec<f64>, Vec<f64>, f64), CommandError<ErrorResponse>> {
         let mut response = self.send_command_bytes(b"TBC:SETT?".as_bstr()).await?;
         let response = response.get_response().await??;
         let setpoints = response.options;
-        let zones: Result<Vec<f64>, _> = setpoints.iter()
+        let zones: Result<Vec<f64>, _> = setpoints
+            .iter()
             .filter(|(s, _v)| s.starts_with("Zone"))
-            .map(|(_s, v)| v.clone().try_into_f64().map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse zone temperature: {}", e))))
+            .map(|(_s, v)| {
+                v.clone().try_into_f64().map_err(|e| {
+                    CommandError::InternalError(anyhow::anyhow!(
+                        "Failed to parse zone temperature: {}",
+                        e
+                    ))
+                })
+            })
             .collect();
-        let fans: Result<Vec<f64>, _> = setpoints.iter()
+        let fans: Result<Vec<f64>, _> = setpoints
+            .iter()
             .filter(|(s, _v)| s.starts_with("Fan"))
-            .map(|(_s, v)| v.clone().try_into_f64().map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse fan temperature: {}", e))))
+            .map(|(_s, v)| {
+                v.clone().try_into_f64().map_err(|e| {
+                    CommandError::InternalError(anyhow::anyhow!(
+                        "Failed to parse fan temperature: {}",
+                        e
+                    ))
+                })
+            })
             .collect();
-        let cover = setpoints.iter()
+        let cover = setpoints
+            .iter()
             .filter(|(s, _v)| s.starts_with("Cover"))
             .map(|(_s, v)| v.clone().try_into_f64())
             .next()
-            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No Cover temperature found in response")))?
-            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to parse cover temperature: {}", e)))?;
+            .ok_or_else(|| {
+                CommandError::InternalError(anyhow::anyhow!(
+                    "No Cover temperature found in response"
+                ))
+            })?
+            .map_err(|e| {
+                CommandError::InternalError(anyhow::anyhow!(
+                    "Failed to parse cover temperature: {}",
+                    e
+                ))
+            })?;
         Ok((zones?, fans?, cover))
     }
 
@@ -1332,17 +1405,26 @@ impl QSConnection {
         };
         let x = self.get_exp_file(&path).await?;
 
-        let filter_data_collection: FilterDataCollection = quick_xml::de::from_str(&x.to_str_lossy())
-            .with_context(|| "PlatePointData deserialization error")
-            .map_err(CommandError::InternalError)?;
+        let filter_data_collection: FilterDataCollection =
+            quick_xml::de::from_str(&x.to_str_lossy())
+                .with_context(|| "PlatePointData deserialization error")
+                .map_err(CommandError::InternalError)?;
 
         // Directly access the first PlateData by value without unnecessary clones, if possible.
-        // Since we need to return an owned PlateData (not a reference), we can implement this 
-        // by consuming the collection to extract the value. 
+        // Since we need to return an owned PlateData (not a reference), we can implement this
+        // by consuming the collection to extract the value.
         // If there are no entries, return an error instead of panicking.
-        let plate_point_data = filter_data_collection.plate_point_data.into_iter().next()
-            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No PlatePointData found")))?;
-        let plate_data = plate_point_data.plate_data.into_iter().next()
+        let plate_point_data = filter_data_collection
+            .plate_point_data
+            .into_iter()
+            .next()
+            .ok_or_else(|| {
+                CommandError::InternalError(anyhow::anyhow!("No PlatePointData found"))
+            })?;
+        let plate_data = plate_point_data
+            .plate_data
+            .into_iter()
+            .next()
             .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No PlateData found")))?;
         Ok(plate_data)
     }
@@ -1360,27 +1442,28 @@ impl QSConnection {
     }
 
     /// Authenticate with the machine using HMAC-MD5 challenge-response.
-    pub async fn authenticate(
-        &self,
-        password: &str,
-    ) -> Result<(), CommandError<ErrorResponse>> {
+    pub async fn authenticate(&self, password: &str) -> Result<(), CommandError<ErrorResponse>> {
         // Get challenge
         let mut challenge_recv = self.send_command_bytes(b"CHAL?").await?;
-        let challenge_result = challenge_recv
-            .get_response()
-            .await
-            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Failed to get challenge: {}", e)))?;
-        
-        let challenge_response = challenge_result
-            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Challenge command failed: {}", e)))?;
-        
+        let challenge_result = challenge_recv.get_response().await.map_err(|e| {
+            CommandError::InternalError(anyhow::anyhow!("Failed to get challenge: {}", e))
+        })?;
+
+        let challenge_response = challenge_result.map_err(|e| {
+            CommandError::InternalError(anyhow::anyhow!("Challenge command failed: {}", e))
+        })?;
+
         let challenge_str = challenge_response
             .args
             .first()
-            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No challenge in response")))?
+            .ok_or_else(|| {
+                CommandError::InternalError(anyhow::anyhow!("No challenge in response"))
+            })?
             .clone()
             .try_into_string()
-            .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Challenge is not a string: {:?}", e)))?;
+            .map_err(|e| {
+                CommandError::InternalError(anyhow::anyhow!("Challenge is not a string: {:?}", e))
+            })?;
 
         // Compute HMAC-MD5
         let mut mac = HmacMd5::new_from_slice(password.as_bytes())
@@ -1395,8 +1478,10 @@ impl QSConnection {
             .get_response()
             .await
             .map_err(|e| CommandError::InternalError(anyhow::anyhow!("Auth recv error: {}", e)))?;
-        
-        auth_result.map_err(|e| CommandError::InternalError(anyhow::anyhow!("Authentication failed: {}", e)))?;
+
+        auth_result.map_err(|e| {
+            CommandError::InternalError(anyhow::anyhow!("Authentication failed: {}", e))
+        })?;
 
         Ok(())
     }
@@ -1426,7 +1511,9 @@ impl QSConnection {
     pub async fn abort_current_run(
         &self,
     ) -> Result<Result<(), ErrorResponse>, CommandError<ErrorResponse>> {
-        let mut response = commands::AbortRun("${RunTitle}".to_string()).send(self).await?;
+        let mut response = commands::AbortRun("${RunTitle}".to_string())
+            .send(self)
+            .await?;
         match response.receive_response().await? {
             Ok(_) => Ok(Ok(())),
             Err(e) => Ok(Err(e)),
@@ -1447,7 +1534,9 @@ impl QSConnection {
     pub async fn stop_current_run(
         &self,
     ) -> Result<Result<(), ErrorResponse>, CommandError<ErrorResponse>> {
-        let mut response = commands::StopRun("${RunTitle}".to_string()).send(self).await?;
+        let mut response = commands::StopRun("${RunTitle}".to_string())
+            .send(self)
+            .await?;
         match response.receive_response().await? {
             Ok(_) => Ok(Ok(())),
             Err(e) => Ok(Err(e)),
@@ -1539,8 +1628,6 @@ impl FilterDataFilename {
         })
     }
 
-
-
     pub fn is_same_point(&self, other: &FilterDataFilename) -> bool {
         self.stage == other.stage
             && self.cycle == other.cycle
@@ -1578,8 +1665,6 @@ impl FilterSet {
                 .map_err(|_| QSConnectionError::QS("Invalid emission filter number".to_string()))?,
         })
     }
-
-
 }
 impl std::fmt::Display for FilterSet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1612,15 +1697,19 @@ mod tests {
 
     #[test]
     fn test_filter_data_filename_is_same_point() {
-        let f1 = FilterDataFilename::from_string("S01_C001_T01_P0001_M4_X1_filterdata.xml").unwrap();
-        let f2 = FilterDataFilename::from_string("S01_C001_T01_P0001_M5_X2_filterdata.xml").unwrap();
+        let f1 =
+            FilterDataFilename::from_string("S01_C001_T01_P0001_M4_X1_filterdata.xml").unwrap();
+        let f2 =
+            FilterDataFilename::from_string("S01_C001_T01_P0001_M5_X2_filterdata.xml").unwrap();
         assert!(f1.is_same_point(&f2));
     }
 
     #[test]
     fn test_filter_data_filename_different_point() {
-        let f1 = FilterDataFilename::from_string("S01_C001_T01_P0001_M4_X1_filterdata.xml").unwrap();
-        let f2 = FilterDataFilename::from_string("S01_C002_T01_P0001_M4_X1_filterdata.xml").unwrap();
+        let f1 =
+            FilterDataFilename::from_string("S01_C001_T01_P0001_M4_X1_filterdata.xml").unwrap();
+        let f2 =
+            FilterDataFilename::from_string("S01_C002_T01_P0001_M4_X1_filterdata.xml").unwrap();
         assert!(!f1.is_same_point(&f2));
     }
 

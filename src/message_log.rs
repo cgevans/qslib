@@ -141,7 +141,10 @@ impl RunLogInfo {
     }
 }
 
-#[cfg_attr(feature = "python", pyo3::pyclass(get_all, set_all, module = "qslib._qslib"))]
+#[cfg_attr(
+    feature = "python",
+    pyo3::pyclass(get_all, set_all, module = "qslib._qslib")
+)]
 pub struct TemperatureLog {
     pub timestamps: Vec<f64>,
     pub heatsink_temps: Vec<f64>,
@@ -329,7 +332,9 @@ impl TemperatureLog {
     #[staticmethod]
     #[pyo3(name = "parse_to_polars")]
     pub fn py_parse_to_polars(log: &[u8]) -> anyhow::Result<PyDataFrame> {
-        Self::parse(log).and_then(|log| log.to_polars()).map(PyDataFrame)
+        Self::parse(log)
+            .and_then(|log| log.to_polars())
+            .map(PyDataFrame)
     }
 }
 
@@ -475,7 +480,10 @@ Temperature 1739920069.921 -sample=36.6,35.9,36.0,36.1,35.9,36.5 -heatsink=35.7 
         assert_eq!(info.prerunstart, Some(101.0));
         assert_eq!(info.activestarttime, Some(110.0));
         assert_eq!(info.activeendtime, Some(300.0));
-        assert_eq!(info.stage_names, vec!["PRERUN", "Stage1", "Stage2", "POSTRun"]);
+        assert_eq!(
+            info.stage_names,
+            vec!["PRERUN", "Stage1", "Stage2", "POSTRun"]
+        );
         assert_eq!(info.stage_start_times, vec![101.0, 110.0, 200.0, 300.0]);
         assert_eq!(
             info.stage_end_times,
@@ -539,7 +547,8 @@ Temperature 1739920069.921 -sample=36.6,35.9,36.0,36.1,35.9,36.5 -heatsink=35.7 
     #[test]
     fn test_run_log_info_activeendtime_from_ended() {
         // No POSTRun stage, activeendtime should come from Ended
-        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1\nRun 200.0 Ended";
+        let log =
+            b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1\nRun 200.0 Ended";
         let info = RunLogInfo::parse(log).unwrap();
         assert_eq!(info.activeendtime, Some(200.0));
     }

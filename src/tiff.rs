@@ -34,13 +34,15 @@ pub const DEFAULT_SATURATION_THRESHOLD: u16 = 65520;
 /// Returns (pixels, width, height) where pixels is row-major u16 data.
 pub fn decode_tiff_u16(tiff_bytes: &[u8]) -> Result<(Vec<u16>, u32, u32), TiffError> {
     let cursor = Cursor::new(tiff_bytes);
-    let mut decoder = tiff::decoder::Decoder::new(cursor)
+    let mut decoder =
+        tiff::decoder::Decoder::new(cursor).map_err(|e| TiffError::DecodeError(e.to_string()))?;
+
+    let (width, height) = decoder
+        .dimensions()
         .map_err(|e| TiffError::DecodeError(e.to_string()))?;
 
-    let (width, height) = decoder.dimensions()
-        .map_err(|e| TiffError::DecodeError(e.to_string()))?;
-
-    let result = decoder.read_image()
+    let result = decoder
+        .read_image()
         .map_err(|e| TiffError::DecodeError(e.to_string()))?;
 
     match result {
@@ -165,30 +167,18 @@ pub fn apply_roi_calibration_to_tiff(
         .get_for_emission(emission)
         .ok_or(TiffError::MissingFilter(emission))?;
 
-    let horizontal_pos = roi
-        .horizontal_pos
-        .get(&filter_set)
-        .ok_or_else(|| {
-            TiffError::MissingCalibration(format!("horizontal_pos for {}", filter_set.lowerform()))
-        })?;
-    let vertical_pos = roi
-        .vertical_pos
-        .get(&filter_set)
-        .ok_or_else(|| {
-            TiffError::MissingCalibration(format!("vertical_pos for {}", filter_set.lowerform()))
-        })?;
-    let roi_diameter = roi
-        .roi_diameter
-        .get(&filter_set)
-        .ok_or_else(|| {
-            TiffError::MissingCalibration(format!("roi_diameter for {}", filter_set.lowerform()))
-        })?;
-    let ring_size = roi
-        .ring_size
-        .get(&filter_set)
-        .ok_or_else(|| {
-            TiffError::MissingCalibration(format!("ring_size for {}", filter_set.lowerform()))
-        })?;
+    let horizontal_pos = roi.horizontal_pos.get(&filter_set).ok_or_else(|| {
+        TiffError::MissingCalibration(format!("horizontal_pos for {}", filter_set.lowerform()))
+    })?;
+    let vertical_pos = roi.vertical_pos.get(&filter_set).ok_or_else(|| {
+        TiffError::MissingCalibration(format!("vertical_pos for {}", filter_set.lowerform()))
+    })?;
+    let roi_diameter = roi.roi_diameter.get(&filter_set).ok_or_else(|| {
+        TiffError::MissingCalibration(format!("roi_diameter for {}", filter_set.lowerform()))
+    })?;
+    let ring_size = roi.ring_size.get(&filter_set).ok_or_else(|| {
+        TiffError::MissingCalibration(format!("ring_size for {}", filter_set.lowerform()))
+    })?;
 
     let (pixels, width, height) = decode_tiff_u16(tiff_bytes)?;
 
@@ -264,7 +254,10 @@ mod tests {
     #[test]
     fn test_decode_tiff() {
         let eds_path = require_tiff_eds!();
-        let data = read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
+        let data = read_bytes_from_tiff_eds(
+            &eds_path,
+            "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff",
+        );
         let (pixels, width, height) = decode_tiff_u16(&data).unwrap();
         assert_eq!(width, 648);
         assert_eq!(height, 486);
@@ -274,8 +267,10 @@ mod tests {
     #[test]
     fn test_apply_roi_to_tiff() {
         let eds_path = require_tiff_eds!();
-        let tiff_data =
-            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
+        let tiff_data = read_bytes_from_tiff_eds(
+            &eds_path,
+            "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff",
+        );
         let roi_text = read_string_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let roi = RoiCalibration::parse(&roi_text).unwrap();
 
@@ -304,16 +299,20 @@ mod tests {
     fn test_tiff_roi_matches_quant() {
         let eds_path = require_tiff_eds!();
         // Compare TIFF+ROI result against the quant file for the same image
-        let tiff_data =
-            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff");
+        let tiff_data = read_bytes_from_tiff_eds(
+            &eds_path,
+            "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff",
+        );
         let roi_text = read_string_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let roi = RoiCalibration::parse(&roi_text).unwrap();
 
         let tiff_wells = apply_roi_calibration_to_tiff(&tiff_data, &roi, 4, None).unwrap();
 
         // Parse the corresponding quant file
-        let quant_data =
-            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E1.quant");
+        let quant_data = read_bytes_from_tiff_eds(
+            &eds_path,
+            "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E1.quant",
+        );
         let qf = crate::quant::QuantFile::parse(&quant_data).unwrap();
 
         // Verify exact match for all 96 wells
@@ -356,33 +355,33 @@ mod tests {
     fn test_tiff_roi_matches_quant_e2() {
         let eds_path = require_tiff_eds!();
         // Also verify E2 (longer exposure) matches
-        let tiff_data =
-            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E2.tiff");
+        let tiff_data = read_bytes_from_tiff_eds(
+            &eds_path,
+            "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E2.tiff",
+        );
         let roi_text = read_string_from_tiff_eds(&eds_path, "apldbio/sds/calibrations/roi.ini");
         let roi = RoiCalibration::parse(&roi_text).unwrap();
 
         let tiff_wells = apply_roi_calibration_to_tiff(&tiff_data, &roi, 4, None).unwrap();
 
-        let quant_data =
-            read_bytes_from_tiff_eds(&eds_path, "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E2.quant");
+        let quant_data = read_bytes_from_tiff_eds(
+            &eds_path,
+            "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E2.quant",
+        );
         let qf = crate::quant::QuantFile::parse(&quant_data).unwrap();
 
         for (i, (tw, qw)) in tiff_wells.iter().zip(qf.wells.iter()).enumerate() {
-            assert_eq!(
-                tw.inner.sum, qw.inner.sum,
-                "Well {} inner sum mismatch", i
-            );
+            assert_eq!(tw.inner.sum, qw.inner.sum, "Well {} inner sum mismatch", i);
             assert_eq!(
                 tw.inner.count, qw.inner.count,
-                "Well {} inner count mismatch", i
+                "Well {} inner count mismatch",
+                i
             );
-            assert_eq!(
-                tw.outer.sum, qw.outer.sum,
-                "Well {} outer sum mismatch", i
-            );
+            assert_eq!(tw.outer.sum, qw.outer.sum, "Well {} outer sum mismatch", i);
             assert_eq!(
                 tw.outer.count, qw.outer.count,
-                "Well {} outer count mismatch", i
+                "Well {} outer count mismatch",
+                i
             );
         }
     }
@@ -395,12 +394,30 @@ mod tests {
         let roi = RoiCalibration::parse(&roi_text).unwrap();
 
         let tiff_quant_pairs = [
-            ("apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff", "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E1.quant"),
-            ("apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E2.tiff", "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E2.quant"),
-            ("apldbio/sds/images/S02_C001_T01_P0001_M4_X1_E1.tiff", "apldbio/sds/quant/S02_C001_T01_P0001_M4_X1_E1.quant"),
-            ("apldbio/sds/images/S02_C001_T01_P0001_M4_X1_E2.tiff", "apldbio/sds/quant/S02_C001_T01_P0001_M4_X1_E2.quant"),
-            ("apldbio/sds/images/S02_C002_T01_P0001_M4_X1_E1.tiff", "apldbio/sds/quant/S02_C002_T01_P0001_M4_X1_E1.quant"),
-            ("apldbio/sds/images/S02_C002_T01_P0001_M4_X1_E2.tiff", "apldbio/sds/quant/S02_C002_T01_P0001_M4_X1_E2.quant"),
+            (
+                "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E1.tiff",
+                "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E1.quant",
+            ),
+            (
+                "apldbio/sds/images/S01_C001_T01_P0001_M4_X1_E2.tiff",
+                "apldbio/sds/quant/S01_C001_T01_P0001_M4_X1_E2.quant",
+            ),
+            (
+                "apldbio/sds/images/S02_C001_T01_P0001_M4_X1_E1.tiff",
+                "apldbio/sds/quant/S02_C001_T01_P0001_M4_X1_E1.quant",
+            ),
+            (
+                "apldbio/sds/images/S02_C001_T01_P0001_M4_X1_E2.tiff",
+                "apldbio/sds/quant/S02_C001_T01_P0001_M4_X1_E2.quant",
+            ),
+            (
+                "apldbio/sds/images/S02_C002_T01_P0001_M4_X1_E1.tiff",
+                "apldbio/sds/quant/S02_C002_T01_P0001_M4_X1_E1.quant",
+            ),
+            (
+                "apldbio/sds/images/S02_C002_T01_P0001_M4_X1_E2.tiff",
+                "apldbio/sds/quant/S02_C002_T01_P0001_M4_X1_E2.quant",
+            ),
         ];
 
         for (tiff_path, quant_path) in &tiff_quant_pairs {
@@ -410,12 +427,33 @@ mod tests {
             let quant_data = read_bytes_from_tiff_eds(&eds_path, quant_path);
             let qf = crate::quant::QuantFile::parse(&quant_data).unwrap();
 
-            assert_eq!(tiff_wells.len(), qf.wells.len(), "Well count mismatch for {}", tiff_path);
+            assert_eq!(
+                tiff_wells.len(),
+                qf.wells.len(),
+                "Well count mismatch for {}",
+                tiff_path
+            );
             for (i, (tw, qw)) in tiff_wells.iter().zip(qf.wells.iter()).enumerate() {
-                assert_eq!(tw.inner.sum, qw.inner.sum, "{} well {} inner sum", tiff_path, i);
-                assert_eq!(tw.inner.count, qw.inner.count, "{} well {} inner count", tiff_path, i);
-                assert_eq!(tw.outer.sum, qw.outer.sum, "{} well {} outer sum", tiff_path, i);
-                assert_eq!(tw.outer.count, qw.outer.count, "{} well {} outer count", tiff_path, i);
+                assert_eq!(
+                    tw.inner.sum, qw.inner.sum,
+                    "{} well {} inner sum",
+                    tiff_path, i
+                );
+                assert_eq!(
+                    tw.inner.count, qw.inner.count,
+                    "{} well {} inner count",
+                    tiff_path, i
+                );
+                assert_eq!(
+                    tw.outer.sum, qw.outer.sum,
+                    "{} well {} outer sum",
+                    tiff_path, i
+                );
+                assert_eq!(
+                    tw.outer.count, qw.outer.count,
+                    "{} well {} outer count",
+                    tiff_path, i
+                );
             }
         }
     }

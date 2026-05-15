@@ -1,14 +1,15 @@
+use crate::MachineConfig;
 use dashmap::DashMap;
 use futures::StreamExt;
 use log::{debug, error, info, warn};
 use matrix_sdk::{
     Client,
+    authentication::matrix::MatrixSession,
     config::SyncSettings,
     encryption::verification::{
         Emoji, SasState, SasVerification, Verification, VerificationRequest,
         VerificationRequestState, format_emojis,
     },
-    authentication::matrix::MatrixSession,
     room::Room,
     ruma::{
         UserId,
@@ -26,13 +27,12 @@ use qslib::{
         AccessLevel, CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery,
         ReceiveOkResponseError,
     },
-    parser::{ErrorResponse, LogMessage}
+    parser::{ErrorResponse, LogMessage},
 };
 use serde::{Deserialize, Serialize};
 use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
-use crate::MachineConfig;
 
 /// The data needed to re-build a client.
 #[derive(Debug, Serialize, Deserialize)]
@@ -269,7 +269,8 @@ async fn handle_message(
                 },
                 None => {
                     // Get all configured machine names, sorted
-                    let mut all_machine_names: Vec<_> = all_machines.iter().map(|m| m.name.clone()).collect();
+                    let mut all_machine_names: Vec<_> =
+                        all_machines.iter().map(|m| m.name.clone()).collect();
                     all_machine_names.sort();
 
                     let mut statuses = "<ul>".to_string();
@@ -311,7 +312,9 @@ async fn handle_message(
                                                 "running {} (stage {}, cycle {}, step {}).",
                                                 p.run_title, p.stage, p.cycle, p.step
                                             ),
-                                            PossibleRunProgress::NotRunning(_) => "idle.".to_string(),
+                                            PossibleRunProgress::NotRunning(_) => {
+                                                "idle.".to_string()
+                                            }
                                         };
                                         statuses.push_str("power ");
                                         match v.power {
@@ -337,7 +340,8 @@ async fn handle_message(
                                 }
                             }
                             None => {
-                                statuses.push_str("<span style='color: orange;'>not connected.</span>");
+                                statuses
+                                    .push_str("<span style='color: orange;'>not connected.</span>");
                             }
                         }
                         statuses.push_str("</li>");
@@ -509,15 +513,17 @@ async fn handle_message(
                                     send_matrix_message(
                                         &room,
                                         &format!("Power status for {}: {}", machine, resp),
-                                        false
-                                    ).await?;
+                                        false,
+                                    )
+                                    .await?;
                                 }
                                 Err(e) => {
                                     send_matrix_message(
                                         &room,
                                         &format!("Error getting power status: {}", e),
-                                        true
-                                    ).await?;
+                                        true,
+                                    )
+                                    .await?;
                                 }
                             }
                         }
@@ -527,27 +533,38 @@ async fn handle_message(
                                 send_matrix_message(
                                     &room,
                                     "Control commands are not allowed",
-                                    true
-                                ).await?;
+                                    true,
+                                )
+                                .await?;
                                 return Ok(());
                             }
                             conn.set_access_level(AccessLevel::Controller).await?;
-                            let response = conn.send_command(format!("POW {}", action.unwrap())).await?.get_response().await?;
+                            let response = conn
+                                .send_command(format!("POW {}", action.unwrap()))
+                                .await?
+                                .get_response()
+                                .await?;
                             conn.set_access_level(AccessLevel::Observer).await?;
                             match response {
                                 Ok(_) => {
                                     send_matrix_message(
                                         &room,
-                                        &format!("Power turned {} for {}", action.unwrap(), machine),
-                                        false
-                                    ).await?;
+                                        &format!(
+                                            "Power turned {} for {}",
+                                            action.unwrap(),
+                                            machine
+                                        ),
+                                        false,
+                                    )
+                                    .await?;
                                 }
                                 Err(e) => {
                                     send_matrix_message(
                                         &room,
                                         &format!("Error changing power: {}", e),
-                                        true
-                                    ).await?;
+                                        true,
+                                    )
+                                    .await?;
                                 }
                             }
                         }
@@ -555,8 +572,9 @@ async fn handle_message(
                             send_matrix_message(
                                 &room,
                                 &format!("Invalid power action: {}. Use 'on' or 'off'", invalid),
-                                true
-                            ).await?;
+                                true,
+                            )
+                            .await?;
                         }
                     }
                 }
@@ -589,7 +607,10 @@ async fn handle_message(
                                 protocol.name, protocol.volume, protocol.runmode
                             );
                             if !protocol.filters.is_empty() {
-                                output.push_str(&format!("Default Filters: {}<br>", protocol.filters.join(", ")));
+                                output.push_str(&format!(
+                                    "Default Filters: {}<br>",
+                                    protocol.filters.join(", ")
+                                ));
                             }
                             output.push_str("<br><b>Stages:</b><br>");
                             for (i, stage) in protocol.stages.iter().enumerate() {
@@ -602,14 +623,21 @@ async fn handle_message(
                                 for (j, stage_step) in stage.steps.iter().enumerate() {
                                     match stage_step {
                                         qslib::protocol::StageStep::Standard(step) => {
-                                            let temp_str = if step.temperature.len() == 6 && step.temperature.iter().all(|&t| t == step.temperature[0]) {
+                                            let temp_str = if step.temperature.len() == 6
+                                                && step
+                                                    .temperature
+                                                    .iter()
+                                                    .all(|&t| t == step.temperature[0])
+                                            {
                                                 format!("{}°C", step.temperature[0])
                                             } else {
                                                 format!("{:?}°C", step.temperature)
                                             };
                                             output.push_str(&format!(
                                                 "  Step {}: {}s at {}",
-                                                j + 1, step.time, temp_str
+                                                j + 1,
+                                                step.time,
+                                                temp_str
                                             ));
                                             if step.collect == Some(true) {
                                                 output.push_str(" (collect)");
@@ -629,13 +657,19 @@ async fn handle_message(
                         }
                         Err(e) => {
                             error!("Error getting protocol: {}", e);
-                            send_matrix_message(&room, &format!("Error getting protocol: {}", e), true).await?;
+                            send_matrix_message(
+                                &room,
+                                &format!("Error getting protocol: {}", e),
+                                true,
+                            )
+                            .await?;
                         }
                     }
                 }
                 None => {
                     error!("Machine {} not found", machine);
-                    send_matrix_message(&room, &format!("Machine {} not found.", machine), true).await?;
+                    send_matrix_message(&room, &format!("Machine {} not found.", machine), true)
+                        .await?;
                 }
             }
             Ok(())
@@ -1004,7 +1038,7 @@ pub async fn setup_matrix(
     debug!("Starting sync loop");
     let matrix_client = client.clone();
     let (sync_error_tx, mut sync_error_rx) = tokio::sync::mpsc::unbounded_channel::<MatrixError>();
-    
+
     tokio::spawn(async move {
         if let Err(e) = matrix_client
             .sync(SyncSettings::default().token(response.next_batch))

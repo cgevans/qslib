@@ -135,10 +135,7 @@ impl QuantFilename {
     /// The filename may include a path prefix; only the basename is parsed.
     pub fn parse(filename: &str) -> Result<Self, QuantError> {
         // Extract basename
-        let basename = filename
-            .rsplit('/')
-            .next()
-            .unwrap_or(filename);
+        let basename = filename.rsplit('/').next().unwrap_or(filename);
 
         let stem = basename
             .strip_suffix(".quant")
@@ -407,18 +404,14 @@ fn parse_quant_section(section: &str) -> Result<(Vec<WellQuant>, u32, u32), Quan
     let mut wells = Vec::with_capacity((n_rows * n_cols) as usize);
     for row in 0..n_rows {
         for col in 0..n_cols {
-            let inner = inner_map
-                .get(&(row, col))
-                .ok_or_else(|| {
-                    let row_letter = (b'A' + row as u8) as char;
-                    QuantError::UnpairedRegion(format!("I{}{}", row_letter, col + 1))
-                })?;
-            let outer = outer_map
-                .get(&(row, col))
-                .ok_or_else(|| {
-                    let row_letter = (b'A' + row as u8) as char;
-                    QuantError::UnpairedRegion(format!("O{}{}", row_letter, col + 1))
-                })?;
+            let inner = inner_map.get(&(row, col)).ok_or_else(|| {
+                let row_letter = (b'A' + row as u8) as char;
+                QuantError::UnpairedRegion(format!("I{}{}", row_letter, col + 1))
+            })?;
+            let outer = outer_map.get(&(row, col)).ok_or_else(|| {
+                let row_letter = (b'A' + row as u8) as char;
+                QuantError::UnpairedRegion(format!("O{}{}", row_letter, col + 1))
+            })?;
             wells.push(WellQuant {
                 inner: *inner,
                 outer: *outer,
@@ -434,7 +427,10 @@ fn parse_quant_section(section: &str) -> Result<(Vec<WellQuant>, u32, u32), Quan
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[cfg_attr(feature = "python", pyclass(frozen, eq, hash, ord, get_all, module = "qslib._qslib"))]
+#[cfg_attr(
+    feature = "python",
+    pyclass(frozen, eq, hash, ord, get_all, module = "qslib._qslib")
+)]
 pub struct CollectionKey {
     pub stage: u32,
     pub cycle: u32,
@@ -752,9 +748,7 @@ pub fn parse_quant_xml(data: &[u8]) -> Result<Vec<TiffImageMeta>, QuantError> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e))
-                if e.name().as_ref() == b"images" =>
-            {
+            Ok(Event::Start(ref e)) | Ok(Event::Empty(ref e)) if e.name().as_ref() == b"images" => {
                 in_images = true;
             }
             Ok(Event::End(ref e)) if e.name().as_ref() == b"images" => {
@@ -779,8 +773,7 @@ pub fn parse_quant_xml(data: &[u8]) -> Result<Vec<TiffImageMeta>, QuantError> {
 
                 for attr in e.attributes().flatten() {
                     let key = String::from_utf8_lossy(attr.key.as_ref()).to_string();
-                    let val =
-                        String::from_utf8_lossy(&attr.value).to_string();
+                    let val = String::from_utf8_lossy(&attr.value).to_string();
                     match key.as_str() {
                         "stage" => {
                             meta.stage = val.parse().unwrap_or(0);
@@ -834,18 +827,14 @@ pub fn parse_quant_xml(data: &[u8]) -> Result<Vec<TiffImageMeta>, QuantError> {
 
                 // Read the text content (filename)
                 if let Ok(Event::Text(t)) = reader.read_event_into(&mut buf) {
-                    meta.filename =
-                        String::from_utf8_lossy(t.as_ref()).trim().to_string();
+                    meta.filename = String::from_utf8_lossy(t.as_ref()).trim().to_string();
                 }
 
                 results.push(meta);
             }
             Ok(Event::Eof) => break,
             Err(e) => {
-                return Err(QuantError::ParseError(format!(
-                    "XML parse error: {}",
-                    e
-                )));
+                return Err(QuantError::ParseError(format!("XML parse error: {}", e)));
             }
             _ => {}
         }
@@ -879,9 +868,7 @@ impl QuantDataCollection {
         // Read quant XML files for metadata
         let mut image_meta: HashMap<String, TiffImageMeta> = HashMap::new();
         let xml_names: Vec<String> = (0..archive.len())
-            .filter_map(|i| {
-                archive.by_index(i).ok().map(|e| e.name().to_string())
-            })
+            .filter_map(|i| archive.by_index(i).ok().map(|e| e.name().to_string()))
             .filter(|n| n.starts_with(&quant_prefix) && n.ends_with(".xml"))
             .collect();
 
@@ -896,9 +883,7 @@ impl QuantDataCollection {
 
         // Read and process TIFF files
         let tiff_names: Vec<String> = (0..archive.len())
-            .filter_map(|i| {
-                archive.by_index(i).ok().map(|e| e.name().to_string())
-            })
+            .filter_map(|i| archive.by_index(i).ok().map(|e| e.name().to_string()))
             .filter(|n| n.starts_with(&image_prefix) && n.ends_with(".tiff"))
             .collect();
 
@@ -914,11 +899,13 @@ impl QuantDataCollection {
                 QuantError::ParseError(format!("No metadata found for TIFF {}", basename))
             })?;
 
-            let tiff_data = read_zip_bytes(&mut archive, tiff_name)
-                .map_err(|e| QuantError::ParseError(format!("Failed to read {}: {}", tiff_name, e)))?;
+            let tiff_data = read_zip_bytes(&mut archive, tiff_name).map_err(|e| {
+                QuantError::ParseError(format!("Failed to read {}: {}", tiff_name, e))
+            })?;
 
-            let wells = crate::tiff::apply_roi_calibration_to_tiff(&tiff_data, &roi, qfn.emission, None)
-                .map_err(|e| QuantError::ParseError(format!("TIFF ROI error: {}", e)))?;
+            let wells =
+                crate::tiff::apply_roi_calibration_to_tiff(&tiff_data, &roi, qfn.emission, None)
+                    .map_err(|e| QuantError::ParseError(format!("TIFF ROI error: {}", e)))?;
 
             let well_n_rows = roi.n_rows;
             let well_n_cols = roi.n_cols;
@@ -940,9 +927,9 @@ impl QuantDataCollection {
             }
 
             // Use the actual excitation/emission from metadata, not the ROI key
-            let actual_filter_set = FilterSet::from_string(&format!(
-                "x{}-m{}", meta.excitation, meta.emission
-            )).map_err(QuantError::ParseError)?;
+            let actual_filter_set =
+                FilterSet::from_string(&format!("x{}-m{}", meta.excitation, meta.emission))
+                    .map_err(QuantError::ParseError)?;
 
             let conditions = QuantConditions {
                 stage: meta.stage,
@@ -1057,8 +1044,9 @@ impl QuantDataCollection {
             })?;
 
             let tiff_data = std::fs::read(&file_path)?;
-            let wells = crate::tiff::apply_roi_calibration_to_tiff(&tiff_data, &roi, qfn.emission, None)
-                .map_err(|e| QuantError::ParseError(format!("TIFF ROI error: {}", e)))?;
+            let wells =
+                crate::tiff::apply_roi_calibration_to_tiff(&tiff_data, &roi, qfn.emission, None)
+                    .map_err(|e| QuantError::ParseError(format!("TIFF ROI error: {}", e)))?;
 
             let well_n_rows = roi.n_rows;
             let well_n_cols = roi.n_cols;
@@ -1079,9 +1067,9 @@ impl QuantDataCollection {
             }
 
             // Use the actual excitation/emission from metadata, not the ROI key
-            let actual_filter_set = FilterSet::from_string(&format!(
-                "x{}-m{}", meta.excitation, meta.emission
-            )).map_err(QuantError::ParseError)?;
+            let actual_filter_set =
+                FilterSet::from_string(&format!("x{}-m{}", meta.excitation, meta.emission))
+                    .map_err(QuantError::ParseError)?;
 
             let conditions = QuantConditions {
                 stage: meta.stage,
@@ -1268,12 +1256,16 @@ impl QuantDataCollection {
                 outer_sums.push(wq.outer.sum);
                 outer_counts.push(wq.outer.count);
 
-                let net_total = wq.inner.sum
-                    - wq.inner.count as f64 * wq.outer.sum / wq.outer.count as f64;
+                let net_total =
+                    wq.inner.sum - wq.inner.count as f64 * wq.outer.sum / wq.outer.count as f64;
                 net_totals.push(net_total);
 
                 let zone_idx = (col as usize / zone_size).min(n_zones.saturating_sub(1));
-                let st = cond.sample_temperatures.get(zone_idx).copied().unwrap_or(0.0);
+                let st = cond
+                    .sample_temperatures
+                    .get(zone_idx)
+                    .copied()
+                    .unwrap_or(0.0);
                 sample_temps.push(st);
                 zones.push(zone_idx as u32);
             }
@@ -1313,8 +1305,7 @@ impl QuantDataCollection {
     #[staticmethod]
     #[pyo3(name = "from_eds")]
     fn py_from_eds(path: &str) -> PyResult<Self> {
-        Self::from_eds(path)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
+        Self::from_eds(path).map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))
     }
 
     #[staticmethod]
@@ -1421,8 +1412,7 @@ mod tests {
     use std::io::Read;
 
     fn read_quant_from_test_eds(path: &str) -> Vec<u8> {
-        let eds_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test.eds");
+        let eds_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/test.eds");
         let file = std::fs::File::open(eds_path).expect("test.eds not found");
         let mut archive = ::zip::ZipArchive::new(file).expect("invalid zip");
         let mut entry = archive.by_name(path).expect("file not found in EDS");
@@ -1519,8 +1509,7 @@ mod tests {
 
         // Verify net_total for first well (A1)
         let w = &qf.wells[0];
-        let net_total =
-            w.inner.sum - w.inner.count as f64 * w.outer.sum / w.outer.count as f64;
+        let net_total = w.inner.sum - w.inner.count as f64 * w.outer.sum / w.outer.count as f64;
         // net_total should be positive (signal above background)
         assert!(net_total > 0.0);
     }
@@ -1710,10 +1699,26 @@ mod tests {
             let qqf = quant_coll.get(qk).unwrap();
 
             for (i, (tw, qw)) in tqf.wells.iter().zip(qqf.wells.iter()).enumerate() {
-                assert_eq!(tw.inner.sum, qw.inner.sum, "Key {:?} well {} inner sum", tk, i);
-                assert_eq!(tw.inner.count, qw.inner.count, "Key {:?} well {} inner count", tk, i);
-                assert_eq!(tw.outer.sum, qw.outer.sum, "Key {:?} well {} outer sum", tk, i);
-                assert_eq!(tw.outer.count, qw.outer.count, "Key {:?} well {} outer count", tk, i);
+                assert_eq!(
+                    tw.inner.sum, qw.inner.sum,
+                    "Key {:?} well {} inner sum",
+                    tk, i
+                );
+                assert_eq!(
+                    tw.inner.count, qw.inner.count,
+                    "Key {:?} well {} inner count",
+                    tk, i
+                );
+                assert_eq!(
+                    tw.outer.sum, qw.outer.sum,
+                    "Key {:?} well {} outer sum",
+                    tk, i
+                );
+                assert_eq!(
+                    tw.outer.count, qw.outer.count,
+                    "Key {:?} well {} outer count",
+                    tk, i
+                );
             }
         }
     }
