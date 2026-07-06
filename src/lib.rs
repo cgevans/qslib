@@ -98,6 +98,18 @@ mod qslib {
     use crate::commands::MachineStatus;
 
     #[pymodule_export]
+    use crate::commands::StatusLedColor;
+
+    #[pymodule_export]
+    use crate::commands::StatusLedMode;
+
+    #[pymodule_export]
+    use crate::commands::StatusLedSet;
+
+    #[pymodule_export]
+    use crate::commands::StatusLedState;
+
+    #[pymodule_export]
     use crate::data::FilterSet;
 
     #[pymodule_export]

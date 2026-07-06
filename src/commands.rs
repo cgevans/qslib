@@ -581,6 +581,393 @@ impl From<PowerSet> for Command {
     }
 }
 
+/// Color of the front-panel status LED.
+///
+/// The status LED is the machine's indicator light, distinct from the optical
+/// excitation lamp. The seven colors and their numeric codes match the firmware
+/// (`statusled.mod`): RED=1, GREEN=2, BLUE=3, YELLOW=4, CYAN=5, MAGENTA=6, WHITE=7.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "python", pyclass(frozen, module = "qslib._qslib"))]
+pub enum StatusLedColor {
+    Red,
+    Green,
+    Blue,
+    Yellow,
+    Cyan,
+    Magenta,
+    White,
+}
+
+impl StatusLedColor {
+    /// Numeric color code used by the firmware `StatusLED:ColorType` register.
+    pub fn number(&self) -> u8 {
+        match self {
+            StatusLedColor::Red => 1,
+            StatusLedColor::Green => 2,
+            StatusLedColor::Blue => 3,
+            StatusLedColor::Yellow => 4,
+            StatusLedColor::Cyan => 5,
+            StatusLedColor::Magenta => 6,
+            StatusLedColor::White => 7,
+        }
+    }
+
+    /// Uppercase name, as used in the SCPI verb (`LED:<NAME>ON`) and returned by `LED:COLor?`.
+    pub fn name(&self) -> &'static str {
+        match self {
+            StatusLedColor::Red => "RED",
+            StatusLedColor::Green => "GREEN",
+            StatusLedColor::Blue => "BLUE",
+            StatusLedColor::Yellow => "YELLOW",
+            StatusLedColor::Cyan => "CYAN",
+            StatusLedColor::Magenta => "MAGENTA",
+            StatusLedColor::White => "WHITE",
+        }
+    }
+}
+
+impl TryFrom<&str> for StatusLedColor {
+    type Error = ();
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        match value.to_lowercase().as_str() {
+            "red" => Ok(StatusLedColor::Red),
+            "green" => Ok(StatusLedColor::Green),
+            "blue" => Ok(StatusLedColor::Blue),
+            "yellow" => Ok(StatusLedColor::Yellow),
+            "cyan" => Ok(StatusLedColor::Cyan),
+            "magenta" => Ok(StatusLedColor::Magenta),
+            "white" => Ok(StatusLedColor::White),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<StatusLedColor> for String {
+    fn from(color: StatusLedColor) -> Self {
+        color.name().to_string()
+    }
+}
+
+/// Mode of the status LED: solid on, off, or blinking.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "python", pyclass(frozen, module = "qslib._qslib"))]
+pub enum StatusLedMode {
+    On,
+    Off,
+    Blink,
+}
+
+impl StatusLedMode {
+    /// Suffix used in the SCPI verb (`LED:<COLOR><NAME>`).
+    pub fn name(&self) -> &'static str {
+        match self {
+            StatusLedMode::On => "ON",
+            StatusLedMode::Off => "OFF",
+            StatusLedMode::Blink => "BLINK",
+        }
+    }
+}
+
+impl TryFrom<&str> for StatusLedMode {
+    type Error = ();
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        // Accept both the SCPI words and the parser's boolean-normalized forms
+        // (`LED:STATus?` returns e.g. `BLUE true` / `- false`; `BLINK` passes through).
+        match value.to_lowercase().as_str() {
+            "on" | "true" | "yes" | "1" => Ok(StatusLedMode::On),
+            "off" | "false" | "no" | "0" => Ok(StatusLedMode::Off),
+            "blink" => Ok(StatusLedMode::Blink),
+            _ => Err(()),
+        }
+    }
+}
+
+impl From<StatusLedMode> for String {
+    fn from(mode: StatusLedMode) -> Self {
+        mode.name().to_string()
+    }
+}
+
+/// Set the status LED to a color and mode.
+///
+/// Uses the low-level per-color verbs (`LED:GREENON`, `LED:GREENBLINK`,
+/// `LED:GREENOFF`), which are unrestricted — unlike the `LED:<COLOR>:ON` form,
+/// they set/clear any color including red.
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyclass(frozen, get_all, module = "qslib._qslib"))]
+pub struct StatusLedSet {
+    pub color: StatusLedColor,
+    pub mode: StatusLedMode,
+}
+
+impl StatusLedSet {
+    pub fn new(color: StatusLedColor, mode: StatusLedMode) -> Self {
+        Self { color, mode }
+    }
+
+    /// The SCPI command string, e.g. `LED:GREENON`.
+    pub fn scpi_command(&self) -> String {
+        format!("LED:{}{}", self.color.name(), self.mode.name())
+    }
+}
+
+impl CommandBuilder for StatusLedSet {
+    type Response = ();
+    type Error = ErrorResponse;
+    // Placeholder: the real verb is color-dependent and emitted by write_command.
+    // Response routing is by message ident, not by COMMAND, so this is safe.
+    const COMMAND: &'static [u8] = b"LED";
+    fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
+        bytes.write_all(self.scpi_command().as_bytes())?;
+        Ok(())
+    }
+}
+
+/// Current color and mode of the status LED (from `LED:STATus?`).
+///
+/// `color` is `None` when the LED is off (the firmware reports the color as `-`).
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "python", pyclass(frozen, get_all, module = "qslib._qslib"))]
+pub struct StatusLedState {
+    pub color: Option<StatusLedColor>,
+    pub mode: StatusLedMode,
+}
+
+impl StatusLedState {
+    /// The SCPI query for status LED state.
+    pub const COMMAND: &'static [u8] = b"LED:STATus?";
+
+    /// Build from the two response tokens `<color> <mode>`.
+    fn from_tokens(tokens: &[String]) -> Result<Self, String> {
+        let color = match tokens.first() {
+            Some(c) if c == "-" => None,
+            Some(c) => Some(
+                StatusLedColor::try_from(c.as_str())
+                    .map_err(|_| format!("unexpected status LED color: {}", c))?,
+            ),
+            None => return Err("missing status LED color".to_string()),
+        };
+        let mode = tokens
+            .get(1)
+            .ok_or_else(|| "missing status LED mode".to_string())?;
+        let mode = StatusLedMode::try_from(mode.as_str())
+            .map_err(|_| format!("unexpected status LED mode: {}", mode))?;
+        Ok(StatusLedState { color, mode })
+    }
+
+    /// Parse a raw `LED:STATus?` response body (e.g. `b"BLUE true"`).
+    pub fn parse(response: &[u8]) -> Result<Self, OkParseError> {
+        let empty = || OkResponse {
+            args: vec![],
+            options: ArgMap::new(),
+        };
+        let s = std::str::from_utf8(response)
+            .map_err(|e| OkParseError::UnexpectedValues(empty(), format!("invalid UTF-8: {}", e)))?;
+        let tokens = shell_words::split(s)
+            .map_err(|e| OkParseError::UnexpectedValues(empty(), format!("split error: {}", e)))?;
+        Self::from_tokens(&tokens).map_err(|m| OkParseError::UnexpectedValues(empty(), m))
+    }
+}
+
+impl TryFrom<OkResponse> for StatusLedState {
+    type Error = OkParseError;
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        let tokens: Vec<String> = value.args.iter().map(|v| v.to_string()).collect();
+        Self::from_tokens(&tokens)
+            .map_err(|m| OkParseError::UnexpectedValues(value.clone(), m))
+    }
+}
+
+impl std::fmt::Display for StatusLedState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.color {
+            Some(c) => write!(f, "StatusLedState(color={}, mode={})", c.name(), self.mode.name()),
+            None => write!(f, "StatusLedState(color=None, mode={})", self.mode.name()),
+        }
+    }
+}
+
+/// Query the status LED state.
+#[derive(Debug, Clone)]
+pub struct StatusLedQuery;
+
+impl CommandBuilder for StatusLedQuery {
+    type Response = StatusLedState;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"LED:STATus?";
+}
+
+#[cfg(feature = "python")]
+fn extract_status_led_color(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<StatusLedColor> {
+    if let Ok(c) = obj.extract::<StatusLedColor>() {
+        return Ok(c);
+    }
+    if let Ok(s) = obj.extract::<String>() {
+        if let Ok(c) = StatusLedColor::try_from(s.as_str()) {
+            return Ok(c);
+        }
+    }
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "Invalid status LED color: {:?}",
+        obj
+    )))
+}
+
+#[cfg(feature = "python")]
+fn extract_status_led_mode(obj: &Bound<'_, pyo3::PyAny>) -> PyResult<StatusLedMode> {
+    if let Ok(m) = obj.extract::<StatusLedMode>() {
+        return Ok(m);
+    }
+    if let Ok(s) = obj.extract::<String>() {
+        if let Ok(m) = StatusLedMode::try_from(s.as_str()) {
+            return Ok(m);
+        }
+    }
+    Err(pyo3::exceptions::PyValueError::new_err(format!(
+        "Invalid status LED mode: {:?}",
+        obj
+    )))
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl StatusLedColor {
+    #[new]
+    fn py_new(value: &Bound<'_, pyo3::PyAny>) -> PyResult<Self> {
+        extract_status_led_color(value)
+    }
+
+    fn __str__(&self) -> String {
+        self.name().to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("StatusLedColor.{}", self.name())
+    }
+
+    fn __eq__(&self, other: &Bound<'_, pyo3::PyAny>) -> bool {
+        if let Ok(c) = other.extract::<StatusLedColor>() {
+            return self == &c;
+        }
+        if let Ok(s) = other.extract::<String>() {
+            if let Ok(c) = StatusLedColor::try_from(s.as_str()) {
+                return self == &c;
+            }
+        }
+        false
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[getter]
+    fn value(&self) -> String {
+        self.name().to_string()
+    }
+
+    #[getter]
+    fn get_number(&self) -> u8 {
+        self.number()
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl StatusLedMode {
+    #[new]
+    fn py_new(value: &Bound<'_, pyo3::PyAny>) -> PyResult<Self> {
+        extract_status_led_mode(value)
+    }
+
+    fn __str__(&self) -> String {
+        self.name().to_string()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("StatusLedMode.{}", self.name())
+    }
+
+    fn __eq__(&self, other: &Bound<'_, pyo3::PyAny>) -> bool {
+        if let Ok(m) = other.extract::<StatusLedMode>() {
+            return self == &m;
+        }
+        if let Ok(s) = other.extract::<String>() {
+            if let Ok(m) = StatusLedMode::try_from(s.as_str()) {
+                return self == &m;
+            }
+        }
+        false
+    }
+
+    fn __hash__(&self) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[getter]
+    fn value(&self) -> String {
+        self.name().to_string()
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl StatusLedSet {
+    #[new]
+    fn py_new(
+        color: &Bound<'_, pyo3::PyAny>,
+        mode: &Bound<'_, pyo3::PyAny>,
+    ) -> PyResult<Self> {
+        Ok(Self {
+            color: extract_status_led_color(color)?,
+            mode: extract_status_led_mode(mode)?,
+        })
+    }
+
+    /// The SCPI command string, e.g. `"LED:GREENON"`.
+    #[pyo3(name = "command_string")]
+    fn py_command_string(&self) -> String {
+        self.scpi_command()
+    }
+
+    fn __repr__(&self) -> String {
+        format!(
+            "StatusLedSet(color={}, mode={})",
+            self.color.name(),
+            self.mode.name()
+        )
+    }
+}
+
+#[cfg(feature = "python")]
+#[pymethods]
+impl StatusLedState {
+    #[staticmethod]
+    fn from_bytes(response: &[u8]) -> PyResult<Self> {
+        Self::parse(response)
+            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+    }
+
+    #[staticmethod]
+    fn command() -> &'static [u8] {
+        Self::COMMAND
+    }
+
+    fn __repr__(&self) -> String {
+        self.to_string()
+    }
+
+    fn __str__(&self) -> String {
+        self.to_string()
+    }
+}
+
 // '-RunMode=- -Step=- -RunTitle=- -Cycle=- -Stage=-'
 #[derive(Debug, Clone)]
 pub struct RunProgress {

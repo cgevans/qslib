@@ -499,9 +499,9 @@ def check_access(
         m = Machine(host, max_access_level=AccessLevel.Controller, password=controller_pw)
         try:
             with m.ensured_connection(AccessLevel.Controller):
-                m.run_command("LED:YELLOWON")
+                m.set_status_led("yellow")
                 time.sleep(2)
-                m.run_command("LED:BLUEON")
+                m.set_status_led("blue")
             p.good("succeeded.")
         except AuthError as e:
             p.error("Controller password was not set successfully.")
@@ -512,9 +512,9 @@ def check_access(
         m = Machine(host, max_access_level=AccessLevel.Administrator, password=admin_pw)
         try:
             with m.ensured_connection(AccessLevel.Administrator):
-                m.run_command("LED:REDON")
+                m.set_status_led("red")
                 time.sleep(2)
-                m.run_command("LED:BLUEON")
+                m.set_status_led("blue")
             p.good("succeeded.")
         except AuthError as e:
             p.error("Administrator password was not set successfully.")
@@ -525,9 +525,9 @@ def check_access(
         m = Machine(host, max_access_level=AccessLevel.Controller)
         try:
             with m.ensured_connection(AccessLevel.Controller):
-                m.run_command("LED:GREENON")
+                m.set_status_led("green")
                 time.sleep(2)
-                m.run_command("LED:BLUEON")
+                m.set_status_led("blue")
             p.good("succeeded.")
         except AccessLevelExceeded as e:
             p.error("Setting passwordless controller access failed.")

@@ -19,7 +19,13 @@ from .processors import (
     polars_process,
 )
 from .protocol import CustomStep, Protocol, Stage, Step
-from .scpi_commands import AccessLevel
+from .scpi_commands import (
+    AccessLevel,
+    StatusLedColor,
+    StatusLedMode,
+    StatusLedSet,
+    StatusLedState,
+)
 
 __all__ = (
     "AccessLevel",
@@ -39,6 +45,10 @@ __all__ = (
     "SmoothEMWMean",
     "SmoothWindowMean",
     "Stage",
+    "StatusLedColor",
+    "StatusLedMode",
+    "StatusLedSet",
+    "StatusLedState",
     "Step",
     "SubtractByMeanPerWell",
     "pandas_process",
