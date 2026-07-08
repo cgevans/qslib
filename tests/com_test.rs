@@ -1104,6 +1104,39 @@ async fn test_is_connected() {
 }
 
 #[tokio::test]
+async fn test_log_stream_ends_on_disconnect() {
+    // Regression: after the connection closes, the log subscription stream must
+    // terminate (yield None) instead of blocking forever. Previously the
+    // broadcast senders lived in the connection's logchannels map and were never
+    // dropped, so subscribers hung after a disconnect.
+    let (addr, server) = setup_mock_server(None, true).await;
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+        .await
+        .unwrap();
+
+    let mut stream = connection.subscribe_log(&["Status"]).await;
+
+    // Close the server so the client observes a disconnect (EOF).
+    server.abort();
+
+    // The stream must end within a bounded time. Drain any buffered messages
+    // until we observe the terminating None.
+    let ended = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if stream.next().await.is_none() {
+                break;
+            }
+        }
+    })
+    .await;
+
+    assert!(
+        ended.is_ok(),
+        "log stream did not terminate after disconnect"
+    );
+}
+
+#[tokio::test]
 async fn test_subscribe_with_timestamp_option() {
     let (addr, _server) = setup_mock_server(None, true).await;
     let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)

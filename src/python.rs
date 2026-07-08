@@ -5,7 +5,7 @@ use crate::parser::Command;
 use crate::parser::ParseError;
 use crate::parser::{LogMessage, MessageIdent, MessageResponse};
 use crate::protocol::{Protocol, Stage, StageStep, Step};
-use pyo3::exceptions::{PyException, PyTimeoutError, PyValueError};
+use pyo3::exceptions::{PyException, PyStopIteration, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::PyErr;
 use std::sync::Arc;
@@ -662,16 +662,22 @@ pub struct PyLogReceiver {
 
 #[pymethods]
 impl PyLogReceiver {
-    fn __next__(&mut self) -> PyResult<LogMessage> {
-        let x = self.rt.block_on(self.rx.next());
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<LogMessage> {
+        // Release the GIL while waiting for the next log message so other
+        // Python threads keep running. The stream ends (yields None) when the
+        // connection task exits and drops the log senders, at which point we
+        // raise StopIteration so a `for msg in receiver:` loop terminates
+        // cleanly instead of blocking forever.
+        let rt = Arc::clone(&self.rt);
+        let x = py.detach(|| rt.block_on(self.rx.next()));
         match x {
             Some(x) => x.1.map_err(|e| PyValueError::new_err(e.to_string())),
-            None => Err(PyValueError::new_err("No message received")),
+            None => Err(PyStopIteration::new_err("Connection closed")),
         }
     }
 
-    fn next(&mut self) -> PyResult<LogMessage> {
-        self.__next__()
+    fn next(&mut self, py: Python<'_>) -> PyResult<LogMessage> {
+        self.__next__(py)
     }
 }
 
