@@ -1,5 +1,6 @@
 use crate::com::{ConnectionError, QSConnectionError, SendCommandError};
 use crate::com::{ConnectionType, QSConnection, ResponseReceiver, TlsConfig};
+use crate::commands::ReceiveOkResponseError;
 use crate::parser::Command;
 use crate::parser::ParseError;
 use crate::parser::{LogMessage, MessageIdent, MessageResponse};
@@ -542,37 +543,36 @@ impl PyMessageResponse {
     ///
     /// Raises:
     ///     ValueError: If response is an error or invalid
-    pub fn get_response_bytes(&mut self) -> PyResult<Vec<u8>> {
-        loop {
-            let ret = self.rt.block_on(self.rx.recv());
-            match ret {
-                Some(x) => match x {
-                    MessageResponse::Ok { ident: _, message }
-                    | MessageResponse::Warning { ident: _, message } => {
-                        return Ok(message.to_bytes())
-                    }
-                    MessageResponse::CommandError { ident: _, error } => {
-                        return Err(CommandError::new_err(error))
-                    }
-                    MessageResponse::Next { ident: _ } => continue,
-                    MessageResponse::Message(message) => {
-                        return Err(UnexpectedMessageResponse::new_err(format!(
-                            "Received log message as response to command: {:?}",
-                            message
-                        )))
-                    }
-                },
-                None => {
-                    return Err(DisconnectedBeforeResponse::new_err(
-                        "Disconnected before response",
-                    ))
-                }
+    pub fn get_response_bytes(&mut self, py: Python<'_>) -> PyResult<Vec<u8>> {
+        // Bounded by the connection's timeouts (initial for the first message,
+        // next_to_ok after a NEXT) so a lost or never-sent response cannot
+        // block forever. The GIL is released for the duration of the wait so
+        // other Python threads keep running and Ctrl-C stays responsive.
+        let rt = Arc::clone(&self.rt);
+        let res = py.detach(|| rt.block_on(self.rx.get_response()));
+        match res {
+            Ok(Ok(message)) => Ok(message.to_bytes()),
+            Ok(Err(error)) => Err(CommandError::new_err(error)),
+            Err(ReceiveOkResponseError::Timeout) => {
+                Err(PyTimeoutError::new_err("Timed out waiting for response"))
+            }
+            Err(ReceiveOkResponseError::ConnectionClosed) => Err(
+                DisconnectedBeforeResponse::new_err("Disconnected before response"),
+            ),
+            Err(ReceiveOkResponseError::UnexpectedMessage(message)) => {
+                Err(UnexpectedMessageResponse::new_err(format!(
+                    "Received log message as response to command: {:?}",
+                    message
+                )))
+            }
+            Err(e @ ReceiveOkResponseError::ResponseParsingError(_)) => {
+                Err(CommandResponseError::new_err(e.to_string()))
             }
         }
     }
 
-    pub fn get_response(&mut self) -> PyResult<String> {
-        let bytes = self.get_response_bytes()?;
+    pub fn get_response(&mut self, py: Python<'_>) -> PyResult<String> {
+        let bytes = self.get_response_bytes(py)?;
         String::from_utf8(bytes).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -583,26 +583,30 @@ impl PyMessageResponse {
     ///
     /// Raises:
     ///     ValueError: If response is not an acknowledgment
-    pub fn get_ack(&mut self) -> PyResult<()> {
-        let x = self.rt.block_on(self.rx.recv());
+    pub fn get_ack(&mut self, py: Python<'_>) -> PyResult<()> {
+        // Bounded by the connection's initial timeout, with the GIL released
+        // during the wait, so a missing acknowledgement cannot block forever.
+        let rt = Arc::clone(&self.rt);
+        let x = py.detach(|| rt.block_on(self.rx.recv_initial()));
         match x {
-            Some(x) => match x {
-                MessageResponse::Ok { ident: _, message }
-                | MessageResponse::Warning { ident: _, message } => {
-                    Err(UnexpectedMessageResponse::new_err(format!(
-                        "OK message received as acknowledgment: {:?}",
-                        message
-                    )))
-                }
-                MessageResponse::CommandError { ident: _, error } => {
-                    Err(CommandError::new_err(error.to_string()))
-                }
-                MessageResponse::Next { ident: _ } => Ok(()),
-                MessageResponse::Message(message) => Err(UnexpectedMessageResponse::new_err(
-                    format!("Received log message as response to command: {:?}", message),
-                )),
-            },
-            None => Err(DisconnectedBeforeResponse::new_err(
+            Ok(MessageResponse::Ok { ident: _, message })
+            | Ok(MessageResponse::Warning { ident: _, message }) => {
+                Err(UnexpectedMessageResponse::new_err(format!(
+                    "OK message received as acknowledgment: {:?}",
+                    message
+                )))
+            }
+            Ok(MessageResponse::CommandError { ident: _, error }) => {
+                Err(CommandError::new_err(error.to_string()))
+            }
+            Ok(MessageResponse::Next { ident: _ }) => Ok(()),
+            Ok(MessageResponse::Message(message)) => Err(UnexpectedMessageResponse::new_err(
+                format!("Received log message as response to command: {:?}", message),
+            )),
+            Err(ReceiveOkResponseError::Timeout) => Err(PyTimeoutError::new_err(
+                "Timed out waiting for acknowledgment",
+            )),
+            Err(_) => Err(DisconnectedBeforeResponse::new_err(
                 "Disconnected before response",
             )),
         }
@@ -859,7 +863,7 @@ impl PyQSConnection {
             rx,
             rt: self.rt.clone(),
         };
-        let challenge = challenge_response.get_response()?;
+        let challenge = challenge_response.get_response(py)?;
 
         // Generate auth response using Python's hmac module
         let hmac_module = PyModule::import(py, "hmac")?;
@@ -879,7 +883,7 @@ impl PyQSConnection {
             rx,
             rt: self.rt.clone(),
         };
-        auth_response_recv.get_response()?;
+        auth_response_recv.get_response(py)?;
 
         Ok(())
     }
