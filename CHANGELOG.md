@@ -6,6 +6,11 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Unreleased
+
+### Protocol fixes
+- Fix collection-filter serialization in `tcprotocol.xml`. Filters are carried internally in hacform (`m{em},x{ex}[,quant]`), but `to_xml_pair` re-parsed them with an ad-hoc splitter that assumed an `em,row,ex` numeric layout, so `m4,x4,quant` was written as `Excitation="xquant" Emission="mm4"` (and reloading such a file warned `Invalid filter set format: xquant-mm4`). Serialization now goes through `FilterSet::from_string`, restoring the pre-0.14 output `Excitation="x4" Emission="m4"`. Only the `tcprotocol.xml` metadata was affected; `filterdata` and quant data were correct. Regression introduced in 0.14.0 with the Rust protocol port.
+
 ## Version 0.15.1
 
 ### Data fixes
