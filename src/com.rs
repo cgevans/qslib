@@ -471,6 +471,10 @@ impl QSConnectionInner {
                 }
                 n = f_data_to_receive => {
                     let n = n?;
+                    if n == 0 {
+                        trace!("Connection closed by peer (EOF).");
+                        break Ok(());
+                    }
                     trace!("Receiving data");
                     self.handle_receive(n).await;
                 }
