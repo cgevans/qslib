@@ -2202,21 +2202,14 @@ impl Protocol {
     }
 }
 
-/// Parse a filter string (e.g. "x4-m4", "4,1,4") into (excitation, emission) for XML attributes.
+/// Parse a filter string (lowerform "x4-m4", hacform "m4,x4,quant", or upperform
+/// "M4_X4") into ("x{ex}", "m{em}") attribute strings for a FilterSet element.
+/// Unrecognised strings are passed through unchanged.
 fn parse_filter_for_xml(filter: &str) -> (String, String) {
-    // Format: "x{n}-m{n}" or "{em},{row},{ex}" (hacform)
-    if let Some(rest) = filter.strip_prefix('x') {
-        if let Some((ex, em)) = rest.split_once("-m") {
-            return (format!("x{}", ex), format!("m{}", em));
-        }
+    match crate::data::FilterSet::from_string(filter) {
+        Ok(fs) => (format!("x{}", fs.ex), format!("m{}", fs.em)),
+        Err(_) => (filter.to_string(), filter.to_string()),
     }
-    // Try hacform: "em,row,ex" like "4,1,4"
-    let parts: Vec<&str> = filter.split(',').collect();
-    if parts.len() >= 3 {
-        return (format!("x{}", parts[2]), format!("m{}", parts[0]));
-    }
-    // Fallback
-    (filter.to_string(), filter.to_string())
 }
 
 // =====================================================================
@@ -4087,6 +4080,52 @@ mod tests {
     }
 
     #[test]
+    fn test_to_xml_pair_with_hacform_filters() {
+        // Filters as emitted in hacform ("m{em},x{ex}[,quant]") must still render
+        // as x{ex}/m{em} in the FilterSet element.
+        let protocol = Protocol {
+            stages: vec![Stage {
+                steps: vec![StageStep::Standard(Step {
+                    time: 30,
+                    temperature: vec![75.0; 6],
+                    collect: Some(true),
+                    temp_increment: 0.0,
+                    temp_incrementcycle: 2,
+                    temp_incrementpoint: None,
+                    time_increment: 0,
+                    time_incrementcycle: 2,
+                    time_incrementpoint: None,
+                    filters: vec![],
+                    pcr: false,
+                    quant: true,
+                    tiff: false,
+                    repeat: 1,
+                    default_filters: vec![],
+                })],
+                repeat: 10,
+                index: Some(1),
+                label: None,
+                default_filters: vec![],
+            }],
+            name: "hacform_filter_test".to_string(),
+            volume: 35.0,
+            runmode: "standard".to_string(),
+            filters: vec!["m4,x4,quant".to_string(), "m1,x1".to_string()],
+            covertemperature: 105.0,
+            prerun: vec![],
+            postrun: vec![],
+        };
+
+        let (tc, _) = protocol.to_xml_pair(105.0, "0.14.0", None);
+        assert!(tc.contains("Emission=\"m4\""), "tc: {tc}");
+        assert!(tc.contains("Excitation=\"x4\""), "tc: {tc}");
+        assert!(tc.contains("Emission=\"m1\""), "tc: {tc}");
+        assert!(tc.contains("Excitation=\"x1\""), "tc: {tc}");
+        assert!(!tc.contains("xquant"), "tc: {tc}");
+        assert!(!tc.contains("mm4"), "tc: {tc}");
+    }
+
+    #[test]
     fn test_to_xml_pair_with_machine_toml() {
         let protocol = Protocol {
             stages: vec![],
@@ -4342,13 +4381,10 @@ port = 7443
 
     #[test]
     fn test_parse_filter_for_xml() {
-        let (ex, em) = parse_filter_for_xml("x4-m4");
-        assert_eq!(ex, "x4");
-        assert_eq!(em, "m4");
-
-        let (ex, em) = parse_filter_for_xml("4,1,4");
-        assert_eq!(ex, "x4");
-        assert_eq!(em, "m4");
+        assert_eq!(parse_filter_for_xml("x4-m4"), ("x4".into(), "m4".into()));
+        assert_eq!(parse_filter_for_xml("m4,x4,quant"), ("x4".into(), "m4".into()));
+        assert_eq!(parse_filter_for_xml("m1,x3"), ("x3".into(), "m1".into()));
+        assert_eq!(parse_filter_for_xml("M4_X4"), ("x4".into(), "m4".into()));
     }
 
     // =====================================================================
