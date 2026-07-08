@@ -305,6 +305,20 @@ pub enum QSCommError {
     QS(String),
 }
 
+/// Best-effort extraction of a message ident from a response that failed to
+/// parse. Responses have the form `<KEYWORD> <ident> ...`; the parse failure is
+/// usually in the body, so the ident is still recoverable. Used to fail a
+/// waiting command fast instead of leaving it to time out.
+fn try_extract_ident(msg: &[u8]) -> Option<MessageIdent> {
+    let mut input = msg;
+    let kw_end = input.iter().position(|&c| c == b' ')?;
+    input = &input[kw_end..];
+    while let Some(&b' ') = input.first() {
+        input = &input[1..];
+    }
+    MessageIdent::parse(&mut input).ok()
+}
+
 impl QSConnectionInner {
     async fn handle_receive(&mut self, n: usize) {
         trace!(
@@ -344,11 +358,23 @@ impl QSConnectionInner {
                         Ok(MessageResponse::Next { ident }) => {
                             let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                match channel.send(MessageResponse::Next { ident }).await {
+                                // try_send, never await: blocking the receive loop on a
+                                // slow consumer would stall the whole connection.
+                                match channel.try_send(MessageResponse::Next { ident }) {
                                     Ok(_) => {
                                         // Next is intermediate, keep channel for future responses
                                     }
-                                    Err(_) => {
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        // Consumer is not draining. Drop this intermediate
+                                        // NEXT rather than block; keep the channel so the
+                                        // terminal response can still be delivered once it
+                                        // drains.
+                                        warn!(
+                                            "Response channel full for ident {:?}; dropping NEXT",
+                                            ident_clone
+                                        );
+                                    }
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
                                         // Receiver dropped, remove from HashMap to prevent leak
                                         self.messagechannels.remove(&ident_clone);
                                         trace!(
@@ -365,23 +391,18 @@ impl QSConnectionInner {
                             // CommandError is final response, always remove channel
                             let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                match channel
-                                    .send(MessageResponse::CommandError { ident, error })
-                                    .await
+                                // try_send, never await (see NEXT arm). If the consumer's
+                                // buffer is full it is stuck; drop the response and let its
+                                // timeout fire rather than stalling the whole connection.
+                                if let Err(mpsc::error::TrySendError::Full(_)) =
+                                    channel.try_send(MessageResponse::CommandError { ident, error })
                                 {
-                                    Ok(_) => {
-                                        // Successfully sent, remove channel
-                                        self.messagechannels.remove(&ident_clone);
-                                    }
-                                    Err(_) => {
-                                        // Receiver dropped, remove channel anyway
-                                        self.messagechannels.remove(&ident_clone);
-                                        trace!(
-                                            "Removed channel for ident {:?} after send failure",
-                                            ident_clone
-                                        );
-                                    }
+                                    warn!(
+                                        "Response channel full for ident {:?}; dropping error response",
+                                        ident_clone
+                                    );
                                 }
+                                self.messagechannels.remove(&ident_clone);
                             } else {
                                 trace!("No channel for message ident: {:?}", ident_clone);
                             }
@@ -395,20 +416,18 @@ impl QSConnectionInner {
                                 _ => unreachable!(),
                             };
                             if let Some(channel) = self.messagechannels.get_mut(&ident_clone) {
-                                match channel.send(msg).await {
-                                    Ok(_) => {
-                                        // Successfully sent, remove channel
-                                        self.messagechannels.remove(&ident_clone);
-                                    }
-                                    Err(_) => {
-                                        // Receiver dropped, remove channel anyway
-                                        self.messagechannels.remove(&ident_clone);
-                                        trace!(
-                                            "Removed channel for ident {:?} after send failure",
-                                            ident_clone
-                                        );
-                                    }
+                                // try_send, never await (see NEXT arm). A stuck consumer
+                                // must not stall the receive loop; drop and let its timeout
+                                // fire.
+                                if let Err(mpsc::error::TrySendError::Full(_)) =
+                                    channel.try_send(msg)
+                                {
+                                    warn!(
+                                        "Response channel full for ident {:?}; dropping OK response",
+                                        ident_clone
+                                    );
                                 }
+                                self.messagechannels.remove(&ident_clone);
                             } else {
                                 trace!("No channel for message ident: {:?}", ident_clone);
                             }
@@ -419,6 +438,23 @@ impl QSConnectionInner {
                                 e,
                                 String::from_utf8_lossy(&msg)
                             );
+                            // Surface the parse failure to the waiting command (if its
+                            // ident is recoverable) so it fails fast instead of waiting
+                            // out its timeout.
+                            if let Some(ident) = try_extract_ident(&msg) {
+                                if let Some(channel) = self.messagechannels.get_mut(&ident) {
+                                    let error = ErrorResponse {
+                                        error: "ParseError".to_string(),
+                                        args: crate::parser::ArgMap::new(),
+                                        message: format!("Failed to parse server response: {}", e),
+                                    };
+                                    let _ = channel.try_send(MessageResponse::CommandError {
+                                        ident: ident.clone(),
+                                        error,
+                                    });
+                                    self.messagechannels.remove(&ident);
+                                }
+                            }
                         }
                     }
                 }
@@ -753,7 +789,7 @@ impl QSConnection {
         msg.write_bytes(&mut bytes)?;
         trace!("Sending: {}", String::from_utf8_lossy(&bytes));
 
-        let (tx, rx) = mpsc::channel(5);
+        let (tx, rx) = mpsc::channel(64);
         self.commandchannel
             .send((msg, tx))
             .await
@@ -773,7 +809,7 @@ impl QSConnection {
             ident: Some(ident),
             content: None,
         };
-        let (tx, rx) = mpsc::channel(5);
+        let (tx, rx) = mpsc::channel(64);
         self.commandchannel
             .send((msg, tx))
             .await
@@ -793,7 +829,7 @@ impl QSConnection {
             ident: None,
             content: Some(bytes.into()),
         };
-        let (tx, rx) = mpsc::channel(5);
+        let (tx, rx) = mpsc::channel(64);
         self.commandchannel
             .send((msg, tx))
             .await
@@ -1057,7 +1093,12 @@ impl QSConnection {
 
         Ok(QSConnection {
             task: tokio::spawn(async move {
-                qsi.inner_loop().await.map_err(QSConnectionError::IOError)
+                let result = qsi.inner_loop().await.map_err(QSConnectionError::IOError);
+                // Drop all log-subscription senders so subscribers observe the
+                // disconnect: their BroadcastStreams end (yield None) instead of
+                // blocking forever waiting for a message that can never arrive.
+                qsi.logchannels.clear();
+                result
             }),
             commandchannel: com_tx,
             logchannels,
@@ -1130,7 +1171,12 @@ impl QSConnection {
 
         Ok(QSConnection {
             task: tokio::spawn(async move {
-                qsi.inner_loop().await.map_err(QSConnectionError::IOError)
+                let result = qsi.inner_loop().await.map_err(QSConnectionError::IOError);
+                // Drop all log-subscription senders so subscribers observe the
+                // disconnect: their BroadcastStreams end (yield None) instead of
+                // blocking forever waiting for a message that can never arrive.
+                qsi.logchannels.clear();
+                result
             }),
             commandchannel: com_tx,
             logchannels,
