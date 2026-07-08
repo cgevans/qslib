@@ -79,8 +79,29 @@ impl MsgRecv {
     }
 
     fn check_from_pos(&mut self, start_pos: usize) -> bool {
-        if self.msg_error.is_some() || self.msg_end.is_some() {
+        if self.msg_end.is_some() {
             return true;
+        }
+        // If an error was latched during an earlier scan but the malformed
+        // message's terminating newline had not yet arrived, resync here by
+        // scanning forward (ignoring tag structure) for the next newline and
+        // marking it as the message end. `try_get_msg` then drains the bad
+        // message and surfaces the error. Without this, a malformed message
+        // whose newline arrives in a *later* read (ordinary TCP fragmentation)
+        // would wedge the receiver permanently: `msg_error` stays set, so this
+        // function used to early-return before ever scanning for the newline,
+        // `msg_end` was never set, and `try_get_msg` never drained or cleared
+        // the error. Scanning from `start_pos` (rather than 0) is correct
+        // because there can be no top-level newline between the error position
+        // and `start_pos` -- otherwise `msg_end` would already have been set in
+        // the scan that latched the error.
+        if self.msg_error.is_some() {
+            let from = start_pos.min(self.buf.len());
+            if let Some(offset) = self.buf[from..].iter().position(|&c| c == b'\n') {
+                self.msg_end = Some(from + offset + 1);
+                return true;
+            }
+            return false;
         }
         self.parttag = None;
         let mut pos = start_pos;
@@ -432,6 +453,52 @@ mod tests {
         receiver.push_data(b"OK 1 success\n");
         let msg = receiver.try_get_msg().unwrap().unwrap();
         assert_eq!(&msg, b"OK 1 success\n");
+    }
+
+    #[test]
+    fn test_latched_error_resyncs_when_newline_arrives_later() {
+        // Regression: a malformed message (mismatched close tag) whose
+        // terminating newline arrives in a *separate* push, as happens with
+        // ordinary TCP fragmentation. Before the fix this permanently wedged
+        // the receiver (msg_error latched, msg_end never set, try_get_msg
+        // returning Ok(None) forever), so every later message was lost.
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"OK 1 <quote>a\nb</wrongtag>");
+        // Terminating newline delivered in a later read.
+        receiver.push_data(b"\n");
+
+        // The malformed message must surface as an error, not hang.
+        let result = receiver.try_get_msg();
+        assert!(
+            result.is_err(),
+            "expected the malformed message to surface as an error, got {:?}",
+            result
+        );
+
+        // The receiver must recover and parse subsequent valid messages.
+        receiver.push_data(b"OK 2 success\n");
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg, b"OK 2 success\n");
+    }
+
+    #[test]
+    fn test_unexpected_close_tag_split_before_newline() {
+        // Same class of bug for an unexpected (unmatched) close tag split
+        // from its terminating newline.
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"</unexpected>content");
+        receiver.push_data(b"\n");
+
+        let result = receiver.try_get_msg();
+        assert!(
+            result.is_err(),
+            "expected an error for the unexpected close tag, got {:?}",
+            result
+        );
+
+        receiver.push_data(b"OK 3 ok\n");
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg, b"OK 3 ok\n");
     }
 
     #[test]
