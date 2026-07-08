@@ -48,34 +48,32 @@ pub enum ReceiveNextResponseError {
     UnexpectedError(ErrorResponse),
     #[error("Unexpected message response: {0:?}")]
     UnexpectedMessage(crate::parser::LogMessage),
+    #[error("Timeout waiting for response")]
+    Timeout,
 }
 
 impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> CommandReceiver<T, E> {
     pub async fn receive_response(&mut self) -> Result<Result<T, E>, ReceiveOkResponseError> {
-        loop {
-            match self.response.recv().await {
-                None => return Err(ReceiveOkResponseError::ConnectionClosed),
-                Some(
-                    MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. },
-                ) => return Ok(Ok(message.try_into()?)),
-                Some(MessageResponse::CommandError { error, .. }) => return Ok(Err(error.into())),
-                Some(MessageResponse::Next { .. }) => (),
-                Some(MessageResponse::Message(message)) => {
-                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
-                }
-            }
+        // Delegate to the timeout-bounded receiver so a lost or never-sent
+        // response cannot block forever (e.g. a half-open connection). This
+        // applies the connection's initial timeout for the first message and
+        // next_to_ok timeout after a NEXT, ignoring intermediate NEXTs.
+        match self.response.get_response().await? {
+            Ok(ok) => Ok(Ok(ok.try_into()?)),
+            Err(error) => Ok(Err(error.into())),
         }
     }
 
     pub async fn receive_next(&mut self) -> Result<Result<(), E>, ReceiveNextResponseError> {
-        match self.response.recv().await {
-            None => Err(ReceiveNextResponseError::ConnectionClosed),
-            Some(MessageResponse::CommandError { error, .. }) => Ok(Err(error.into())),
-            Some(MessageResponse::Next { .. }) => Ok(Ok(())),
-            Some(
-                MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. },
-            ) => Err(ReceiveNextResponseError::UnexpectedOk(message)),
-            Some(MessageResponse::Message(message)) => {
+        match self.response.recv_initial().await {
+            Err(ReceiveOkResponseError::Timeout) => Err(ReceiveNextResponseError::Timeout),
+            Err(_) => Err(ReceiveNextResponseError::ConnectionClosed),
+            Ok(MessageResponse::CommandError { error, .. }) => Ok(Err(error.into())),
+            Ok(MessageResponse::Next { .. }) => Ok(Ok(())),
+            Ok(MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. }) => {
+                Err(ReceiveNextResponseError::UnexpectedOk(message))
+            }
+            Ok(MessageResponse::Message(message)) => {
                 Err(ReceiveNextResponseError::UnexpectedMessage(message))
             }
         }

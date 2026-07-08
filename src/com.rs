@@ -547,6 +547,23 @@ impl ResponseReceiver {
         self.receiver.recv().await
     }
 
+    /// Receive the next message, bounded by the connection's initial timeout.
+    ///
+    /// Unlike [`recv`](Self::recv), this cannot block forever: it returns
+    /// `Timeout` if no message arrives within `initial_timeout`, and
+    /// `ConnectionClosed` if the connection closed (or no timeout is
+    /// configured). Used for single-message waits such as acknowledgements.
+    pub async fn recv_initial(&mut self) -> Result<MessageResponse, ReceiveOkResponseError> {
+        let initial = self
+            .initial_timeout
+            .ok_or(ReceiveOkResponseError::ConnectionClosed)?;
+        match timeout(initial, self.recv()).await {
+            Ok(Some(msg)) => Ok(msg),
+            Ok(None) => Err(ReceiveOkResponseError::ConnectionClosed),
+            Err(_) => Err(ReceiveOkResponseError::Timeout),
+        }
+    }
+
     /// Get the OK or error response from the machine, ignoring NEXT messages.
     /// Uses connection's default timeouts: initial_timeout for first response, next_to_ok_timeout after NEXT.
     pub async fn get_response(
