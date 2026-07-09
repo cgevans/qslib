@@ -17,18 +17,31 @@ use qslib::commands::*;
 use std::time::Duration;
 use tokio_stream::StreamExt;
 
-const TCP_HOST: &str = "localhost";
-const TCP_PORT: u16 = 7000;
-const SSL_HOST: &str = "localhost";
-const SSL_PORT: u16 = 7443;
-const TEST_PASSWORD: &str = "correctpassword";
+fn test_host() -> String {
+    std::env::var("QSLIB_TEST_MACHINE").unwrap_or_else(|_| "localhost".to_string())
+}
+fn tcp_port() -> u16 {
+    std::env::var("QSLIB_TEST_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7000)
+}
+fn ssl_port() -> u16 {
+    std::env::var("QSLIB_TEST_SSL_PORT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(7443)
+}
+fn test_password() -> String {
+    std::env::var("QSLIB_TEST_PASSWORD").unwrap_or_else(|_| "correctpassword".to_string())
+}
 
 /// Helper to connect and authenticate with Observer access level.
 async fn connect_authenticated(host: &str, port: u16, conn_type: ConnectionType) -> QSConnection {
     let conn = QSConnection::connect(host, port, conn_type)
         .await
         .expect("Failed to connect");
-    conn.authenticate(TEST_PASSWORD)
+    conn.authenticate(&test_password())
         .await
         .expect("Failed to authenticate");
     conn.set_access_level(AccessLevel::Observer)
@@ -41,7 +54,7 @@ async fn connect_authenticated(host: &str, port: u16, conn_type: ConnectionType)
 #[tokio::test]
 #[ignore]
 async fn test_real_tcp_connection() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     assert!(
         connection.is_ok(),
@@ -68,7 +81,7 @@ async fn test_real_tcp_connection() {
 #[tokio::test]
 #[ignore]
 async fn test_real_ssl_connection() {
-    let connection = QSConnection::connect(SSL_HOST, SSL_PORT, ConnectionType::SSL).await;
+    let connection = QSConnection::connect(&test_host(), ssl_port(), ConnectionType::SSL).await;
 
     assert!(
         connection.is_ok(),
@@ -85,7 +98,7 @@ async fn test_real_ssl_connection() {
 #[tokio::test]
 #[ignore]
 async fn test_real_auto_tcp() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::Auto).await;
+    let connection = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::Auto).await;
 
     assert!(
         connection.is_ok(),
@@ -100,7 +113,7 @@ async fn test_real_auto_tcp() {
 #[tokio::test]
 #[ignore]
 async fn test_real_auto_ssl() {
-    let connection = QSConnection::connect(SSL_HOST, SSL_PORT, ConnectionType::Auto).await;
+    let connection = QSConnection::connect(&test_host(), ssl_port(), ConnectionType::Auto).await;
 
     assert!(
         connection.is_ok(),
@@ -116,8 +129,8 @@ async fn test_real_auto_ssl() {
 #[ignore]
 async fn test_real_connection_timeout() {
     let connection = QSConnection::connect_with_timeout(
-        TCP_HOST,
-        TCP_PORT,
+        &test_host(),
+        tcp_port(),
         ConnectionType::TCP,
         Duration::from_secs(10),
     )
@@ -134,7 +147,7 @@ async fn test_real_connection_timeout() {
 #[tokio::test]
 #[ignore]
 async fn test_real_help_command() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+    let connection = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP)
         .await
         .expect("Failed to connect");
 
@@ -151,7 +164,7 @@ async fn test_real_help_command() {
 #[tokio::test]
 #[ignore]
 async fn test_real_power_query() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let response = PowerQuery
         .send(&connection)
@@ -174,7 +187,7 @@ async fn test_real_power_query() {
 #[tokio::test]
 #[ignore]
 async fn test_real_access_level_query() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+    let connection = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP)
         .await
         .expect("Failed to connect");
 
@@ -196,12 +209,12 @@ async fn test_real_access_level_query() {
 #[tokio::test]
 #[ignore]
 async fn test_real_authentication() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+    let connection = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP)
         .await
         .expect("Failed to connect");
 
     // Authenticate
-    let auth_result = connection.authenticate(TEST_PASSWORD).await;
+    let auth_result = connection.authenticate(&test_password()).await;
     assert!(
         auth_result.is_ok(),
         "Authentication failed: {:?}",
@@ -231,7 +244,7 @@ async fn test_real_authentication() {
 #[tokio::test]
 #[ignore]
 async fn test_real_authentication_wrong_password() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+    let connection = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP)
         .await
         .expect("Failed to connect");
 
@@ -246,7 +259,7 @@ async fn test_real_authentication_wrong_password() {
 #[tokio::test]
 #[ignore]
 async fn test_real_set_access_level() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+    let connection = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP)
         .await
         .expect("Failed to connect");
 
@@ -280,13 +293,13 @@ async fn test_real_set_access_level() {
 #[tokio::test]
 #[ignore]
 async fn test_real_controller_access() {
-    let connection = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+    let connection = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP)
         .await
         .expect("Failed to connect");
 
     // Authenticate first
     connection
-        .authenticate(TEST_PASSWORD)
+        .authenticate(&test_password())
         .await
         .expect("Failed to authenticate");
 
@@ -314,7 +327,7 @@ async fn test_real_controller_access() {
 #[tokio::test]
 #[ignore]
 async fn test_real_log_subscription() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     Subscribe::topic("Temperature")
         .send(&connection)
@@ -336,7 +349,7 @@ async fn test_real_log_subscription() {
 #[tokio::test]
 #[ignore]
 async fn test_real_run_title_no_run() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let result = connection.get_current_run_name().await;
 
@@ -351,7 +364,7 @@ async fn test_real_run_title_no_run() {
 #[tokio::test]
 #[ignore]
 async fn test_real_temperature_setpoints() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let result = connection.get_current_temperature_setpoints().await;
 
@@ -378,7 +391,7 @@ async fn test_real_temperature_setpoints() {
 #[tokio::test]
 #[ignore]
 async fn test_real_file_list() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let result = connection.get_expfile_list("*").await;
 
@@ -391,7 +404,7 @@ async fn test_real_file_list() {
 #[tokio::test]
 #[ignore]
 async fn test_real_concurrent_commands() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     // Send multiple commands concurrently
     let power_fut = PowerQuery.send(&connection);
@@ -421,7 +434,7 @@ async fn test_real_concurrent_commands() {
 #[tokio::test]
 #[ignore]
 async fn test_real_raw_command() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     // Send a raw RUNTitle? command
     let mut response = connection
@@ -437,7 +450,7 @@ async fn test_real_raw_command() {
 #[tokio::test]
 #[ignore]
 async fn test_real_ssl_commands() {
-    let connection = connect_authenticated(SSL_HOST, SSL_PORT, ConnectionType::SSL).await;
+    let connection = connect_authenticated(&test_host(), ssl_port(), ConnectionType::SSL).await;
 
     // Test a simple command over SSL
     let response = PowerQuery
@@ -455,14 +468,14 @@ async fn test_real_ssl_commands() {
 #[ignore]
 async fn test_real_reconnection() {
     // First connection
-    let conn1 = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+    let conn1 = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP)
         .await
         .expect("First connection failed");
 
     assert!(conn1.is_connected().await);
 
     // Second connection while first is still active
-    let conn2 = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::TCP)
+    let conn2 = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::TCP)
         .await
         .expect("Second connection failed");
 
@@ -481,7 +494,7 @@ async fn test_real_reconnection() {
 #[ignore]
 async fn test_real_wrong_port_type() {
     // Try SSL connection to TCP port - should fail
-    let result = QSConnection::connect(TCP_HOST, TCP_PORT, ConnectionType::SSL).await;
+    let result = QSConnection::connect(&test_host(), tcp_port(), ConnectionType::SSL).await;
     assert!(result.is_err(), "SSL connection to TCP port should fail");
 }
 
@@ -489,7 +502,7 @@ async fn test_real_wrong_port_type() {
 #[tokio::test]
 #[ignore]
 async fn test_real_drawer_query() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let response = DrawerStatusQuery
         .send(&connection)
@@ -515,7 +528,7 @@ async fn test_real_drawer_query() {
 #[tokio::test]
 #[ignore]
 async fn test_real_cover_query() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let response = CoverPositionQuery
         .send(&connection)
@@ -541,7 +554,7 @@ async fn test_real_cover_query() {
 #[tokio::test]
 #[ignore]
 async fn test_real_cover_heat_query() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let response = CoverHeatStatusQuery
         .send(&connection)
@@ -573,7 +586,7 @@ async fn test_real_cover_heat_query() {
 #[tokio::test]
 #[ignore]
 async fn test_real_quick_status() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let response = QuickStatusQuery
         .send(&connection)
@@ -608,7 +621,7 @@ async fn test_real_quick_status() {
 #[tokio::test]
 #[ignore]
 async fn test_real_control_zones() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let mut response = connection
         .send_command_bytes(b"TBC:ControlZones?")
@@ -649,7 +662,7 @@ async fn test_real_control_zones() {
 #[tokio::test]
 #[ignore]
 async fn test_real_subscribe_temperature() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     Subscribe::topic("Temperature")
         .send(&connection)
@@ -675,7 +688,7 @@ async fn test_real_subscribe_temperature() {
 #[tokio::test]
 #[ignore]
 async fn test_real_subscribe_multiple() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     Subscribe::topics(&["Temperature", "Status"])
         .send(&connection)
@@ -701,7 +714,7 @@ async fn test_real_subscribe_multiple() {
 #[tokio::test]
 #[ignore]
 async fn test_real_sample_temperatures() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let response = SampleTemperaturesQuery
         .send(&connection)
@@ -733,7 +746,7 @@ async fn test_real_sample_temperatures() {
 #[tokio::test]
 #[ignore]
 async fn test_real_block_temperatures() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let response = BlockTemperaturesQuery
         .send(&connection)
@@ -765,7 +778,7 @@ async fn test_real_block_temperatures() {
 #[tokio::test]
 #[ignore]
 async fn test_real_temperature_control_status() {
-    let connection = connect_authenticated(TCP_HOST, TCP_PORT, ConnectionType::TCP).await;
+    let connection = connect_authenticated(&test_host(), tcp_port(), ConnectionType::TCP).await;
 
     let response = TemperatureControlStatusQuery
         .send(&connection)
