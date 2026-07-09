@@ -511,9 +511,10 @@ jobs:
     # machine. Remove this job (and rust_integration_tests below) if no such
     # runner is registered.
     runs-on: self-hosted-qpcr
+    # Docker-executor runner: reach the simulator container directly on the CI network.
     env:
-      QSLIB_TEST_MACHINE: localhost
-      QSLIB_TEST_PORT: "7000"
+      QSLIB_TEST_MACHINE: simulator
+      QSLIB_TEST_PORT: "7001"
       QSLIB_TEST_PASSWORD: correctpassword
       QSLIB_TEST_SSL: "false"
     steps:
@@ -548,9 +549,10 @@ jobs:
   rust_integration_tests:
     name: Rust tests with machine
     runs-on: self-hosted-qpcr
+    # Docker-executor runner: reach the simulator container directly on the CI network.
     env:
-      QSLIB_TEST_MACHINE: localhost
-      QSLIB_TEST_PORT: "7000"
+      QSLIB_TEST_MACHINE: simulator
+      QSLIB_TEST_PORT: "7001"
       QSLIB_TEST_PASSWORD: correctpassword
       QSLIB_TEST_SSL: "false"
     steps:
