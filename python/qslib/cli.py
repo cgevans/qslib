@@ -260,7 +260,8 @@ def machine_status(machine: str) -> None:
 
     if rs.state != "Idle":
         click.echo(
-            f"Run {rs.name}. Stage {rs.stage}/{rs.num_stages}, cycle {rs.cycle}/{rs.num_cycles}, and step {rs.step}."
+            f"Run {rs.name}. Stage {rs.stage_name} ({rs.stage}/{rs.num_stages}), "
+            f"cycle {rs.cycle}/{rs.num_cycles}, and step {rs.step}."
         )
 
     del m

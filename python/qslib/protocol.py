@@ -1741,6 +1741,8 @@ class Protocol(ProtoCommand):
         # assert self.volume == new.volume
         # assert self.name == new.name
 
+        # status.stage is the zero-indexed stage number (PRERUN=0, numbered stage "k"=k,
+        # POSTRUN=num_stages+1), so i + 1 (the 1-based numbered position) compares directly.
         for i, (oldstage, newstage) in enumerate(zip_longest(self.stages, new.stages)):
             if i + 1 < status.stage:  # If the stage has already passed, we must be equal
                 if oldstage != newstage:

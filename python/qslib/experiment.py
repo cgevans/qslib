@@ -2066,6 +2066,7 @@ table, th, td {{
         self.stages = pl.DataFrame(
             {
                 "stage": ms.stage_names,
+                "stage_name": ms.stage_names,
                 "start_time": [
                     datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_start_times
                 ],
@@ -3170,7 +3171,9 @@ table, th, td {{
         match stages:
             case slice():
                 start = 1 if stages.start is None else stages.start
-                stop = self.stages.iloc[-2]["stage"] + 1 if stages.stop is None else stages.stop
+                # Upper bound comes from the numeric stage column of the data (the stage
+                # number), not the string-named stages table.
+                stop = self.filter_data_polars["stage"].max() + 1 if stages.stop is None else stages.stop
                 step = 1 if stages.step is None else stages.step
                 stages = slice(start, stop, step)
                 d = d.filter(pl.col("stage").is_in(range(stages.start, stages.stop, stages.step)))
@@ -3191,8 +3194,7 @@ table, th, td {{
                 d = d.with_columns((pl.col("timestamp") - pl.lit(self.activestarttime)).alias("time_since_mark"))
                 start_time_descr = "experiment start"
             case "stage":
-                first_stage_start = self.stages.loc[first_stage, "start_time"]
-                print(first_stage_start, first_stage)
+                first_stage_start = self.stages.filter(pl.col("stage_index") == first_stage)["start_time"][0]
                 d = d.with_columns((pl.col("timestamp") - pl.lit(first_stage_start)).alias("time_since_mark"))
                 start_time_descr = f"stage {first_stage} start"
             case _:

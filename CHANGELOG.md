@@ -8,6 +8,8 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Unreleased
 
+(LLM-generated descriptions below.)
+
 ### Protocol fixes
 - Fix collection-filter serialization in `tcprotocol.xml`. Filters are carried internally in hacform (`m{em},x{ex}[,quant]`), but `to_xml_pair` re-parsed them with an ad-hoc splitter that assumed an `em,row,ex` numeric layout, so `m4,x4,quant` was written as `Excitation="xquant" Emission="mm4"` (and reloading such a file warned `Invalid filter set format: xquant-mm4`). Serialization now goes through `FilterSet::from_string`, restoring the pre-0.14 output `Excitation="x4" Emission="m4"`. Only the `tcprotocol.xml` metadata was affected; `filterdata` and quant data were correct. Regression introduced in 0.14.0 with the Rust protocol port.
 
@@ -19,7 +21,14 @@ SPDX-License-Identifier: EUPL-1.2
 - Prevent a stalled consumer from wedging the whole connection. Responses were delivered to per-command channels with a blocking send on a small (5-slot) buffer, so a consumer that stopped draining its `ResponseReceiver` stalled the entire receive loop. Delivery is now non-blocking (buffer raised to 64): intermediate `NEXT`s are dropped when the buffer is full, and terminal responses fall through to the consumer's timeout rather than blocking.
 - Surface unparseable responses to the waiting command. A response that failed to parse was only logged, leaving its command to wait out the full timeout; the command's ident is now recovered when possible and delivered a parse error so it fails immediately.
 
+### Stage identity fixes
+- Distinguish a stage's *name* from its *number* in run status. The machine reports a raw stage token (`PRERUN`, `1`…`N`, `POSTRun`, or `-`), while qslib uses a zero-indexed stage number (position in the run's full stage sequence: `PRERUN`=0, numbered stage `"k"`=k, `POSTRUN`=`num_stages`+1). `RunStatus` now carries both: the new `stage_name` field holds the raw token, and `stage` is the number. Previously `POSTRUN` collapsed to `0` (indistinguishable from `PRERUN`) and any non-numeric name became `-1`; `POSTRUN` is now `num_stages`+1, so `Protocol.check_compatible` correctly treats a post-run as fully elapsed. `num_stages` is unchanged. `Experiment.stages` gains an explicit `stage_name` column alongside the existing `stage` (name) and `stage_index` (number) columns.
+- Fix `Experiment.plot_over_time_altair` stage selection. With `stages` given as a slice, or `start_time="stage"`, the method called pandas `.iloc`/`.loc` on the polars `stages` frame and raised `AttributeError`; the stage bounds and start time are now derived via polars (from the numeric data column and `stage_index`).
+- Warn instead of silently corrupting on a non-numeric stage in collected data. Data collection only occurs inside numbered cycling stages, so a non-numeric stage indicates a malformed file; the InfluxDB line-protocol, v2 JSON, and quant image-XML paths previously coerced such a value to `0`/`-1` or dropped the field silently, and now log a warning.
+
 ## Version 0.15.1
+
+(LLM-generated descriptions below.)
 
 ### Data fixes
 - Fix `welldata` / `filter_data` time columns on v1-spec EDS files. In 0.15.0 the v1 codepath was rewritten to go through `filter_data_polars` (which emits `Datetime[ms, UTC]`) and reformat back to the legacy pandas multi-index; the timestamp conversion assumed `astype("int64")` returned nanoseconds, so it divided by 1e9 and produced timestamps 1e6× too small (and huge negative `seconds`/`hours`). Now uses a time-unit-agnostic subtraction from the Unix epoch.
