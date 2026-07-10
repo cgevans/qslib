@@ -1,12 +1,14 @@
 use crate::com::{ConnectionError, QSConnectionError, SendCommandError};
 use crate::com::{ConnectionType, QSConnection, ResponseReceiver, TlsConfig};
+use crate::commands::ReceiveOkResponseError;
 use crate::parser::Command;
 use crate::parser::ParseError;
 use crate::parser::{LogMessage, MessageIdent, MessageResponse};
 use crate::protocol::{Protocol, Stage, StageStep, Step};
-use pyo3::exceptions::{PyException, PyTimeoutError, PyValueError};
+use pyo3::exceptions::{PyException, PyStopIteration, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::PyErr;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::select;
@@ -27,6 +29,30 @@ pyo3::create_exception!(
     DisconnectedBeforeResponse,
     CommandResponseError
 );
+
+const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+
+fn block_on_with_signals<F>(py: Python<'_>, rt: &Runtime, future: F) -> PyResult<F::Output>
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    tokio::pin!(future);
+    loop {
+        let result = py.detach(|| {
+            rt.block_on(async {
+                select! {
+                    result = &mut future => Some(result),
+                    _ = tokio::time::sleep(SIGNAL_CHECK_INTERVAL) => None,
+                }
+            })
+        });
+        if let Some(result) = result {
+            return Ok(result);
+        }
+        py.check_signals()?;
+    }
+}
 
 #[pyclass(module = "qslib._qslib")]
 #[pyo3(name = "RustStep")]
@@ -542,37 +568,32 @@ impl PyMessageResponse {
     ///
     /// Raises:
     ///     ValueError: If response is an error or invalid
-    pub fn get_response_bytes(&mut self) -> PyResult<Vec<u8>> {
-        loop {
-            let ret = self.rt.block_on(self.rx.recv());
-            match ret {
-                Some(x) => match x {
-                    MessageResponse::Ok { ident: _, message }
-                    | MessageResponse::Warning { ident: _, message } => {
-                        return Ok(message.to_bytes())
-                    }
-                    MessageResponse::CommandError { ident: _, error } => {
-                        return Err(CommandError::new_err(error))
-                    }
-                    MessageResponse::Next { ident: _ } => continue,
-                    MessageResponse::Message(message) => {
-                        return Err(UnexpectedMessageResponse::new_err(format!(
-                            "Received log message as response to command: {:?}",
-                            message
-                        )))
-                    }
-                },
-                None => {
-                    return Err(DisconnectedBeforeResponse::new_err(
-                        "Disconnected before response",
-                    ))
-                }
+    pub fn get_response_bytes(&mut self, py: Python<'_>) -> PyResult<Vec<u8>> {
+        let rt = Arc::clone(&self.rt);
+        let res = block_on_with_signals(py, &rt, self.rx.get_response())?;
+        match res {
+            Ok(Ok(message)) => Ok(message.to_bytes()),
+            Ok(Err(error)) => Err(CommandError::new_err(error)),
+            Err(ReceiveOkResponseError::Timeout) => {
+                Err(PyTimeoutError::new_err("Timed out waiting for response"))
+            }
+            Err(ReceiveOkResponseError::ConnectionClosed) => Err(
+                DisconnectedBeforeResponse::new_err("Disconnected before response"),
+            ),
+            Err(ReceiveOkResponseError::UnexpectedMessage(message)) => {
+                Err(UnexpectedMessageResponse::new_err(format!(
+                    "Received log message as response to command: {:?}",
+                    message
+                )))
+            }
+            Err(e @ ReceiveOkResponseError::ResponseParsingError(_)) => {
+                Err(CommandResponseError::new_err(e.to_string()))
             }
         }
     }
 
-    pub fn get_response(&mut self) -> PyResult<String> {
-        let bytes = self.get_response_bytes()?;
+    pub fn get_response(&mut self, py: Python<'_>) -> PyResult<String> {
+        let bytes = self.get_response_bytes(py)?;
         String::from_utf8(bytes).map_err(|e| PyValueError::new_err(e.to_string()))
     }
 
@@ -583,26 +604,28 @@ impl PyMessageResponse {
     ///
     /// Raises:
     ///     ValueError: If response is not an acknowledgment
-    pub fn get_ack(&mut self) -> PyResult<()> {
-        let x = self.rt.block_on(self.rx.recv());
+    pub fn get_ack(&mut self, py: Python<'_>) -> PyResult<()> {
+        let rt = Arc::clone(&self.rt);
+        let x = block_on_with_signals(py, &rt, self.rx.recv_initial())?;
         match x {
-            Some(x) => match x {
-                MessageResponse::Ok { ident: _, message }
-                | MessageResponse::Warning { ident: _, message } => {
-                    Err(UnexpectedMessageResponse::new_err(format!(
-                        "OK message received as acknowledgment: {:?}",
-                        message
-                    )))
-                }
-                MessageResponse::CommandError { ident: _, error } => {
-                    Err(CommandError::new_err(error.to_string()))
-                }
-                MessageResponse::Next { ident: _ } => Ok(()),
-                MessageResponse::Message(message) => Err(UnexpectedMessageResponse::new_err(
-                    format!("Received log message as response to command: {:?}", message),
-                )),
-            },
-            None => Err(DisconnectedBeforeResponse::new_err(
+            Ok(MessageResponse::Ok { ident: _, message })
+            | Ok(MessageResponse::Warning { ident: _, message }) => {
+                Err(UnexpectedMessageResponse::new_err(format!(
+                    "OK message received as acknowledgment: {:?}",
+                    message
+                )))
+            }
+            Ok(MessageResponse::CommandError { ident: _, error }) => {
+                Err(CommandError::new_err(error.to_string()))
+            }
+            Ok(MessageResponse::Next { ident: _ }) => Ok(()),
+            Ok(MessageResponse::Message(message)) => Err(UnexpectedMessageResponse::new_err(
+                format!("Received log message as response to command: {:?}", message),
+            )),
+            Err(ReceiveOkResponseError::Timeout) => Err(PyTimeoutError::new_err(
+                "Timed out waiting for acknowledgment",
+            )),
+            Err(_) => Err(DisconnectedBeforeResponse::new_err(
                 "Disconnected before response",
             )),
         }
@@ -619,15 +642,17 @@ impl PyMessageResponse {
     /// Raises:
     ///     TimeoutError: If timeout occurs
     ///     ValueError: If response is an error or invalid
-    pub fn get_response_with_timeout(&mut self, timeout: u64) -> PyResult<String> {
-        let x = self.rt.block_on(async {
+    pub fn get_response_with_timeout(&mut self, py: Python<'_>, timeout: u64) -> PyResult<String> {
+        let rt = Arc::clone(&self.rt);
+        let x = block_on_with_signals(py, &rt, async {
             select! {
                 rx = self.rx.recv() => Ok(rx),
                 _ = tokio::time::sleep(Duration::from_secs(timeout)) => {
-                    Err(PyTimeoutError::new_err("Timeout"))
+                    Err(())
                 }
             }
-        })?;
+        })?
+        .map_err(|()| PyTimeoutError::new_err("Timeout"))?;
         match x {
             Some(x) => match x {
                 MessageResponse::Ok { ident: _, message }
@@ -658,16 +683,17 @@ pub struct PyLogReceiver {
 
 #[pymethods]
 impl PyLogReceiver {
-    fn __next__(&mut self) -> PyResult<LogMessage> {
-        let x = self.rt.block_on(self.rx.next());
+    fn __next__(&mut self, py: Python<'_>) -> PyResult<LogMessage> {
+        let rt = Arc::clone(&self.rt);
+        let x = block_on_with_signals(py, &rt, self.rx.next())?;
         match x {
             Some(x) => x.1.map_err(|e| PyValueError::new_err(e.to_string())),
-            None => Err(PyValueError::new_err("No message received")),
+            None => Err(PyStopIteration::new_err("Connection closed")),
         }
     }
 
-    fn next(&mut self) -> PyResult<LogMessage> {
-        self.__next__()
+    fn next(&mut self, py: Python<'_>) -> PyResult<LogMessage> {
+        self.__next__(py)
     }
 }
 
@@ -859,7 +885,7 @@ impl PyQSConnection {
             rx,
             rt: self.rt.clone(),
         };
-        let challenge = challenge_response.get_response()?;
+        let challenge = challenge_response.get_response(py)?;
 
         // Generate auth response using Python's hmac module
         let hmac_module = PyModule::import(py, "hmac")?;
@@ -879,7 +905,7 @@ impl PyQSConnection {
             rx,
             rt: self.rt.clone(),
         };
-        auth_response_recv.get_response()?;
+        auth_response_recv.get_response(py)?;
 
         Ok(())
     }

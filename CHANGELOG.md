@@ -6,7 +6,29 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Unreleased
+
+(Generated with LLM assistance.)
+
+### Protocol fixes
+- Correct collection-filter attributes in `tcprotocol.xml` for hacform filter strings.
+
+### Communication fixes
+- Treat zero-byte reads as disconnects.
+- Resynchronize malformed messages at newline boundaries.
+- Bound response waits and make Python waits interruptible.
+- End log subscriptions when the connection closes.
+- Prevent response-channel backpressure from blocking the receive loop or dropping terminal responses.
+- Report response parse failures when their identifier is recoverable.
+
+### Stage identity fixes
+- Add raw stage names to `RunStatus` and distinguish `PRERUN` from `POSTRUN` positions.
+- Use Polars APIs for Altair stage selection.
+- Warn when collected-data stage values are nonnumeric.
+
 ## Version 0.15.1
+
+(LLM-generated descriptions below.)
 
 ### Data fixes
 - Fix `welldata` / `filter_data` time columns on v1-spec EDS files. In 0.15.0 the v1 codepath was rewritten to go through `filter_data_polars` (which emits `Datetime[ms, UTC]`) and reformat back to the legacy pandas multi-index; the timestamp conversion assumed `astype("int64")` returned nanoseconds, so it divided by 1e9 and produced timestamps 1e6× too small (and huge negative `seconds`/`hours`). Now uses a time-unit-agnostic subtraction from the Unix epoch.

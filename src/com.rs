@@ -305,6 +305,17 @@ pub enum QSCommError {
     QS(String),
 }
 
+/// Extract the ident prefix from a response without parsing its body.
+fn try_extract_ident(msg: &[u8]) -> Option<MessageIdent> {
+    let mut input = msg;
+    let kw_end = input.iter().position(|&c| c == b' ')?;
+    input = &input[kw_end..];
+    while let Some(&b' ') = input.first() {
+        input = &input[1..];
+    }
+    MessageIdent::parse(&mut input).ok()
+}
+
 impl QSConnectionInner {
     async fn handle_receive(&mut self, n: usize) {
         trace!(
@@ -344,11 +355,22 @@ impl QSConnectionInner {
                         Ok(MessageResponse::Next { ident }) => {
                             let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                match channel.send(MessageResponse::Next { ident }).await {
-                                    Ok(_) => {
-                                        // Next is intermediate, keep channel for future responses
+                                if channel.capacity() <= 1 {
+                                    warn!(
+                                        "Response channel near capacity for ident {:?}; dropping NEXT",
+                                        ident_clone
+                                    );
+                                    continue;
+                                }
+                                match channel.try_send(MessageResponse::Next { ident }) {
+                                    Ok(_) => {}
+                                    Err(mpsc::error::TrySendError::Full(_)) => {
+                                        warn!(
+                                            "Response channel full for ident {:?}; dropping NEXT",
+                                            ident_clone
+                                        );
                                     }
-                                    Err(_) => {
+                                    Err(mpsc::error::TrySendError::Closed(_)) => {
                                         // Receiver dropped, remove from HashMap to prevent leak
                                         self.messagechannels.remove(&ident_clone);
                                         trace!(
@@ -362,53 +384,38 @@ impl QSConnectionInner {
                             }
                         }
                         Ok(MessageResponse::CommandError { ident, error }) => {
-                            // CommandError is final response, always remove channel
                             let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                match channel
-                                    .send(MessageResponse::CommandError { ident, error })
-                                    .await
+                                if let Err(mpsc::error::TrySendError::Full(_)) =
+                                    channel.try_send(MessageResponse::CommandError { ident, error })
                                 {
-                                    Ok(_) => {
-                                        // Successfully sent, remove channel
-                                        self.messagechannels.remove(&ident_clone);
-                                    }
-                                    Err(_) => {
-                                        // Receiver dropped, remove channel anyway
-                                        self.messagechannels.remove(&ident_clone);
-                                        trace!(
-                                            "Removed channel for ident {:?} after send failure",
-                                            ident_clone
-                                        );
-                                    }
+                                    warn!(
+                                        "Response channel full for ident {:?}; dropping error response",
+                                        ident_clone
+                                    );
                                 }
+                                self.messagechannels.remove(&ident_clone);
                             } else {
                                 trace!("No channel for message ident: {:?}", ident_clone);
                             }
                         }
                         Ok(msg @ MessageResponse::Ok { .. })
                         | Ok(msg @ MessageResponse::Warning { .. }) => {
-                            // OK/Warning is final response, always remove channel
                             let ident_clone = match &msg {
                                 MessageResponse::Ok { ident, .. }
                                 | MessageResponse::Warning { ident, .. } => ident.clone(),
                                 _ => unreachable!(),
                             };
                             if let Some(channel) = self.messagechannels.get_mut(&ident_clone) {
-                                match channel.send(msg).await {
-                                    Ok(_) => {
-                                        // Successfully sent, remove channel
-                                        self.messagechannels.remove(&ident_clone);
-                                    }
-                                    Err(_) => {
-                                        // Receiver dropped, remove channel anyway
-                                        self.messagechannels.remove(&ident_clone);
-                                        trace!(
-                                            "Removed channel for ident {:?} after send failure",
-                                            ident_clone
-                                        );
-                                    }
+                                if let Err(mpsc::error::TrySendError::Full(_)) =
+                                    channel.try_send(msg)
+                                {
+                                    warn!(
+                                        "Response channel full for ident {:?}; dropping OK response",
+                                        ident_clone
+                                    );
                                 }
+                                self.messagechannels.remove(&ident_clone);
                             } else {
                                 trace!("No channel for message ident: {:?}", ident_clone);
                             }
@@ -419,6 +426,20 @@ impl QSConnectionInner {
                                 e,
                                 String::from_utf8_lossy(&msg)
                             );
+                            if let Some(ident) = try_extract_ident(&msg) {
+                                if let Some(channel) = self.messagechannels.get_mut(&ident) {
+                                    let error = ErrorResponse {
+                                        error: "ParseError".to_string(),
+                                        args: crate::parser::ArgMap::new(),
+                                        message: format!("Failed to parse server response: {}", e),
+                                    };
+                                    let _ = channel.try_send(MessageResponse::CommandError {
+                                        ident: ident.clone(),
+                                        error,
+                                    });
+                                    self.messagechannels.remove(&ident);
+                                }
+                            }
                         }
                     }
                 }
@@ -545,6 +566,18 @@ pub struct ResponseReceiver {
 impl ResponseReceiver {
     pub async fn recv(&mut self) -> Option<MessageResponse> {
         self.receiver.recv().await
+    }
+
+    /// Receive one message within the connection's initial timeout.
+    pub async fn recv_initial(&mut self) -> Result<MessageResponse, ReceiveOkResponseError> {
+        let initial = self
+            .initial_timeout
+            .ok_or(ReceiveOkResponseError::ConnectionClosed)?;
+        match timeout(initial, self.recv()).await {
+            Ok(Some(msg)) => Ok(msg),
+            Ok(None) => Err(ReceiveOkResponseError::ConnectionClosed),
+            Err(_) => Err(ReceiveOkResponseError::Timeout),
+        }
     }
 
     /// Get the OK or error response from the machine, ignoring NEXT messages.
@@ -736,7 +769,7 @@ impl QSConnection {
         msg.write_bytes(&mut bytes)?;
         trace!("Sending: {}", String::from_utf8_lossy(&bytes));
 
-        let (tx, rx) = mpsc::channel(5);
+        let (tx, rx) = mpsc::channel(64);
         self.commandchannel
             .send((msg, tx))
             .await
@@ -756,7 +789,7 @@ impl QSConnection {
             ident: Some(ident),
             content: None,
         };
-        let (tx, rx) = mpsc::channel(5);
+        let (tx, rx) = mpsc::channel(64);
         self.commandchannel
             .send((msg, tx))
             .await
@@ -776,7 +809,7 @@ impl QSConnection {
             ident: None,
             content: Some(bytes.into()),
         };
-        let (tx, rx) = mpsc::channel(5);
+        let (tx, rx) = mpsc::channel(64);
         self.commandchannel
             .send((msg, tx))
             .await
@@ -1040,7 +1073,10 @@ impl QSConnection {
 
         Ok(QSConnection {
             task: tokio::spawn(async move {
-                qsi.inner_loop().await.map_err(QSConnectionError::IOError)
+                let result = qsi.inner_loop().await.map_err(QSConnectionError::IOError);
+                // Close log subscriptions.
+                qsi.logchannels.clear();
+                result
             }),
             commandchannel: com_tx,
             logchannels,
@@ -1113,7 +1149,10 @@ impl QSConnection {
 
         Ok(QSConnection {
             task: tokio::spawn(async move {
-                qsi.inner_loop().await.map_err(QSConnectionError::IOError)
+                let result = qsi.inner_loop().await.map_err(QSConnectionError::IOError);
+                // Close log subscriptions.
+                qsi.logchannels.clear();
+                result
             }),
             commandchannel: com_tx,
             logchannels,

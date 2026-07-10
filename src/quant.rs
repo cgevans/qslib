@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+
+use log::warn;
 use thiserror::Error;
 
 use crate::data::FilterSet;
@@ -776,7 +778,10 @@ pub fn parse_quant_xml(data: &[u8]) -> Result<Vec<TiffImageMeta>, QuantError> {
                     let val = String::from_utf8_lossy(&attr.value).to_string();
                     match key.as_str() {
                         "stage" => {
-                            meta.stage = val.parse().unwrap_or(0);
+                            meta.stage = val.parse().unwrap_or_else(|_| {
+                                warn!("Non-numeric image stage attribute {:?}; using 0", val);
+                                0
+                            });
                         }
                         "cycle" => {
                             meta.cycle = val.parse().unwrap_or(0);

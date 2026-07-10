@@ -128,7 +128,7 @@ class SCPICommand:
     def from_string(s: str) -> "SCPICommand": ...
     def to_command_string(self) -> str: ...
     def __repr__(self) -> str: ...
-    def __eq__(self, other: "SCPICommand") -> bool: ...
+    def __eq__(self, other: "Any") -> bool: ...
 
 # Enums
 class AccessLevel:
@@ -156,7 +156,12 @@ class RunStatus:
     """Status of a running experiment."""
 
     name: str
+    #: Zero-indexed stage number in the run's full stage sequence: PRERUN = 0,
+    #: numbered stage "k" = k, POSTRUN = num_stages + 1, unset/unknown = -1.
+    #: Matches the integer ``stage`` column of collected fluorescence data.
     stage: int
+    #: Raw stage token reported by the machine: "PRERUN", "1".."N", "POSTRun", "-".
+    stage_name: str
     num_stages: int
     cycle: int
     num_cycles: int

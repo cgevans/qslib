@@ -1,3 +1,4 @@
+use log::warn;
 use polars::prelude::*;
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
@@ -402,12 +403,15 @@ impl PlateData {
                 gs, row_letter, col, fluorescence
             );
 
-            // Add stage, cycle, step, point if available
-            if let Some(stage) = self
-                .get_attribute("STAGE")
-                .and_then(|s| s.parse::<i32>().ok())
-            {
-                line.push_str(&format!(",stage={:02}i", stage));
+            // Add collection coordinates when available.
+            if let Some(stage_attr) = self.get_attribute("STAGE") {
+                match stage_attr.parse::<i32>() {
+                    Ok(stage) => line.push_str(&format!(",stage={:02}i", stage)),
+                    Err(_) => warn!(
+                        "Non-numeric STAGE attribute {:?}; omitting stage field",
+                        stage_attr
+                    ),
+                }
             }
             if let Some(cycle) = self
                 .get_attribute("CYCLE")
@@ -566,7 +570,12 @@ impl PlateData {
             .alias("filter_set"),
             lit(self
                 .get_stage()
-                .ok_or_else(|| PolarsError::ComputeError("Missing STAGE attribute".into()))?)
+                .ok_or_else(|| match self.get_attribute("STAGE") {
+                    Some(s) => PolarsError::ComputeError(
+                        format!("Non-numeric STAGE attribute {:?}", s).into(),
+                    ),
+                    None => PolarsError::ComputeError("Missing STAGE attribute".into()),
+                })?)
             .alias("stage"),
             lit(self
                 .get_cycle()
@@ -1108,7 +1117,15 @@ pub fn parse_filterdata_v2_json(json_str: &str, plate_type: u32) -> Result<DataF
 
     for entry in &data {
         let cp = &entry["collectionPoint"];
-        let stage = cp["stage"].as_i64().unwrap_or(0);
+        let stage = cp["stage"].as_i64().unwrap_or_else(|| {
+            if !cp["stage"].is_null() {
+                warn!(
+                    "Non-integer collectionPoint stage {:?}; using 0",
+                    cp["stage"]
+                );
+            }
+            0
+        });
         let cycle = cp["cycle"].as_i64().unwrap_or(0);
         let step = cp["step"].as_i64().unwrap_or(0);
         let point = cp["point"].as_i64().unwrap_or(0);

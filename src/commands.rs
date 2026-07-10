@@ -48,34 +48,28 @@ pub enum ReceiveNextResponseError {
     UnexpectedError(ErrorResponse),
     #[error("Unexpected message response: {0:?}")]
     UnexpectedMessage(crate::parser::LogMessage),
+    #[error("Timeout waiting for response")]
+    Timeout,
 }
 
 impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> CommandReceiver<T, E> {
     pub async fn receive_response(&mut self) -> Result<Result<T, E>, ReceiveOkResponseError> {
-        loop {
-            match self.response.recv().await {
-                None => return Err(ReceiveOkResponseError::ConnectionClosed),
-                Some(
-                    MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. },
-                ) => return Ok(Ok(message.try_into()?)),
-                Some(MessageResponse::CommandError { error, .. }) => return Ok(Err(error.into())),
-                Some(MessageResponse::Next { .. }) => (),
-                Some(MessageResponse::Message(message)) => {
-                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
-                }
-            }
+        match self.response.get_response().await? {
+            Ok(ok) => Ok(Ok(ok.try_into()?)),
+            Err(error) => Ok(Err(error.into())),
         }
     }
 
     pub async fn receive_next(&mut self) -> Result<Result<(), E>, ReceiveNextResponseError> {
-        match self.response.recv().await {
-            None => Err(ReceiveNextResponseError::ConnectionClosed),
-            Some(MessageResponse::CommandError { error, .. }) => Ok(Err(error.into())),
-            Some(MessageResponse::Next { .. }) => Ok(Ok(())),
-            Some(
-                MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. },
-            ) => Err(ReceiveNextResponseError::UnexpectedOk(message)),
-            Some(MessageResponse::Message(message)) => {
+        match self.response.recv_initial().await {
+            Err(ReceiveOkResponseError::Timeout) => Err(ReceiveNextResponseError::Timeout),
+            Err(_) => Err(ReceiveNextResponseError::ConnectionClosed),
+            Ok(MessageResponse::CommandError { error, .. }) => Ok(Err(error.into())),
+            Ok(MessageResponse::Next { .. }) => Ok(Ok(())),
+            Ok(MessageResponse::Ok { message, .. } | MessageResponse::Warning { message, .. }) => {
+                Err(ReceiveNextResponseError::UnexpectedOk(message))
+            }
+            Ok(MessageResponse::Message(message)) => {
                 Err(ReceiveNextResponseError::UnexpectedMessage(message))
             }
         }
@@ -594,6 +588,7 @@ pub struct RunProgress {
     pub step: String,
     pub run_title: String,
     pub cycle: String,
+    /// Raw stage token reported by the machine.
     pub stage: String,
 }
 
@@ -1271,7 +1266,10 @@ use std::collections::HashMap;
 #[cfg_attr(feature = "python", pyclass(frozen, get_all, module = "qslib._qslib"))]
 pub struct RunStatus {
     pub name: String,
+    /// Stage position: PRERUN = 0, numbered stage k = k, POSTRUN = N + 1.
     pub stage: i64,
+    /// Raw stage token reported by the machine.
+    pub stage_name: String,
     pub num_stages: i64,
     pub cycle: i64,
     pub num_cycles: i64,
@@ -1318,17 +1316,20 @@ impl RunStatus {
             .unwrap()
             .replace_all(&tokens[0], "$2")
             .to_string();
-        let parse_stage = |s: &str| -> i64 {
-            if s == "PRERUN" || s == "POSTRun" {
-                0
-            } else {
-                s.parse().unwrap_or(-1)
-            }
+        let num_stages: i64 = tokens[2].parse().unwrap_or(-1);
+        let stage_name = tokens[1].clone();
+        let stage = if stage_name.eq_ignore_ascii_case("PRERUN") {
+            0
+        } else if stage_name.eq_ignore_ascii_case("POSTRUN") {
+            num_stages + 1
+        } else {
+            stage_name.parse().unwrap_or(-1)
         };
         Ok(RunStatus {
             name,
-            stage: parse_stage(&tokens[1]),
-            num_stages: tokens[2].parse().unwrap_or(-1),
+            stage,
+            stage_name,
+            num_stages,
             cycle: tokens[3].parse().unwrap_or(-1),
             num_cycles: tokens[4].parse().unwrap_or(-1),
             step: tokens[5].parse().unwrap_or(-1),
@@ -1342,8 +1343,8 @@ impl std::fmt::Display for RunStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "RunStatus(name={:?}, stage={}, num_stages={}, cycle={}, num_cycles={}, step={}, point={}, state={:?})",
-            self.name, self.stage, self.num_stages, self.cycle, self.num_cycles, self.step, self.point, self.state
+            "RunStatus(name={:?}, stage={}, stage_name={:?}, num_stages={}, cycle={}, num_cycles={}, step={}, point={}, state={:?})",
+            self.name, self.stage, self.stage_name, self.num_stages, self.cycle, self.num_cycles, self.step, self.point, self.state
         )
     }
 }
@@ -2433,6 +2434,7 @@ mod tests {
         let status = RunStatus::parse(response).unwrap();
         assert_eq!(status.name, "TestRun");
         assert_eq!(status.stage, 2);
+        assert_eq!(status.stage_name, "2");
         assert_eq!(status.num_stages, 5);
         assert_eq!(status.cycle, 3);
         assert_eq!(status.num_cycles, 10);
@@ -2447,6 +2449,7 @@ mod tests {
         let status = RunStatus::parse(response).unwrap();
         assert_eq!(status.name, "-");
         assert_eq!(status.stage, -1);
+        assert_eq!(status.stage_name, "-1");
         assert_eq!(status.state, "Idle");
     }
 
@@ -2455,13 +2458,16 @@ mod tests {
         let response = b"MyRun PRERUN 5 1 10 1 0 Running";
         let status = RunStatus::parse(response).unwrap();
         assert_eq!(status.stage, 0);
+        assert_eq!(status.stage_name, "PRERUN");
     }
 
     #[test]
     fn test_run_status_parse_postrun_stage() {
         let response = b"MyRun POSTRun 5 1 10 1 0 Complete";
         let status = RunStatus::parse(response).unwrap();
-        assert_eq!(status.stage, 0);
+        assert_eq!(status.stage, 6);
+        assert_eq!(status.num_stages, 5);
+        assert_eq!(status.stage_name, "POSTRun");
     }
 
     #[test]

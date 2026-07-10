@@ -79,8 +79,17 @@ impl MsgRecv {
     }
 
     fn check_from_pos(&mut self, start_pos: usize) -> bool {
-        if self.msg_error.is_some() || self.msg_end.is_some() {
+        if self.msg_end.is_some() {
             return true;
+        }
+        // Discard a malformed message at its terminating newline.
+        if self.msg_error.is_some() {
+            let from = start_pos.min(self.buf.len());
+            if let Some(offset) = self.buf[from..].iter().position(|&c| c == b'\n') {
+                self.msg_end = Some(from + offset + 1);
+                return true;
+            }
+            return false;
         }
         self.parttag = None;
         let mut pos = start_pos;
@@ -432,6 +441,42 @@ mod tests {
         receiver.push_data(b"OK 1 success\n");
         let msg = receiver.try_get_msg().unwrap().unwrap();
         assert_eq!(&msg, b"OK 1 success\n");
+    }
+
+    #[test]
+    fn test_latched_error_resyncs_when_newline_arrives_later() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"OK 1 <quote>a\nb</wrongtag>");
+        receiver.push_data(b"\n");
+
+        let result = receiver.try_get_msg();
+        assert!(
+            result.is_err(),
+            "expected the malformed message to surface as an error, got {:?}",
+            result
+        );
+
+        receiver.push_data(b"OK 2 success\n");
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg, b"OK 2 success\n");
+    }
+
+    #[test]
+    fn test_unexpected_close_tag_split_before_newline() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"</unexpected>content");
+        receiver.push_data(b"\n");
+
+        let result = receiver.try_get_msg();
+        assert!(
+            result.is_err(),
+            "expected an error for the unexpected close tag, got {:?}",
+            result
+        );
+
+        receiver.push_data(b"OK 3 ok\n");
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(&msg, b"OK 3 ok\n");
     }
 
     #[test]
