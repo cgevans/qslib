@@ -305,10 +305,7 @@ pub enum QSCommError {
     QS(String),
 }
 
-/// Best-effort extraction of a message ident from a response that failed to
-/// parse. Responses have the form `<KEYWORD> <ident> ...`; the parse failure is
-/// usually in the body, so the ident is still recoverable. Used to fail a
-/// waiting command fast instead of leaving it to time out.
+/// Extract the ident prefix from a response without parsing its body.
 fn try_extract_ident(msg: &[u8]) -> Option<MessageIdent> {
     let mut input = msg;
     let kw_end = input.iter().position(|&c| c == b' ')?;
@@ -358,17 +355,16 @@ impl QSConnectionInner {
                         Ok(MessageResponse::Next { ident }) => {
                             let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                // try_send, never await: blocking the receive loop on a
-                                // slow consumer would stall the whole connection.
+                                if channel.capacity() <= 1 {
+                                    warn!(
+                                        "Response channel near capacity for ident {:?}; dropping NEXT",
+                                        ident_clone
+                                    );
+                                    continue;
+                                }
                                 match channel.try_send(MessageResponse::Next { ident }) {
-                                    Ok(_) => {
-                                        // Next is intermediate, keep channel for future responses
-                                    }
+                                    Ok(_) => {}
                                     Err(mpsc::error::TrySendError::Full(_)) => {
-                                        // Consumer is not draining. Drop this intermediate
-                                        // NEXT rather than block; keep the channel so the
-                                        // terminal response can still be delivered once it
-                                        // drains.
                                         warn!(
                                             "Response channel full for ident {:?}; dropping NEXT",
                                             ident_clone
@@ -388,12 +384,8 @@ impl QSConnectionInner {
                             }
                         }
                         Ok(MessageResponse::CommandError { ident, error }) => {
-                            // CommandError is final response, always remove channel
                             let ident_clone = ident.clone();
                             if let Some(channel) = self.messagechannels.get_mut(&ident) {
-                                // try_send, never await (see NEXT arm). If the consumer's
-                                // buffer is full it is stuck; drop the response and let its
-                                // timeout fire rather than stalling the whole connection.
                                 if let Err(mpsc::error::TrySendError::Full(_)) =
                                     channel.try_send(MessageResponse::CommandError { ident, error })
                                 {
@@ -409,16 +401,12 @@ impl QSConnectionInner {
                         }
                         Ok(msg @ MessageResponse::Ok { .. })
                         | Ok(msg @ MessageResponse::Warning { .. }) => {
-                            // OK/Warning is final response, always remove channel
                             let ident_clone = match &msg {
                                 MessageResponse::Ok { ident, .. }
                                 | MessageResponse::Warning { ident, .. } => ident.clone(),
                                 _ => unreachable!(),
                             };
                             if let Some(channel) = self.messagechannels.get_mut(&ident_clone) {
-                                // try_send, never await (see NEXT arm). A stuck consumer
-                                // must not stall the receive loop; drop and let its timeout
-                                // fire.
                                 if let Err(mpsc::error::TrySendError::Full(_)) =
                                     channel.try_send(msg)
                                 {
@@ -438,9 +426,6 @@ impl QSConnectionInner {
                                 e,
                                 String::from_utf8_lossy(&msg)
                             );
-                            // Surface the parse failure to the waiting command (if its
-                            // ident is recoverable) so it fails fast instead of waiting
-                            // out its timeout.
                             if let Some(ident) = try_extract_ident(&msg) {
                                 if let Some(channel) = self.messagechannels.get_mut(&ident) {
                                     let error = ErrorResponse {
@@ -583,12 +568,7 @@ impl ResponseReceiver {
         self.receiver.recv().await
     }
 
-    /// Receive the next message, bounded by the connection's initial timeout.
-    ///
-    /// Unlike [`recv`](Self::recv), this cannot block forever: it returns
-    /// `Timeout` if no message arrives within `initial_timeout`, and
-    /// `ConnectionClosed` if the connection closed (or no timeout is
-    /// configured). Used for single-message waits such as acknowledgements.
+    /// Receive one message within the connection's initial timeout.
     pub async fn recv_initial(&mut self) -> Result<MessageResponse, ReceiveOkResponseError> {
         let initial = self
             .initial_timeout
@@ -1094,9 +1074,7 @@ impl QSConnection {
         Ok(QSConnection {
             task: tokio::spawn(async move {
                 let result = qsi.inner_loop().await.map_err(QSConnectionError::IOError);
-                // Drop all log-subscription senders so subscribers observe the
-                // disconnect: their BroadcastStreams end (yield None) instead of
-                // blocking forever waiting for a message that can never arrive.
+                // Close log subscriptions.
                 qsi.logchannels.clear();
                 result
             }),
@@ -1172,9 +1150,7 @@ impl QSConnection {
         Ok(QSConnection {
             task: tokio::spawn(async move {
                 let result = qsi.inner_loop().await.map_err(QSConnectionError::IOError);
-                // Drop all log-subscription senders so subscribers observe the
-                // disconnect: their BroadcastStreams end (yield None) instead of
-                // blocking forever waiting for a message that can never arrive.
+                // Close log subscriptions.
                 qsi.logchannels.clear();
                 result
             }),

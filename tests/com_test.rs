@@ -219,6 +219,13 @@ async fn setup_mock_server(
                                             tokio::time::sleep(Duration::from_millis(50)).await;
                                             socket.write_all(format!("ERRor {} [TestError] --> test error\n", id).as_bytes()).await.unwrap();
                                         }
+                                    } else if cmd_part.starts_with("NEXTFLOOD") {
+                                        if let Some(ref id) = ident {
+                                            for _ in 0..100 {
+                                                socket.write_all(format!("NEXT {}\n", id).as_bytes()).await.unwrap();
+                                            }
+                                            socket.write_all(format!("OK {} done\n", id).as_bytes()).await.unwrap();
+                                        }
                                     } else if cmd_part.starts_with("SILENCE") {
                                         // Never respond — for timeout tests
                                     } else if cmd_part.starts_with("WARNTEST") {
@@ -1105,10 +1112,6 @@ async fn test_is_connected() {
 
 #[tokio::test]
 async fn test_log_stream_ends_on_disconnect() {
-    // Regression: after the connection closes, the log subscription stream must
-    // terminate (yield None) instead of blocking forever. Previously the
-    // broadcast senders lived in the connection's logchannels map and were never
-    // dropped, so subscribers hung after a disconnect.
     let (addr, server) = setup_mock_server(None, true).await;
     let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
         .await
@@ -1116,11 +1119,8 @@ async fn test_log_stream_ends_on_disconnect() {
 
     let mut stream = connection.subscribe_log(&["Status"]).await;
 
-    // Close the server so the client observes a disconnect (EOF).
     server.abort();
 
-    // The stream must end within a bounded time. Drain any buffered messages
-    // until we observe the terminating None.
     let ended = tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             if stream.next().await.is_none() {
@@ -1383,6 +1383,21 @@ async fn test_response_next_then_error() {
     assert!(inner.is_err(), "Expected error response");
     let err = inner.unwrap_err();
     assert_eq!(err.error, "TestError");
+
+    _server.abort();
+}
+
+#[tokio::test]
+async fn test_response_next_flood_preserves_terminal_response() {
+    let (addr, _server) = setup_mock_server(None, true).await;
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+        .await
+        .unwrap();
+
+    let mut response = connection.send_command_bytes(b"NEXTFLOOD").await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let result = response.get_response().await.unwrap().unwrap();
+    assert_eq!(result.args, vec![Value::String("done".into())]);
 
     _server.abort();
 }

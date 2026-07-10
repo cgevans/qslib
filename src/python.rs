@@ -8,6 +8,7 @@ use crate::protocol::{Protocol, Stage, StageStep, Step};
 use pyo3::exceptions::{PyException, PyStopIteration, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::PyErr;
+use std::future::Future;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::select;
@@ -28,6 +29,30 @@ pyo3::create_exception!(
     DisconnectedBeforeResponse,
     CommandResponseError
 );
+
+const SIGNAL_CHECK_INTERVAL: Duration = Duration::from_millis(100);
+
+fn block_on_with_signals<F>(py: Python<'_>, rt: &Runtime, future: F) -> PyResult<F::Output>
+where
+    F: Future + Send,
+    F::Output: Send,
+{
+    tokio::pin!(future);
+    loop {
+        let result = py.detach(|| {
+            rt.block_on(async {
+                select! {
+                    result = &mut future => Some(result),
+                    _ = tokio::time::sleep(SIGNAL_CHECK_INTERVAL) => None,
+                }
+            })
+        });
+        if let Some(result) = result {
+            return Ok(result);
+        }
+        py.check_signals()?;
+    }
+}
 
 #[pyclass(module = "qslib._qslib")]
 #[pyo3(name = "RustStep")]
@@ -544,12 +569,8 @@ impl PyMessageResponse {
     /// Raises:
     ///     ValueError: If response is an error or invalid
     pub fn get_response_bytes(&mut self, py: Python<'_>) -> PyResult<Vec<u8>> {
-        // Bounded by the connection's timeouts (initial for the first message,
-        // next_to_ok after a NEXT) so a lost or never-sent response cannot
-        // block forever. The GIL is released for the duration of the wait so
-        // other Python threads keep running and Ctrl-C stays responsive.
         let rt = Arc::clone(&self.rt);
-        let res = py.detach(|| rt.block_on(self.rx.get_response()));
+        let res = block_on_with_signals(py, &rt, self.rx.get_response())?;
         match res {
             Ok(Ok(message)) => Ok(message.to_bytes()),
             Ok(Err(error)) => Err(CommandError::new_err(error)),
@@ -584,10 +605,8 @@ impl PyMessageResponse {
     /// Raises:
     ///     ValueError: If response is not an acknowledgment
     pub fn get_ack(&mut self, py: Python<'_>) -> PyResult<()> {
-        // Bounded by the connection's initial timeout, with the GIL released
-        // during the wait, so a missing acknowledgement cannot block forever.
         let rt = Arc::clone(&self.rt);
-        let x = py.detach(|| rt.block_on(self.rx.recv_initial()));
+        let x = block_on_with_signals(py, &rt, self.rx.recv_initial())?;
         match x {
             Ok(MessageResponse::Ok { ident: _, message })
             | Ok(MessageResponse::Warning { ident: _, message }) => {
@@ -623,15 +642,17 @@ impl PyMessageResponse {
     /// Raises:
     ///     TimeoutError: If timeout occurs
     ///     ValueError: If response is an error or invalid
-    pub fn get_response_with_timeout(&mut self, timeout: u64) -> PyResult<String> {
-        let x = self.rt.block_on(async {
+    pub fn get_response_with_timeout(&mut self, py: Python<'_>, timeout: u64) -> PyResult<String> {
+        let rt = Arc::clone(&self.rt);
+        let x = block_on_with_signals(py, &rt, async {
             select! {
                 rx = self.rx.recv() => Ok(rx),
                 _ = tokio::time::sleep(Duration::from_secs(timeout)) => {
-                    Err(PyTimeoutError::new_err("Timeout"))
+                    Err(())
                 }
             }
-        })?;
+        })?
+        .map_err(|()| PyTimeoutError::new_err("Timeout"))?;
         match x {
             Some(x) => match x {
                 MessageResponse::Ok { ident: _, message }
@@ -663,13 +684,8 @@ pub struct PyLogReceiver {
 #[pymethods]
 impl PyLogReceiver {
     fn __next__(&mut self, py: Python<'_>) -> PyResult<LogMessage> {
-        // Release the GIL while waiting for the next log message so other
-        // Python threads keep running. The stream ends (yields None) when the
-        // connection task exits and drops the log senders, at which point we
-        // raise StopIteration so a `for msg in receiver:` loop terminates
-        // cleanly instead of blocking forever.
         let rt = Arc::clone(&self.rt);
-        let x = py.detach(|| rt.block_on(self.rx.next()));
+        let x = block_on_with_signals(py, &rt, self.rx.next())?;
         match x {
             Some(x) => x.1.map_err(|e| PyValueError::new_err(e.to_string())),
             None => Err(PyStopIteration::new_err("Connection closed")),

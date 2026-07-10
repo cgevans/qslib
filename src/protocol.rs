@@ -2202,9 +2202,7 @@ impl Protocol {
     }
 }
 
-/// Parse a filter string (lowerform "x4-m4", hacform "m4,x4,quant", or upperform
-/// "M4_X4") into ("x{ex}", "m{em}") attribute strings for a FilterSet element.
-/// Unrecognised strings are passed through unchanged.
+/// Convert a filter name to XML excitation and emission attributes.
 fn parse_filter_for_xml(filter: &str) -> (String, String) {
     match crate::data::FilterSet::from_string(filter) {
         Ok(fs) => (format!("x{}", fs.ex), format!("m{}", fs.em)),
@@ -4081,8 +4079,6 @@ mod tests {
 
     #[test]
     fn test_to_xml_pair_with_hacform_filters() {
-        // Filters as emitted in hacform ("m{em},x{ex}[,quant]") must still render
-        // as x{ex}/m{em} in the FilterSet element.
         let protocol = Protocol {
             stages: vec![Stage {
                 steps: vec![StageStep::Standard(Step {
@@ -4382,9 +4378,13 @@ port = 7443
     #[test]
     fn test_parse_filter_for_xml() {
         assert_eq!(parse_filter_for_xml("x4-m4"), ("x4".into(), "m4".into()));
-        assert_eq!(parse_filter_for_xml("m4,x4,quant"), ("x4".into(), "m4".into()));
+        assert_eq!(
+            parse_filter_for_xml("m4,x4,quant"),
+            ("x4".into(), "m4".into())
+        );
         assert_eq!(parse_filter_for_xml("m1,x3"), ("x3".into(), "m1".into()));
         assert_eq!(parse_filter_for_xml("M4_X4"), ("x4".into(), "m4".into()));
+        assert!(crate::data::FilterSet::from_string("4,1,4").is_err());
     }
 
     // =====================================================================

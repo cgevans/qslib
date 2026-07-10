@@ -778,8 +778,6 @@ pub fn parse_quant_xml(data: &[u8]) -> Result<Vec<TiffImageMeta>, QuantError> {
                     let val = String::from_utf8_lossy(&attr.value).to_string();
                     match key.as_str() {
                         "stage" => {
-                            // Images are only collected inside numbered cycling stages,
-                            // so a non-numeric stage attribute indicates a malformed file.
                             meta.stage = val.parse().unwrap_or_else(|_| {
                                 warn!("Non-numeric image stage attribute {:?}; using 0", val);
                                 0

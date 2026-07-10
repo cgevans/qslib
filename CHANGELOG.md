@@ -8,23 +8,23 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Unreleased
 
-(LLM-generated descriptions below.)
+(Generated with LLM assistance.)
 
 ### Protocol fixes
-- Fix collection-filter serialization in `tcprotocol.xml`. Filters are carried internally in hacform (`m{em},x{ex}[,quant]`), but `to_xml_pair` re-parsed them with an ad-hoc splitter that assumed an `em,row,ex` numeric layout, so `m4,x4,quant` was written as `Excitation="xquant" Emission="mm4"` (and reloading such a file warned `Invalid filter set format: xquant-mm4`). Serialization now goes through `FilterSet::from_string`, restoring the pre-0.14 output `Excitation="x4" Emission="m4"`. Only the `tcprotocol.xml` metadata was affected; `filterdata` and quant data were correct. Regression introduced in 0.14.0 with the Rust protocol port.
+- Correct collection-filter attributes in `tcprotocol.xml` for hacform filter strings.
 
 ### Communication fixes
-- Fix hang when the peer closes the connection with a zero-byte read. A read returning 0 (EOF) was handed to the message handler, which ignored it, so the receive loop spun without terminating and pending commands never completed. A 0-byte read is now treated as EOF and closes the loop cleanly.
-- Fix permanent receiver wedge on a malformed message split across reads. When a mismatched or unexpected XML close tag was seen but the message's terminating newline arrived in a later TCP read, the message-boundary scanner latched the error and stopped scanning for the newline, so `msg_end` was never set and no further message on the connection was ever parsed — every subsequent command then hung. The scanner now resyncs to the next newline (ignoring tag structure) and surfaces the error.
-- Bound all response waits with timeouts. The Python bridge (`get_response`, `get_response_bytes`, `get_ack`) and the Rust `receive_response`/`receive_next` helpers waited on the response channel with no timeout, so a half-open connection (no data and no EOF) or a lost/never-sent response blocked forever; because the wait held the GIL, such a hang also froze every Python thread and made Ctrl-C unresponsive. These now use the connection's `initial`/`next_to_ok` timeouts and release the GIL while waiting.
-- Fix log subscriptions hanging after disconnect. The broadcast senders backing `subscribe_log` lived in the connection's channel map and were never dropped, so a subscriber's iterator blocked forever once the connection closed instead of ending. The connection now drops them when its task exits (ending subscribers' streams), and the Python `LogReceiver` raises `StopIteration`.
-- Prevent a stalled consumer from wedging the whole connection. Responses were delivered to per-command channels with a blocking send on a small (5-slot) buffer, so a consumer that stopped draining its `ResponseReceiver` stalled the entire receive loop. Delivery is now non-blocking (buffer raised to 64): intermediate `NEXT`s are dropped when the buffer is full, and terminal responses fall through to the consumer's timeout rather than blocking.
-- Surface unparseable responses to the waiting command. A response that failed to parse was only logged, leaving its command to wait out the full timeout; the command's ident is now recovered when possible and delivered a parse error so it fails immediately.
+- Treat zero-byte reads as disconnects.
+- Resynchronize malformed messages at newline boundaries.
+- Bound response waits and make Python waits interruptible.
+- End log subscriptions when the connection closes.
+- Prevent response-channel backpressure from blocking the receive loop or dropping terminal responses.
+- Report response parse failures when their identifier is recoverable.
 
 ### Stage identity fixes
-- Distinguish a stage's *name* from its *number* in run status. The machine reports a raw stage token (`PRERUN`, `1`…`N`, `POSTRun`, or `-`), while qslib uses a zero-indexed stage number (position in the run's full stage sequence: `PRERUN`=0, numbered stage `"k"`=k, `POSTRUN`=`num_stages`+1). `RunStatus` now carries both: the new `stage_name` field holds the raw token, and `stage` is the number. Previously `POSTRUN` collapsed to `0` (indistinguishable from `PRERUN`) and any non-numeric name became `-1`; `POSTRUN` is now `num_stages`+1, so `Protocol.check_compatible` correctly treats a post-run as fully elapsed. `num_stages` is unchanged. `Experiment.stages` gains an explicit `stage_name` column alongside the existing `stage` (name) and `stage_index` (number) columns.
-- Fix `Experiment.plot_over_time_altair` stage selection. With `stages` given as a slice, or `start_time="stage"`, the method called pandas `.iloc`/`.loc` on the polars `stages` frame and raised `AttributeError`; the stage bounds and start time are now derived via polars (from the numeric data column and `stage_index`).
-- Warn instead of silently corrupting on a non-numeric stage in collected data. Data collection only occurs inside numbered cycling stages, so a non-numeric stage indicates a malformed file; the InfluxDB line-protocol, v2 JSON, and quant image-XML paths previously coerced such a value to `0`/`-1` or dropped the field silently, and now log a warning.
+- Add raw stage names to `RunStatus` and distinguish `PRERUN` from `POSTRUN` positions.
+- Use Polars APIs for Altair stage selection.
+- Warn when collected-data stage values are nonnumeric.
 
 ## Version 0.15.1
 

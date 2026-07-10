@@ -54,10 +54,6 @@ pub enum ReceiveNextResponseError {
 
 impl<T: TryFrom<OkResponse, Error = OkParseError>, E: From<ErrorResponse>> CommandReceiver<T, E> {
     pub async fn receive_response(&mut self) -> Result<Result<T, E>, ReceiveOkResponseError> {
-        // Delegate to the timeout-bounded receiver so a lost or never-sent
-        // response cannot block forever (e.g. a half-open connection). This
-        // applies the connection's initial timeout for the first message and
-        // next_to_ok timeout after a NEXT, ignoring intermediate NEXTs.
         match self.response.get_response().await? {
             Ok(ok) => Ok(Ok(ok.try_into()?)),
             Err(error) => Ok(Err(error.into())),
@@ -592,8 +588,7 @@ pub struct RunProgress {
     pub step: String,
     pub run_title: String,
     pub cycle: String,
-    /// Raw stage token reported by the machine ("PRERUN", "1".."N", "POSTRun", "-").
-    /// This is the stage *name*; cf. `RunStatus::stage` for the numeric position.
+    /// Raw stage token reported by the machine.
     pub stage: String,
 }
 
@@ -1271,11 +1266,9 @@ use std::collections::HashMap;
 #[cfg_attr(feature = "python", pyclass(frozen, get_all, module = "qslib._qslib"))]
 pub struct RunStatus {
     pub name: String,
-    /// Zero-indexed stage number in the run's full stage sequence: PRERUN = 0,
-    /// numbered stage "k" = k, POSTRUN = num_stages + 1, unset/unknown = -1.
-    /// Matches the integer `stage` column of collected fluorescence data.
+    /// Stage position: PRERUN = 0, numbered stage k = k, POSTRUN = N + 1.
     pub stage: i64,
-    /// Raw stage token reported by the machine: "PRERUN", "1".."N", "POSTRun", "-".
+    /// Raw stage token reported by the machine.
     pub stage_name: String,
     pub num_stages: i64,
     pub cycle: i64,
@@ -1324,9 +1317,6 @@ impl RunStatus {
             .replace_all(&tokens[0], "$2")
             .to_string();
         let num_stages: i64 = tokens[2].parse().unwrap_or(-1);
-        // Stage name and stage number are distinct: the machine reports a raw token
-        // (PRERUN, "1".."N", POSTRun, or "-"), while the number is the zero-indexed
-        // position in the run's full stage sequence (PRERUN=0, "k"=k, POSTRUN=N+1).
         let stage_name = tokens[1].clone();
         let stage = if stage_name.eq_ignore_ascii_case("PRERUN") {
             0
@@ -2459,7 +2449,6 @@ mod tests {
         let status = RunStatus::parse(response).unwrap();
         assert_eq!(status.name, "-");
         assert_eq!(status.stage, -1);
-        // The RunStatus command defaults an unset stage to "-1" (${Stage:--1}).
         assert_eq!(status.stage_name, "-1");
         assert_eq!(status.state, "Idle");
     }
@@ -2476,7 +2465,6 @@ mod tests {
     fn test_run_status_parse_postrun_stage() {
         let response = b"MyRun POSTRun 5 1 10 1 0 Complete";
         let status = RunStatus::parse(response).unwrap();
-        // POSTRUN sits just past the last numbered stage: num_stages + 1.
         assert_eq!(status.stage, 6);
         assert_eq!(status.num_stages, 5);
         assert_eq!(status.stage_name, "POSTRun");
