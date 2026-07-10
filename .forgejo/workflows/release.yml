@@ -1,0 +1,16 @@
+name: Release
+
+# Keep tag handling separate from branch CI: Forgejo does not support
+# combining `branches` and `tags` filters on the same push trigger.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    uses: ./.forgejo/workflows/ci.yml
+    secrets: inherit

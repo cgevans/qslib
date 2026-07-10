@@ -6,8 +6,7 @@ SPDX-License-Identifier: EUPL-1.2
 
 [![Documentation Status](https://readthedocs.org/projects/qslib/badge/?version=latest)](https://qslib.readthedocs.io/en/latest/?badge=latest)
 ![Codecov](https://img.shields.io/codecov/c/github/cgevans/qslib)
-![GitHub Workflow
-Status](https://img.shields.io/github/actions/workflow/status/cgevans/qslib/python-tests.yml?branch=main)
+[![Forgejo Actions](https://img.shields.io/forgejo/actions/workflow/status/cge/qslib/ci.yml?branch=main&forgejo_url=https%3A%2F%2Fcodeberg.org)](https://codeberg.org/cge/qslib/actions)
 ![PyPI](https://img.shields.io/pypi/v/qslib)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/5512/badge)](https://bestpractices.coreinfrastructure.org/projects/5512)
 [![DOI](https://zenodo.org/badge/393710481.svg)](https://zenodo.org/badge/latestdoi/393710481)
@@ -59,9 +58,9 @@ QSLib is pure Python, and can be installed via pip:
 
     pip3 install -U qslib
 
-Or, for the current Github version:
+Or, for the current Codeberg version:
 
-    pip3 install -U --pre git+https://github.com/cgevans/qslib
+    pip3 install -U --pre git+https://codeberg.org/cge/qslib.git
 
 It requires at least version 3.10 of Python. While it uses async code at
 its core for communication, it can be used conveniently in Jupyter or
@@ -81,9 +80,9 @@ connection or port forwarding. See the documentation for more information.
 
 ## Contributing and issue reporting
 
-Issue reports and enhancement requests can be submitted via Github.
+Issue reports and enhancement requests can be submitted via Codeberg.
 
-Potential contributions can be submitted via Github.  These should include pytest tests, preferably
+Potential contributions can be submitted via Codeberg.  These should include pytest tests, preferably
 both tests that can be run without outside resources, and, if applicable, tests that directly test
 any communication with a QuantStudio SCPI server.  They will also need a Contributor Licence Agreement.
 

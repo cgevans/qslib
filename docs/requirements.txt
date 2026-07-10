@@ -1,9 +1,9 @@
 # SPDX-FileCopyrightText: 2021 - 2023 Constantine Evans <qslib@mb.costi.net>
 #
 # SPDX-License-Identifier: EUPL-1.2
-# Requirements file for ReadTheDocs, check .readthedocs.yml.
-# To build the module reference correctly, make sure every external package
-# under `install_requires` in `setup.cfg` is also listed here!
-# sphinx_rtd_theme
-recommonmark
-sphinx>=3.2.1
+# Requirements for the hosted Sphinx build. The project itself is installed
+# separately by .readthedocs.yml, which also builds the Rust extension.
+myst-parser
+sphinx>=2.4
+sphinx-autodoc-typehints
+sphinx-click

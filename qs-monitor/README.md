@@ -2,7 +2,7 @@
 
 A monitoring system for QuantStudio qPCR machines, which monitors multiple instruments, collects temperature, run status, and LED status data, and can send metrics to InfluxDB. It has optional Matrix bot integration which provides notifications and remote control capabilities.
 
-Relies on [qslib](https://github.com/cgevans/qslib) for communication with the machines.
+Relies on [qslib](https://codeberg.org/cge/qslib) for communication with the machines.
 
 ## Features
 
@@ -104,4 +104,3 @@ Licensed under the EUPL-1.2. See LICENSE.txt for details.
 ## Author
 
 Constantine Evans
-
