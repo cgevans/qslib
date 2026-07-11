@@ -307,29 +307,39 @@ jobs:
           path: dist
 
   # macOS jobs run on the `macos-arm64` runner. Intel macOS wheels are intentionally deprecated.
+  #
+  # These use uv-managed Python (like the Windows jobs) rather than
+  # actions/setup-python. On the host-mode macOS runner setup-python installs
+  # the interpreter with `sudo installer -pkg`, but the unprivileged runner
+  # user can neither sudo nor write setup-python's default /Users/runner
+  # tool-cache path. uv fetches a standalone interpreter into the user's own
+  # directory with no sudo and no tool cache.
   macos:
     name: Python macOS builds
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
     runs-on: macos-arm64
+    env:
+      UV_MANAGED_PYTHON: "1"
     strategy:
       matrix:
         target: [aarch64]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.10"
       - uses: https://github.com/dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Python
+        run: uv python install 3.10
       - name: Build wheels
-        uses: https://github.com/PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --find-interpreter
-          sccache: "true"
-          rust-toolchain: stable
+        # abi3 (default features) builds a single cp310-abi3 wheel from 3.10.
+        run: |
+          python="$(uv python find 3.10)"
+          uvx maturin build --release --out dist --interpreter "$python"
       - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
         with:
           name: wheels-macos-${{ matrix.target }}
@@ -340,25 +350,27 @@ jobs:
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
     runs-on: macos-arm64
+    env:
+      UV_MANAGED_PYTHON: "1"
     strategy:
       matrix:
         target: [aarch64]
         python-version: ['3.13t', '3.14t']
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ matrix.python-version }}
       - uses: https://github.com/dtolnay/rust-toolchain@master
         with:
           toolchain: stable
+      - name: Install uv
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Install Python
+        run: uv python install ${{ matrix.python-version }}
       - name: Build wheels
-        uses: https://github.com/PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --interpreter python3 --no-default-features --features python
-          sccache: "true"
-          rust-toolchain: stable
+        run: |
+          python="$(uv python find ${{ matrix.python-version }})"
+          uvx maturin build --release --out dist --interpreter "$python" --no-default-features --features python
       - uses: https://code.forgejo.org/forgejo/upload-artifact@v4
         with:
           name: wheels-macos-freethreaded-${{ matrix.python-version }}-${{ matrix.target }}
