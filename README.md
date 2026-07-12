@@ -12,6 +12,9 @@ SPDX-License-Identifier: EUPL-1.2
 [![DOI](https://zenodo.org/badge/393710481.svg)](https://zenodo.org/badge/latestdoi/393710481)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/qslib)](https://pypi.org/project/qslib/)
 
+> **Note:** The canonical repository for qslib is hosted on [Codeberg](https://codeberg.org/cge/qslib).
+> The [GitHub repository](https://github.com/cgevans/qslib) is a mirror; please file issues and pull
+> requests on Codeberg.
 
 [Our DNA 28 poster is available here.](https://costi.eu/dna28/qslib-poster.pdf)
 
