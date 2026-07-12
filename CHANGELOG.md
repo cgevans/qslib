@@ -9,6 +9,7 @@ SPDX-License-Identifier: EUPL-1.2
 ## Unreleased
 
 - Added commands for querying and setting the status led.
+- Moved documentation hosting from Read the Docs to Codeberg Pages, built via Forgejo Actions and served at <https://cge.codeberg.page/qslib/>. The Read the Docs site now redirects there.
 
 ## Version 0.15.2
 
