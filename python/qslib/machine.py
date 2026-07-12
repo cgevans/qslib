@@ -21,7 +21,15 @@ import io
 from .data import FilterSet
 
 if TYPE_CHECKING:
-    pass
+    DrawerPosition = Literal["Open", "Closed", "Unknown"]
+    CoverPosition = Literal["Up", "Down", "Unknown", ""]
+else:
+    # At runtime these are plain ``str``. The precise ``Literal`` types above are
+    # only for static checkers: resolving a live ``Literal`` return annotation
+    # crashes jedi (IPython's completer), which breaks tab-completion on
+    # ``Machine`` instances entirely.
+    DrawerPosition = str
+    CoverPosition = str
 
 
 from qslib.scpi_commands import AccessLevel, SCPICommand, ArgList, specialize_command_error
@@ -900,16 +908,16 @@ class Machine:
             return RunStatus.from_bytes(out)
 
     @property
-    def drawer_position(self) -> Literal["Open", "Closed", "Unknown"]:
+    def drawer_position(self) -> DrawerPosition:
         """Return the drawer position from the DRAW? command."""
         with self.ensured_connection(AccessLevel.Observer):
             d = self.run_command("DRAW?")
             if d not in ["Open", "Closed", "Unknown"]:
                 raise ValueError(f"Drawer position {d} is not understood.")
-            return cast(Literal["Open", "Closed", "Unknown"], d)
+            return cast(DrawerPosition, d)
 
     @property
-    def cover_position(self) -> Literal["Up", "Down", "Unknown", ""]:
+    def cover_position(self) -> CoverPosition:
         """Return the cover position from the ENG? command. Note that
         this does not always seem to work."""
         with self.ensured_connection(AccessLevel.Observer):
@@ -918,7 +926,7 @@ class Machine:
                 raise ValueError(f"Cover position {f} is not understood.")
             if f == "":
                 log.error("Cover position is blank. This should not happen.")
-            return cast(Literal["Up", "Down", "Unknown", ""], f)
+            return cast(CoverPosition, f)
 
     @_ensure_connection(AccessLevel.Controller)
     def cover_lower(self, check: bool = True, ensure_drawer: bool = True) -> None:
