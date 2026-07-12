@@ -6,6 +6,10 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Unreleased
+
+- Added commands for querying and setting the status led.
+
 ## Version 0.15.2
 
 (Generated with LLM assistance.)
