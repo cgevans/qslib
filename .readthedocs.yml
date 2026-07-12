@@ -1,16 +1,19 @@
-# SPDX-FileCopyrightText: 2021-2025 Constantine Evans <qslib@mb.costi.net>
+# SPDX-FileCopyrightText: 2021-2026 Constantine Evans <qslib@mb.costi.net>
 # SPDX-License-Identifier: EUPL-1.2
+#
+# Read the Docs is no longer used to build qslib's documentation. Docs are now
+# built and hosted via Forgejo Actions on Codeberg Pages:
+#     https://cge.codeberg.page/qslib/
+# This config replaces the old Sphinx build with a trivial build that emits a
+# redirect page (and a 404 page, served for any old deep link) pointing at the
+# new site, so the stale readthedocs.io project no longer misleads visitors.
 version: 2
 build:
   os: ubuntu-24.04
   tools:
     python: "3.13"
-    # Build the extension from source rather than downloading a CI artifact.
-    rust: "1.96"
-sphinx:
-  configuration: docs/conf.py
-python:
-  install:
-    - requirements: docs/requirements.txt
-    - method: pip
-      path: .
+  commands:
+    - mkdir -p "$READTHEDOCS_OUTPUT/html"
+    - |
+      printf '%s' '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>qslib documentation has moved</title><meta http-equiv="refresh" content="0; url=https://cge.codeberg.page/qslib/"><link rel="canonical" href="https://cge.codeberg.page/qslib/"><meta name="robots" content="noindex"></head><body><p>The qslib documentation has moved to <a href="https://cge.codeberg.page/qslib/">https://cge.codeberg.page/qslib/</a>. This Read the Docs site is no longer maintained.</p></body></html>' > "$READTHEDOCS_OUTPUT/html/index.html"
+    - cp "$READTHEDOCS_OUTPUT/html/index.html" "$READTHEDOCS_OUTPUT/html/404.html"

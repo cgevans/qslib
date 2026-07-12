@@ -74,7 +74,7 @@ altair = [
 
 [project.urls]
 homepage = "https://codeberg.org/cge/qslib/"
-documentation = "https://qslib.readthedocs.org/"
+documentation = "https://cge.codeberg.page/qslib/"
 source = "https://codeberg.org/cge/qslib/"
 changelog = "https://codeberg.org/cge/qslib/src/branch/main/CHANGELOG.md"
 tracker = "https://codeberg.org/cge/qslib/issues"

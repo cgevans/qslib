@@ -4,7 +4,7 @@ SPDX-FileCopyrightText: 2021 - 2023 Constantine Evans <qslib@mb.costi.net>
 SPDX-License-Identifier: EUPL-1.2
 -->
 
-[![Documentation Status](https://readthedocs.org/projects/qslib/badge/?version=latest)](https://qslib.readthedocs.io/en/latest/?badge=latest)
+[![Documentation](https://img.shields.io/badge/docs-cge.codeberg.page%2Fqslib-blue)](https://cge.codeberg.page/qslib/)
 ![Codecov](https://img.shields.io/codecov/c/github/cgevans/qslib)
 [![Forgejo Actions](https://img.shields.io/forgejo/actions/workflow/status/cge/qslib/ci.yml?branch=main&forgejo_url=https%3A%2F%2Fcodeberg.org)](https://codeberg.org/cge/qslib/actions)
 ![PyPI](https://img.shields.io/pypi/v/qslib)
@@ -18,7 +18,7 @@ SPDX-License-Identifier: EUPL-1.2
 
 [Our DNA 28 poster is available here.](https://costi.eu/dna28/qslib-poster.pdf)
 
-Documentation: [Stable](https://qslib.readthedocs.io/en/stable/), [Latest](https://qslib.readthedocs.io/en/latest/)
+Documentation: [https://cge.codeberg.page/qslib/](https://cge.codeberg.page/qslib/)
 
 
 # qslib
