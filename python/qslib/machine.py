@@ -29,7 +29,14 @@ from qslib.scpi_commands import AccessLevel, SCPICommand, ArgList, specialize_co
 from ._util import _unwrap_tags
 from .protocol import Protocol
 
-from ._qslib import MachineStatus, RunStatus  # noqa: E402
+from ._qslib import (  # noqa: E402
+    MachineStatus,
+    RunStatus,
+    StatusLedColor,
+    StatusLedMode,
+    StatusLedSet,
+    StatusLedState,
+)
 
 
 class FileListInfo(TypedDict, total=False):
@@ -791,6 +798,63 @@ class Machine:
                 raise ValueError(f"Drawer position is {drawerpos}")
         if lower_cover:
             self.cover_lower(check=check, ensure_drawer=False)
+
+    @_ensure_connection(AccessLevel.Controller)
+    def set_status_led(
+        self,
+        color: StatusLedColor | str,
+        mode: StatusLedMode | str = "on",
+    ) -> None:
+        """Set the front-panel status LED.
+
+        This is the machine's indicator light, not the optical excitation lamp.
+
+        Parameters
+        ----------
+        color
+            One of red, green, blue, yellow, cyan, magenta, white
+            (a :any:`StatusLedColor` or its name, case-insensitive).
+        mode
+            "on" (solid, the default), "blink", or "off"
+            (a :any:`StatusLedMode` or its name).
+
+        Notes
+        -----
+        Requires Controller access.
+        """
+        self.run_command(StatusLedSet(color, mode).command_string())
+
+    @_ensure_connection(AccessLevel.Controller)
+    def status_led_off(self) -> None:
+        """Turn the front-panel status LED off. Requires Controller access."""
+        self.run_command("LED:LightOFF")
+
+    @property
+    @_ensure_connection(AccessLevel.Observer)
+    def status_led(self) -> StatusLedState:
+        """Current color and mode of the front-panel status LED.
+
+        Reading returns a :any:`StatusLedState` (``.color`` is ``None`` when off).
+        Setting accepts a color name/:any:`StatusLedColor` (solid on), or a
+        ``(color, mode)`` tuple.
+        """
+        return StatusLedState.from_bytes(
+            self.run_command_bytes(StatusLedState.command())
+        )
+
+    @status_led.setter
+    @_ensure_connection(AccessLevel.Controller)
+    def status_led(
+        self,
+        value: StatusLedColor
+        | str
+        | tuple[StatusLedColor | str, StatusLedMode | str],
+    ) -> None:
+        if isinstance(value, tuple):
+            color, mode = value
+        else:
+            color, mode = value, "on"
+        self.set_status_led(color, mode)
 
     @property
     @_ensure_connection(AccessLevel.Observer)

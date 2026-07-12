@@ -50,6 +50,9 @@ async fn setup_mock_server(
         let mut power_status = true; // Start with power ON
         let mut access_level = "Guest".to_string();
         let mut run_title = "-".to_string();
+        // Status LED state; starts solid BLUE (the resting state qslib uses).
+        let mut led_color = "BLUE".to_string();
+        let mut led_mode = "ON".to_string();
 
         loop {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -164,6 +167,28 @@ async fn setup_mock_server(
                                         socket.write_all(ok_resp(&run_title).as_bytes()).await.unwrap();
                                     } else if cmd_part.starts_with("TBC:SETT?") {
                                         socket.write_all(ok_resp("-Zone1=25.0 -Zone2=25.0 -Zone3=25.0 -Zone4=25.0 -Zone5=25.0 -Zone6=25.0 -Fan1=44.0 -Cover=30.0").as_bytes()).await.unwrap();
+                                    } else if cmd_part.starts_with("LED:STATus?") {
+                                        // Firmware reports "<COLOR> <MODE>", or "- OFF" when off.
+                                        let body = if led_mode == "OFF" {
+                                            "- OFF".to_string()
+                                        } else {
+                                            format!("{} {}", led_color, led_mode)
+                                        };
+                                        socket.write_all(ok_resp(&body).as_bytes()).await.unwrap();
+                                    } else if cmd_part.starts_with("LED:") {
+                                        // Set command, e.g. LED:GREENON / LED:GREENBLINK / LED:GREENOFF
+                                        let verb = cmd_part.trim().strip_prefix("LED:").unwrap_or("");
+                                        if let Some(color) = verb.strip_suffix("BLINK") {
+                                            led_color = color.to_string();
+                                            led_mode = "BLINK".to_string();
+                                        } else if let Some(color) = verb.strip_suffix("OFF") {
+                                            led_color = color.to_string();
+                                            led_mode = "OFF".to_string();
+                                        } else if let Some(color) = verb.strip_suffix("ON") {
+                                            led_color = color.to_string();
+                                            led_mode = "ON".to_string();
+                                        }
+                                        socket.write_all(ok_empty().as_bytes()).await.unwrap();
                                     } else if cmd_part.starts_with("ERRTEST") {
                                         socket.write_all(err_resp("InsufficientAccess", "Observer access required").as_bytes()).await.unwrap();
                                     } else if cmd_part.starts_with("QUIT") {
@@ -456,6 +481,78 @@ async fn test_power_query_and_set() {
         .await;
     assert!(response.is_ok());
     assert_eq!(response.unwrap().unwrap(), PowerStatus::On);
+
+    _server.abort();
+}
+
+#[tokio::test]
+async fn test_status_led_set_and_query() {
+    let (addr, _server) = setup_mock_server(None, true).await;
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+        .await
+        .unwrap();
+
+    // Command serialization
+    assert_eq!(
+        StatusLedSet::new(StatusLedColor::Green, StatusLedMode::On).scpi_command(),
+        "LED:GREENON"
+    );
+    assert_eq!(
+        StatusLedSet::new(StatusLedColor::Blue, StatusLedMode::Blink).scpi_command(),
+        "LED:BLUEBLINK"
+    );
+
+    // Initial state should be solid BLUE
+    let state = StatusLedQuery
+        .send(&connection)
+        .await
+        .unwrap()
+        .receive_response()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.color, Some(StatusLedColor::Blue));
+    assert_eq!(state.mode, StatusLedMode::On);
+
+    // Set blinking green
+    StatusLedSet::new(StatusLedColor::Green, StatusLedMode::Blink)
+        .send(&connection)
+        .await
+        .unwrap()
+        .receive_response()
+        .await
+        .unwrap()
+        .unwrap();
+    let state = StatusLedQuery
+        .send(&connection)
+        .await
+        .unwrap()
+        .receive_response()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.color, Some(StatusLedColor::Green));
+    assert_eq!(state.mode, StatusLedMode::Blink);
+
+    // Turn off — color reported as None
+    StatusLedSet::new(StatusLedColor::Green, StatusLedMode::Off)
+        .send(&connection)
+        .await
+        .unwrap()
+        .receive_response()
+        .await
+        .unwrap()
+        .unwrap();
+    let state = StatusLedQuery
+        .send(&connection)
+        .await
+        .unwrap()
+        .receive_response()
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.color, None);
+    assert_eq!(state.mode, StatusLedMode::Off);
 
     _server.abort();
 }

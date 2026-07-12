@@ -14,7 +14,14 @@ from typing import Any, Sequence, Type, TypeVar
 
 import numpy as np
 
-from ._qslib import AccessLevel as AccessLevel, CommandError
+from ._qslib import (
+    AccessLevel as AccessLevel,
+    CommandError,
+    StatusLedColor as StatusLedColor,
+    StatusLedMode as StatusLedMode,
+    StatusLedSet as StatusLedSet,
+    StatusLedState as StatusLedState,
+)
 
 
 class NoMatch(CommandError):

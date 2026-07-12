@@ -5,7 +5,14 @@
 
 import pytest
 
-from qslib import AccessLevel, Machine
+from qslib import (
+    AccessLevel,
+    Machine,
+    StatusLedColor,
+    StatusLedMode,
+    StatusLedSet,
+    StatusLedState,
+)
 from qslib.machine import _gen_auth_response
 
 
@@ -189,3 +196,75 @@ def test_repr():
     r = repr(m)
     assert "Machine" in r
     assert "example.com" in r
+
+
+# --- Status LED types ---
+
+
+def test_status_led_color_from_string():
+    assert StatusLedColor("green") == StatusLedColor.Green
+    assert StatusLedColor("GREEN") == StatusLedColor.Green
+    assert StatusLedColor.Green != "green"
+    assert StatusLedColor.Green.value == "GREEN"
+    assert StatusLedColor.Red.number == 1
+    assert StatusLedColor.Green.number == 2
+    assert StatusLedColor.White.number == 7
+
+
+def test_status_led_color_invalid():
+    with pytest.raises(ValueError):
+        StatusLedColor("chartreuse")
+
+
+def test_status_led_mode_from_string():
+    assert StatusLedMode("on") == StatusLedMode.On
+    assert StatusLedMode("BLINK") == StatusLedMode.Blink
+    assert StatusLedMode.On != "on"
+    # boolean-normalized forms returned by LED:STATus?
+    assert StatusLedMode("true") == StatusLedMode.On
+    assert StatusLedMode("false") == StatusLedMode.Off
+
+
+def test_status_led_mode_invalid():
+    with pytest.raises(ValueError):
+        StatusLedMode("flash")
+
+
+def test_status_led_types_obey_hash_contract():
+    color = StatusLedColor("green")
+    mode = StatusLedMode("on")
+    assert {StatusLedColor.Green: "green"}[color] == "green"
+    assert {StatusLedMode.On: "on"}[mode] == "on"
+
+
+def test_status_led_set_command_string():
+    assert StatusLedSet("green", "on").command_string() == "LED:GREENON"
+    assert StatusLedSet("blue", "blink").command_string() == "LED:BLUEBLINK"
+    assert StatusLedSet(StatusLedColor.Red, StatusLedMode.Off).command_string() == "LED:REDOFF"
+
+
+def test_status_led_state_command():
+    assert StatusLedState.command() == b"LED:STATus?"
+
+
+def test_status_led_state_cannot_be_constructed_directly():
+    with pytest.raises(TypeError):
+        StatusLedState()
+
+
+def test_status_led_state_from_bytes_on():
+    s = StatusLedState.from_bytes(response=b"BLUE true")
+    assert s.color == StatusLedColor.Blue
+    assert s.mode == StatusLedMode.On
+
+
+def test_status_led_state_from_bytes_off():
+    s = StatusLedState.from_bytes(b"- false")
+    assert s.color is None
+    assert s.mode == StatusLedMode.Off
+
+
+def test_status_led_state_from_bytes_blink():
+    s = StatusLedState.from_bytes(b"GREEN BLINK")
+    assert s.color == StatusLedColor.Green
+    assert s.mode == StatusLedMode.Blink

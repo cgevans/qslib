@@ -4,7 +4,8 @@
 
 """Type stubs for qslib._qslib Rust extension module."""
 
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, final
+from typing_extensions import Never, Self
 import numpy as np
 import numpy.typing as npt
 import polars as pl
@@ -204,6 +205,74 @@ class MachineStatus:
     def get_target_temperatures(self) -> Dict[str, float]: ...
     def get_target_controlled(self) -> Dict[str, bool]: ...
     def get_led_temperature(self) -> float: ...
+
+@final
+class StatusLedColor:
+    """Color of the front-panel status LED."""
+
+    Red: "StatusLedColor"
+    Green: "StatusLedColor"
+    Blue: "StatusLedColor"
+    Yellow: "StatusLedColor"
+    Cyan: "StatusLedColor"
+    Magenta: "StatusLedColor"
+    White: "StatusLedColor"
+
+    def __new__(cls, value: Union[str, "StatusLedColor"]) -> "StatusLedColor": ...
+    @property
+    def value(self) -> str: ...
+    @property
+    def number(self) -> int: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __hash__(self) -> int: ...
+    def __eq__(self, other: object) -> bool: ...
+
+@final
+class StatusLedMode:
+    """Mode of the status LED: solid on, off, or blinking."""
+
+    On: "StatusLedMode"
+    Off: "StatusLedMode"
+    Blink: "StatusLedMode"
+
+    def __new__(cls, value: Union[str, "StatusLedMode"]) -> "StatusLedMode": ...
+    @property
+    def value(self) -> str: ...
+    def __str__(self) -> str: ...
+    def __repr__(self) -> str: ...
+    def __hash__(self) -> int: ...
+    def __eq__(self, other: object) -> bool: ...
+
+@final
+class StatusLedSet:
+    """A command to set the status LED to a color and mode."""
+
+    color: StatusLedColor
+    mode: StatusLedMode
+
+    def __new__(
+        cls,
+        color: Union[str, StatusLedColor],
+        mode: Union[str, StatusLedMode],
+    ) -> "StatusLedSet": ...
+    def command_string(self) -> str: ...
+    def __repr__(self) -> str: ...
+
+@final
+class StatusLedState:
+    """Current color and mode of the status LED (from ``LED:STATus?``)."""
+
+    color: Optional[StatusLedColor]
+    mode: StatusLedMode
+
+    def __new__(cls, _token: Never) -> Self: ...
+    @staticmethod
+    def from_bytes(response: bytes) -> "StatusLedState": ...
+    @staticmethod
+    def command() -> bytes: ...
+    def __repr__(self) -> str: ...
+    def __str__(self) -> str: ...
 
 # Protocol classes
 class RustStep:
