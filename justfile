@@ -4,6 +4,12 @@
 build:
     uv run maturin develop --uv
 
+# Build the HTML documentation
+docs:
+    uv sync --group dev --group docs --no-install-project
+    uv run maturin develop --uv
+    uv run sphinx-build -b html docs docs/_build/html
+
 # Run all tests (Rust + Python)
 test: build test-rust test-python
 

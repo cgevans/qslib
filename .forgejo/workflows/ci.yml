@@ -148,6 +148,33 @@ jobs:
           name: rust-from-python-linux
           token: ${{ secrets.CODECOV_TOKEN }}
 
+  docs:
+    name: Docs build
+    runs-on: docker
+    container:
+      image: docker.io/catthehacker/ubuntu:act-22.04
+      volumes:
+        - qslib-cargo:/cache/cargo
+        - qslib-cargo-target:/cache/cargo-target
+        - qslib-uv:/cache/uv
+    env:
+      CARGO_HOME: /cache/cargo
+      CARGO_TARGET_DIR: /cache/cargo-target
+      UV_CACHE_DIR: /cache/uv
+    steps:
+      - uses: actions/checkout@v4
+      - uses: https://github.com/dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Install uv
+        uses: https://github.com/astral-sh/setup-uv@v7
+      - name: Install just
+        uses: https://github.com/taiki-e/install-action@v2
+        with:
+          tool: just
+      - name: Build documentation
+        run: just docs
+
   linux:
     name: Python Linux builds
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'

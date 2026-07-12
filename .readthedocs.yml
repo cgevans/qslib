@@ -7,6 +7,8 @@ build:
     python: "3.13"
     # Build the extension from source rather than downloading a CI artifact.
     rust: "1.96"
+sphinx:
+  configuration: docs/conf.py
 python:
   install:
     - requirements: docs/requirements.txt
