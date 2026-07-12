@@ -761,8 +761,9 @@ impl StatusLedState {
             args: vec![],
             options: ArgMap::new(),
         };
-        let s = std::str::from_utf8(response)
-            .map_err(|e| OkParseError::UnexpectedValues(empty(), format!("invalid UTF-8: {}", e)))?;
+        let s = std::str::from_utf8(response).map_err(|e| {
+            OkParseError::UnexpectedValues(empty(), format!("invalid UTF-8: {}", e))
+        })?;
         let tokens = shell_words::split(s)
             .map_err(|e| OkParseError::UnexpectedValues(empty(), format!("split error: {}", e)))?;
         Self::from_tokens(&tokens).map_err(|m| OkParseError::UnexpectedValues(empty(), m))
@@ -773,15 +774,19 @@ impl TryFrom<OkResponse> for StatusLedState {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
         let tokens: Vec<String> = value.args.iter().map(|v| v.to_string()).collect();
-        Self::from_tokens(&tokens)
-            .map_err(|m| OkParseError::UnexpectedValues(value.clone(), m))
+        Self::from_tokens(&tokens).map_err(|m| OkParseError::UnexpectedValues(value.clone(), m))
     }
 }
 
 impl std::fmt::Display for StatusLedState {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.color {
-            Some(c) => write!(f, "StatusLedState(color={}, mode={})", c.name(), self.mode.name()),
+            Some(c) => write!(
+                f,
+                "StatusLedState(color={}, mode={})",
+                c.name(),
+                self.mode.name()
+            ),
             None => write!(f, "StatusLedState(color=None, mode={})", self.mode.name()),
         }
     }
@@ -849,11 +854,6 @@ impl StatusLedColor {
         if let Ok(c) = other.extract::<StatusLedColor>() {
             return self == &c;
         }
-        if let Ok(s) = other.extract::<String>() {
-            if let Ok(c) = StatusLedColor::try_from(s.as_str()) {
-                return self == &c;
-            }
-        }
         false
     }
 
@@ -895,11 +895,6 @@ impl StatusLedMode {
         if let Ok(m) = other.extract::<StatusLedMode>() {
             return self == &m;
         }
-        if let Ok(s) = other.extract::<String>() {
-            if let Ok(m) = StatusLedMode::try_from(s.as_str()) {
-                return self == &m;
-            }
-        }
         false
     }
 
@@ -920,10 +915,7 @@ impl StatusLedMode {
 #[pymethods]
 impl StatusLedSet {
     #[new]
-    fn py_new(
-        color: &Bound<'_, pyo3::PyAny>,
-        mode: &Bound<'_, pyo3::PyAny>,
-    ) -> PyResult<Self> {
+    fn py_new(color: &Bound<'_, pyo3::PyAny>, mode: &Bound<'_, pyo3::PyAny>) -> PyResult<Self> {
         Ok(Self {
             color: extract_status_led_color(color)?,
             mode: extract_status_led_mode(mode)?,
@@ -950,8 +942,7 @@ impl StatusLedSet {
 impl StatusLedState {
     #[staticmethod]
     fn from_bytes(response: &[u8]) -> PyResult<Self> {
-        Self::parse(response)
-            .map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
+        Self::parse(response).map_err(|e| pyo3::exceptions::PyValueError::new_err(format!("{}", e)))
     }
 
     #[staticmethod]

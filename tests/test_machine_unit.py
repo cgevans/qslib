@@ -204,6 +204,7 @@ def test_repr():
 def test_status_led_color_from_string():
     assert StatusLedColor("green") == StatusLedColor.Green
     assert StatusLedColor("GREEN") == StatusLedColor.Green
+    assert StatusLedColor.Green != "green"
     assert StatusLedColor.Green.value == "GREEN"
     assert StatusLedColor.Red.number == 1
     assert StatusLedColor.Green.number == 2
@@ -218,6 +219,7 @@ def test_status_led_color_invalid():
 def test_status_led_mode_from_string():
     assert StatusLedMode("on") == StatusLedMode.On
     assert StatusLedMode("BLINK") == StatusLedMode.Blink
+    assert StatusLedMode.On != "on"
     # boolean-normalized forms returned by LED:STATus?
     assert StatusLedMode("true") == StatusLedMode.On
     assert StatusLedMode("false") == StatusLedMode.Off
@@ -228,21 +230,30 @@ def test_status_led_mode_invalid():
         StatusLedMode("flash")
 
 
+def test_status_led_types_obey_hash_contract():
+    color = StatusLedColor("green")
+    mode = StatusLedMode("on")
+    assert {StatusLedColor.Green: "green"}[color] == "green"
+    assert {StatusLedMode.On: "on"}[mode] == "on"
+
+
 def test_status_led_set_command_string():
     assert StatusLedSet("green", "on").command_string() == "LED:GREENON"
     assert StatusLedSet("blue", "blink").command_string() == "LED:BLUEBLINK"
-    assert (
-        StatusLedSet(StatusLedColor.Red, StatusLedMode.Off).command_string()
-        == "LED:REDOFF"
-    )
+    assert StatusLedSet(StatusLedColor.Red, StatusLedMode.Off).command_string() == "LED:REDOFF"
 
 
 def test_status_led_state_command():
     assert StatusLedState.command() == b"LED:STATus?"
 
 
+def test_status_led_state_cannot_be_constructed_directly():
+    with pytest.raises(TypeError):
+        StatusLedState()
+
+
 def test_status_led_state_from_bytes_on():
-    s = StatusLedState.from_bytes(b"BLUE true")
+    s = StatusLedState.from_bytes(response=b"BLUE true")
     assert s.color == StatusLedColor.Blue
     assert s.mode == StatusLedMode.On
 
