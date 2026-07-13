@@ -170,7 +170,10 @@ fn get_command_help(command: &str) -> String {
             <br>\
             Displays the protocol in the same human-readable form as qslib's Python \
             interface: name, sample volume, run mode, default filters, and each stage's \
-            steps with temperatures, durations, cycling, increments, and collection settings.".to_string()
+            steps with temperatures, durations, cycling, increments, and collection settings.<br>\
+            <br>\
+            If a run is in progress, the current stage and step are highlighted and the \
+            current cycle is shown next to the stage.".to_string()
         }
         "power" => {
             "<b>!power &lt;machine&gt; [on|off]</b><br>\
@@ -602,7 +605,8 @@ async fn handle_message(
                     let (conn, _) = x.value();
                     match conn.get_running_protocol().await {
                         Ok(protocol) => {
-                            let (plain, html) = render_protocol(&protocol);
+                            let (cs, ct, cc) = current_run_position(conn).await;
+                            let (plain, html) = render_protocol(&protocol, cs, ct, cc);
                             send_matrix_message_with_plain(&room, &plain, &html, false).await?;
                         }
                         Err(e) => {
@@ -798,13 +802,64 @@ fn html_escape(s: &str) -> String {
 
 /// Render a running protocol into (plain_text, html) bodies for Matrix.
 ///
-/// The plain text is qslib's `Protocol` `Display` output, the same
-/// human-readable form as the Python interface. The HTML wraps that in a
-/// `<pre>` block (escaped) so Matrix clients preserve the indentation.
-fn render_protocol(protocol: &qslib::protocol::Protocol) -> (String, String) {
-    let plain = protocol.to_string();
-    let html = format!("<pre>{}</pre>", html_escape(&plain));
+/// The text is qslib's `Protocol` line rendering, the same human-readable form
+/// as the Python interface. `current_stage`/`current_step`/`current_cycle` are
+/// the machine's 1-based position (from run status); when given, the current
+/// stage and step are highlighted (bold in HTML, `⟵` marker in plain text) and
+/// the current cycle is noted on the stage. Pass `None` for an idle machine.
+///
+/// The HTML wraps the (escaped) content in a `<pre>` block so Matrix clients
+/// preserve the indentation.
+fn render_protocol(
+    protocol: &qslib::protocol::Protocol,
+    current_stage: Option<i64>,
+    current_step: Option<i64>,
+    current_cycle: Option<i64>,
+) -> (String, String) {
+    let lines = protocol.info_lines(current_stage, current_step, current_cycle);
+
+    let mut plain = String::new();
+    let mut html = String::from("<pre>");
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            plain.push('\n');
+            html.push('\n');
+        }
+        if line.current {
+            plain.push_str(&line.text);
+            plain.push_str("  ⟵ current");
+            html.push_str("<b>");
+            html.push_str(&html_escape(&line.text));
+            html.push_str("</b>");
+        } else {
+            plain.push_str(&line.text);
+            html.push_str(&html_escape(&line.text));
+        }
+    }
+    html.push_str("</pre>");
     (plain, html)
+}
+
+/// Query the machine's current run position as 1-based `(stage, step, cycle)`.
+///
+/// Returns `(None, None, None)` when the machine is idle or on any error, so
+/// protocol rendering degrades gracefully to an unmarked listing.
+async fn current_run_position(conn: &Arc<QSConnection>) -> (Option<i64>, Option<i64>, Option<i64>) {
+    let mut query = match QuickStatusQuery.send(conn).await {
+        Ok(q) => q,
+        Err(_) => return (None, None, None),
+    };
+    match query.receive_response().await {
+        Ok(Ok(status)) => match status.runprogress {
+            PossibleRunProgress::Running(rp) => (
+                rp.stage.parse().ok(),
+                rp.step.parse().ok(),
+                rp.cycle.parse().ok(),
+            ),
+            PossibleRunProgress::NotRunning(_) => (None, None, None),
+        },
+        _ => (None, None, None),
+    }
 }
 
 /// Send a message with distinct plain-text and HTML bodies. Used when the HTML
@@ -1162,24 +1217,52 @@ mod tests {
         assert_eq!(html_escape("plain text"), "plain text");
     }
 
+    const MULTI_STAGE: &str = "PROT -volume=25 -runmode=standard qpcr <multiline.protocol>\n\tSTAGE 1 _HOLD <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 120\n\t\t</multiline.step>\n\t</multiline.stage>\n\tSTAGE -repeat=40 2 _CYCLE <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 15\n\t\t</multiline.step>\n\t\tSTEP 2 <multiline.step>\n\t\t\tRAMP 60\n\t\t\tHACFILT x1-m4\n\t\t\tHOLDANDCOLLECT 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";
+
     #[test]
-    fn test_render_protocol_matches_display() {
+    fn test_render_protocol_unmarked_matches_display() {
         let protocol_string = "PROTOCOL -volume=50.0 -runmode=standard test_protocol <multiline.protocol>\n\tSTAGE 1 _HOLD_1 <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 60.0 60.0 60.0 60.0 60.0 60.0\n\t\t\tHOLD 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";
         let cmd = Command::try_from(protocol_string).expect("parse command");
         let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
 
-        let (plain, html) = render_protocol(&protocol);
-
-        // Plain body is exactly qslib's Display output (the Python-style form).
+        // With no current position, the plain body is exactly qslib's Display
+        // output (the Python-style form) and the HTML is just the escaped <pre>.
+        let (plain, html) = render_protocol(&protocol, None, None, None);
         assert_eq!(plain, protocol.to_string());
         assert!(plain.contains("Run Protocol test_protocol"));
         assert!(plain.contains("Stage with 1 cycle"));
 
-        // HTML wraps the escaped Display output in a <pre> block.
         assert!(html.starts_with("<pre>"));
         assert!(html.ends_with("</pre>"));
         assert_eq!(html, format!("<pre>{}</pre>", html_escape(&plain)));
-        // The wrapping <pre> is the only literal markup; inner content is escaped.
+        // No markup other than the wrapping <pre>.
         assert!(!html["<pre>".len()..html.len() - "</pre>".len()].contains('<'));
+    }
+
+    #[test]
+    fn test_render_protocol_highlights_current() {
+        let cmd = Command::try_from(MULTI_STAGE).expect("parse command");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
+
+        // Current position: stage 2, step 2, cycle 12.
+        let (plain, html) = render_protocol(&protocol, Some(2), Some(2), Some(12));
+
+        // Cycle note on the current stage.
+        assert!(plain.contains("cycle 12/40"));
+        // Current step is marked in plain text and bold in HTML.
+        assert!(plain.contains("60.00°C for 60s/cycle (collects x1-m4)  ⟵ current"));
+        assert!(html.contains("<b>"));
+        assert!(html.contains("60.00°C for 60s/cycle (collects x1-m4)</b>"));
+        // Non-current lines are not marked.
+        assert!(!plain.contains("15s/cycle  ⟵"));
+    }
+
+    #[test]
+    fn test_render_protocol_idle_no_marks() {
+        let cmd = Command::try_from(MULTI_STAGE).expect("parse command");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
+        let (plain, html) = render_protocol(&protocol, None, None, None);
+        assert!(!plain.contains("⟵"));
+        assert!(!html.contains("<b>"));
     }
 }

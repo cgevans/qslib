@@ -5,6 +5,7 @@
 ### qs-monitor
 
 - Render `!protocol` output using qslib's `Protocol` `Display` format (matching the Python interface) in a `<pre>` block, instead of the previous minimal per-step summary
+- Highlight the current stage/step in `!protocol` output (bold in HTML, `⟵` marker in plain text) and note the current cycle, using live run status
 - Add MachineState tracking for zone targets, run progress (stage/cycle/step), run name, and plate setup
 - Add `refresh_state()` to query QuickStatus, run name, and plate setup on startup and after every Run message
 - Include zone target temperatures in InfluxDB temperature data points
