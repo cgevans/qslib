@@ -168,7 +168,9 @@ fn get_command_help(command: &str) -> String {
             <b>Example:</b><br>\
             <code>!protocol qs1</code><br>\
             <br>\
-            Displays the protocol name, volume, run mode, and stage structure.".to_string()
+            Displays the protocol in the same human-readable form as qslib's Python \
+            interface: name, sample volume, run mode, default filters, and each stage's \
+            steps with temperatures, durations, cycling, increments, and collection settings.".to_string()
         }
         "power" => {
             "<b>!power &lt;machine&gt; [on|off]</b><br>\
@@ -600,60 +602,8 @@ async fn handle_message(
                     let (conn, _) = x.value();
                     match conn.get_running_protocol().await {
                         Ok(protocol) => {
-                            let mut output = format!(
-                                "<b>Protocol: {}</b><br>\
-                                Volume: {} µL<br>\
-                                Run Mode: {}<br>",
-                                protocol.name, protocol.volume, protocol.runmode
-                            );
-                            if !protocol.filters.is_empty() {
-                                output.push_str(&format!(
-                                    "Default Filters: {}<br>",
-                                    protocol.filters.join(", ")
-                                ));
-                            }
-                            output.push_str("<br><b>Stages:</b><br>");
-                            for (i, stage) in protocol.stages.iter().enumerate() {
-                                output.push_str(&format!(
-                                    "Stage {}: {} (repeat: {})<br>",
-                                    i + 1,
-                                    stage.label.as_ref().unwrap_or(&format!("Stage {}", i + 1)),
-                                    stage.repeat
-                                ));
-                                for (j, stage_step) in stage.steps.iter().enumerate() {
-                                    match stage_step {
-                                        qslib::protocol::StageStep::Standard(step) => {
-                                            let temp_str = if step.temperature.len() == 6
-                                                && step
-                                                    .temperature
-                                                    .iter()
-                                                    .all(|&t| t == step.temperature[0])
-                                            {
-                                                format!("{}°C", step.temperature[0])
-                                            } else {
-                                                format!("{:?}°C", step.temperature)
-                                            };
-                                            output.push_str(&format!(
-                                                "  Step {}: {}s at {}",
-                                                j + 1,
-                                                step.time,
-                                                temp_str
-                                            ));
-                                            if step.collect == Some(true) {
-                                                output.push_str(" (collect)");
-                                            }
-                                            output.push_str("<br>");
-                                        }
-                                        qslib::protocol::StageStep::Custom(_) => {
-                                            output.push_str(&format!(
-                                                "  Step {}: (custom SCPI)<br>",
-                                                j + 1
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            send_matrix_message(&room, &output, false).await?;
+                            let (plain, html) = render_protocol(&protocol);
+                            send_matrix_message_with_plain(&room, &plain, &html, false).await?;
                         }
                         Err(e) => {
                             error!("Error getting protocol: {}", e);
@@ -832,6 +782,40 @@ async fn send_matrix_message(
     important: bool,
 ) -> Result<(), matrix_sdk::Error> {
     let mut content = RoomMessageEventContent::text_html(message, message);
+    if important {
+        content.mentions = Some(Mentions::with_room_mention());
+    }
+    room.send(content).await?;
+    Ok(())
+}
+
+/// Escape a string for inclusion in Matrix HTML message bodies.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Render a running protocol into (plain_text, html) bodies for Matrix.
+///
+/// The plain text is qslib's `Protocol` `Display` output, the same
+/// human-readable form as the Python interface. The HTML wraps that in a
+/// `<pre>` block (escaped) so Matrix clients preserve the indentation.
+fn render_protocol(protocol: &qslib::protocol::Protocol) -> (String, String) {
+    let plain = protocol.to_string();
+    let html = format!("<pre>{}</pre>", html_escape(&plain));
+    (plain, html)
+}
+
+/// Send a message with distinct plain-text and HTML bodies. Used when the HTML
+/// body carries markup (e.g. a `<pre>` block) that would be noise as plain text.
+async fn send_matrix_message_with_plain(
+    room: &Room,
+    plain: &str,
+    html: &str,
+    important: bool,
+) -> Result<(), matrix_sdk::Error> {
+    let mut content = RoomMessageEventContent::text_html(plain, html);
     if important {
         content.mentions = Some(Mentions::with_room_mention());
     }
@@ -1163,5 +1147,39 @@ async fn handle_run_message(name: String, msg: LogMessage, room: &Room) {
             Ok(_) => (),
             Err(e) => error!("Error sending message: {}", e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qslib::parser::Command;
+    use qslib::protocol::Protocol;
+
+    #[test]
+    fn test_html_escape() {
+        assert_eq!(html_escape("a & b <c> \"d\""), "a &amp; b &lt;c&gt; \"d\"");
+        assert_eq!(html_escape("plain text"), "plain text");
+    }
+
+    #[test]
+    fn test_render_protocol_matches_display() {
+        let protocol_string = "PROTOCOL -volume=50.0 -runmode=standard test_protocol <multiline.protocol>\n\tSTAGE 1 _HOLD_1 <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 60.0 60.0 60.0 60.0 60.0 60.0\n\t\t\tHOLD 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";
+        let cmd = Command::try_from(protocol_string).expect("parse command");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
+
+        let (plain, html) = render_protocol(&protocol);
+
+        // Plain body is exactly qslib's Display output (the Python-style form).
+        assert_eq!(plain, protocol.to_string());
+        assert!(plain.contains("Run Protocol test_protocol"));
+        assert!(plain.contains("Stage with 1 cycle"));
+
+        // HTML wraps the escaped Display output in a <pre> block.
+        assert!(html.starts_with("<pre>"));
+        assert!(html.ends_with("</pre>"));
+        assert_eq!(html, format!("<pre>{}</pre>", html_escape(&plain)));
+        // The wrapping <pre> is the only literal markup; inner content is escaped.
+        assert!(!html["<pre>".len()..html.len() - "</pre>".len()].contains('<'));
     }
 }
