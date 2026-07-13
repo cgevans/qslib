@@ -4,6 +4,7 @@
 
 ### qs-monitor
 
+- Show estimated time remaining in `!status` (both the single-machine and all-machines forms) for running machines
 - Render `!protocol` output as proper HTML (nested stage/step lists) with a plain-text fallback matching qslib's Python interface, instead of the previous minimal per-step summary
 - Highlight the current stage/step in `!protocol` output (bold in HTML, `⟵` marker in plain text) and note the current cycle, using live run status
 - Add MachineState tracking for zone targets, run progress (stage/cycle/step), run name, and plate setup

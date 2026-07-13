@@ -105,7 +105,8 @@ fn get_command_help(command: &str) -> String {
             <b>Information shown:</b><br>\
             • Power status (on/off)<br>\
             • Cover heat status and temperature<br>\
-            • Current run progress (if running) or idle status".to_string()
+            • Current run progress (if running) or idle status<br>\
+            • Estimated time remaining (if running)".to_string()
         }
         "command" => {
             "<b>!command &lt;machine&gt; &lt;command&gt;</b><br>\
@@ -262,7 +263,18 @@ async fn handle_message(
                             }
                         };
                         match v {
-                            Ok(v) => send_matrix_message(&room, &v.to_html(), false).await?,
+                            Ok(v) => {
+                                let mut html = v.to_html();
+                                if let PossibleRunProgress::Running(_) = &v.runprogress
+                                    && let Ok(Some(secs)) = conn.get_run_remaining_time().await
+                                {
+                                    html.push_str(&format!(
+                                        "<p>Estimated time remaining: {}</p>",
+                                        format_duration_secs(secs)
+                                    ));
+                                }
+                                send_matrix_message(&room, &html, false).await?
+                            }
                             Err(e) => error!("Error getting status: {}", e),
                         }
                     }
@@ -313,10 +325,22 @@ async fn handle_message(
                                 match v {
                                     Ok(v) => {
                                         let runmsg = match v.runprogress {
-                                            PossibleRunProgress::Running(p) => format!(
-                                                "running {} (stage {}, cycle {}, step {}).",
-                                                p.run_title, p.stage, p.cycle, p.step
-                                            ),
+                                            PossibleRunProgress::Running(p) => {
+                                                let mut s = format!(
+                                                    "running {} (stage {}, cycle {}, step {})",
+                                                    p.run_title, p.stage, p.cycle, p.step
+                                                );
+                                                if let Ok(Some(secs)) =
+                                                    conn.get_run_remaining_time().await
+                                                {
+                                                    s.push_str(&format!(
+                                                        ", ~{} remaining",
+                                                        format_duration_secs(secs)
+                                                    ));
+                                                }
+                                                s.push('.');
+                                                s
+                                            }
                                             PossibleRunProgress::NotRunning(_) => {
                                                 "idle.".to_string()
                                             }
@@ -791,6 +815,30 @@ async fn send_matrix_message(
     }
     room.send(content).await?;
     Ok(())
+}
+
+/// Format a duration in seconds as a compact human string (e.g. `1h23m`,
+/// `45m`, `30s`). Negative values are clamped to zero.
+fn format_duration_secs(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    let h = seconds / 3600;
+    let m = (seconds % 3600) / 60;
+    let s = seconds % 60;
+    if h > 0 {
+        if m > 0 {
+            format!("{}h{}m", h, m)
+        } else {
+            format!("{}h", h)
+        }
+    } else if m > 0 {
+        if s > 0 {
+            format!("{}m{}s", m, s)
+        } else {
+            format!("{}m", m)
+        }
+    } else {
+        format!("{}s", s)
+    }
 }
 
 /// Escape a string for inclusion in Matrix HTML message bodies.
@@ -1275,6 +1323,18 @@ mod tests {
     fn test_html_escape() {
         assert_eq!(html_escape("a & b <c> \"d\""), "a &amp; b &lt;c&gt; \"d\"");
         assert_eq!(html_escape("plain text"), "plain text");
+    }
+
+    #[test]
+    fn test_format_duration_secs() {
+        assert_eq!(format_duration_secs(0), "0s");
+        assert_eq!(format_duration_secs(-5), "0s");
+        assert_eq!(format_duration_secs(45), "45s");
+        assert_eq!(format_duration_secs(60), "1m");
+        assert_eq!(format_duration_secs(90), "1m30s");
+        assert_eq!(format_duration_secs(3600), "1h");
+        assert_eq!(format_duration_secs(3600 + 23 * 60), "1h23m");
+        assert_eq!(format_duration_secs(2 * 3600 + 5), "2h");
     }
 
     const MULTI_STAGE: &str = "PROT -volume=25 -runmode=standard qpcr <multiline.protocol>\n\tSTAGE 1 _HOLD <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 120\n\t\t</multiline.step>\n\t</multiline.stage>\n\tSTAGE -repeat=40 2 _CYCLE <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 15\n\t\t</multiline.step>\n\t\tSTEP 2 <multiline.step>\n\t\t\tRAMP 60\n\t\t\tHACFILT x1-m4\n\t\t\tHOLDANDCOLLECT 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";

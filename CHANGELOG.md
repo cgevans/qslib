@@ -8,6 +8,7 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Unreleased
 
+- Added `QSConnection::get_run_remaining_time` (Rust), querying the machine's estimated remaining run time in seconds.
 - Added `Protocol::info_lines` and `Protocol::view` (Rust) for rendering a protocol with the current stage/step flagged: `info_lines` mirrors the flat `Display` output, `view` returns a structured tree for building custom (e.g. HTML) renderings.
 - Added commands for querying and setting the status led.
 - Moved documentation hosting from Read the Docs to Codeberg Pages, built via Forgejo Actions and served at <https://cge.codeberg.page/qslib/>. The Read the Docs site now redirects there.
