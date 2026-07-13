@@ -1438,6 +1438,44 @@ pub struct ProtocolLine {
     pub current: bool,
 }
 
+/// A structured view of a protocol, for callers that want to build their own
+/// (e.g. HTML) rendering rather than the flat [`Display`](std::fmt::Display) /
+/// [`Protocol::info_lines`] text. Every descriptive string matches the
+/// corresponding piece of the `Display` output.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtocolView {
+    /// The protocol name (e.g. `"qpcr"`).
+    pub name: String,
+    /// Header details, e.g. `["sample volume 25 µL", "run mode standard"]`.
+    pub details: Vec<String>,
+    /// Oxford-joined default filters (e.g. `"x1-m4 and x4-m5"`), if any.
+    pub default_filters: Option<String>,
+    pub stages: Vec<StageView>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StageView {
+    /// 1-based stage number (matches the machine's stage numbering).
+    pub number: i64,
+    /// e.g. `"Stage with 40 cycles (total duration 50m)"` (no cycle note).
+    pub summary: String,
+    /// Whether this is the machine's current stage.
+    pub current: bool,
+    /// e.g. `"cycle 12/40"` when this is the current stage and it repeats.
+    pub cycle: Option<String>,
+    pub steps: Vec<StepView>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct StepView {
+    /// 1-based step number within the stage.
+    pub number: i64,
+    /// e.g. `"95.00°C for 15s/cycle (collects x1-m4)"`.
+    pub text: String,
+    /// Whether this is the machine's current step.
+    pub current: bool,
+}
+
 impl Stage {
     /// Render this stage as lines, mirroring [`Stage::info_str`] exactly when
     /// `stage_current` is false and no position is given. When `stage_current`
@@ -1746,6 +1784,106 @@ impl Protocol {
         }
 
         out
+    }
+
+    /// Build a structured [`ProtocolView`] for custom (e.g. HTML) rendering.
+    ///
+    /// `current_stage`/`current_step`/`current_cycle` are the machine's 1-based
+    /// position, matched the same way as [`Protocol::info_lines`]. The
+    /// descriptive strings match the corresponding pieces of the `Display`
+    /// output. Pass `None` for all three for an idle machine.
+    pub fn view(
+        &self,
+        current_stage: Option<i64>,
+        current_step: Option<i64>,
+        current_cycle: Option<i64>,
+    ) -> ProtocolView {
+        let mut details = Vec::new();
+        if self.volume != 0.0 {
+            details.push(format!("sample volume {} µL", self.volume));
+        }
+        if !self.runmode.is_empty() {
+            details.push(format!("run mode {}", self.runmode));
+        }
+
+        let default_filters = if self.filters.is_empty() {
+            None
+        } else {
+            let filter_strs: Vec<String> = self
+                .filters
+                .iter()
+                .map(|f| filter_to_lowerform(f))
+                .collect();
+            Some(oxford_list(&filter_strs))
+        };
+
+        let stages = self
+            .stages
+            .iter()
+            .enumerate()
+            .map(|(i, stage)| {
+                let number = stage.index.unwrap_or((i + 1) as i64);
+                let stage_current = current_stage == Some(number);
+
+                let adds = if stage.repeat > 1 { "s" } else { "" };
+                let mut summary = format!("Stage with {} cycle{}", stage.repeat, adds);
+                let total_duration: i64 = stage
+                    .steps
+                    .iter()
+                    .map(|s| match s {
+                        StageStep::Standard(s) => s.time * stage.repeat,
+                        StageStep::Custom(_) => 0,
+                    })
+                    .sum();
+                if total_duration > 0 {
+                    summary.push_str(&format!(
+                        " (total duration {})",
+                        format_duration(total_duration)
+                    ));
+                }
+
+                let cycle = if stage_current && stage.repeat > 1 {
+                    current_cycle.map(|c| format!("cycle {}/{}", c, stage.repeat))
+                } else {
+                    None
+                };
+
+                let steps = stage
+                    .steps
+                    .iter()
+                    .enumerate()
+                    .map(|(j, step)| {
+                        let step_number = (j + 1) as i64;
+                        let text = match step {
+                            StageStep::Standard(s) => s.info_str(None, stage.repeat),
+                            StageStep::Custom(cmds) => {
+                                format!("Custom step of {} commands", cmds.len())
+                            }
+                        };
+                        StepView {
+                            number: step_number,
+                            text,
+                            current: stage_current && current_step == Some(step_number),
+                        }
+                    })
+                    .collect();
+
+                StageView {
+                    number,
+                    summary,
+                    current: stage_current,
+                    cycle,
+                    steps,
+                }
+            })
+            .collect();
+
+        ProtocolView {
+            name: self.name.clone(),
+            details,
+            default_filters,
+            stages,
+        }
     }
 
     pub fn from_scpicommand(cmd: &Command) -> Result<Protocol, ProtocolParseError> {
@@ -3444,6 +3582,55 @@ mod tests {
             .info_lines(Some(0), None, None)
             .iter()
             .all(|l| !l.current));
+    }
+
+    #[test]
+    fn test_view() {
+        let multi = "PROT -volume=25 -runmode=standard qpcr <multiline.protocol>\n\tSTAGE 1 _HOLD <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 120\n\t\t</multiline.step>\n\t</multiline.stage>\n\tSTAGE -repeat=40 2 _CYCLE <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 15\n\t\t</multiline.step>\n\t\tSTEP 2 <multiline.step>\n\t\t\tRAMP 60\n\t\t\tHACFILT x1-m4\n\t\t\tHOLDANDCOLLECT 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";
+        let cmd = Command::try_from(multi).expect("parse command");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
+
+        let view = protocol.view(Some(2), Some(2), Some(12));
+        assert_eq!(view.name, "qpcr");
+        assert_eq!(
+            view.details,
+            vec![
+                "sample volume 25 µL".to_string(),
+                "run mode standard".to_string()
+            ]
+        );
+        assert_eq!(view.default_filters, None);
+        assert_eq!(view.stages.len(), 2);
+
+        // Stage 1: not current, single step, no cycle note.
+        let s1 = &view.stages[0];
+        assert_eq!(s1.number, 1);
+        assert_eq!(s1.summary, "Stage with 1 cycle (total duration 120s)");
+        assert!(!s1.current);
+        assert_eq!(s1.cycle, None);
+        assert_eq!(s1.steps.len(), 1);
+        assert_eq!(s1.steps[0].text, "95.00°C for 120s/cycle");
+        assert!(!s1.steps[0].current);
+
+        // Stage 2: current, cycle note, two steps, step 2 current.
+        let s2 = &view.stages[1];
+        assert_eq!(s2.number, 2);
+        assert_eq!(s2.summary, "Stage with 40 cycles (total duration 50m)");
+        assert!(s2.current);
+        assert_eq!(s2.cycle, Some("cycle 12/40".to_string()));
+        assert_eq!(s2.steps.len(), 2);
+        assert_eq!(s2.steps[0].text, "95.00°C for 15s/cycle");
+        assert!(!s2.steps[0].current);
+        assert_eq!(s2.steps[1].text, "60.00°C for 60s/cycle (collects x1-m4)");
+        assert!(s2.steps[1].current);
+
+        // Idle: nothing current, no cycle notes.
+        let idle = protocol.view(None, None, None);
+        assert!(idle.stages.iter().all(|s| !s.current && s.cycle.is_none()));
+        assert!(idle
+            .stages
+            .iter()
+            .all(|s| s.steps.iter().all(|st| !st.current)));
     }
 
     /// Test Ramp with temperature list parsing (comma-separated string)

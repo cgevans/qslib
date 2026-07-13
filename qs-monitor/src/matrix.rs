@@ -802,42 +802,102 @@ fn html_escape(s: &str) -> String {
 
 /// Render a running protocol into (plain_text, html) bodies for Matrix.
 ///
-/// The text is qslib's `Protocol` line rendering, the same human-readable form
-/// as the Python interface. `current_stage`/`current_step`/`current_cycle` are
-/// the machine's 1-based position (from run status); when given, the current
-/// stage and step are highlighted (bold in HTML, `⟵` marker in plain text) and
-/// the current cycle is noted on the stage. Pass `None` for an idle machine.
+/// `current_stage`/`current_step`/`current_cycle` are the machine's 1-based
+/// position (from run status); when given, the current stage and step are
+/// highlighted and the current cycle is noted on the stage. Pass `None` for an
+/// idle machine.
 ///
-/// The HTML wraps the (escaped) content in a `<pre>` block so Matrix clients
-/// preserve the indentation.
+/// The plain body is qslib's flat line rendering (the same human-readable form
+/// as the Python interface), with a `⟵` marker on the current stage/step. The
+/// HTML body is a proper nested list, with the current stage/step in bold.
 fn render_protocol(
     protocol: &qslib::protocol::Protocol,
     current_stage: Option<i64>,
     current_step: Option<i64>,
     current_cycle: Option<i64>,
 ) -> (String, String) {
-    let lines = protocol.info_lines(current_stage, current_step, current_cycle);
-
     let mut plain = String::new();
-    let mut html = String::from("<pre>");
-    for (i, line) in lines.iter().enumerate() {
+    for (i, line) in protocol
+        .info_lines(current_stage, current_step, current_cycle)
+        .iter()
+        .enumerate()
+    {
         if i > 0 {
             plain.push('\n');
-            html.push('\n');
         }
+        plain.push_str(&line.text);
         if line.current {
-            plain.push_str(&line.text);
             plain.push_str("  ⟵ current");
-            html.push_str("<b>");
-            html.push_str(&html_escape(&line.text));
-            html.push_str("</b>");
-        } else {
-            plain.push_str(&line.text);
-            html.push_str(&html_escape(&line.text));
         }
     }
-    html.push_str("</pre>");
+
+    let html = protocol_view_html(&protocol.view(current_stage, current_step, current_cycle));
     (plain, html)
+}
+
+/// Escape `text` and wrap it in `<b>…</b>` when `current`.
+fn html_span(text: &str, current: bool) -> String {
+    let escaped = html_escape(text);
+    if current {
+        format!("<b>{}</b>", escaped)
+    } else {
+        escaped
+    }
+}
+
+/// Render a [`qslib::protocol::ProtocolView`] as a nested HTML list for Matrix.
+///
+/// Stages are an ordered list; a stage with a single step collapses onto its
+/// line, otherwise its steps are a nested ordered list. The current stage and
+/// step are shown in bold.
+fn protocol_view_html(view: &qslib::protocol::ProtocolView) -> String {
+    let mut html = String::new();
+
+    html.push_str("<p><b>Run Protocol ");
+    html.push_str(&html_escape(&view.name));
+    html.push_str("</b>");
+    if !view.details.is_empty() {
+        html.push_str(" — ");
+        html.push_str(&html_escape(&view.details.join(", ")));
+    }
+    html.push_str("</p>");
+
+    if let Some(df) = &view.default_filters {
+        html.push_str("<p><i>Default filters: ");
+        html.push_str(&html_escape(df));
+        html.push_str("</i></p>");
+    }
+
+    html.push_str("<ol>");
+    for stage in &view.stages {
+        html.push_str("<li>");
+
+        let mut head = stage.summary.clone();
+        if let Some(cycle) = &stage.cycle {
+            head.push_str(" — ");
+            head.push_str(cycle);
+        }
+        html.push_str(&html_span(&head, stage.current));
+
+        if stage.steps.len() == 1 {
+            // Collapse a single step onto the stage line.
+            html.push_str(": ");
+            html.push_str(&html_span(&stage.steps[0].text, stage.steps[0].current));
+        } else if !stage.steps.is_empty() {
+            html.push_str("<ol>");
+            for step in &stage.steps {
+                html.push_str("<li>");
+                html.push_str(&html_span(&step.text, step.current));
+                html.push_str("</li>");
+            }
+            html.push_str("</ol>");
+        }
+
+        html.push_str("</li>");
+    }
+    html.push_str("</ol>");
+
+    html
 }
 
 /// Query the machine's current run position as 1-based `(stage, step, cycle)`.
@@ -1220,23 +1280,21 @@ mod tests {
     const MULTI_STAGE: &str = "PROT -volume=25 -runmode=standard qpcr <multiline.protocol>\n\tSTAGE 1 _HOLD <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 120\n\t\t</multiline.step>\n\t</multiline.stage>\n\tSTAGE -repeat=40 2 _CYCLE <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 15\n\t\t</multiline.step>\n\t\tSTEP 2 <multiline.step>\n\t\t\tRAMP 60\n\t\t\tHACFILT x1-m4\n\t\t\tHOLDANDCOLLECT 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";
 
     #[test]
-    fn test_render_protocol_unmarked_matches_display() {
+    fn test_render_protocol_plain_matches_display() {
         let protocol_string = "PROTOCOL -volume=50.0 -runmode=standard test_protocol <multiline.protocol>\n\tSTAGE 1 _HOLD_1 <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 60.0 60.0 60.0 60.0 60.0 60.0\n\t\t\tHOLD 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";
         let cmd = Command::try_from(protocol_string).expect("parse command");
         let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
 
-        // With no current position, the plain body is exactly qslib's Display
-        // output (the Python-style form) and the HTML is just the escaped <pre>.
         let (plain, html) = render_protocol(&protocol, None, None, None);
-        assert_eq!(plain, protocol.to_string());
-        assert!(plain.contains("Run Protocol test_protocol"));
-        assert!(plain.contains("Stage with 1 cycle"));
 
-        assert!(html.starts_with("<pre>"));
-        assert!(html.ends_with("</pre>"));
-        assert_eq!(html, format!("<pre>{}</pre>", html_escape(&plain)));
-        // No markup other than the wrapping <pre>.
-        assert!(!html["<pre>".len()..html.len() - "</pre>".len()].contains('<'));
+        // The plain fallback is exactly qslib's Display output (Python-style).
+        assert_eq!(plain, protocol.to_string());
+
+        // The HTML is a proper nested list, not a <pre> block.
+        assert!(!html.contains("<pre>"));
+        assert!(html.contains("<ol>"));
+        assert!(html.contains("<li>"));
+        assert!(html.contains("<b>Run Protocol test_protocol</b>"));
     }
 
     #[test]
@@ -1247,14 +1305,17 @@ mod tests {
         // Current position: stage 2, step 2, cycle 12.
         let (plain, html) = render_protocol(&protocol, Some(2), Some(2), Some(12));
 
-        // Cycle note on the current stage.
+        // Cycle note on the current stage, in both bodies.
         assert!(plain.contains("cycle 12/40"));
-        // Current step is marked in plain text and bold in HTML.
+        assert!(html.contains("<b>Stage with 40 cycles (total duration 50m) — cycle 12/40</b>"));
+
+        // Current step: marked in plain text, bold in HTML.
         assert!(plain.contains("60.00°C for 60s/cycle (collects x1-m4)  ⟵ current"));
-        assert!(html.contains("<b>"));
-        assert!(html.contains("60.00°C for 60s/cycle (collects x1-m4)</b>"));
-        // Non-current lines are not marked.
+        assert!(html.contains("<b>60.00°C for 60s/cycle (collects x1-m4)</b>"));
+
+        // Non-current step/stage is not marked.
         assert!(!plain.contains("15s/cycle  ⟵"));
+        assert!(!html.contains("<b>95.00°C for 15s/cycle</b>"));
     }
 
     #[test]
@@ -1263,6 +1324,7 @@ mod tests {
         let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
         let (plain, html) = render_protocol(&protocol, None, None, None);
         assert!(!plain.contains("⟵"));
-        assert!(!html.contains("<b>"));
+        // Only the title is bold; no stage or step is highlighted.
+        assert_eq!(html.matches("<b>").count(), 1);
     }
 }
