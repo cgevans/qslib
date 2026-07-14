@@ -18,7 +18,7 @@ All routes require `Authorization: Bearer <token>` unless started with
 
 | Route | Description |
 |-------|-------------|
-| `GET /health` | `{"name","version","uptime_s","scpi_ok"}`; `scpi_ok` is a live TCP probe of the SCPI target. |
+| `GET /health` | `{"name","version","uptime_s","scpi_ok","file_root"}`; `scpi_ok` is a live TCP probe of the SCPI target; `file_root` is the canonicalized `--file-root` (clients use it to serve absolute paths). |
 | `GET`/`HEAD /file/<path…>` | Bulk file off disk under `--file-root`. Supports `Range` (→ `206`), `ETag`, `Last-Modified`, `Accept-Ranges`. Traversal/symlink escape → `403`; missing/dir → `404`. |
 | `POST /scpi` | Run one SCPI command. Body is the raw command or JSON `{"command","access","timeout_ms","encoding"}`; query `?access=&timeout_ms=&encoding=` also accepted. Response headers `X-SCPI-Status`, `X-SCPI-Access`. SCPI command error → `400` + `X-SCPI-Error`; access denied → `403`; timeout → `504`. |
 | `GET /scpi` (`Upgrade: qslib-scpi`) or `CONNECT /scpi` | Streaming SCPI tunnel spliced to `127.0.0.1:7000`. |
@@ -57,7 +57,11 @@ All options have `--help`. Key ones:
 - SCPI access is still governed by the InstrumentServer; qslib-server
   additionally caps elevation at `--max-access`.
 - `/file` is restricted to `--file-root`, canonicalized, with `..`/absolute and
-  symlink escapes rejected.
+  symlink escapes rejected. `ensure_server` deploys with `--file-root=/` so it can
+  serve completed `.eds` files under `/sdcard` as well as the `/data/vendor/IS`
+  experiment tree; qslib-server already runs as root and binds the eth0 link only,
+  so this widens what is *readable* over the trusted cable but not who can reach it.
+  Pass a narrower `file_root=` to `ensure_server` to restrict it.
 - Runs as root (started via `SYST:EXEC`); keep it small and private-interface
   only. Threat model = trusted private cable + admin Windows box.
 
@@ -93,6 +97,7 @@ qslib-server is started on demand, mirroring qslib's dropbear pattern. From Pyth
 
 ```python
 from qslib.machine import Machine
+from qslib.experiment import Experiment
 
 m = Machine("instr-host", password="…", server_token="…")   # server_port defaults to 7500
 m.ensure_server(
@@ -100,6 +105,7 @@ m.ensure_server(
     listen="169.254.217.190:7500",   # the instrument's private eth0 IP
 )
 data = m.read_file("experiments/…/filterdata.zip")   # fast HTTP path, falls back to SCPI
+exp  = Experiment.from_machine_storage(m, "myrun")    # completed .eds pulled over HTTP
 ```
 
 When `server_port` is set (default 7500), `Machine` **auto-connects its SCPI session
@@ -109,6 +115,16 @@ is not reachable, analogous to the automatic SSL/TCP selection. Pass `server_por
 to disable qslib-server entirely. Once connected (or once `ensure_server` confirms it is
 running), `Machine.read_file` prefers qslib-server's HTTP `/file` transfer, falling back
 to `FILE:READ` over SCPI.
+
+`read_file` resolves the SCPI file context/path to an **absolute** on-instrument path
+(via the InstrumentServer `locations.ini` context map) and serves it over HTTP when it
+falls under qslib-server's `--file-root`. So that completed-run `.eds` files (which live
+on `/sdcard/public_run_complete`, a different mount from the `/data/vendor/IS` experiment
+tree) are reachable, **`ensure_server` deploys qslib-server with `--file-root=/` by
+default** — the client learns the root from `/health` and only takes the HTTP path for
+paths under it, falling back to SCPI otherwise. This means `Experiment.from_machine_storage`
+(and `save_run_from_storage`) pull the completed `.eds` over HTTP. Directory reads
+(`Experiment.from_running` / `from_uncollected`, via `EXP:ZIPREAD?`) still use SCPI.
 
 `ensure_server` streams the binary to the instrument in chunks over SCPI
 (gzip + base64 via `SYST:EXEC "echo … | base64 -d"`, size/md5-verified — a

@@ -74,11 +74,14 @@ def server(tmp_path):
 
 
 def test_health(server):
-    client, _ = server
+    client, root = server
     h = client.health()
     assert h["name"] == "qslib-server"
     assert "version" in h
     assert h["scpi_ok"] is False  # no SCPI server behind it
+    # file_root is reported (canonicalized) so clients can serve by abs path.
+    assert Path(h["file_root"]).resolve() == Path(root).resolve()
+    assert Path(client.file_root).resolve() == Path(root).resolve()
 
 
 def test_get_file_bytes(server):
@@ -87,6 +90,19 @@ def test_get_file_bytes(server):
     (root / "sub").mkdir()
     (root / "sub" / "data.bin").write_bytes(data)
     assert client.get_file("sub/data.bin") == data
+
+
+def test_get_abs_file(server):
+    """get_abs_file fetches by absolute path, made relative to file_root."""
+    client, root = server
+    data = b"abs" * 4000
+    (root / "sub").mkdir()
+    (root / "sub" / "a.bin").write_bytes(data)
+    # An absolute path under the (canonical) file_root must resolve and download.
+    assert client.get_abs_file(str(Path(client.file_root) / "sub" / "a.bin")) == data
+    # A path outside the root raises (-> caller falls back to SCPI).
+    with pytest.raises(ServerError):
+        client.get_abs_file("/etc/passwd")
 
 
 def test_get_file_to_dest(server, tmp_path):
@@ -159,7 +175,7 @@ def test_deploy_binary_chunk_roundtrip(monkeypatch):
 
     m = Machine("127.0.0.1", server_port=1)
     data = os.urandom(150_003)  # not a multiple of the chunk size
-    m._deploy_binary("/data/qslib-server", data, file_root="/froot", chunk_chars=40000)
+    m._deploy_binary("/data/qslib-server", data, chunk_chars=40000)
     assert files["/data/qslib-server"] == data
 
 
@@ -180,7 +196,7 @@ def test_deploy_binary_detects_corruption(monkeypatch):
     monkeypatch.setattr(Machine, "read_file", fake_read)
     m = Machine("127.0.0.1", server_port=1)
     with pytest.raises(ServerError):
-        m._deploy_binary("/data/qslib-server", os.urandom(1000), file_root="/froot")
+        m._deploy_binary("/data/qslib-server", os.urandom(1000))
 
 
 def test_ensure_server_rejects_unsafe_exec_values():
@@ -202,15 +218,15 @@ def test_ensure_server_rejects_unsafe_exec_values():
         )
 
 
-def _machine_with_fake_server(monkeypatch, *, get_file):
+def _machine_with_fake_server(monkeypatch, *, get_abs_file):
     """A non-connecting Machine whose ``server`` is a stub with the given
-    ``get_file`` callable."""
+    ``get_abs_file(abspath)`` callable."""
     from qslib.machine import Machine
     from qslib import server as server_mod
 
     class FakeServer:
-        def get_file(self, path):
-            return get_file(path)
+        def get_abs_file(self, abspath):
+            return get_abs_file(abspath)
 
     m = Machine("127.0.0.1", automatic=False, server_port=7500)
     monkeypatch.setattr(type(m), "server", property(lambda self: FakeServer()))
@@ -218,27 +234,49 @@ def _machine_with_fake_server(monkeypatch, *, get_file):
 
 
 def test_read_file_prefers_server(monkeypatch):
-    """When connected to qslib-server, read_file uses HTTP, not SCPI."""
-    m, _ = _machine_with_fake_server(monkeypatch, get_file=lambda path: b"http:" + path.encode())
+    """When connected to qslib-server, read_file resolves the default FILE
+    context to an absolute path and fetches it over HTTP, not SCPI."""
+    m, _ = _machine_with_fake_server(monkeypatch, get_abs_file=lambda abspath: b"http:" + abspath.encode())
     m._prefer_server_files = True
 
     def boom(self, command):
         raise AssertionError("SCPI must not be used when qslib-server is preferred")
 
     monkeypatch.setattr(type(m), "run_command_to_bytes", boom)
-    assert m.read_file("some/file.bin") == b"http:some/file.bin"
+    # default FILE context roots at /data/vendor/IS
+    assert m.read_file("experiments/run/f.bin") == b"http:/data/vendor/IS/experiments/run/f.bin"
+
+
+def test_read_file_public_run_complete_uses_server(monkeypatch):
+    """The public_run_complete context (completed .eds, on /sdcard) resolves to
+    its /sdcard absolute path and is fetched over HTTP."""
+    seen = {}
+
+    def grab(abspath):
+        seen["abspath"] = abspath
+        return b"eds-bytes"
+
+    m, _ = _machine_with_fake_server(monkeypatch, get_abs_file=grab)
+    m._prefer_server_files = True
+
+    def boom(self, command):
+        raise AssertionError("SCPI must not be used when qslib-server is preferred")
+
+    monkeypatch.setattr(type(m), "run_command_to_bytes", boom)
+    assert m.read_file("myrun.eds", context="public_run_complete") == b"eds-bytes"
+    assert seen["abspath"] == "/sdcard/public_run_complete/myrun.eds"
 
 
 def test_read_file_falls_back_to_scpi_on_server_error(monkeypatch):
     """A qslib-server error falls back to the SCPI path when fallback=True."""
     import base64
 
-    def raising(path):
+    def raising(abspath):
         from qslib.server import ServerError
 
         raise ServerError("boom", status=500)
 
-    m, _ = _machine_with_fake_server(monkeypatch, get_file=raising)
+    m, _ = _machine_with_fake_server(monkeypatch, get_abs_file=raising)
     m._prefer_server_files = True
 
     def fake_scpi(self, command):
@@ -252,10 +290,10 @@ def test_read_file_uses_scpi_when_not_connected_via_server(monkeypatch):
     """Without a qslib-server connection, read_file uses SCPI and never HTTP."""
     import base64
 
-    def boom(path):
+    def boom(abspath):
         raise AssertionError("HTTP must not be used when qslib-server is not preferred")
 
-    m, _ = _machine_with_fake_server(monkeypatch, get_file=boom)
+    m, _ = _machine_with_fake_server(monkeypatch, get_abs_file=boom)
     m._prefer_server_files = False
 
     monkeypatch.setattr(
@@ -264,20 +302,21 @@ def test_read_file_uses_scpi_when_not_connected_via_server(monkeypatch):
     assert m.read_file("f.bin") == b"x"
 
 
-def test_read_file_nondefault_context_uses_scpi(monkeypatch):
-    """A non-default context forces SCPI even when qslib-server is preferred."""
+def test_read_file_unknown_context_uses_scpi(monkeypatch):
+    """An unrecognised context (not in the locations map) forces SCPI even when
+    qslib-server is preferred."""
     import base64
 
-    def boom(path):
-        raise AssertionError("HTTP path must not handle a non-default context")
+    def boom(abspath):
+        raise AssertionError("HTTP path must not handle an unknown context")
 
-    m, _ = _machine_with_fake_server(monkeypatch, get_file=boom)
+    m, _ = _machine_with_fake_server(monkeypatch, get_abs_file=boom)
     m._prefer_server_files = True
 
     monkeypatch.setattr(
         type(m), "run_command_to_bytes", lambda self, c: b"<quote>\n" + base64.b64encode(b"y") + b"</quote>"
     )
-    assert m.read_file("f.bin", context="public_run_complete") == b"y"
+    assert m.read_file("f.bin", context="usbdrive") == b"y"
 
 
 def test_auth_required(tmp_path):

@@ -18,11 +18,12 @@ not running.
 from __future__ import annotations
 
 import json
+import posixpath
 import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import IO, Any, BinaryIO
 
@@ -59,10 +60,43 @@ class ServerClient:
     port: int = 7500
     token: str | None = None
     timeout: float = 30.0
+    _file_root: str | None = field(default=None, init=False, repr=False, compare=False)
+    _file_root_fetched: bool = field(default=False, init=False, repr=False, compare=False)
 
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
+
+    @property
+    def file_root(self) -> str | None:
+        """qslib-server's canonicalized ``--file-root``, from ``/health`` (cached).
+
+        ``None`` if qslib-server is unreachable or predates the ``file_root``
+        field in ``/health``.
+        """
+        if not self._file_root_fetched:
+            try:
+                self._file_root = self.health().get("file_root")
+            except ServerError:
+                self._file_root = None
+            self._file_root_fetched = True
+        return self._file_root
+
+    def _rel_to_root(self, abspath: str) -> str | None:
+        """Return ``abspath`` made relative to :attr:`file_root`, or ``None`` if
+        it is not under the root (so the caller falls back to SCPI)."""
+        root = self.file_root
+        if root is None:
+            return None
+        root = root.rstrip("/")
+        ap = posixpath.normpath(abspath)
+        if root == "":  # file_root is "/"
+            return ap.lstrip("/")
+        if ap == root:
+            return ""
+        if ap.startswith(root + "/"):
+            return ap[len(root) + 1 :]
+        return None
 
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
         headers: dict[str, str] = {}
@@ -138,6 +172,23 @@ class ServerClient:
                 out: IO[bytes] = dest
                 shutil.copyfileobj(resp, out, chunk_size)
             return None
+
+    def get_abs_file(
+        self,
+        abspath: str,
+        dest: str | Path | BinaryIO | None = None,
+        chunk_size: int = 1 << 20,
+    ) -> bytes | None:
+        """Fetch a file by its absolute on-instrument path.
+
+        The path is made relative to qslib-server's :attr:`file_root` and served
+        via :meth:`get_file`. Raises :class:`ServerError` if the path is not
+        under the root (so callers fall back to SCPI).
+        """
+        rel = self._rel_to_root(abspath)
+        if rel is None:
+            raise ServerError(f"{abspath!r} is not under qslib-server file root {self.file_root!r}")
+        return self.get_file(rel, dest=dest, chunk_size=chunk_size)
 
     def scpi(
         self,

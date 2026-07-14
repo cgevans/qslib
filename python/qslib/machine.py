@@ -51,6 +51,47 @@ from ._qslib import (  # noqa: E402
     StatusLedState,
 )
 
+import posixpath
+
+# InstrumentServer SCPI file "context" -> absolute on-instrument directory, from
+# ``Config/locations.ini`` (byte-identical across InstrumentServer 132/151/161).
+# Used to turn a FILE-branch locator into an absolute path that qslib-server can
+# serve raw over HTTP. Keys are lowercase (SCPI context names are matched
+# case-insensitively); ``None``/``""`` is the default context. Contexts not
+# listed here fall back to SCPI.
+_SCPI_CONTEXT_ROOTS: dict[str | None, str] = {
+    None: "/data/vendor/IS",
+    "": "/data/vendor/IS",
+    "file": "/data/vendor/IS",
+    "default": "/data/vendor/IS",
+    "experiments": "/data/vendor/IS/experiments",
+    "runs": "/data/vendor/IS/runs",
+    "logs": "/data/vendor/IS/logs",
+    "templates": "/data/vendor/IS/templates",
+    "calibrations": "/data/vendor/IS/calibrations",
+    "public_run_complete": "/sdcard/public_run_complete",
+    "private_run_complete": "/sdcard/private_run_complete",
+}
+
+
+def _scpi_locator_abspath(locator: str) -> str | None:
+    """Resolve a FILE-branch locator (``"[context:]relpath"``) to an absolute
+    on-instrument path, mirroring the InstrumentServer's ``getPath``.
+
+    Returns ``None`` if the context is not a known root (so the caller uses
+    SCPI). Traversal (``.``/``..``) components are dropped, as the server does.
+    """
+    if ":" in locator:
+        ctx, rel = locator.split(":", 1)
+        key: str | None = ctx.lower()
+    else:
+        key, rel = None, locator
+    base = _SCPI_CONTEXT_ROOTS.get(key)
+    if base is None:
+        return None
+    parts = [p for p in rel.replace("\\", "/").split("/") if p not in ("", ".", "..")]
+    return posixpath.join(base, *parts) if parts else base
+
 
 class FileListInfo(TypedDict, total=False):
     """Information about a file when verbose=True"""
@@ -616,20 +657,21 @@ class Machine:
         ``FILE:READ`` over SCPI. Otherwise, or on any qslib-server error when
         ``fallback`` is true, it is read over SCPI.
 
-        The HTTP path is only used for the default ``context``/``leaf`` (a
-        filesystem read under qslib-server's ``--file-root``, assumed to align
-        with the SCPI ``FILE`` context root); a non-default ``context`` or
-        ``leaf`` always uses SCPI, since qslib-server addresses files by
-        filesystem path rather than SCPI context/leaf.
+        The HTTP path resolves ``(context, path)`` to an absolute on-instrument
+        path (via the InstrumentServer ``locations.ini`` context map) and fetches
+        it from qslib-server if it falls under qslib-server's ``--file-root``.
+        This covers the default ``FILE`` context and known contexts such as
+        ``public_run_complete`` (completed ``.eds`` files). An unknown context, a
+        non-``FILE`` leaf, or a path outside the served root falls back to SCPI.
 
         Parameters
         ----------
         path : str
             File path on the machine.
         context : str | None (default None)
-            SCPI file context. A non-default context forces the SCPI path.
+            SCPI file context. An unrecognised context forces the SCPI path.
         leaf : str (default FILE)
-            SCPI file leaf. A non-default leaf forces the SCPI path.
+            SCPI file leaf. A non-``FILE`` leaf forces the SCPI path.
         encoding : "base64" | "plain" (default base64)
             SCPI transfer encoding (ignored on the HTTP path).
         fast : bool (default True)
@@ -642,10 +684,19 @@ class Machine:
         bytes
             returned file
         """
-        server = self.server if (fast and not context and leaf == "FILE" and self._prefer_server_files) else None
+        if not context:
+            contexts = ""
+        elif context[-1] == ":":
+            contexts = context
+        else:
+            contexts = context + ":"
+
+        abspath = _scpi_locator_abspath(contexts + path) if leaf == "FILE" else None
+        server = self.server if (fast and self._prefer_server_files and abspath is not None) else None
         if server is not None:
+            assert abspath is not None
             try:
-                data = server.get_file(path)
+                data = server.get_abs_file(abspath)
                 assert data is not None
                 return data
             except ServerError:
@@ -653,12 +704,6 @@ class Machine:
                 if not fallback:
                     raise
 
-        if not context:
-            contexts = ""
-        elif context[-1] == ":":
-            contexts = context
-        else:
-            contexts = context + ":"
         reply = self.run_command_to_bytes(SCPICommand(f"{leaf}:READ?", contexts + path, encoding=encoding))
         if not reply.startswith(b"<quote>\n") or not reply.endswith(b"</quote>"):
             raise ValueError("Unexpected reply format: expected <quote>...</quote>")
@@ -687,7 +732,7 @@ class Machine:
         *,
         listen: str,
         remote_path: str = "/data/qslib-server",
-        file_root: str = "/data/vendor/IS",
+        file_root: str = "/",
         extra_args: tuple[str, ...] = (),
         timeout: float = 5.0,
     ) -> ServerClient:
@@ -715,7 +760,10 @@ class Machine:
         remote_path
             Persistent path to install the binary to on the instrument.
         file_root
-            ``--file-root`` for qslib-server.
+            ``--file-root`` for qslib-server (default ``"/"``, so it can serve
+            completed ``.eds`` files under ``/sdcard`` as well as experiment
+            data under ``/data/vendor/IS``). qslib-server binds the private eth0
+            IP only, so this is exposed solely on the trusted local cable.
         extra_args
             Additional qslib-server CLI arguments.
 
@@ -772,7 +820,7 @@ class Machine:
 
         # SYST:EXEC needs Controller; hold it for the whole deploy + launch.
         with self.ensured_connection(AccessLevel.Controller):
-            self._deploy_binary(remote_path, data, file_root=file_root)
+            self._deploy_binary(remote_path, data)
             self.run_command(f'SYST:EXEC "chmod 755 {shlex.quote(remote_path)}"')
             # nohup so qslib-server survives the SYST:EXEC shell exiting.
             self.run_command(f'SYST:EXEC "nohup {cmdline} >/dev/null 2>&1 &"')
@@ -792,7 +840,6 @@ class Machine:
         remote_path: str,
         data: bytes,
         *,
-        file_root: str,
         chunk_chars: int = 40000,
     ) -> None:
         """Transfer ``data`` to ``remote_path`` on the instrument over SCPI.
@@ -805,9 +852,9 @@ class Machine:
         InstrumentServer builds a single large ``FILE:WRITE`` times out; the
         SCPI command-size limit is only tens of KB, so the payload is chunked
         below that. Requires Controller access (caller supplies it) and
-        ``gunzip``/``base64`` on the instrument. ``file_root`` must be the
-        instrument's FILE-namespace root so the verification scratch file can be
-        read back.
+        ``gunzip``/``base64`` on the instrument. The verification scratch file is
+        written under the default SCPI ``FILE`` context root so it can be read
+        back over SCPI regardless of qslib-server's ``--file-root``.
         """
         gz = gzip.compress(data, 9)
         b64 = base64.b64encode(gz).decode()  # only [A-Za-z0-9+/=], SCPI/shell-safe
@@ -823,7 +870,9 @@ class Machine:
         self.run_command(f'SYST:EXEC "gunzip -f {gzq}"')
 
         # Verify: size is universal; md5 only if md5sum exists on the device.
-        check = file_root.rstrip("/") + "/.qslib_deploy_check"
+        # Scratch under the default FILE context root so the read-back below
+        # (default context) resolves to the same file, independent of --file-root.
+        check = _SCPI_CONTEXT_ROOTS[None].rstrip("/") + "/.qslib_deploy_check"
         self.run_command(f'SYST:EXEC "( wc -c {q}; md5sum {q} ) > {shlex.quote(check)} 2>/dev/null"')
         # Force SCPI: qslib-server is being deployed, so it is not yet serving.
         raw = self.read_file(".qslib_deploy_check", fast=False).decode(errors="replace")

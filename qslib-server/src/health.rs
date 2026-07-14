@@ -15,6 +15,10 @@ pub struct Health {
     version: &'static str,
     uptime_s: u64,
     scpi_ok: bool,
+    /// Canonicalized `--file-root`. Clients use it to decide whether an
+    /// absolute filesystem path is reachable over `/file` (and how to make it
+    /// root-relative) before falling back to SCPI.
+    file_root: String,
 }
 
 /// Probe the SCPI target with a short-timeout TCP connect.
@@ -31,5 +35,6 @@ pub async fn health(State(state): State<AppState>) -> Json<Health> {
         version: env!("CARGO_PKG_VERSION"),
         uptime_s: state.started.elapsed().as_secs(),
         scpi_ok: probe_scpi(&state).await,
+        file_root: state.file_root.to_string_lossy().into_owned(),
     })
 }
