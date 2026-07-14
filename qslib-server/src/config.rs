@@ -57,8 +57,9 @@ pub struct Config {
     #[arg(long, env = "QSLIB_SERVER_SCPI_PASSWORD", hide_env_values = true)]
     pub scpi_password: Option<String>,
 
-    /// Optional warm-connection pool size for `/scpi` (0 = connect per
-    /// request, the default and recommended mode).
+    /// Reserved: warm-connection pool size for `/scpi`. Not yet implemented;
+    /// `/scpi` uses connect-per-request (0 = default). A non-zero value is
+    /// accepted but ignored (with a warning).
     #[arg(long, default_value_t = 0)]
     pub pool_size: usize,
 
@@ -69,6 +70,11 @@ pub struct Config {
     /// Default per-request SCPI timeout, in milliseconds.
     #[arg(long, default_value_t = 30_000)]
     pub scpi_timeout_ms: u64,
+
+    /// Maximum number of concurrent SCPI tunnels. Bounds how many localhost
+    /// SCPI connections abandoned/idle tunnels can pin open.
+    #[arg(long, default_value_t = 16)]
+    pub max_tunnels: usize,
 }
 
 fn parse_access_level(s: &str) -> Result<AccessLevel, String> {

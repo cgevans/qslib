@@ -112,6 +112,25 @@ def test_get_file_traversal_blocked(agent):
     assert exc.value.status in (403, 404)
 
 
+def test_ensure_agent_rejects_unsafe_exec_values():
+    """ensure_agent must reject values that would break out of the SCPI
+    SYST:EXEC string or trigger SCPI/shell substitution."""
+    from qslib.machine import Machine
+
+    m = Machine("127.0.0.1", agent_port=_free_port())
+    with pytest.raises(ValueError):
+        m.ensure_agent(binary=b"stub", listen="1.2.3.4:8770", remote_path='/data/x"; rm -rf /')
+    with pytest.raises(ValueError):
+        m.ensure_agent(binary=b"stub", listen="$(reboot)", remote_path="/data/qslib-server")
+    with pytest.raises(ValueError):
+        m.ensure_agent(
+            binary=b"stub",
+            listen="1.2.3.4:8770",
+            remote_path="/data/qslib-server",
+            extra_args=("--log", "`touch /tmp/pwned`"),
+        )
+
+
 def test_auth_required(tmp_path):
     if not BINARY.exists():
         pytest.skip("agent binary not built")

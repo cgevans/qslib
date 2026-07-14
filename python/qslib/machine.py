@@ -612,9 +612,12 @@ class Machine:
         when ``fallback=True``, it falls back to :meth:`read_file`.
 
         ``path`` is interpreted relative to the agent's ``--file-root`` (assumed
-        to align with the SCPI ``FILE`` context root on the instrument).
+        to align with the SCPI ``FILE`` context root on the instrument). The
+        fast agent path is only used for the default ``context``/``leaf``; a
+        non-default context or leaf always uses SCPI, since the agent addresses
+        files by filesystem path rather than SCPI context/leaf.
         """
-        agent = self.agent if fast else None
+        agent = self.agent if (fast and context is None and leaf == "FILE") else None
         if agent is not None:
             try:
                 data = agent.get_file(path)
@@ -680,9 +683,33 @@ class Machine:
         if binary is None:
             raise AgentError("agent is not running and no `binary` was provided to deploy")
 
+        # The SYST:EXEC argument is a SCPI double-quoted string that the
+        # instrument also passes to a shell and that performs SCPI `$(...)`
+        # substitution. shlex.quote neutralises the shell layer for each argv
+        # element, but characters that break the outer SCPI string or trigger
+        # SCPI substitution must be rejected outright.
+        unsafe = set('"\\`$\n\r')
+
+        def _safe(name: str, value: str) -> str:
+            bad = unsafe & set(value)
+            if bad:
+                raise ValueError(
+                    f"ensure_agent {name} contains characters unsafe for SYST:EXEC "
+                    f"({''.join(sorted(bad))!r}): {value!r}"
+                )
+            return value
+
+        _safe("remote_path", remote_path)
+        _safe("listen", listen)
+        _safe("file_root", file_root)
+        if self.agent_token:
+            _safe("agent_token", self.agent_token)
+        for a in extra_args:
+            _safe("extra_arg", a)
+
         data = Path(binary).read_bytes() if isinstance(binary, str) else binary
         self.write_file(remote_path, data)
-        self.run_command(f'SYST:EXEC "chmod 755 {remote_path}"')
+        self.run_command(f'SYST:EXEC "chmod 755 {shlex.quote(remote_path)}"')
 
         args = [remote_path, "--listen", listen, "--file-root", file_root]
         args += ["--token", self.agent_token] if self.agent_token else ["--no-auth"]

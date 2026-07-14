@@ -26,6 +26,8 @@ pub struct AppStateInner {
     pub scpi_password: Option<String>,
     pub scpi_timeout_ms: u64,
     pub started: Instant,
+    /// Bounds concurrent SCPI tunnels.
+    pub tunnels: Arc<tokio::sync::Semaphore>,
 }
 
 impl AppState {
@@ -48,6 +50,7 @@ impl AppState {
             scpi_password: config.scpi_password.clone(),
             scpi_timeout_ms: config.scpi_timeout_ms,
             started: Instant::now(),
+            tunnels: Arc::new(tokio::sync::Semaphore::new(config.max_tunnels.max(1))),
         })))
     }
 }

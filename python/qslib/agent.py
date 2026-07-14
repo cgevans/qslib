@@ -91,7 +91,13 @@ class AgentClient:
         """Return the agent's ``/health`` document."""
         req = urllib.request.Request(f"{self.base_url}/health", headers=self._headers(), method="GET")
         with self._open(req) as resp:
-            return json.loads(resp.read().decode())
+            raw = resp.read()
+        try:
+            return json.loads(raw.decode())
+        except (ValueError, UnicodeDecodeError) as e:
+            # Not the agent (or a proxy error page): surface as AgentError so
+            # available()/ensure_agent degrade gracefully rather than raising.
+            raise AgentError("agent /health returned a non-JSON body") from e
 
     def available(self) -> bool:
         """Return True if the agent responds to ``/health`` (and SCPI is up)."""

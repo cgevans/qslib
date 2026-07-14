@@ -108,6 +108,7 @@ fn test_config(scpi: SocketAddr, root: PathBuf, token: Option<String>) -> Config
         pool_size: 0,
         log: None,
         scpi_timeout_ms: 5000,
+        max_tunnels: 16,
     }
 }
 
@@ -300,6 +301,20 @@ async fn scpi_oneshot_command_error() {
         .unwrap();
     assert_eq!(resp.status(), 400);
     assert!(resp.headers().contains_key("x-scpi-error"));
+}
+
+#[tokio::test]
+async fn scpi_rejects_newline_injection() {
+    let (addr, _dir) = setup(None).await;
+    for body in ["SYST:VERS?\nACC Controller", "RUNTitle?\r\nPOW OFF"] {
+        let resp = client()
+            .post(format!("http://{addr}/scpi"))
+            .body(body)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 400, "body {body:?} should be rejected");
+    }
 }
 
 #[tokio::test]

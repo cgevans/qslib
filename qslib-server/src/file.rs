@@ -150,9 +150,20 @@ pub async fn serve_file(
     let meta = tokio::fs::metadata(&path)
         .await
         .map_err(|_| AgentError::not_found("file not found"))?;
-    if meta.is_dir() {
-        return Err(AgentError::not_found("path is a directory"));
+    // Only serve regular files. Directories, FIFOs, sockets, and device nodes
+    // are rejected: opening a FIFO read-only would block a blocking-pool thread
+    // indefinitely, and device nodes have no meaningful length.
+    if !meta.is_file() {
+        return Err(AgentError::not_found("not a regular file"));
     }
+    // Note on TOCTOU: `resolve_under_root` canonicalizes and confirms the path
+    // is under the root, but `metadata`/`open` below re-access it by path and
+    // follow symlinks, so a local writer racing a symlink swap on a path
+    // component could still escape the root. A race-free fix needs
+    // openat2(RESOLVE_BENEATH), which the instrument kernel (3.0.35) lacks. The
+    // deployment threat model (isolated link-local cable, no untrusted local
+    // users, read-only remote surface) makes this acceptable; revisit if the
+    // agent is ever exposed to a host with untrusted local accounts.
     let size = meta.len();
     let modified = meta.modified().ok();
 

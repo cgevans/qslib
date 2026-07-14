@@ -37,6 +37,15 @@ pub async fn tunnel(
         }
     }
 
+    // Bound concurrent tunnels so idle/abandoned ones cannot exhaust the
+    // instrument's SCPI connection capacity. The permit is held for the whole
+    // tunnel lifetime and released when the splice ends.
+    let permit = state
+        .tunnels
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| AgentError::unavailable("too many concurrent SCPI tunnels"))?;
+
     // Fail fast if the SCPI server is unreachable, before upgrading.
     let upstream = TcpStream::connect(state.scpi_target).await.map_err(|e| {
         AgentError::unavailable(format!(
@@ -48,6 +57,7 @@ pub async fn tunnel(
     let on_upgrade = hyper::upgrade::on(&mut req);
     let target = state.scpi_target;
     tokio::spawn(async move {
+        let _permit = permit; // released when this task ends
         match on_upgrade.await {
             Ok(upgraded) => {
                 let mut client = TokioIo::new(upgraded);

@@ -73,6 +73,17 @@ pub async fn post_scpi(
     if command.is_empty() {
         return Err(AgentError::bad_request("empty SCPI command"));
     }
+    // A one-shot command is a single line: the connection frames it with a
+    // trailing newline and reads exactly one response. An interior newline
+    // would inject a second, unmonitored command onto the already-elevated
+    // loopback connection (bypassing the --max-access cap) and desync the
+    // response stream. Reject them; multi-command / multiline-quoted sessions
+    // must use the streaming tunnel.
+    if command.contains(['\n', '\r']) {
+        return Err(AgentError::bad_request(
+            "SCPI command must be a single line (no CR/LF); use the /scpi tunnel for multi-command or multiline sessions",
+        ));
+    }
 
     let access = match access_str {
         Some(s) => parse_access(&s)?,

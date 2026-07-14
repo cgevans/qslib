@@ -15,6 +15,13 @@ fn main() -> anyhow::Result<()> {
     if token.is_none() {
         warn!("authentication is DISABLED (--no-auth); serving without a bearer token");
     }
+    if config.pool_size != 0 {
+        warn!(
+            "--pool-size {} ignored: the warm connection pool is not yet implemented; \
+             /scpi uses connect-per-request",
+            config.pool_size
+        );
+    }
     let state = AppState::new(&config, token)?;
 
     let runtime = tokio::runtime::Builder::new_multi_thread()
