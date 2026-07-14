@@ -26,11 +26,11 @@ All routes require `Authorization: Bearer <token>` unless started with
 ```bash
 # bulk pull with resume
 curl -H "Authorization: Bearer $TOK" -r 0- \
-     'http://instr:8770/file/experiments/2026-07-13_run/apldbio/sds/filterdata.zip' -o out.zip
+     'http://instr:7500/file/experiments/2026-07-13_run/apldbio/sds/filterdata.zip' -o out.zip
 
 # one-shot SCPI at an access level
 curl -H "Authorization: Bearer $TOK" --data 'RUNTitle?' \
-     'http://instr:8770/scpi?access=Observer'
+     'http://instr:7500/scpi?access=Observer'
 ```
 
 ## Configuration
@@ -39,7 +39,7 @@ All options have `--help`. Key ones:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--listen` | `127.0.0.1:8770` | Bind address — **use the private eth0 IP only**, never `0.0.0.0`. |
+| `--listen` | `127.0.0.1:7500` | Bind address — **use the private eth0 IP only**, never `0.0.0.0`. |
 | `--scpi-target` | `127.0.0.1:7000` | Localhost plaintext SCPI endpoint. |
 | `--file-root` | `/data/vendor/IS` | Root for `/file`; requests cannot escape it. |
 | `--default-access` / `--max-access` | `Observer` / `Controller` | Default and hard-capped SCPI access levels. |
@@ -94,10 +94,10 @@ The agent is started on demand, mirroring qslib's dropbear pattern. From Python:
 ```python
 from qslib.machine import Machine
 
-m = Machine("instr-host", password="…", agent_port=8770, agent_token="…")
+m = Machine("instr-host", password="…", agent_port=7500, agent_token="…")
 m.ensure_agent(
     binary="target/armv7-unknown-linux-musleabihf/min-size/qslib-server",
-    listen="169.254.217.190:8770",   # the instrument's private eth0 IP
+    listen="169.254.217.190:7500",   # the instrument's private eth0 IP
 )
 data = m.get_file("experiments/…/filterdata.zip")   # fast path, falls back to SCPI
 ```
@@ -111,7 +111,7 @@ if the port is already taken.
 
 The agent's HTTP port must be reachable from the client — on the QuantStudio
 fleet the Windows box that fronts each instrument forwards it, e.g. socat
-`TCP-LISTEN:8770,bind=<lab-ip> → TCP:169.254.x.x:8770` (plaintext is fine behind
+`TCP-LISTEN:7500,bind=<lab-ip> → TCP:169.254.x.x:7500` (plaintext is fine behind
 the mesh VPN), persisted the same way as the existing `:7443` SCPI forwards.
 
 ## Windows box

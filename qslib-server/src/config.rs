@@ -16,9 +16,9 @@ use qslib_core::commands::AccessLevel;
 #[derive(Debug, Clone, Parser)]
 #[command(name = "qslib-server", version, about)]
 pub struct Config {
-    /// Address to bind, e.g. `169.254.217.190:8770`. Bind the private eth0 IP
+    /// Address to bind, e.g. `169.254.217.190:7500`. Bind the private eth0 IP
     /// only, never `0.0.0.0`.
-    #[arg(long, default_value = "127.0.0.1:8770")]
+    #[arg(long, default_value = "127.0.0.1:7500")]
     pub listen: SocketAddr,
 
     /// Localhost plaintext SCPI endpoint of the InstrumentServer.

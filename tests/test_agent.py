@@ -190,13 +190,13 @@ def test_ensure_agent_rejects_unsafe_exec_values():
 
     m = Machine("127.0.0.1", agent_port=_free_port())
     with pytest.raises(ValueError):
-        m.ensure_agent(binary=b"stub", listen="1.2.3.4:8770", remote_path='/data/x"; rm -rf /')
+        m.ensure_agent(binary=b"stub", listen="1.2.3.4:7500", remote_path='/data/x"; rm -rf /')
     with pytest.raises(ValueError):
         m.ensure_agent(binary=b"stub", listen="$(reboot)", remote_path="/data/qslib-server")
     with pytest.raises(ValueError):
         m.ensure_agent(
             binary=b"stub",
-            listen="1.2.3.4:8770",
+            listen="1.2.3.4:7500",
             remote_path="/data/qslib-server",
             extra_args=("--log", "`touch /tmp/pwned`"),
         )

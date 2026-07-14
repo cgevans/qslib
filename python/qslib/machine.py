@@ -656,7 +656,7 @@ class Machine:
             Path to, or bytes of, the agent binary to deploy. Required only if
             the agent is not already running.
         listen
-            The instrument-side bind address, e.g. ``"169.254.217.190:8770"``.
+            The instrument-side bind address, e.g. ``"169.254.217.190:7500"``.
             This is the private eth0 IP on the instrument, which the client
             cannot infer, so it must be supplied.
         remote_path

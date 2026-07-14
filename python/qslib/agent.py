@@ -47,7 +47,7 @@ class AgentClient:
         Host or IP of the agent (typically reached through the Windows-box
         forward / VPN, or directly on the private link).
     port
-        Agent port (default 8770).
+        Agent port (default 7500).
     token
         Bearer token, if the agent requires one.
     timeout
@@ -55,7 +55,7 @@ class AgentClient:
     """
 
     host: str
-    port: int = 8770
+    port: int = 7500
     token: str | None = None
     timeout: float = 30.0
 
