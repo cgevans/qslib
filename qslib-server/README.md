@@ -20,6 +20,7 @@ All routes require `Authorization: Bearer <token>` unless started with
 |-------|-------------|
 | `GET /health` | `{"name","version","uptime_s","scpi_ok","file_root"}`; `scpi_ok` is a live TCP probe of the SCPI target; `file_root` is the canonicalized `--file-root` (clients use it to serve absolute paths). |
 | `GET`/`HEAD /file/<path…>` | Bulk file off disk under `--file-root`. Supports `Range` (→ `206`), `ETag`, `Last-Modified`, `Accept-Ranges`. Traversal/symlink escape → `403`; missing/dir → `404`. |
+| `GET /list/<dir…>` | JSON manifest `{"files":[{"path","size"},…]}` of the regular files under a directory (recursive, dotfiles included, symlinked dirs not descended — matches the `EXP:ZIPREAD?` file set). Lets a client pull a run directory as raw files instead of a base64+deflate zip. Missing/not-a-dir → `404`/`400`. |
 | `POST /scpi` | Run one SCPI command. Body is the raw command or JSON `{"command","access","timeout_ms","encoding"}`; query `?access=&timeout_ms=&encoding=` also accepted. Response headers `X-SCPI-Status`, `X-SCPI-Access`. SCPI command error → `400` + `X-SCPI-Error`; access denied → `403`; timeout → `504`. |
 | `GET /scpi` (`Upgrade: qslib-scpi`) or `CONNECT /scpi` | Streaming SCPI tunnel spliced to `127.0.0.1:7000`. |
 
@@ -124,7 +125,13 @@ tree) are reachable, **`ensure_server` deploys qslib-server with `--file-root=/`
 default** — the client learns the root from `/health` and only takes the HTTP path for
 paths under it, falling back to SCPI otherwise. This means `Experiment.from_machine_storage`
 (and `save_run_from_storage`) pull the completed `.eds` over HTTP. Directory reads
-(`Experiment.from_running` / `from_uncollected`, via `EXP:ZIPREAD?`) still use SCPI.
+(`Experiment.from_running` / `from_uncollected`) use `Machine.download_dir`, which
+enumerates the run directory via `/list` and pulls each file raw over `/file` (no
+`ZIPREAD` base64+deflate), reproducing the same on-disk tree; it falls back to SCPI
+`EXP:ZIPREAD?` when qslib-server is not available.
+
+All of this is validated end-to-end against a real instrument by
+`validate_against_machine.py` (SCPI vs HTTP, byte-for-byte).
 
 `ensure_server` streams the binary to the instrument in chunks over SCPI
 (gzip + base64 via `SYST:EXEC "echo … | base64 -d"`, size/md5-verified — a

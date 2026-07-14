@@ -164,6 +164,61 @@ async fn file_full_download() {
 }
 
 #[tokio::test]
+async fn list_dir_enumerates_recursively() {
+    let (addr, dir) = setup(None).await;
+    let root = dir.path();
+    tokio::fs::create_dir_all(root.join("run/apldbio/sds"))
+        .await
+        .unwrap();
+    tokio::fs::write(root.join("run/top.txt"), b"top").await.unwrap();
+    tokio::fs::write(root.join("run/apldbio/sds/a.xml"), b"aaaa")
+        .await
+        .unwrap();
+    tokio::fs::write(root.join("run/apldbio/sds/.hidden"), b"hh")
+        .await
+        .unwrap();
+
+    let resp = client()
+        .get(format!("http://{addr}/list/run"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let mut got: Vec<(String, u64)> = body["files"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| {
+            (
+                e["path"].as_str().unwrap().to_string(),
+                e["size"].as_u64().unwrap(),
+            )
+        })
+        .collect();
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            ("apldbio/sds/.hidden".to_string(), 2),
+            ("apldbio/sds/a.xml".to_string(), 4),
+            ("top.txt".to_string(), 3),
+        ]
+    );
+}
+
+#[tokio::test]
+async fn list_dir_missing_is_404() {
+    let (addr, _dir) = setup(None).await;
+    let resp = client()
+        .get(format!("http://{addr}/list/nope"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
 async fn file_range_request() {
     let (addr, dir) = setup(None).await;
     let content: Vec<u8> = (0u8..=255).collect();

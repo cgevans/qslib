@@ -12,6 +12,8 @@ use axum::body::Body;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde::Serialize;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
@@ -233,6 +235,86 @@ async fn open(path: &Path) -> Result<File, ServerError> {
     File::open(path)
         .await
         .map_err(|e| ServerError::internal(format!("failed to open file: {e}")))
+}
+
+/// One file in a `/list` response: path relative to the listed directory
+/// (forward-slash separated), and its size in bytes.
+#[derive(Serialize)]
+pub struct ListEntry {
+    pub path: String,
+    pub size: u64,
+}
+
+#[derive(Serialize)]
+pub struct ListResponse {
+    pub files: Vec<ListEntry>,
+}
+
+/// `GET /list/<dir…>` — recursively enumerate the regular files under a
+/// directory, off disk, returning a JSON manifest.
+///
+/// This mirrors the InstrumentServer `EXP:ZIPREAD?` file set (Python
+/// `os.walk(followlinks=False)` + zip of the `filelist`) so a client can pull a
+/// run directory as raw files instead of a base64+deflate zip: real
+/// subdirectories are descended; regular files and symlinks-to-files are
+/// listed (including dotfiles); symlinks-to-directories and broken symlinks are
+/// skipped. Paths are relative to the requested directory.
+pub async fn list_dir(
+    State(state): State<AppState>,
+    AxumPath(rel): AxumPath<String>,
+) -> Result<Response, ServerError> {
+    let root = resolve_under_root(&state.file_root, &rel).await?;
+    let meta = tokio::fs::metadata(&root)
+        .await
+        .map_err(|_| ServerError::not_found("directory not found"))?;
+    if !meta.is_dir() {
+        return Err(ServerError::bad_request("not a directory"));
+    }
+
+    let mut files: Vec<ListEntry> = Vec::new();
+    // DFS with an explicit stack: (absolute dir, path prefix relative to `root`).
+    let mut stack: Vec<(PathBuf, String)> = vec![(root.clone(), String::new())];
+    while let Some((cur, prefix)) = stack.pop() {
+        let mut rd = tokio::fs::read_dir(&cur)
+            .await
+            .map_err(|e| ServerError::internal(format!("failed to read directory: {e}")))?;
+        while let Some(entry) = rd
+            .next_entry()
+            .await
+            .map_err(|e| ServerError::internal(format!("failed to read directory entry: {e}")))?
+        {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            let rel_path = if prefix.is_empty() {
+                name.into_owned()
+            } else {
+                format!("{prefix}/{name}")
+            };
+            // `file_type()` does not follow symlinks, so `is_dir()` is true only
+            // for real directories — those we descend (matching `followlinks=False`).
+            let ft = entry
+                .file_type()
+                .await
+                .map_err(|e| ServerError::internal(format!("failed to stat entry: {e}")))?;
+            if ft.is_dir() {
+                stack.push((entry.path(), rel_path));
+            } else {
+                // Regular file or symlink. Follow it: a symlink-to-directory is
+                // skipped (as `os.walk` does not descend it and zips no file for
+                // it); a symlink-to-file or regular file is listed by target size;
+                // a broken symlink is skipped.
+                match tokio::fs::metadata(entry.path()).await {
+                    Ok(m) if m.is_file() => files.push(ListEntry {
+                        path: rel_path,
+                        size: m.len(),
+                    }),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    Ok(Json(ListResponse { files }).into_response())
 }
 
 #[cfg(test)]

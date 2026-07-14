@@ -119,6 +119,12 @@ class ServerClient:
             raise ServerError(message, status=e.code, detail=detail) from e
         except urllib.error.URLError as e:
             raise ServerError(f"cannot reach qslib-server at {self.base_url}: {e.reason}") from e
+        except OSError as e:
+            # Connection reset/refused/timeout mid-request (e.g. the server was
+            # killed, or a forwarder RSTs when nothing is listening) arrives as a
+            # raw OSError rather than a URLError. Treat it as "unavailable" so
+            # health()/available()/ensure_server degrade gracefully.
+            raise ServerError(f"cannot reach qslib-server at {self.base_url}: {e}") from e
 
     # -- endpoints ---------------------------------------------------------
 
@@ -189,6 +195,48 @@ class ServerClient:
         if rel is None:
             raise ServerError(f"{abspath!r} is not under qslib-server file root {self.file_root!r}")
         return self.get_file(rel, dest=dest, chunk_size=chunk_size)
+
+    def list_dir(self, abspath: str) -> list[dict[str, Any]]:
+        """Return the recursive file manifest of a directory (``GET /list``).
+
+        Each entry is ``{"path": <relative>, "size": <bytes>}``, where ``path``
+        is relative to ``abspath`` (forward-slash separated). The manifest
+        matches the InstrumentServer ``EXP:ZIPREAD?`` file set (dotfiles
+        included, symlinked directories not descended). Raises
+        :class:`ServerError` (status 404) if the directory does not exist, or if
+        ``abspath`` is not under qslib-server's :attr:`file_root`.
+        """
+        rel = self._rel_to_root(abspath)
+        if rel is None:
+            raise ServerError(f"{abspath!r} is not under qslib-server file root {self.file_root!r}")
+        quoted = urllib.parse.quote(rel.lstrip("/"))
+        req = urllib.request.Request(f"{self.base_url}/list/{quoted}", headers=self._headers(), method="GET")
+        with self._open(req) as resp:
+            raw = resp.read()
+        try:
+            return json.loads(raw.decode()).get("files", [])
+        except (ValueError, UnicodeDecodeError) as e:
+            raise ServerError("qslib-server /list returned a non-JSON body") from e
+
+    def download_dir(self, abspath: str, dest_dir: str | Path, chunk_size: int = 1 << 20) -> int:
+        """Download a directory tree rooted at ``abspath`` into ``dest_dir``.
+
+        Enumerates the directory via :meth:`list_dir` and fetches each file raw
+        (no compression), preserving the relative structure under ``dest_dir``.
+        Returns the number of files written. Raises :class:`ServerError` on any
+        failure (so callers can fall back to SCPI).
+        """
+        dest = Path(dest_dir)
+        n = 0
+        for entry in self.list_dir(abspath):
+            rel = entry["path"]
+            if rel.startswith("/") or ".." in rel.split("/"):
+                raise ServerError(f"unsafe path in /list manifest: {rel!r}")
+            out = dest.joinpath(*rel.split("/"))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            self.get_abs_file(posixpath.join(abspath, rel), dest=out, chunk_size=chunk_size)
+            n += 1
+        return n
 
     def scpi(
         self,

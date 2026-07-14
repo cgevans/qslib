@@ -11,6 +11,7 @@ been built (``cargo build -p qslib-server``).
 
 from __future__ import annotations
 
+import os
 import socket
 import subprocess
 import time
@@ -21,6 +22,19 @@ import pytest
 from qslib.server import ServerClient, ServerError
 
 BINARY = Path(__file__).parent.parent / "target" / "debug" / "qslib-server"
+
+
+def _zipread_files(run_dir: Path) -> dict[str, bytes]:
+    """The file set (relpath -> content) that InstrumentServer ``EXP:ZIPREAD?``
+    would produce for ``run_dir``: ``os.walk(followlinks=False)`` filenames,
+    read following symlinks (as ``zipfile.write`` does), arcnames relative to
+    the run dir. This is the ground truth ``download_dir`` must reproduce."""
+    out: dict[str, bytes] = {}
+    for folder, _dirs, files in os.walk(run_dir, followlinks=False):
+        for fn in files:
+            ap = Path(folder) / fn
+            out[ap.relative_to(run_dir).as_posix()] = ap.read_bytes()
+    return out
 
 
 def _free_port() -> int:
@@ -103,6 +117,68 @@ def test_get_abs_file(server):
     # A path outside the root raises (-> caller falls back to SCPI).
     with pytest.raises(ServerError):
         client.get_abs_file("/etc/passwd")
+
+
+def _make_run_tree(root: Path) -> Path:
+    """A synthetic run directory covering the edge cases that distinguish the
+    ZIPREAD walk from a plain listing: nested dirs, a dotfile, a symlink to a
+    file (included), and a symlink to a directory (not descended)."""
+    run = root / "run1"
+    (run / "apldbio" / "sds").mkdir(parents=True)
+    (run / "apldbio" / "sds" / "a.xml").write_bytes(b"A" * 1000)
+    (run / "apldbio" / "sds" / ".hidden").write_bytes(b"dotfile")
+    (run / "top.txt").write_bytes(b"T" * 50)
+    (run / "sub2").mkdir()
+    (run / "sub2" / "b.bin").write_bytes(bytes(range(256)) * 10)
+    (run / "link_to_a").symlink_to(run / "apldbio" / "sds" / "a.xml")
+    (run / "link_to_sub2").symlink_to(run / "sub2")
+    return run
+
+
+def test_list_dir_matches_zipread_file_set(server):
+    """/list enumerates exactly the files EXP:ZIPREAD? would zip: dotfiles in,
+    symlinked file in, symlinked directory not descended."""
+    client, root = server
+    run = _make_run_tree(root)
+    abspath = str(Path(client.file_root) / "run1")
+
+    listed = {e["path"] for e in client.list_dir(abspath)}
+    assert listed == set(_zipread_files(run))
+    assert "apldbio/sds/.hidden" in listed  # dotfile included
+    assert "link_to_a" in listed  # symlink-to-file included
+    assert not any(p.startswith("link_to_sub2") for p in listed)  # symlink-to-dir not descended
+
+
+def test_download_dir_reproduces_zipread_tree(server, tmp_path):
+    """download_dir writes the same tree, byte-for-byte, that extracting the
+    ZIPREAD zip would produce."""
+    client, root = server
+    run = _make_run_tree(root)
+    abspath = str(Path(client.file_root) / "run1")
+
+    dest = tmp_path / "out"
+    n = client.download_dir(abspath, dest)
+
+    expected = _zipread_files(run)
+    assert n == len(expected)
+    got = {f.relative_to(dest).as_posix(): f.read_bytes() for f in dest.rglob("*") if f.is_file()}
+    assert got == expected
+
+
+def test_health_on_dead_port_raises_servererror():
+    """A connection reset/refusal (server down) surfaces as ServerError, not a
+    raw OSError, so available()/ensure_server degrade gracefully."""
+    client = ServerClient("127.0.0.1", port=_free_port(), timeout=2)
+    with pytest.raises(ServerError):
+        client.health()
+    assert client.available() is False
+
+
+def test_list_dir_missing_is_404(server):
+    client, root = server
+    with pytest.raises(ServerError) as exc:
+        client.list_dir(str(Path(client.file_root) / "does_not_exist"))
+    assert exc.value.status == 404
 
 
 def test_get_file_to_dest(server, tmp_path):
@@ -317,6 +393,63 @@ def test_read_file_unknown_context_uses_scpi(monkeypatch):
         type(m), "run_command_to_bytes", lambda self, c: b"<quote>\n" + base64.b64encode(b"y") + b"</quote>"
     )
     assert m.read_file("f.bin", context="usbdrive") == b"y"
+
+
+def _machine_with_fake_server_dir(monkeypatch, *, download_dir):
+    """A non-connecting Machine whose ``server.download_dir`` is a stub."""
+    from qslib.machine import Machine
+
+    class FakeServer:
+        def download_dir(self, abspath, dest_dir, *a, **k):
+            return download_dir(abspath, dest_dir)
+
+    m = Machine("127.0.0.1", automatic=False, server_port=7500)
+    monkeypatch.setattr(type(m), "server", property(lambda self: FakeServer()))
+    return m
+
+
+def test_machine_download_dir_resolves_exp_context(monkeypatch, tmp_path):
+    """Machine.download_dir maps the EXP leaf to /data/vendor/IS/experiments and
+    delegates to the server with the resolved absolute path."""
+    seen = {}
+
+    def grab(abspath, dest_dir):
+        seen["abspath"] = abspath
+        seen["dest"] = dest_dir
+        return 3
+
+    m = _machine_with_fake_server_dir(monkeypatch, download_dir=grab)
+    m._prefer_server_files = True
+    assert m.download_dir("run1", tmp_path, leaf="EXP") is True
+    assert seen["abspath"] == "/data/vendor/IS/experiments/run1"
+
+
+def test_machine_download_dir_not_preferred_returns_false(monkeypatch, tmp_path):
+    def boom(abspath, dest_dir):
+        raise AssertionError("must not touch server when not preferred")
+
+    m = _machine_with_fake_server_dir(monkeypatch, download_dir=boom)
+    m._prefer_server_files = False
+    assert m.download_dir("run1", tmp_path, leaf="EXP") is False
+
+
+def test_machine_download_dir_404_raises_filenotfound(monkeypatch, tmp_path):
+    def missing(abspath, dest_dir):
+        raise ServerError("nope", status=404)
+
+    m = _machine_with_fake_server_dir(monkeypatch, download_dir=missing)
+    m._prefer_server_files = True
+    with pytest.raises(FileNotFoundError):
+        m.download_dir("run1", tmp_path, leaf="EXP")
+
+
+def test_machine_download_dir_other_error_returns_false(monkeypatch, tmp_path):
+    def err(abspath, dest_dir):
+        raise ServerError("boom", status=500)
+
+    m = _machine_with_fake_server_dir(monkeypatch, download_dir=err)
+    m._prefer_server_files = True
+    assert m.download_dir("run1", tmp_path, leaf="EXP") is False
 
 
 def test_auth_required(tmp_path):

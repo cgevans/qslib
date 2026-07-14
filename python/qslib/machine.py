@@ -73,6 +73,14 @@ _SCPI_CONTEXT_ROOTS: dict[str | None, str] = {
     "private_run_complete": "/sdcard/private_run_complete",
 }
 
+# SCPI leaf (branch) -> its default context, for directory operations addressed
+# by leaf rather than an explicit context (e.g. ``EXP:ZIPREAD?``). ``None`` means
+# the FILE default context (``/data/vendor/IS``).
+_SCPI_LEAF_DEFAULT_CONTEXT: dict[str, str | None] = {
+    "FILE": None,
+    "EXP": "experiments",
+}
+
 
 def _scpi_locator_abspath(locator: str) -> str | None:
     """Resolve a FILE-branch locator (``"[context:]relpath"``) to an absolute
@@ -560,6 +568,41 @@ class Machine:
         x = self.run_command_to_bytes(f"{leaf}:ZIPREAD? {path}")
 
         return zipfile.ZipFile(io.BytesIO(base64.decodebytes(x[7:-8])))
+
+    @_ensure_connection(AccessLevel.Observer)
+    def download_dir(self, remote_dir: str, dest_dir: str | Path, *, leaf: str = "FILE", fast: bool = True) -> bool:
+        """Download a directory tree from the machine into ``dest_dir`` over HTTP.
+
+        When connected to ``qslib-server`` (see :meth:`connect`/:meth:`ensure_server`)
+        and ``fast`` is true, the directory is enumerated via qslib-server's
+        ``/list`` and each file is fetched raw (no ``ZIPREAD`` base64+deflate),
+        preserving the tree under ``dest_dir`` — the same on-disk layout that
+        extracting :meth:`read_dir_as_zip` produces.
+
+        Returns ``True`` if the directory was downloaded over HTTP; ``False`` if
+        qslib-server is not available/preferred, the context is unknown, or a
+        transfer error occurred (so the caller should fall back to SCPI
+        ``ZIPREAD``). Raises :class:`FileNotFoundError` if the directory does not
+        exist on the server (distinct from the fallback signal, for name probing).
+        """
+        if not (fast and self._prefer_server_files):
+            return False
+        server = self.server
+        if server is None:
+            return False
+        context = _SCPI_LEAF_DEFAULT_CONTEXT.get(leaf, leaf)
+        locator = (context + ":" if context else "") + remote_dir
+        abspath = _scpi_locator_abspath(locator)
+        if abspath is None:
+            return False
+        try:
+            server.download_dir(abspath, dest_dir)
+        except ServerError as e:
+            if e.status == 404:
+                raise FileNotFoundError(remote_dir) from e
+            log.warning("qslib-server download_dir failed for %r; falling back to SCPI", remote_dir, exc_info=True)
+            return False
+        return True
 
     @overload
     def list_files(

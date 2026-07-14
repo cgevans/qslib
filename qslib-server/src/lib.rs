@@ -37,6 +37,7 @@ pub fn build_router(state: AppState) -> Router {
                 .connect(tunnel::tunnel),
         )
         .route("/file/{*path}", get(file::serve_file).head(file::serve_file))
+        .route("/list/{*path}", get(file::list_dir))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,

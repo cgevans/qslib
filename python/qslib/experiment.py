@@ -1313,9 +1313,15 @@ table, th, td {{
             if not crt:
                 raise ValueError("Nothing is currently running.")
 
-            z = machine.read_dir_as_zip(crt, leaf="EXP")
-
-            _safe_extractall(z, exp._dir_base)
+            # Prefer qslib-server's raw HTTP directory transfer; fall back to the
+            # SCPI ZIPREAD (base64+deflate) path when it is not available.
+            try:
+                downloaded = machine.download_dir(crt, exp._dir_base, leaf="EXP")
+            except FileNotFoundError:
+                downloaded = False
+            if not downloaded:
+                z = machine.read_dir_as_zip(crt, leaf="EXP")
+                _safe_extractall(z, exp._dir_base)
 
             exp._update_from_files()
 
@@ -1347,15 +1353,19 @@ table, th, td {{
             if move:
                 raise NotImplementedError
 
-            try:
-                z = machine.read_dir_as_zip(_safe_exp_name(name), leaf="EXP")
-            except IOError:  # FIXME
+            # Try each candidate name; for each, prefer qslib-server's raw HTTP
+            # directory transfer and fall back to SCPI ZIPREAD.
+            for candidate in (_safe_exp_name(name), name):
                 try:
-                    z = machine.read_dir_as_zip(name, leaf="EXP")
-                except IOError:
-                    raise ValueError(f"Could not find experiment {name} in uncollect runs on {machine}.")
-
-            _safe_extractall(z, exp._dir_base)
+                    if machine.download_dir(candidate, exp._dir_base, leaf="EXP"):
+                        break
+                    z = machine.read_dir_as_zip(candidate, leaf="EXP")
+                except (IOError, FileNotFoundError):  # FIXME
+                    continue
+                _safe_extractall(z, exp._dir_base)
+                break
+            else:
+                raise ValueError(f"Could not find experiment {name} in uncollect runs on {machine}.")
 
             exp._update_from_files()
 
