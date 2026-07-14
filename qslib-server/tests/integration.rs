@@ -318,6 +318,33 @@ async fn scpi_rejects_newline_injection() {
 }
 
 #[tokio::test]
+async fn scpi_tunnel_connects_and_runs() {
+    use std::time::Duration;
+    let (addr, _dir) = setup(None).await;
+    // Connect a real QSConnection through the agent's SCPI tunnel.
+    let conn = qslib_core::com::QSConnection::connect_agent_tunnel(
+        &addr.ip().to_string(),
+        addr.port(),
+        None,
+    )
+    .await
+    .expect("tunnel connect");
+    let mut recv = conn
+        .send_command_bytes(&b"SYST:VERS?"[..])
+        .await
+        .expect("send command");
+    let resp = recv
+        .get_response_with_timeout(Duration::from_secs(5))
+        .await
+        .expect("no timeout")
+        .expect("ok response");
+    assert!(
+        resp.to_string().contains("1.0.0"),
+        "unexpected tunnel response: {resp}"
+    );
+}
+
+#[tokio::test]
 async fn scpi_access_cap_enforced() {
     let (addr, _dir) = setup(None).await;
     let resp = client()

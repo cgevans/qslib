@@ -202,9 +202,10 @@ class Machine:
     _initial_access_level: AccessLevel = AccessLevel.Observer
     _current_access_level: AccessLevel = AccessLevel.Guest
     _connection: QSConnection | None = None
-    agent_port: int | None = None
+    agent_port: int | None = 7500
     agent_token: str | None = None
     _agent: AgentClient | None = None
+    _agent_connect_timeout: int = 3
 
     def asdict(self, password: bool = False) -> dict[str, str | int | None]:
         d: dict[str, str | int | None] = {"host": self.host}
@@ -256,8 +257,9 @@ class Machine:
         client_key_path: str | None = None,
         server_ca_file: str | None = None,
         tls_server_name: str | None = None,
-        agent_port: int | None = None,
+        agent_port: int | None = 7500,
         agent_token: str | None = None,
+        agent_connect_timeout: int = 3,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
@@ -281,28 +283,23 @@ class Machine:
         self.tls_server_name = tls_server_name
         self.agent_port = agent_port
         self.agent_token = agent_token
+        self.agent_connect_timeout = agent_connect_timeout
         self._agent = None
 
     def connect(self) -> None:
-        """Open the connection manually."""
+        """Open the connection manually.
 
-        # Determine connection type based on ssl parameter
-        if self.ssl is True:
-            connection_type = "SSL"
-        elif self.ssl is False:
-            connection_type = "TCP"
-        else:
-            connection_type = "Auto"
+        When ``agent_port`` is set (the default), this first tries to connect
+        through a ``qslib-server`` agent's SCPI tunnel on that port, falling back
+        to a direct SSL/TCP SCPI connection if the agent is not reachable —
+        analogous to the automatic SSL/TCP selection. Pass ``agent_port=None`` to
+        disable the agent entirely.
+        """
+        conn = self._try_agent_connection()
+        if conn is None:
+            conn = self._direct_connection()
+        self.connection = conn
 
-        self.connection = QSConnection(
-            host=self.host,
-            port=self.port,
-            connection_type=connection_type,
-            client_cert_path=self.client_certificate_path,
-            client_key_path=self.client_key_path,
-            server_ca_path=self.server_ca_file,
-            tls_server_name=self.tls_server_name,
-        )
         if self.password is not None:
             self.authenticate(self.password)
         if self._initial_access_level is not None:
@@ -318,6 +315,52 @@ class Machine:
                     ) from e
                 raise
         self._current_access_level = self.get_access_level()[0]
+
+    def _try_agent_connection(self) -> QSConnection | None:
+        """Try to connect through the qslib-server agent's SCPI tunnel.
+
+        Returns the connection, or ``None`` if the agent is not configured
+        (``agent_port is None``) or not reachable within
+        ``agent_connect_timeout``.
+        """
+        if self.agent_port is None:
+            return None
+        try:
+            conn = QSConnection(
+                host=self.host,
+                port=self.agent_port,
+                connection_type="Agent",
+                agent_token=self.agent_token,
+                timeout=self.agent_connect_timeout,
+            )
+            log.debug("connected to %s via qslib-server agent tunnel (port %s)", self.host, self.agent_port)
+            return conn
+        except Exception as e:
+            log.debug(
+                "qslib-server agent tunnel on %s:%s unavailable (%s); using direct SCPI",
+                self.host,
+                self.agent_port,
+                e,
+            )
+            return None
+
+    def _direct_connection(self) -> QSConnection:
+        """Open a direct SSL/TCP SCPI connection (the non-agent path)."""
+        if self.ssl is True:
+            connection_type = "SSL"
+        elif self.ssl is False:
+            connection_type = "TCP"
+        else:
+            connection_type = "Auto"
+        return QSConnection(
+            host=self.host,
+            port=self.port,
+            connection_type=connection_type,
+            client_cert_path=self.client_certificate_path,
+            client_key_path=self.client_key_path,
+            server_ca_path=self.server_ca_file,
+            tls_server_name=self.tls_server_name,
+        )
 
     @property
     def connected(self) -> bool:

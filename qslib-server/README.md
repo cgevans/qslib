@@ -94,13 +94,19 @@ The agent is started on demand, mirroring qslib's dropbear pattern. From Python:
 ```python
 from qslib.machine import Machine
 
-m = Machine("instr-host", password="…", agent_port=7500, agent_token="…")
+m = Machine("instr-host", password="…", agent_token="…")   # agent_port defaults to 7500
 m.ensure_agent(
     binary="target/armv7-unknown-linux-musleabihf/min-size/qslib-server",
     listen="169.254.217.190:7500",   # the instrument's private eth0 IP
 )
 data = m.get_file("experiments/…/filterdata.zip")   # fast path, falls back to SCPI
 ```
+
+When `agent_port` is set (default 7500), `Machine` **auto-connects its SCPI session
+through the agent's tunnel** — the client speaks plaintext SCPI over the agent (no
+instrument-side TLS) — and falls back to a direct SSL/TCP connection if the agent is
+not reachable, analogous to the automatic SSL/TCP selection. Pass `agent_port=None` to
+disable the agent entirely.
 
 `ensure_agent` streams the binary to the instrument in chunks over SCPI
 (gzip + base64 via `SYST:EXEC "echo … | base64 -d"`, size/md5-verified — a
