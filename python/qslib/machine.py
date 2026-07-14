@@ -9,7 +9,9 @@ import logging
 import random
 import re
 import shlex
+import time
 import zipfile
+from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
@@ -18,6 +20,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 from ._qslib import QSConnection, CommandError
 import io
+from .agent import AgentClient, AgentError
 from .data import FilterSet
 
 if TYPE_CHECKING:
@@ -197,6 +200,9 @@ class Machine:
     _initial_access_level: AccessLevel = AccessLevel.Observer
     _current_access_level: AccessLevel = AccessLevel.Guest
     _connection: QSConnection | None = None
+    agent_port: int | None = None
+    agent_token: str | None = None
+    _agent: AgentClient | None = None
 
     def asdict(self, password: bool = False) -> dict[str, str | int | None]:
         d: dict[str, str | int | None] = {"host": self.host}
@@ -248,6 +254,8 @@ class Machine:
         client_key_path: str | None = None,
         server_ca_file: str | None = None,
         tls_server_name: str | None = None,
+        agent_port: int | None = None,
+        agent_token: str | None = None,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
@@ -269,6 +277,9 @@ class Machine:
         self.client_key_path = client_key_path
         self.server_ca_file = server_ca_file
         self.tls_server_name = tls_server_name
+        self.agent_port = agent_port
+        self.agent_token = agent_token
+        self._agent = None
 
     def connect(self) -> None:
         """Open the connection manually."""
@@ -570,6 +581,123 @@ class Machine:
             return base64.decodebytes(r)
         else:
             return r
+
+    @property
+    def agent(self) -> AgentClient | None:
+        """An :class:`~qslib.agent.AgentClient` for the on-instrument
+        ``qslib-server`` agent, or ``None`` if ``agent_port`` was not set.
+
+        The agent is reached at the same host as SCPI, on ``agent_port``.
+        """
+        if self.agent_port is None:
+            return None
+        if self._agent is None:
+            self._agent = AgentClient(self.host, port=self.agent_port, token=self.agent_token)
+        return self._agent
+
+    def get_file(
+        self,
+        path: str,
+        context: str | None = None,
+        leaf: str = "FILE",
+        *,
+        fast: bool = True,
+        fallback: bool = True,
+    ) -> bytes:
+        """Read a file, preferring the fast ``qslib-server`` agent when available.
+
+        With ``fast=True`` and an agent configured (``agent_port``) and reachable,
+        the file is fetched over plain HTTP off disk, avoiding the base64+TLS
+        overhead of ``FILE:READ`` over SCPI. Otherwise, or on any agent error
+        when ``fallback=True``, it falls back to :meth:`read_file`.
+
+        ``path`` is interpreted relative to the agent's ``--file-root`` (assumed
+        to align with the SCPI ``FILE`` context root on the instrument).
+        """
+        agent = self.agent if fast else None
+        if agent is not None:
+            try:
+                data = agent.get_file(path)
+                assert data is not None
+                return data
+            except AgentError:
+                log.warning("agent get_file failed for %r; falling back to SCPI", path, exc_info=True)
+                if not fallback:
+                    raise
+        return self.read_file(path, context=context, leaf=leaf)
+
+    def ensure_agent(
+        self,
+        binary: str | bytes | None = None,
+        *,
+        listen: str,
+        remote_path: str = "/data/qslib-server",
+        file_root: str = "/data/vendor/IS",
+        extra_args: tuple[str, ...] = (),
+        timeout: float = 5.0,
+    ) -> AgentClient:
+        """Ensure the ``qslib-server`` agent is running, deploying it if needed.
+
+        If the agent already answers ``/health``, its client is returned
+        immediately. Otherwise, when ``binary`` (a path or the raw bytes of a
+        cross-compiled agent) is given, it is pushed with :meth:`write_file`,
+        made executable, and started in the background via ``SYST:EXEC`` (root),
+        then polled until ready.
+
+        Parameters
+        ----------
+        binary
+            Path to, or bytes of, the agent binary to deploy. Required only if
+            the agent is not already running.
+        listen
+            The instrument-side bind address, e.g. ``"169.254.217.190:8770"``.
+            This is the private eth0 IP on the instrument, which the client
+            cannot infer, so it must be supplied.
+        remote_path
+            Persistent path to install the binary to on the instrument.
+        file_root
+            ``--file-root`` for the agent.
+        extra_args
+            Additional agent CLI arguments.
+
+        Notes
+        -----
+        Requires ``agent_port`` on the :class:`Machine`, and Controller access
+        for the push. The exact on-device ``SYST:EXEC`` and path behaviour
+        should be confirmed on the target instrument.
+        """
+        if self.agent_port is None:
+            raise ValueError("agent_port must be set on the Machine to use the agent")
+        client = self.agent
+        assert client is not None
+
+        try:
+            client.health()
+            return client
+        except AgentError:
+            pass
+
+        if binary is None:
+            raise AgentError("agent is not running and no `binary` was provided to deploy")
+
+        data = Path(binary).read_bytes() if isinstance(binary, str) else binary
+        self.write_file(remote_path, data)
+        self.run_command(f'SYST:EXEC "chmod 755 {remote_path}"')
+
+        args = [remote_path, "--listen", listen, "--file-root", file_root]
+        args += ["--token", self.agent_token] if self.agent_token else ["--no-auth"]
+        args += list(extra_args)
+        cmdline = " ".join(shlex.quote(a) for a in args)
+        self.run_command(f'SYST:EXEC "{cmdline} &"')
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                client.health()
+                return client
+            except AgentError:
+                time.sleep(0.1)
+        raise AgentError("agent did not become ready after deployment")
 
     @_ensure_connection(AccessLevel.Controller)
     def write_file(self, path: str, data: str | bytes) -> None:

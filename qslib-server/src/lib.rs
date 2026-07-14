@@ -118,10 +118,12 @@ pub fn init_logging(config: &Config) -> anyhow::Result<()> {
         None => BoxMakeWriter::new(std::io::stderr),
     };
 
+    // No ANSI: the `ansi` crate feature is intentionally excluded to keep the
+    // agent binary small; logs go to stderr or a file, where colors are noise.
     if tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(writer)
-        .with_ansi(config.log.is_none())
+        .with_ansi(false)
         .try_init()
         .is_err()
     {
