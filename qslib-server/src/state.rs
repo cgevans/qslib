@@ -9,7 +9,7 @@ use qslib_core::commands::AccessLevel;
 
 use crate::config::Config;
 
-/// Immutable, shared agent state, cheaply cloneable via `Arc`.
+/// Immutable, shared qslib-server state, cheaply cloneable via `Arc`.
 #[derive(Clone)]
 pub struct AppState(pub Arc<AppStateInner>);
 

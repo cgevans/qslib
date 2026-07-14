@@ -13,7 +13,7 @@ use qslib_core::com::{CommandError, QSConnection};
 use qslib_core::commands::{AccessLevel, ReceiveOkResponseError};
 use qslib_core::parser::{ErrorResponse, OkResponse};
 
-use crate::error::AgentError;
+use crate::error::ServerError;
 use crate::state::AppState;
 
 /// Maximum time to establish the loopback SCPI connection.
@@ -32,9 +32,9 @@ pub async fn run_oneshot(
     command: &str,
     access: AccessLevel,
     timeout_ms: u64,
-) -> Result<(AccessLevel, OneShot), AgentError> {
+) -> Result<(AccessLevel, OneShot), ServerError> {
     if access > state.max_access {
-        return Err(AgentError::forbidden(format!(
+        return Err(ServerError::forbidden(format!(
             "requested access level {} exceeds --max-access {}",
             String::from(access),
             String::from(state.max_access.clone())
@@ -51,7 +51,7 @@ pub async fn run_oneshot(
     let mut recv = conn
         .send_command_bytes(command.as_bytes())
         .await
-        .map_err(|e| AgentError::unavailable(format!("failed to send SCPI command: {e}")))?;
+        .map_err(|e| ServerError::unavailable(format!("failed to send SCPI command: {e}")))?;
 
     let out = match recv
         .get_response_with_timeout(Duration::from_millis(timeout_ms))
@@ -60,12 +60,12 @@ pub async fn run_oneshot(
         Ok(Ok(ok)) => OneShot::Ok(ok),
         Ok(Err(err)) => OneShot::ScpiError(err),
         Err(ReceiveOkResponseError::Timeout) => {
-            return Err(AgentError::timeout("timed out waiting for SCPI response"))
+            return Err(ServerError::timeout("timed out waiting for SCPI response"))
         }
         Err(ReceiveOkResponseError::ConnectionClosed) => {
-            return Err(AgentError::unavailable("SCPI connection closed before response"))
+            return Err(ServerError::unavailable("SCPI connection closed before response"))
         }
-        Err(e) => return Err(AgentError::internal(format!("SCPI response error: {e}"))),
+        Err(e) => return Err(ServerError::internal(format!("SCPI response error: {e}"))),
     };
 
     // Drop the connection: the receive loop exits and the socket closes.
@@ -74,16 +74,16 @@ pub async fn run_oneshot(
 }
 
 /// Establish the loopback plaintext SCPI connection, with a bounded timeout.
-pub async fn connect(state: &AppState) -> Result<QSConnection, AgentError> {
+pub async fn connect(state: &AppState) -> Result<QSConnection, ServerError> {
     let host = state.scpi_target.ip().to_string();
     let port = state.scpi_target.port();
     match tokio::time::timeout(CONNECT_TIMEOUT, QSConnection::connect_tcp(&host, port)).await {
         Ok(Ok(conn)) => Ok(conn),
-        Ok(Err(e)) => Err(AgentError::unavailable(format!(
+        Ok(Err(e)) => Err(ServerError::unavailable(format!(
             "cannot connect to SCPI server at {}: {e}",
             state.scpi_target
         ))),
-        Err(_) => Err(AgentError::unavailable(format!(
+        Err(_) => Err(ServerError::unavailable(format!(
             "timed out connecting to SCPI server at {}",
             state.scpi_target
         ))),
@@ -107,16 +107,16 @@ async fn ensure_access(
     }
 }
 
-fn map_access_error(target: &AccessLevel, e: CommandError<ErrorResponse>) -> AgentError {
+fn map_access_error(target: &AccessLevel, e: CommandError<ErrorResponse>) -> ServerError {
     match e {
         // The instrument refused the access level (auth required / denied).
-        CommandError::CommandError(err) => AgentError::forbidden(format!(
+        CommandError::CommandError(err) => ServerError::forbidden(format!(
             "access level {} denied: {err}",
             String::from(target.clone())
         )),
         CommandError::ParseResponseError(ReceiveOkResponseError::Timeout) => {
-            AgentError::timeout("timed out setting SCPI access level")
+            ServerError::timeout("timed out setting SCPI access level")
         }
-        other => AgentError::unavailable(format!("failed to set SCPI access level: {other}")),
+        other => ServerError::unavailable(format!("failed to set SCPI access level: {other}")),
     }
 }

@@ -2,7 +2,7 @@
 name = "qslib-server"
 version.workspace = true
 edition = "2021"
-description = "On-instrument HTTP transport/command agent for QuantStudio machines (bulk file transfer, one-shot SCPI, SCPI tunnel)"
+description = "On-instrument HTTP transport/command service for QuantStudio machines (bulk file transfer, one-shot SCPI, SCPI tunnel)"
 license = "EUPL-1.2"
 authors = ["Constantine Evans <qslib@mb.costi.net>"]
 homepage = "https://codeberg.org/cge/qslib"
@@ -13,7 +13,7 @@ name = "qslib-server"
 path = "src/main.rs"
 
 [dependencies]
-# Core SCPI protocol/connection layer, no TLS and no pyo3 — keeps the agent a
+# Core SCPI protocol/connection layer, no TLS and no pyo3 — keeps qslib-server a
 # pure-Rust static binary that cross-compiles to armv7 musl with no C deps.
 qslib-core = { path = "../qslib-core", default-features = false }
 

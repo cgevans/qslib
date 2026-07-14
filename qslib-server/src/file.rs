@@ -15,7 +15,7 @@ use axum::response::{IntoResponse, Response};
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
-use crate::error::AgentError;
+use crate::error::ServerError;
 use crate::state::AppState;
 
 /// Streaming read buffer. Large enough to keep the socket saturated on the
@@ -26,7 +26,7 @@ const READ_BUFFER: usize = 256 * 1024;
 /// rejecting any traversal or symlink escape.
 ///
 /// Returns the canonical path on success.
-pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, AgentError> {
+pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, ServerError> {
     // Reject non-`Normal` components up front: `..`, absolute roots, Windows
     // prefixes. `CurDir` (`.`) is harmless and skipped.
     let mut safe = PathBuf::new();
@@ -35,7 +35,7 @@ pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, Agent
             Component::Normal(c) => safe.push(c),
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(AgentError::forbidden(
+                return Err(ServerError::forbidden(
                     "path escapes the file root (`..`, absolute, or prefix component)",
                 ));
             }
@@ -47,12 +47,12 @@ pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, Agent
     // Canonicalize resolves symlinks and `.`/`..`; a missing file errors (404).
     let canonical = tokio::fs::canonicalize(&joined)
         .await
-        .map_err(|_| AgentError::not_found("file not found"))?;
+        .map_err(|_| ServerError::not_found("file not found"))?;
 
     // Even after component filtering, a symlink inside the tree could point
     // outside; verify the real path is still under the (canonical) root.
     if !canonical.starts_with(root) {
-        return Err(AgentError::forbidden("path escapes the file root via symlink"));
+        return Err(ServerError::forbidden("path escapes the file root via symlink"));
     }
     Ok(canonical)
 }
@@ -144,17 +144,17 @@ pub async fn serve_file(
     method: Method,
     AxumPath(rel): AxumPath<String>,
     headers: HeaderMap,
-) -> Result<Response, AgentError> {
+) -> Result<Response, ServerError> {
     let path = resolve_under_root(&state.file_root, &rel).await?;
 
     let meta = tokio::fs::metadata(&path)
         .await
-        .map_err(|_| AgentError::not_found("file not found"))?;
+        .map_err(|_| ServerError::not_found("file not found"))?;
     // Only serve regular files. Directories, FIFOs, sockets, and device nodes
     // are rejected: opening a FIFO read-only would block a blocking-pool thread
     // indefinitely, and device nodes have no meaningful length.
     if !meta.is_file() {
-        return Err(AgentError::not_found("not a regular file"));
+        return Err(ServerError::not_found("not a regular file"));
     }
     // Note on TOCTOU: `resolve_under_root` canonicalizes and confirms the path
     // is under the root, but `metadata`/`open` below re-access it by path and
@@ -163,7 +163,7 @@ pub async fn serve_file(
     // openat2(RESOLVE_BENEATH), which the instrument kernel (3.0.35) lacks. The
     // deployment threat model (isolated link-local cable, no untrusted local
     // users, read-only remote surface) makes this acceptable; revisit if the
-    // agent is ever exposed to a host with untrusted local accounts.
+    // qslib-server is ever exposed to a host with untrusted local accounts.
     let size = meta.len();
     let modified = meta.modified().ok();
 
@@ -221,7 +221,7 @@ pub async fn serve_file(
             use tokio::io::{AsyncReadExt, AsyncSeekExt};
             file.seek(std::io::SeekFrom::Start(start))
                 .await
-                .map_err(|e| AgentError::internal(format!("seek failed: {e}")))?;
+                .map_err(|e| ServerError::internal(format!("seek failed: {e}")))?;
             let limited = file.take(len);
             let body = Body::from_stream(ReaderStream::with_capacity(limited, READ_BUFFER));
             Ok((StatusCode::PARTIAL_CONTENT, resp_headers, body).into_response())
@@ -229,10 +229,10 @@ pub async fn serve_file(
     }
 }
 
-async fn open(path: &Path) -> Result<File, AgentError> {
+async fn open(path: &Path) -> Result<File, ServerError> {
     File::open(path)
         .await
-        .map_err(|e| AgentError::internal(format!("failed to open file: {e}")))
+        .map_err(|e| ServerError::internal(format!("failed to open file: {e}")))
 }
 
 #[cfg(test)]

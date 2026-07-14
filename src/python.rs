@@ -723,7 +723,7 @@ impl PyQSConnection {
     /// Raises:
     ///     ValueError: If connection_type is invalid or connection fails
     #[new]
-    #[pyo3(signature = (host, port = 7443, connection_type = "Auto", timeout = 10, client_cert_path = None, client_key_path = None, server_ca_path = None, tls_server_name = None, agent_token = None))]
+    #[pyo3(signature = (host, port = 7443, connection_type = "Auto", timeout = 10, client_cert_path = None, client_key_path = None, server_ca_path = None, tls_server_name = None, server_token = None))]
     fn new(
         host: &str,
         port: u16,
@@ -733,15 +733,15 @@ impl PyQSConnection {
         client_key_path: Option<String>,
         server_ca_path: Option<String>,
         tls_server_name: Option<String>,
-        agent_token: Option<String>,
+        server_token: Option<String>,
     ) -> PyResult<Self> {
         let rt = Runtime::new()?;
 
-        // "Agent": connect via a qslib-server agent's SCPI tunnel (plaintext HTTP
+        // "Server": connect via a qslib-server SCPI tunnel (plaintext HTTP
         // upgrade to the instrument's localhost SCPI, no instrument-side TLS).
-        if connection_type == "Agent" {
+        if connection_type == "Server" {
             let conn = rt.block_on(async {
-                let fut = QSConnection::connect_agent_tunnel(host, port, agent_token.as_deref());
+                let fut = QSConnection::connect_server_tunnel(host, port, server_token.as_deref());
                 match timeout {
                     Some(t) => match tokio::time::timeout(Duration::from_secs(t), fut).await {
                         Ok(r) => r,

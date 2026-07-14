@@ -5,7 +5,7 @@ use axum::http::{header, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 
-use crate::error::AgentError;
+use crate::error::ServerError;
 use crate::state::AppState;
 
 /// Constant-time-ish comparison of two byte slices. Avoids leaking the token
@@ -29,7 +29,7 @@ pub async fn require_bearer(
     State(state): State<AppState>,
     req: Request<axum::body::Body>,
     next: Next,
-) -> Result<Response, AgentError> {
+) -> Result<Response, ServerError> {
     let Some(expected) = state.token.as_deref() else {
         return Ok(next.run(req).await);
     };
@@ -43,6 +43,6 @@ pub async fn require_bearer(
 
     match provided {
         Some(tok) if tokens_match(tok.as_bytes(), expected.as_bytes()) => Ok(next.run(req).await),
-        _ => Err(AgentError::unauthorized("missing or invalid bearer token")),
+        _ => Err(ServerError::unauthorized("missing or invalid bearer token")),
     }
 }

@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 from ._qslib import QSConnection, CommandError
 import io
-from .agent import AgentClient, AgentError
+from .server import ServerClient, ServerError
 from .data import FilterSet
 
 if TYPE_CHECKING:
@@ -202,10 +202,11 @@ class Machine:
     _initial_access_level: AccessLevel = AccessLevel.Observer
     _current_access_level: AccessLevel = AccessLevel.Guest
     _connection: QSConnection | None = None
-    agent_port: int | None = 7500
-    agent_token: str | None = None
-    _agent: AgentClient | None = None
-    _agent_connect_timeout: int = 3
+    server_port: int | None = 7500
+    server_token: str | None = None
+    _server: ServerClient | None = None
+    _server_connect_timeout: int = 3
+    _prefer_server_files: bool = False
 
     def asdict(self, password: bool = False) -> dict[str, str | int | None]:
         d: dict[str, str | int | None] = {"host": self.host}
@@ -257,9 +258,9 @@ class Machine:
         client_key_path: str | None = None,
         server_ca_file: str | None = None,
         tls_server_name: str | None = None,
-        agent_port: int | None = 7500,
-        agent_token: str | None = None,
-        agent_connect_timeout: int = 3,
+        server_port: int | None = 7500,
+        server_token: str | None = None,
+        server_connect_timeout: int = 3,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
     ):
         self.host = host
@@ -281,21 +282,22 @@ class Machine:
         self.client_key_path = client_key_path
         self.server_ca_file = server_ca_file
         self.tls_server_name = tls_server_name
-        self.agent_port = agent_port
-        self.agent_token = agent_token
-        self.agent_connect_timeout = agent_connect_timeout
-        self._agent = None
+        self.server_port = server_port
+        self.server_token = server_token
+        self.server_connect_timeout = server_connect_timeout
+        self._server = None
+        self._prefer_server_files = False
 
     def connect(self) -> None:
         """Open the connection manually.
 
-        When ``agent_port`` is set (the default), this first tries to connect
-        through a ``qslib-server`` agent's SCPI tunnel on that port, falling back
-        to a direct SSL/TCP SCPI connection if the agent is not reachable —
-        analogous to the automatic SSL/TCP selection. Pass ``agent_port=None`` to
-        disable the agent entirely.
+        When ``server_port`` is set (the default), this first tries to connect
+        through a ``qslib-server`` SCPI tunnel on that port, falling back to a
+        direct SSL/TCP SCPI connection if qslib-server is not reachable —
+        analogous to the automatic SSL/TCP selection. Pass ``server_port=None``
+        to disable qslib-server entirely.
         """
-        conn = self._try_agent_connection()
+        conn = self._try_server_connection()
         if conn is None:
             conn = self._direct_connection()
         self.connection = conn
@@ -316,36 +318,38 @@ class Machine:
                 raise
         self._current_access_level = self.get_access_level()[0]
 
-    def _try_agent_connection(self) -> QSConnection | None:
-        """Try to connect through the qslib-server agent's SCPI tunnel.
+    def _try_server_connection(self) -> QSConnection | None:
+        """Try to connect through the qslib-server SCPI tunnel.
 
-        Returns the connection, or ``None`` if the agent is not configured
-        (``agent_port is None``) or not reachable within
-        ``agent_connect_timeout``.
+        Returns the connection, or ``None`` if qslib-server is not configured
+        (``server_port is None``) or not reachable within
+        ``server_connect_timeout``.
         """
-        if self.agent_port is None:
+        if self.server_port is None:
             return None
         try:
             conn = QSConnection(
                 host=self.host,
-                port=self.agent_port,
-                connection_type="Agent",
-                agent_token=self.agent_token,
-                timeout=self.agent_connect_timeout,
+                port=self.server_port,
+                connection_type="Server",
+                server_token=self.server_token,
+                timeout=self.server_connect_timeout,
             )
-            log.debug("connected to %s via qslib-server agent tunnel (port %s)", self.host, self.agent_port)
+            log.debug("connected to %s via qslib-server tunnel (port %s)", self.host, self.server_port)
+            self._prefer_server_files = True
             return conn
         except Exception as e:
             log.debug(
-                "qslib-server agent tunnel on %s:%s unavailable (%s); using direct SCPI",
+                "qslib-server tunnel on %s:%s unavailable (%s); using direct SCPI",
                 self.host,
-                self.agent_port,
+                self.server_port,
                 e,
             )
             return None
 
     def _direct_connection(self) -> QSConnection:
-        """Open a direct SSL/TCP SCPI connection (the non-agent path)."""
+        """Open a direct SSL/TCP SCPI connection (the non-qslib-server path)."""
+        self._prefer_server_files = False
         if self.ssl is True:
             connection_type = "SSL"
         elif self.ssl is False:
@@ -595,23 +599,60 @@ class Machine:
 
     @_ensure_connection(AccessLevel.Observer)
     def read_file(
-        self, path: str, context: str | None = None, leaf: str = "FILE", encoding: Literal["base64", "plain"] = "base64"
+        self,
+        path: str,
+        context: str | None = None,
+        leaf: str = "FILE",
+        encoding: Literal["base64", "plain"] = "base64",
+        *,
+        fast: bool = True,
+        fallback: bool = True,
     ) -> bytes:
-        """Read a file.
+        """Read a file, preferring qslib-server's HTTP transfer when connected.
+
+        When the machine is connected to ``qslib-server`` (see :meth:`connect`
+        and :meth:`ensure_server`) and ``fast`` is true, the file is fetched
+        over plain HTTP straight off disk, avoiding the base64+TLS overhead of
+        ``FILE:READ`` over SCPI. Otherwise, or on any qslib-server error when
+        ``fallback`` is true, it is read over SCPI.
+
+        The HTTP path is only used for the default ``context``/``leaf`` (a
+        filesystem read under qslib-server's ``--file-root``, assumed to align
+        with the SCPI ``FILE`` context root); a non-default ``context`` or
+        ``leaf`` always uses SCPI, since qslib-server addresses files by
+        filesystem path rather than SCPI context/leaf.
 
         Parameters
         ----------
         path : str
             File path on the machine.
         context : str | None (default None)
-            Context.
-        leaf: str (default FILE)
+            SCPI file context. A non-default context forces the SCPI path.
+        leaf : str (default FILE)
+            SCPI file leaf. A non-default leaf forces the SCPI path.
+        encoding : "base64" | "plain" (default base64)
+            SCPI transfer encoding (ignored on the HTTP path).
+        fast : bool (default True)
+            Prefer qslib-server's HTTP transfer when it is available.
+        fallback : bool (default True)
+            Fall back to SCPI if the HTTP transfer fails.
 
         Returns
         -------
         bytes
             returned file
         """
+        server = self.server if (fast and not context and leaf == "FILE" and self._prefer_server_files) else None
+        if server is not None:
+            try:
+                data = server.get_file(path)
+                assert data is not None
+                return data
+            except ServerError:
+                log.warning("qslib-server file read failed for %r; falling back to SCPI", path, exc_info=True)
+                if not fallback:
+                    raise
+
         if not context:
             contexts = ""
         elif context[-1] == ":":
@@ -628,53 +669,19 @@ class Machine:
             return r
 
     @property
-    def agent(self) -> AgentClient | None:
-        """An :class:`~qslib.agent.AgentClient` for the on-instrument
-        ``qslib-server`` agent, or ``None`` if ``agent_port`` was not set.
+    def server(self) -> ServerClient | None:
+        """A :class:`~qslib.server.ServerClient` for the on-instrument
+        ``qslib-server``, or ``None`` if ``server_port`` was not set.
 
-        The agent is reached at the same host as SCPI, on ``agent_port``.
+        qslib-server is reached at the same host as SCPI, on ``server_port``.
         """
-        if self.agent_port is None:
+        if self.server_port is None:
             return None
-        if self._agent is None:
-            self._agent = AgentClient(self.host, port=self.agent_port, token=self.agent_token)
-        return self._agent
+        if self._server is None:
+            self._server = ServerClient(self.host, port=self.server_port, token=self.server_token)
+        return self._server
 
-    def get_file(
-        self,
-        path: str,
-        context: str | None = None,
-        leaf: str = "FILE",
-        *,
-        fast: bool = True,
-        fallback: bool = True,
-    ) -> bytes:
-        """Read a file, preferring the fast ``qslib-server`` agent when available.
-
-        With ``fast=True`` and an agent configured (``agent_port``) and reachable,
-        the file is fetched over plain HTTP off disk, avoiding the base64+TLS
-        overhead of ``FILE:READ`` over SCPI. Otherwise, or on any agent error
-        when ``fallback=True``, it falls back to :meth:`read_file`.
-
-        ``path`` is interpreted relative to the agent's ``--file-root`` (assumed
-        to align with the SCPI ``FILE`` context root on the instrument). The
-        fast agent path is only used for the default ``context``/``leaf``; a
-        non-default context or leaf always uses SCPI, since the agent addresses
-        files by filesystem path rather than SCPI context/leaf.
-        """
-        agent = self.agent if (fast and context is None and leaf == "FILE") else None
-        if agent is not None:
-            try:
-                data = agent.get_file(path)
-                assert data is not None
-                return data
-            except AgentError:
-                log.warning("agent get_file failed for %r; falling back to SCPI", path, exc_info=True)
-                if not fallback:
-                    raise
-        return self.read_file(path, context=context, leaf=leaf)
-
-    def ensure_agent(
+    def ensure_server(
         self,
         binary: str | bytes | None = None,
         *,
@@ -683,21 +690,24 @@ class Machine:
         file_root: str = "/data/vendor/IS",
         extra_args: tuple[str, ...] = (),
         timeout: float = 5.0,
-    ) -> AgentClient:
-        """Ensure the ``qslib-server`` agent is running, deploying it if needed.
+    ) -> ServerClient:
+        """Ensure ``qslib-server`` is running, deploying it if needed.
 
-        If the agent already answers ``/health``, its client is returned
+        If qslib-server already answers ``/health``, its client is returned
         immediately. Otherwise, when ``binary`` (a path or the raw bytes of a
-        cross-compiled agent) is given, it is streamed to the instrument in
-        chunks over SCPI (:meth:`_deploy_binary`; ``FILE:WRITE`` is unreliable
+        cross-compiled qslib-server) is given, it is streamed to the instrument
+        in chunks over SCPI (:meth:`_deploy_binary`; ``FILE:WRITE`` is unreliable
         for large files on some builds), made executable, and started in the
         background via ``SYST:EXEC`` (root), then polled until ready.
+
+        On success, subsequent :meth:`read_file` calls prefer qslib-server's
+        HTTP transfer.
 
         Parameters
         ----------
         binary
-            Path to, or bytes of, the agent binary to deploy. Required only if
-            the agent is not already running.
+            Path to, or bytes of, the qslib-server binary to deploy. Required
+            only if qslib-server is not already running.
         listen
             The instrument-side bind address, e.g. ``"169.254.217.190:7500"``.
             This is the private eth0 IP on the instrument, which the client
@@ -705,29 +715,30 @@ class Machine:
         remote_path
             Persistent path to install the binary to on the instrument.
         file_root
-            ``--file-root`` for the agent.
+            ``--file-root`` for qslib-server.
         extra_args
-            Additional agent CLI arguments.
+            Additional qslib-server CLI arguments.
 
         Notes
         -----
-        Requires ``agent_port`` on the :class:`Machine`, and Controller access
+        Requires ``server_port`` on the :class:`Machine`, and Controller access
         for the push. The exact on-device ``SYST:EXEC`` and path behaviour
         should be confirmed on the target instrument.
         """
-        if self.agent_port is None:
-            raise ValueError("agent_port must be set on the Machine to use the agent")
-        client = self.agent
+        if self.server_port is None:
+            raise ValueError("server_port must be set on the Machine to use qslib-server")
+        client = self.server
         assert client is not None
 
         try:
             client.health()
+            self._prefer_server_files = True
             return client
-        except AgentError:
+        except ServerError:
             pass
 
         if binary is None:
-            raise AgentError("agent is not running and no `binary` was provided to deploy")
+            raise ServerError("qslib-server is not running and no `binary` was provided to deploy")
 
         # The SYST:EXEC argument is a SCPI double-quoted string that the
         # instrument also passes to a shell and that performs SCPI `$(...)`
@@ -740,7 +751,7 @@ class Machine:
             bad = unsafe & set(value)
             if bad:
                 raise ValueError(
-                    f"ensure_agent {name} contains characters unsafe for SYST:EXEC "
+                    f"ensure_server {name} contains characters unsafe for SYST:EXEC "
                     f"({''.join(sorted(bad))!r}): {value!r}"
                 )
             return value
@@ -748,14 +759,14 @@ class Machine:
         _safe("remote_path", remote_path)
         _safe("listen", listen)
         _safe("file_root", file_root)
-        if self.agent_token:
-            _safe("agent_token", self.agent_token)
+        if self.server_token:
+            _safe("server_token", self.server_token)
         for a in extra_args:
             _safe("extra_arg", a)
 
         data = Path(binary).read_bytes() if isinstance(binary, str) else binary
         args = [remote_path, "--listen", listen, "--file-root", file_root]
-        args += ["--token", self.agent_token] if self.agent_token else ["--no-auth"]
+        args += ["--token", self.server_token] if self.server_token else ["--no-auth"]
         args += list(extra_args)
         cmdline = " ".join(shlex.quote(a) for a in args)
 
@@ -763,17 +774,18 @@ class Machine:
         with self.ensured_connection(AccessLevel.Controller):
             self._deploy_binary(remote_path, data, file_root=file_root)
             self.run_command(f'SYST:EXEC "chmod 755 {shlex.quote(remote_path)}"')
-            # nohup so the agent survives the SYST:EXEC shell exiting.
+            # nohup so qslib-server survives the SYST:EXEC shell exiting.
             self.run_command(f'SYST:EXEC "nohup {cmdline} >/dev/null 2>&1 &"')
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
                 client.health()
+                self._prefer_server_files = True
                 return client
-            except AgentError:
+            except ServerError:
                 time.sleep(0.1)
-        raise AgentError("agent did not become ready after deployment")
+        raise ServerError("qslib-server did not become ready after deployment")
 
     def _deploy_binary(
         self,
@@ -813,15 +825,16 @@ class Machine:
         # Verify: size is universal; md5 only if md5sum exists on the device.
         check = file_root.rstrip("/") + "/.qslib_deploy_check"
         self.run_command(f'SYST:EXEC "( wc -c {q}; md5sum {q} ) > {shlex.quote(check)} 2>/dev/null"')
-        raw = self.read_file(".qslib_deploy_check").decode(errors="replace")
+        # Force SCPI: qslib-server is being deployed, so it is not yet serving.
+        raw = self.read_file(".qslib_deploy_check", fast=False).decode(errors="replace")
         self.run_command(f'SYST:EXEC "rm -f {shlex.quote(check)}"')
 
         if str(len(data)) not in re.findall(r"\d+", raw):
-            raise AgentError(f"binary transfer size mismatch (expected {len(data)} bytes): {raw!r}")
+            raise ServerError(f"binary transfer size mismatch (expected {len(data)} bytes): {raw!r}")
         remote_md5s = re.findall(r"\b[0-9a-f]{32}\b", raw)
         local_md5 = hashlib.md5(data).hexdigest()
         if remote_md5s and local_md5 not in remote_md5s:
-            raise AgentError(f"binary transfer md5 mismatch (expected {local_md5}): {raw!r}")
+            raise ServerError(f"binary transfer md5 mismatch (expected {local_md5}): {raw!r}")
 
     @_ensure_connection(AccessLevel.Controller)
     def write_file(self, path: str, data: str | bytes) -> None:

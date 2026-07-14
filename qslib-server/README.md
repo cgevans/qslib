@@ -7,9 +7,9 @@ the existing localhost plaintext SCPI server (`127.0.0.1:7000`) and a reader of
 the on-disk experiment files; it does **not** modify the InstrumentServer.
 
 Rationale and measurements are in `../llm-research/data-transfer-performance.md`
-and the design in `../llm-plans/instrument-agent.md`. Bulk transfer through the
-agent avoids the base64+TLS overhead of `FILE:READ` over SCPI (~4.7 MB/s) and
-approaches disk/gigabit speed.
+and the design in `../llm-plans/instrument-agent.md`. Bulk transfer through
+qslib-server avoids the base64+TLS overhead of `FILE:READ` over SCPI (~4.7 MB/s)
+and approaches disk/gigabit speed.
 
 ## HTTP API
 
@@ -54,8 +54,8 @@ All options have `--help`. Key ones:
   box, with no routable interface. Confidentiality to remote clients is provided
   downstream (Windows-box TLS terminator + tinc VPN).
 - Bearer-token auth on every route (including the tunnel) by default.
-- SCPI access is still governed by the InstrumentServer; the agent additionally
-  caps elevation at `--max-access`.
+- SCPI access is still governed by the InstrumentServer; qslib-server
+  additionally caps elevation at `--max-access`.
 - `/file` is restricted to `--file-root`, canonicalized, with `..`/absolute and
   symlink escapes rejected.
 - Runs as root (started via `SYST:EXEC`); keep it small and private-interface
@@ -85,44 +85,46 @@ CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=rust-lld \
 The `min-size` profile (`opt-level="z"`, `lto`, `codegen-units=1`, `strip`) is
 defined in the workspace `Cargo.toml` and applies only to `--profile min-size`
 builds. It keeps `panic="unwind"` so a stray panic drops one connection rather
-than the whole root agent.
+than the whole root process.
 
 ## Deployment
 
-The agent is started on demand, mirroring qslib's dropbear pattern. From Python:
+qslib-server is started on demand, mirroring qslib's dropbear pattern. From Python:
 
 ```python
 from qslib.machine import Machine
 
-m = Machine("instr-host", password="…", agent_token="…")   # agent_port defaults to 7500
-m.ensure_agent(
+m = Machine("instr-host", password="…", server_token="…")   # server_port defaults to 7500
+m.ensure_server(
     binary="target/armv7-unknown-linux-musleabihf/min-size/qslib-server",
     listen="169.254.217.190:7500",   # the instrument's private eth0 IP
 )
-data = m.get_file("experiments/…/filterdata.zip")   # fast path, falls back to SCPI
+data = m.read_file("experiments/…/filterdata.zip")   # fast HTTP path, falls back to SCPI
 ```
 
-When `agent_port` is set (default 7500), `Machine` **auto-connects its SCPI session
-through the agent's tunnel** — the client speaks plaintext SCPI over the agent (no
-instrument-side TLS) — and falls back to a direct SSL/TCP connection if the agent is
-not reachable, analogous to the automatic SSL/TCP selection. Pass `agent_port=None` to
-disable the agent entirely.
+When `server_port` is set (default 7500), `Machine` **auto-connects its SCPI session
+through the qslib-server tunnel** — the client speaks plaintext SCPI over qslib-server
+(no instrument-side TLS) — and falls back to a direct SSL/TCP connection if qslib-server
+is not reachable, analogous to the automatic SSL/TCP selection. Pass `server_port=None`
+to disable qslib-server entirely. Once connected (or once `ensure_server` confirms it is
+running), `Machine.read_file` prefers qslib-server's HTTP `/file` transfer, falling back
+to `FILE:READ` over SCPI.
 
-`ensure_agent` streams the binary to the instrument in chunks over SCPI
+`ensure_server` streams the binary to the instrument in chunks over SCPI
 (gzip + base64 via `SYST:EXEC "echo … | base64 -d"`, size/md5-verified — a
 single `FILE:WRITE` is unreliable for large files on some builds), `chmod`s it,
 and launches it in the background with `SYST:EXEC "nohup … &"` (root), then polls
-`/health`. It is idempotent: the agent refuses to double-bind and exits cleanly
+`/health`. It is idempotent: qslib-server refuses to double-bind and exits cleanly
 if the port is already taken.
 
-The agent's HTTP port must be reachable from the client — on the QuantStudio
+qslib-server's HTTP port must be reachable from the client — on the QuantStudio
 fleet the Windows box that fronts each instrument forwards it, e.g. socat
 `TCP-LISTEN:7500,bind=<lab-ip> → TCP:169.254.x.x:7500` (plaintext is fine behind
 the mesh VPN), persisted the same way as the existing `:7443` SCPI forwards.
 
 ## Windows box
 
-Add one forward for the agent port: VPN → `169.254.217.190:AGENTPORT` (plaintext
+Add one forward for the qslib-server port: VPN → `169.254.217.190:SERVERPORT` (plaintext
 TCP is fine behind the tinc VPN + ssh; or TLS-terminate at the box like the
 existing 7443 bridge), plus one inbound firewall allow.
 

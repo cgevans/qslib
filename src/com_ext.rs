@@ -2,7 +2,7 @@
 //! objects (plate setup, filter data, parsed protocol).
 //!
 //! These live in the `qslib` crate rather than `qslib-core` so the core stays
-//! free of Polars/EDS types; the `qslib-server` agent binary does not pull them
+//! free of Polars/EDS types; the `qslib-server` binary does not pull them
 //! in. Each method uses only the public core connection API (send a command,
 //! read a response, fetch an experiment file) and then parses the result into a
 //! qslib type.

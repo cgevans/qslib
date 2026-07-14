@@ -12,13 +12,13 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
-use crate::error::AgentError;
+use crate::error::ServerError;
 use crate::state::AppState;
 
 pub async fn tunnel(
     State(state): State<AppState>,
     mut req: Request,
-) -> Result<Response, AgentError> {
+) -> Result<Response, ServerError> {
     let is_connect = req.method() == Method::CONNECT;
 
     // For a GET upgrade, require the Upgrade request header so we do not hijack
@@ -31,7 +31,7 @@ pub async fn tunnel(
             .map(|v| v.eq_ignore_ascii_case("qslib-scpi"))
             .unwrap_or(false);
         if !wants_upgrade {
-            return Err(AgentError::bad_request(
+            return Err(ServerError::bad_request(
                 "GET /scpi requires `Upgrade: qslib-scpi`; use POST /scpi for one-shot commands",
             ));
         }
@@ -44,11 +44,11 @@ pub async fn tunnel(
         .tunnels
         .clone()
         .try_acquire_owned()
-        .map_err(|_| AgentError::unavailable("too many concurrent SCPI tunnels"))?;
+        .map_err(|_| ServerError::unavailable("too many concurrent SCPI tunnels"))?;
 
     // Fail fast if the SCPI server is unreachable, before upgrading.
     let upstream = TcpStream::connect(state.scpi_target).await.map_err(|e| {
-        AgentError::unavailable(format!(
+        ServerError::unavailable(format!(
             "cannot connect to SCPI server at {}: {e}",
             state.scpi_target
         ))

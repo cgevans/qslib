@@ -2,9 +2,9 @@
 #
 # SPDX-License-Identifier: EUPL-1.2
 
-"""Tests for the AgentClient against the real qslib-server binary.
+"""Tests for the ServerClient against the real qslib-server binary.
 
-These launch the compiled ``qslib-server`` agent (x86 debug build) over
+These launch the compiled ``qslib-server`` binary (x86 debug build) over
 loopback and exercise the HTTP client. The tests skip if the binary has not
 been built (``cargo build -p qslib-server``).
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from qslib.agent import AgentClient, AgentError
+from qslib.server import ServerClient, ServerError
 
 BINARY = Path(__file__).parent.parent / "target" / "debug" / "qslib-server"
 
@@ -29,22 +29,22 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-def _wait_ready(client: AgentClient, timeout: float = 5.0) -> None:
+def _wait_ready(client: ServerClient, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
             client.health()
             return
-        except AgentError:
+        except ServerError:
             time.sleep(0.05)
-    raise TimeoutError("agent did not become ready")
+    raise TimeoutError("server did not become ready")
 
 
 @pytest.fixture
-def agent(tmp_path):
-    """Start a qslib-server agent serving tmp_path, no auth."""
+def server(tmp_path):
+    """Start qslib-server serving tmp_path, no auth."""
     if not BINARY.exists():
-        pytest.skip(f"agent binary not built ({BINARY}); run `cargo build -p qslib-server`")
+        pytest.skip(f"server binary not built ({BINARY}); run `cargo build -p qslib-server`")
     port = _free_port()
     scpi_port = _free_port()  # nothing listening -> scpi_ok False, but /file works
     proc = subprocess.Popen(
@@ -61,7 +61,7 @@ def agent(tmp_path):
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
-    client = AgentClient("127.0.0.1", port=port)
+    client = ServerClient("127.0.0.1", port=port)
     try:
         _wait_ready(client)
         yield client, tmp_path
@@ -73,24 +73,24 @@ def agent(tmp_path):
             proc.kill()
 
 
-def test_health(agent):
-    client, _ = agent
+def test_health(server):
+    client, _ = server
     h = client.health()
     assert h["name"] == "qslib-server"
     assert "version" in h
     assert h["scpi_ok"] is False  # no SCPI server behind it
 
 
-def test_get_file_bytes(agent):
-    client, root = agent
-    data = b"hello agent " * 5000
+def test_get_file_bytes(server):
+    client, root = server
+    data = b"hello server " * 5000
     (root / "sub").mkdir()
     (root / "sub" / "data.bin").write_bytes(data)
     assert client.get_file("sub/data.bin") == data
 
 
-def test_get_file_to_dest(agent, tmp_path):
-    client, root = agent
+def test_get_file_to_dest(server, tmp_path):
+    client, root = server
     data = bytes(range(256)) * 100
     (root / "d.bin").write_bytes(data)
     dest = tmp_path / "out.bin"
@@ -98,16 +98,16 @@ def test_get_file_to_dest(agent, tmp_path):
     assert dest.read_bytes() == data
 
 
-def test_get_file_missing(agent):
-    client, _ = agent
-    with pytest.raises(AgentError) as exc:
+def test_get_file_missing(server):
+    client, _ = server
+    with pytest.raises(ServerError) as exc:
         client.get_file("nope.bin")
     assert exc.value.status == 404
 
 
-def test_get_file_traversal_blocked(agent):
-    client, _ = agent
-    with pytest.raises(AgentError) as exc:
+def test_get_file_traversal_blocked(server):
+    client, _ = server
+    with pytest.raises(ServerError) as exc:
         client.get_file("../../etc/passwd")
     assert exc.value.status in (403, 404)
 
@@ -157,7 +157,7 @@ def test_deploy_binary_chunk_roundtrip(monkeypatch):
     monkeypatch.setattr(Machine, "run_command", fake_run)
     monkeypatch.setattr(Machine, "read_file", fake_read)
 
-    m = Machine("127.0.0.1", agent_port=1)
+    m = Machine("127.0.0.1", server_port=1)
     data = os.urandom(150_003)  # not a multiple of the chunk size
     m._deploy_binary("/data/qslib-server", data, file_root="/froot", chunk_chars=40000)
     assert files["/data/qslib-server"] == data
@@ -167,7 +167,7 @@ def test_deploy_binary_detects_corruption(monkeypatch):
     """If the device file does not match, _deploy_binary raises."""
     import os
 
-    from qslib.agent import AgentError
+    from qslib.server import ServerError
     from qslib.machine import Machine
 
     def fake_run(self, cmd):
@@ -178,23 +178,23 @@ def test_deploy_binary_detects_corruption(monkeypatch):
 
     monkeypatch.setattr(Machine, "run_command", fake_run)
     monkeypatch.setattr(Machine, "read_file", fake_read)
-    m = Machine("127.0.0.1", agent_port=1)
-    with pytest.raises(AgentError):
+    m = Machine("127.0.0.1", server_port=1)
+    with pytest.raises(ServerError):
         m._deploy_binary("/data/qslib-server", os.urandom(1000), file_root="/froot")
 
 
-def test_ensure_agent_rejects_unsafe_exec_values():
-    """ensure_agent must reject values that would break out of the SCPI
+def test_ensure_server_rejects_unsafe_exec_values():
+    """ensure_server must reject values that would break out of the SCPI
     SYST:EXEC string or trigger SCPI/shell substitution."""
     from qslib.machine import Machine
 
-    m = Machine("127.0.0.1", agent_port=_free_port())
+    m = Machine("127.0.0.1", server_port=_free_port())
     with pytest.raises(ValueError):
-        m.ensure_agent(binary=b"stub", listen="1.2.3.4:7500", remote_path='/data/x"; rm -rf /')
+        m.ensure_server(binary=b"stub", listen="1.2.3.4:7500", remote_path='/data/x"; rm -rf /')
     with pytest.raises(ValueError):
-        m.ensure_agent(binary=b"stub", listen="$(reboot)", remote_path="/data/qslib-server")
+        m.ensure_server(binary=b"stub", listen="$(reboot)", remote_path="/data/qslib-server")
     with pytest.raises(ValueError):
-        m.ensure_agent(
+        m.ensure_server(
             binary=b"stub",
             listen="1.2.3.4:7500",
             remote_path="/data/qslib-server",
@@ -202,9 +202,87 @@ def test_ensure_agent_rejects_unsafe_exec_values():
         )
 
 
+def _machine_with_fake_server(monkeypatch, *, get_file):
+    """A non-connecting Machine whose ``server`` is a stub with the given
+    ``get_file`` callable."""
+    from qslib.machine import Machine
+    from qslib import server as server_mod
+
+    class FakeServer:
+        def get_file(self, path):
+            return get_file(path)
+
+    m = Machine("127.0.0.1", automatic=False, server_port=7500)
+    monkeypatch.setattr(type(m), "server", property(lambda self: FakeServer()))
+    return m, server_mod
+
+
+def test_read_file_prefers_server(monkeypatch):
+    """When connected to qslib-server, read_file uses HTTP, not SCPI."""
+    m, _ = _machine_with_fake_server(monkeypatch, get_file=lambda path: b"http:" + path.encode())
+    m._prefer_server_files = True
+
+    def boom(self, command):
+        raise AssertionError("SCPI must not be used when qslib-server is preferred")
+
+    monkeypatch.setattr(type(m), "run_command_to_bytes", boom)
+    assert m.read_file("some/file.bin") == b"http:some/file.bin"
+
+
+def test_read_file_falls_back_to_scpi_on_server_error(monkeypatch):
+    """A qslib-server error falls back to the SCPI path when fallback=True."""
+    import base64
+
+    def raising(path):
+        from qslib.server import ServerError
+
+        raise ServerError("boom", status=500)
+
+    m, _ = _machine_with_fake_server(monkeypatch, get_file=raising)
+    m._prefer_server_files = True
+
+    def fake_scpi(self, command):
+        return b"<quote>\n" + base64.b64encode(b"scpi-data") + b"</quote>"
+
+    monkeypatch.setattr(type(m), "run_command_to_bytes", fake_scpi)
+    assert m.read_file("f.bin") == b"scpi-data"
+
+
+def test_read_file_uses_scpi_when_not_connected_via_server(monkeypatch):
+    """Without a qslib-server connection, read_file uses SCPI and never HTTP."""
+    import base64
+
+    def boom(path):
+        raise AssertionError("HTTP must not be used when qslib-server is not preferred")
+
+    m, _ = _machine_with_fake_server(monkeypatch, get_file=boom)
+    m._prefer_server_files = False
+
+    monkeypatch.setattr(
+        type(m), "run_command_to_bytes", lambda self, c: b"<quote>\n" + base64.b64encode(b"x") + b"</quote>"
+    )
+    assert m.read_file("f.bin") == b"x"
+
+
+def test_read_file_nondefault_context_uses_scpi(monkeypatch):
+    """A non-default context forces SCPI even when qslib-server is preferred."""
+    import base64
+
+    def boom(path):
+        raise AssertionError("HTTP path must not handle a non-default context")
+
+    m, _ = _machine_with_fake_server(monkeypatch, get_file=boom)
+    m._prefer_server_files = True
+
+    monkeypatch.setattr(
+        type(m), "run_command_to_bytes", lambda self, c: b"<quote>\n" + base64.b64encode(b"y") + b"</quote>"
+    )
+    assert m.read_file("f.bin", context="public_run_complete") == b"y"
+
+
 def test_auth_required(tmp_path):
     if not BINARY.exists():
-        pytest.skip("agent binary not built")
+        pytest.skip("server binary not built")
     port = _free_port()
     scpi_port = _free_port()
     (tmp_path / "a.bin").write_bytes(b"x")
@@ -224,17 +302,17 @@ def test_auth_required(tmp_path):
         stderr=subprocess.DEVNULL,
     )
     try:
-        good = AgentClient("127.0.0.1", port=port, token="sekret")
+        good = ServerClient("127.0.0.1", port=port, token="sekret")
         _wait_ready(good)
         assert good.get_file("a.bin") == b"x"
 
-        bad = AgentClient("127.0.0.1", port=port, token="wrong")
-        with pytest.raises(AgentError) as exc:
+        bad = ServerClient("127.0.0.1", port=port, token="wrong")
+        with pytest.raises(ServerError) as exc:
             bad.get_file("a.bin")
         assert exc.value.status == 401
 
-        none = AgentClient("127.0.0.1", port=port)
-        with pytest.raises(AgentError) as exc:
+        none = ServerClient("127.0.0.1", port=port)
+        with pytest.raises(ServerError) as exc:
             none.health()
         assert exc.value.status == 401
     finally:

@@ -1,4 +1,4 @@
-//! Agent error type mapped to HTTP responses with JSON bodies.
+//! qslib-server error type mapped to HTTP responses with JSON bodies.
 
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
@@ -9,7 +9,7 @@ use serde::Serialize;
 /// context; the `header` field, when set, is emitted as an `X-SCPI-Error`
 /// header so scripting clients can distinguish SCPI command errors.
 #[derive(Debug)]
-pub struct AgentError {
+pub struct ServerError {
     pub status: StatusCode,
     pub error: String,
     pub detail: Option<String>,
@@ -23,7 +23,7 @@ struct ErrorBody {
     detail: Option<String>,
 }
 
-impl AgentError {
+impl ServerError {
     pub fn new(status: StatusCode, error: impl Into<String>) -> Self {
         Self {
             status,
@@ -73,7 +73,7 @@ impl AgentError {
     }
 }
 
-impl IntoResponse for AgentError {
+impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
         let mut resp = (
             self.status,

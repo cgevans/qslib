@@ -12,7 +12,7 @@ use serde::Deserialize;
 
 use qslib_core::commands::AccessLevel;
 
-use crate::error::AgentError;
+use crate::error::ServerError;
 use crate::scpi::{run_oneshot, OneShot};
 use crate::state::AppState;
 
@@ -31,9 +31,9 @@ struct ScpiJsonBody {
     encoding: Option<String>,
 }
 
-fn parse_access(s: &str) -> Result<AccessLevel, AgentError> {
+fn parse_access(s: &str) -> Result<AccessLevel, ServerError> {
     AccessLevel::try_from(s.to_string()).map_err(|_| {
-        AgentError::bad_request(format!(
+        ServerError::bad_request(format!(
             "invalid access level `{s}` (expected Guest|Observer|Controller|Administrator|Full)"
         ))
     })
@@ -52,10 +52,10 @@ pub async fn post_scpi(
     Query(query): Query<ScpiQuery>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Response, AgentError> {
+) -> Result<Response, ServerError> {
     let (command, access_str, timeout_ms, encoding) = if is_json(&headers) {
         let parsed: ScpiJsonBody = serde_json::from_slice(&body)
-            .map_err(|e| AgentError::bad_request(format!("invalid JSON body: {e}")))?;
+            .map_err(|e| ServerError::bad_request(format!("invalid JSON body: {e}")))?;
         (
             parsed.command,
             parsed.access.or(query.access),
@@ -64,14 +64,14 @@ pub async fn post_scpi(
         )
     } else {
         let cmd = std::str::from_utf8(&body)
-            .map_err(|_| AgentError::bad_request("request body is not valid UTF-8"))?
+            .map_err(|_| ServerError::bad_request("request body is not valid UTF-8"))?
             .trim()
             .to_string();
         (cmd, query.access, query.timeout_ms, query.encoding)
     };
 
     if command.is_empty() {
-        return Err(AgentError::bad_request("empty SCPI command"));
+        return Err(ServerError::bad_request("empty SCPI command"));
     }
     // A one-shot command is a single line: the connection frames it with a
     // trailing newline and reads exactly one response. An interior newline
@@ -80,7 +80,7 @@ pub async fn post_scpi(
     // response stream. Reject them; multi-command / multiline-quoted sessions
     // must use the streaming tunnel.
     if command.contains(['\n', '\r']) {
-        return Err(AgentError::bad_request(
+        return Err(ServerError::bad_request(
             "SCPI command must be a single line (no CR/LF); use the /scpi tunnel for multi-command or multiline sessions",
         ));
     }
@@ -95,7 +95,7 @@ pub async fn post_scpi(
     let (eff_access, result) = run_oneshot(&state, &command, access, timeout_ms).await?;
 
     match result {
-        OneShot::ScpiError(err) => Err(AgentError::scpi(err.to_string())),
+        OneShot::ScpiError(err) => Err(ServerError::scpi(err.to_string())),
         OneShot::Ok(ok) => {
             let mut resp_headers = HeaderMap::new();
             resp_headers.insert("X-SCPI-Status", HeaderValue::from_static("OK"));
@@ -105,7 +105,7 @@ pub async fn post_scpi(
             if want_bytes {
                 let mut buf = Vec::new();
                 ok.write_bytes(&mut buf)
-                    .map_err(|e| AgentError::internal(format!("failed to encode response: {e}")))?;
+                    .map_err(|e| ServerError::internal(format!("failed to encode response: {e}")))?;
                 resp_headers.insert(
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/octet-stream"),

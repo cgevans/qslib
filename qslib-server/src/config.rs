@@ -1,4 +1,4 @@
-//! Agent configuration and command-line parsing.
+//! qslib-server configuration and command-line parsing.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use clap::Parser;
 use qslib_core::commands::AccessLevel;
 
-/// On-instrument HTTP transport/command agent for QuantStudio machines.
+/// On-instrument HTTP transport/command service for QuantStudio machines.
 ///
 /// Serves, over plain HTTP on a single private-interface port: bulk file
 /// transfer straight off disk (`/file`), a one-shot SCPI command call

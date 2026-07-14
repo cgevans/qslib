@@ -1142,24 +1142,24 @@ impl QSConnection {
         Self::run_plaintext_session(stream, host, port, ConnectionType::TCP).await
     }
 
-    /// Connect to a QuantStudio through a `qslib-server` agent's SCPI tunnel.
+    /// Connect to a QuantStudio through a `qslib-server` SCPI tunnel.
     ///
-    /// Opens a plain TCP connection to the agent, performs the HTTP
+    /// Opens a plain TCP connection to qslib-server, performs the HTTP
     /// `Upgrade: qslib-scpi` handshake, and then runs a normal plaintext SCPI
-    /// session over the upgraded stream (the agent splices it to the
-    /// instrument's `127.0.0.1:7000`). `token` is the agent bearer token, if it
-    /// requires one.
-    pub async fn connect_agent_tunnel(
-        agent_host: &str,
-        agent_port: u16,
+    /// session over the upgraded stream (qslib-server splices it to the
+    /// instrument's `127.0.0.1:7000`). `token` is the qslib-server bearer token,
+    /// if it requires one.
+    pub async fn connect_server_tunnel(
+        server_host: &str,
+        server_port: u16,
         token: Option<&str>,
     ) -> Result<QSConnection, ConnectionError> {
         use tokio::io::AsyncReadExt;
 
-        let mut stream = TcpStream::connect((agent_host, agent_port)).await?;
+        let mut stream = TcpStream::connect((server_host, server_port)).await?;
 
         let mut req = format!(
-            "GET /scpi HTTP/1.1\r\nHost: {agent_host}:{agent_port}\r\n\
+            "GET /scpi HTTP/1.1\r\nHost: {server_host}:{server_port}\r\n\
              Connection: Upgrade\r\nUpgrade: qslib-scpi\r\n"
         );
         if let Some(t) = token {
@@ -1180,7 +1180,7 @@ impl QSConnection {
             if n == 0 {
                 return Err(ConnectionError::IOError(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
-                    "agent closed connection during SCPI tunnel upgrade",
+                    "qslib-server closed connection during SCPI tunnel upgrade",
                 )));
             }
             headers.push(one[0]);
@@ -1190,7 +1190,7 @@ impl QSConnection {
             if headers.len() > 8192 {
                 return Err(ConnectionError::IOError(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "agent upgrade response headers too large",
+                    "qslib-server upgrade response headers too large",
                 )));
             }
         }
@@ -1199,17 +1199,17 @@ impl QSConnection {
         if !status_line.contains(" 101 ") {
             return Err(ConnectionError::IOError(std::io::Error::new(
                 std::io::ErrorKind::ConnectionRefused,
-                format!("agent did not open SCPI tunnel (response: {status_line:?})"),
+                format!("qslib-server did not open SCPI tunnel (response: {status_line:?})"),
             )));
         }
 
-        Self::run_plaintext_session(stream, agent_host, agent_port, ConnectionType::TCP).await
+        Self::run_plaintext_session(stream, server_host, server_port, ConnectionType::TCP).await
     }
 
     /// Run a plaintext SCPI session over an already-connected stream: read the
     /// ready greeting, split the stream, and spawn the receive loop. Shared by
     /// [`connect_tcp`](Self::connect_tcp) and
-    /// [`connect_agent_tunnel`](Self::connect_agent_tunnel).
+    /// [`connect_server_tunnel`](Self::connect_server_tunnel).
     async fn run_plaintext_session(
         stream: TcpStream,
         host: &str,

@@ -9,8 +9,8 @@ use qslib_server::state::AppState;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// Spawn the agent router on an ephemeral loopback port; return its address.
-async fn spawn_agent(state: AppState) -> SocketAddr {
+/// Spawn the qslib-server router on an ephemeral loopback port; return its address.
+async fn spawn_server(state: AppState) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = qslib_server::build_router(state);
@@ -117,7 +117,7 @@ async fn setup(token: Option<&str>) -> (SocketAddr, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let cfg = test_config(scpi, dir.path().to_path_buf(), token.map(|s| s.to_string()));
     let state = AppState::new(&cfg, cfg.resolve_token().unwrap()).unwrap();
-    let addr = spawn_agent(state).await;
+    let addr = spawn_server(state).await;
     (addr, dir)
 }
 
@@ -321,8 +321,8 @@ async fn scpi_rejects_newline_injection() {
 async fn scpi_tunnel_connects_and_runs() {
     use std::time::Duration;
     let (addr, _dir) = setup(None).await;
-    // Connect a real QSConnection through the agent's SCPI tunnel.
-    let conn = qslib_core::com::QSConnection::connect_agent_tunnel(
+    // Connect a real QSConnection through the qslib-server SCPI tunnel.
+    let conn = qslib_core::com::QSConnection::connect_server_tunnel(
         &addr.ip().to_string(),
         addr.port(),
         None,

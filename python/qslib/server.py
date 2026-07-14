@@ -2,16 +2,17 @@
 #
 # SPDX-License-Identifier: EUPL-1.2
 
-"""Client for the on-instrument ``qslib-server`` HTTP agent.
+"""Client for the on-instrument ``qslib-server`` HTTP service.
 
-The agent (see the ``qslib-server`` crate) serves bulk file transfer, one-shot
-SCPI commands, and a SCPI tunnel over plain HTTP on the instrument's private
-link. This module is a small, dependency-free (stdlib ``urllib``) client for it.
+``qslib-server`` (see the ``qslib-server`` crate) runs on the instrument and
+serves bulk file transfer, one-shot SCPI commands, and a SCPI tunnel over plain
+HTTP on the instrument's private link. This module is a small, dependency-free
+(stdlib ``urllib``) client for it.
 
-The agent is an optional acceleration layer: bulk transfer through it avoids the
-base64+TLS overhead of ``FILE:READ`` over SCPI. Everything degrades to the
-normal SCPI path (:meth:`qslib.machine.Machine.read_file`) when the agent is not
-running.
+qslib-server is an optional acceleration layer: bulk transfer through it avoids
+the base64+TLS overhead of ``FILE:READ`` over SCPI. Everything degrades to the
+normal SCPI path (:meth:`qslib.machine.Machine.read_file`) when qslib-server is
+not running.
 """
 
 from __future__ import annotations
@@ -25,11 +26,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any, BinaryIO
 
-__all__ = ["AgentClient", "AgentError"]
+__all__ = ["ServerClient", "ServerError"]
 
 
-class AgentError(RuntimeError):
-    """An error returned by, or while contacting, the agent."""
+class ServerError(RuntimeError):
+    """An error returned by, or while contacting, qslib-server."""
 
     def __init__(self, message: str, status: int | None = None, detail: str | None = None):
         super().__init__(message)
@@ -38,18 +39,18 @@ class AgentError(RuntimeError):
 
 
 @dataclass
-class AgentClient:
-    """A client for a running ``qslib-server`` agent.
+class ServerClient:
+    """A client for a running ``qslib-server``.
 
     Parameters
     ----------
     host
-        Host or IP of the agent (typically reached through the Windows-box
+        Host or IP of qslib-server (typically reached through the Windows-box
         forward / VPN, or directly on the private link).
     port
-        Agent port (default 7500).
+        qslib-server port (default 7500).
     token
-        Bearer token, if the agent requires one.
+        Bearer token, if qslib-server requires one.
     timeout
         Default request timeout in seconds.
     """
@@ -81,29 +82,29 @@ class AgentClient:
             except Exception:
                 pass
             message, detail = _parse_error_body(body, default=str(e))
-            raise AgentError(message, status=e.code, detail=detail) from e
+            raise ServerError(message, status=e.code, detail=detail) from e
         except urllib.error.URLError as e:
-            raise AgentError(f"cannot reach agent at {self.base_url}: {e.reason}") from e
+            raise ServerError(f"cannot reach qslib-server at {self.base_url}: {e.reason}") from e
 
     # -- endpoints ---------------------------------------------------------
 
     def health(self) -> dict[str, Any]:
-        """Return the agent's ``/health`` document."""
+        """Return qslib-server's ``/health`` document."""
         req = urllib.request.Request(f"{self.base_url}/health", headers=self._headers(), method="GET")
         with self._open(req) as resp:
             raw = resp.read()
         try:
             return json.loads(raw.decode())
         except (ValueError, UnicodeDecodeError) as e:
-            # Not the agent (or a proxy error page): surface as AgentError so
-            # available()/ensure_agent degrade gracefully rather than raising.
-            raise AgentError("agent /health returned a non-JSON body") from e
+            # Not qslib-server (or a proxy error page): surface as ServerError so
+            # available()/ensure_server degrade gracefully rather than raising.
+            raise ServerError("qslib-server /health returned a non-JSON body") from e
 
     def available(self) -> bool:
-        """Return True if the agent responds to ``/health`` (and SCPI is up)."""
+        """Return True if qslib-server responds to ``/health`` (and SCPI is up)."""
         try:
             h = self.health()
-        except AgentError:
+        except ServerError:
             return False
         return bool(h.get("scpi_ok", True))
 
@@ -113,12 +114,12 @@ class AgentClient:
         dest: str | Path | BinaryIO | None = None,
         chunk_size: int = 1 << 20,
     ) -> bytes | None:
-        """Fetch a file under the agent's file root.
+        """Fetch a file under qslib-server's file root.
 
         Parameters
         ----------
         path
-            Path relative to the agent's configured ``--file-root``.
+            Path relative to qslib-server's configured ``--file-root``.
         dest
             If given, stream the file to this path or open binary file object
             and return ``None``. If ``None``, return the file contents as bytes.
@@ -145,7 +146,7 @@ class AgentClient:
         timeout_ms: int | None = None,
         encoding: str = "text",
     ) -> str | bytes:
-        """Run a single SCPI command through the agent and return its response.
+        """Run a single SCPI command through qslib-server and return its response.
 
         With ``encoding="bytes"`` the raw response bytes are returned; otherwise
         the response text after ``OK`` is returned as a string.

@@ -1,4 +1,4 @@
-//! qslib-server: on-instrument HTTP transport/command agent.
+//! qslib-server: on-instrument HTTP transport/command service.
 //!
 //! Binds one port on the private link and serves, over plain HTTP: bulk file
 //! transfer off disk (`/file`), a one-shot SCPI command (`/scpi`), a streaming
@@ -26,7 +26,7 @@ use tracing::{info, warn};
 use crate::config::Config;
 use crate::state::AppState;
 
-/// Build the agent's HTTP router with bearer-token auth applied to every route.
+/// Build the qslib-server HTTP router with bearer-token auth applied to every route.
 pub fn build_router(state: AppState) -> Router {
     Router::new()
         .route("/health", get(health::health))
@@ -53,7 +53,7 @@ pub async fn run(config: Config, state: AppState) -> anyhow::Result<()> {
         Ok(l) => l,
         Err(e) if e.kind() == ErrorKind::AddrInUse => {
             info!(
-                "address {} already in use; assuming an agent is already running",
+                "address {} already in use; assuming qslib-server is already running",
                 config.listen
             );
             return Ok(());
@@ -119,7 +119,7 @@ pub fn init_logging(config: &Config) -> anyhow::Result<()> {
     };
 
     // No ANSI: the `ansi` crate feature is intentionally excluded to keep the
-    // agent binary small; logs go to stderr or a file, where colors are noise.
+    // qslib-server binary small; logs go to stderr or a file, where colors are noise.
     if tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_writer(writer)

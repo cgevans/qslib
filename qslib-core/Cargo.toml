@@ -37,7 +37,7 @@ memchr = { version = "2.7", optional = true }
 # come from the depending `qslib` crate; core only needs the derives.
 pyo3 = { version = "0.26", optional = true, features = ["anyhow", "multiple-pymethods"] }
 
-# Optional: TLS client (rustls/ring). Off by default so the agent cross-compiles
+# Optional: TLS client (rustls/ring). Off by default so qslib-server cross-compiles
 # to static musl without C/crypto deps.
 rustls = { version = "0.23.20", features = ["ring"], default-features = false, optional = true }
 rustls-pki-types = { version = "1.10.1", optional = true }
