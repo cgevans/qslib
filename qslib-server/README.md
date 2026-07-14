@@ -82,9 +82,10 @@ CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER=rust-lld \
 # → target/armv7-unknown-linux-musleabihf/min-size/qslib-server (static, stripped)
 ```
 
-The `min-size` profile (`opt-level="z"`, `lto`, `codegen-units=1`,
-`panic="abort"`, `strip`) is defined in the workspace `Cargo.toml` and applies
-only to `--profile min-size` builds.
+The `min-size` profile (`opt-level="z"`, `lto`, `codegen-units=1`, `strip`) is
+defined in the workspace `Cargo.toml` and applies only to `--profile min-size`
+builds. It keeps `panic="unwind"` so a stray panic drops one connection rather
+than the whole root agent.
 
 ## Deployment
 

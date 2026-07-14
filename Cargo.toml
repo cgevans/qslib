@@ -8,12 +8,15 @@ version = "0.15.2"
 # Size-optimized profile for the cross-compiled agent binary. Applied only when
 # built with `--profile min-size` (e.g. the armv7 musl agent build), so the
 # normal `release` profile for qslib/qs-monitor is unaffected.
+#
+# Keeps `panic = "unwind"` (the default) rather than "abort": the agent runs as
+# root on a hard-to-update fleet, so a stray panic should drop one connection,
+# not the whole server. The extra unwind tables cost a few hundred KB.
 [profile.min-size]
 inherits = "release"
 opt-level = "z"
 lto = true
 codegen-units = 1
-panic = "abort"
 strip = true
 
 [package]
