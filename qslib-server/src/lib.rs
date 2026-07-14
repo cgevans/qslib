@@ -15,9 +15,11 @@ pub mod scpi;
 pub mod scpi_http;
 pub mod state;
 pub mod tunnel;
+pub mod upgrade;
 
 use std::io::ErrorKind;
 
+use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 use tokio::net::TcpListener;
@@ -36,8 +38,16 @@ pub fn build_router(state: AppState) -> Router {
                 .get(tunnel::tunnel)
                 .connect(tunnel::tunnel),
         )
-        .route("/file/{*path}", get(file::serve_file).head(file::serve_file))
+        .route(
+            "/file/{*path}",
+            get(file::serve_file).head(file::serve_file),
+        )
         .route("/list/{*path}", get(file::list_dir))
+        // The uploaded binary is several MB — well over axum's 2 MB default.
+        .route(
+            "/upgrade",
+            post(upgrade::upgrade).layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
+        )
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::require_bearer,
@@ -50,7 +60,7 @@ pub fn build_router(state: AppState) -> Router {
 pub async fn run(config: Config, state: AppState) -> anyhow::Result<()> {
     let app = build_router(state);
 
-    let listener = match TcpListener::bind(config.listen).await {
+    let listener = match bind_reuseaddr(config.listen).await {
         Ok(l) => l,
         Err(e) if e.kind() == ErrorKind::AddrInUse => {
             info!(
@@ -74,6 +84,20 @@ pub async fn run(config: Config, state: AppState) -> anyhow::Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
     Ok(())
+}
+
+/// Bind a TCP listener with `SO_REUSEADDR` so an `/upgrade` restart can rebind
+/// the port immediately after the old process exits (avoiding a `TIME_WAIT`
+/// `EADDRINUSE`), rather than the plain `TcpListener::bind` default.
+async fn bind_reuseaddr(addr: std::net::SocketAddr) -> std::io::Result<TcpListener> {
+    let socket = if addr.is_ipv4() {
+        tokio::net::TcpSocket::new_v4()?
+    } else {
+        tokio::net::TcpSocket::new_v6()?
+    };
+    socket.set_reuseaddr(true)?;
+    socket.bind(addr)?;
+    socket.listen(1024)
 }
 
 async fn shutdown_signal() {

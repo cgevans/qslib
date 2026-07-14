@@ -878,6 +878,65 @@ class Machine:
                 time.sleep(0.1)
         raise ServerError("qslib-server did not become ready after deployment")
 
+    def upgrade_server(
+        self,
+        binary: str | bytes,
+        *,
+        timeout: float = 60.0,
+        poll_interval: float = 0.5,
+    ) -> ServerClient:
+        """Upgrade the running ``qslib-server`` to ``binary`` over HTTP.
+
+        Unlike :meth:`ensure_server` (which deploys over SCPI and only helps when
+        nothing is running), this replaces an *already running* qslib-server
+        through its own ``/upgrade`` endpoint: the binary is uploaded raw (fast,
+        no base64+SCPI), verified by SHA-256 and a ``--version`` run on the
+        instrument, installed atomically, and the server restarts into it —
+        rolling back to the previous binary if the new one fails to start.
+
+        Success is confirmed by polling ``/health`` until the running
+        ``exe_sha256`` equals the uploaded binary's hash; a persistent old hash
+        means the instrument rolled back, and this raises. Returns the
+        :class:`~qslib.server.ServerClient` on success.
+
+        This needs qslib-server already running (use :meth:`ensure_server` to
+        bootstrap). No SCPI/Controller access is required.
+        """
+        if self.server_port is None:
+            raise ValueError("server_port must be set on the Machine to upgrade qslib-server")
+        client = self.server
+        assert client is not None
+
+        data = Path(binary).read_bytes() if isinstance(binary, str) else binary
+        new_sha = hashlib.sha256(data).hexdigest()
+
+        current = client.health()  # also confirms it is running
+        if current.get("exe_sha256") == new_sha:
+            log.info("qslib-server already running the requested build (%s)", new_sha[:12])
+            self._prefer_server_files = True
+            return client
+
+        log.info("upgrading qslib-server %s -> %s", current.get("exe_sha256", "?")[:12], new_sha[:12])
+        client.upgrade(data)  # server verifies, installs, and restarts into the new binary
+
+        deadline = time.monotonic() + timeout
+        last: str | None = None
+        while time.monotonic() < deadline:
+            try:
+                h = client.health()
+                last = h.get("exe_sha256")
+                if last == new_sha:
+                    self._prefer_server_files = True
+                    log.info("qslib-server upgrade confirmed (%s)", new_sha[:12])
+                    return client
+            except ServerError:
+                pass  # server is restarting; keep polling
+            time.sleep(poll_interval)
+        raise ServerError(
+            f"qslib-server upgrade did not take effect within {timeout}s "
+            f"(running {last!r}, expected {new_sha}); it may have rolled back to the previous build"
+        )
+
     def _deploy_binary(
         self,
         remote_path: str,

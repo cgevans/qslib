@@ -17,6 +17,7 @@ not running.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import posixpath
 import shutil
@@ -266,6 +267,30 @@ class ServerClient:
         with self._open(req, timeout=(timeout_ms / 1000.0 + 5.0) if timeout_ms else None) as resp:
             data = resp.read()
         return data if encoding == "bytes" else data.decode()
+
+    def upgrade(self, binary: bytes, *, dry_run: bool = False, timeout: float = 120.0) -> dict[str, Any]:
+        """Upload a new qslib-server binary via ``POST /upgrade``.
+
+        The server verifies the SHA-256 (sent in ``x-qslib-sha256``) and that the
+        binary runs (``--version``); unless ``dry_run`` it then installs it
+        atomically and restarts into it, rolling back to the previous binary if
+        the new one fails to start. Returns the server's JSON response. With
+        ``dry_run`` the binary is only verified, not installed.
+
+        The connection typically drops as the server restarts; confirm the new
+        build is live by polling :meth:`health` for the uploaded ``exe_sha256``
+        (see :meth:`qslib.machine.Machine.upgrade_server`).
+        """
+        sha = hashlib.sha256(binary).hexdigest()
+        url = f"{self.base_url}/upgrade" + ("?dry_run=1" if dry_run else "")
+        req = urllib.request.Request(
+            url,
+            data=binary,
+            headers=self._headers({"Content-Type": "application/octet-stream", "x-qslib-sha256": sha}),
+            method="POST",
+        )
+        with self._open(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode())
 
 
 def _parse_error_body(body: bytes, default: str) -> tuple[str, str | None]:

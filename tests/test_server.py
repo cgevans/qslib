@@ -165,6 +165,67 @@ def test_download_dir_reproduces_zipread_tree(server, tmp_path):
     assert got == expected
 
 
+def test_upgrade_dry_run_verifies_real_binary(server):
+    """ServerClient.upgrade(dry_run=True) verifies a real binary end to end
+    (sha + ELF + --version) without installing or restarting."""
+    import hashlib
+
+    client, _ = server
+    data = BINARY.read_bytes()
+    resp = client.upgrade(data, dry_run=True)
+    assert resp["status"] == "verified"
+    assert resp["dry_run"] is True
+    assert resp["sha256"] == hashlib.sha256(data).hexdigest()
+    # server keeps running the same build (nothing swapped)
+    assert client.health()["exe_sha256"] == resp["old_sha256"]
+
+
+def test_machine_upgrade_server_confirms_by_hash(monkeypatch):
+    """upgrade_server uploads, then polls /health until exe_sha256 matches."""
+    import hashlib
+
+    from qslib.machine import Machine
+
+    data = b"\x7fELF" + b"payload" * 100
+    box = {"sha": "0" * 64}
+
+    class FakeServer:
+        def health(self):
+            return {"exe_sha256": box["sha"], "file_root": "/"}
+
+        def upgrade(self, b, **k):
+            box["sha"] = hashlib.sha256(b).hexdigest()  # server restarts into it
+            return {"status": "upgrading"}
+
+    fake = FakeServer()
+    m = Machine("127.0.0.1", automatic=False, server_port=7500)
+    monkeypatch.setattr(type(m), "server", property(lambda self: fake))
+    assert m.upgrade_server(data) is fake
+    assert m._prefer_server_files is True
+
+
+def test_machine_upgrade_server_raises_on_rollback(monkeypatch):
+    """If the running hash never becomes the uploaded one (rollback), it raises."""
+    import hashlib
+
+    from qslib.machine import Machine
+
+    data = b"\x7fELFxyz"
+
+    class FakeServer:
+        def health(self):
+            return {"exe_sha256": "0" * 64}  # never changes -> rolled back
+
+        def upgrade(self, b, **k):
+            return {"status": "upgrading"}
+
+    m = Machine("127.0.0.1", automatic=False, server_port=7500)
+    monkeypatch.setattr(type(m), "server", property(lambda self: FakeServer()))
+    with pytest.raises(ServerError):
+        m.upgrade_server(data, timeout=1.0, poll_interval=0.1)
+    assert hashlib.sha256(data).hexdigest()  # (sanity: data hashable)
+
+
 def test_health_on_dead_port_raises_servererror():
     """A connection reset/refusal (server down) surfaces as ServerError, not a
     raw OSError, so available()/ensure_server degrade gracefully."""

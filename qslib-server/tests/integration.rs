@@ -219,6 +219,69 @@ async fn list_dir_missing_is_404() {
 }
 
 #[tokio::test]
+async fn upgrade_dry_run_verifies_a_real_binary() {
+    let (addr, _dir) = setup(None).await;
+    let bin = std::fs::read(env!("CARGO_BIN_EXE_qslib-server")).unwrap();
+    let sha = qslib_server::state::sha256_hex(&bin);
+
+    let resp = client()
+        .post(format!("http://{addr}/upgrade?dry_run=1"))
+        .header("x-qslib-sha256", &sha)
+        .body(bin)
+        .send()
+        .await
+        .unwrap();
+    let status = resp.status();
+    let text = resp.text().await.unwrap();
+    assert_eq!(status, 200, "body: {text}");
+    let j: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(j["status"], "verified");
+    assert_eq!(j["dry_run"], true);
+    assert_eq!(j["sha256"], sha);
+}
+
+#[tokio::test]
+async fn upgrade_rejects_sha_mismatch() {
+    let (addr, _dir) = setup(None).await;
+    let bin = std::fs::read(env!("CARGO_BIN_EXE_qslib-server")).unwrap();
+    let resp = client()
+        .post(format!("http://{addr}/upgrade?dry_run=1"))
+        .header("x-qslib-sha256", "0".repeat(64))
+        .body(bin)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn upgrade_requires_sha_header() {
+    let (addr, _dir) = setup(None).await;
+    let resp = client()
+        .post(format!("http://{addr}/upgrade?dry_run=1"))
+        .body(vec![0x7f, b'E', b'L', b'F', 1, 2, 3])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn upgrade_rejects_non_elf() {
+    let (addr, _dir) = setup(None).await;
+    let junk = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+    let sha = qslib_server::state::sha256_hex(&junk);
+    let resp = client()
+        .post(format!("http://{addr}/upgrade?dry_run=1"))
+        .header("x-qslib-sha256", &sha)
+        .body(junk)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
 async fn file_range_request() {
     let (addr, dir) = setup(None).await;
     let content: Vec<u8> = (0u8..=255).collect();

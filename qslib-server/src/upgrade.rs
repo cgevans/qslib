@@ -1,0 +1,277 @@
+//! `POST /upgrade` — replace the running binary in place, then restart into it.
+//!
+//! Robustness is layered so a bad upload can never leave the instrument without
+//! a server:
+//!   1. The body's SHA-256 must match the client-supplied `x-qslib-sha256`.
+//!   2. The bytes must start with the ELF magic.
+//!   3. The new binary is written next to the current one, `chmod +x`, and
+//!      **run with `--version`** — if it does not execute cleanly on this
+//!      instrument (wrong arch, corrupt, missing loader) the upgrade is refused
+//!      *before* anything is swapped.
+//!   4. The current binary is copied to `<exe>.bak`, then the new one is moved
+//!      into place with an atomic `rename` (same directory / filesystem).
+//!   5. A detached watchdog (`sh`, its own session) takes over: it stops this
+//!      process, launches the new binary with the same argv, and — if the new
+//!      process dies within a few seconds — restores `<exe>.bak` and relaunches
+//!      it. The watchdog survives this process and the triggering HTTP
+//!      connection closing.
+//!
+//! The client confirms success by polling `/health` until `exe_sha256` equals
+//! the hash it uploaded (a persistent old hash means the watchdog rolled back).
+//!
+//! `?dry_run=1` runs steps 1–3 and reports the result without swapping or
+//! restarting — used by tests and for a safe pre-flight check.
+
+use std::os::unix::fs::PermissionsExt;
+use std::os::unix::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+use axum::body::Bytes;
+use axum::extract::{Query, State};
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde::Deserialize;
+
+use crate::error::ServerError;
+use crate::state::{sha256_hex, AppState};
+
+#[derive(Deserialize)]
+pub struct UpgradeParams {
+    /// `?dry_run=1` / `true` verifies without installing. Accepted as a string
+    /// so `1`, `true`, `yes` all work (a bare `bool` would reject `1`).
+    pub dry_run: Option<String>,
+}
+
+impl UpgradeParams {
+    fn is_dry_run(&self) -> bool {
+        matches!(
+            self.dry_run
+                .as_deref()
+                .map(|s| s.trim().to_ascii_lowercase())
+                .as_deref(),
+            Some("1" | "true" | "yes" | "on")
+        )
+    }
+}
+
+pub async fn upgrade(
+    State(state): State<AppState>,
+    Query(params): Query<UpgradeParams>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, ServerError> {
+    let exe = state.exe_path.clone();
+    if exe.as_os_str().is_empty() {
+        return Err(ServerError::internal(
+            "cannot upgrade: the running executable path is unknown",
+        ));
+    }
+
+    let expected = headers
+        .get("x-qslib-sha256")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.trim().to_ascii_lowercase())
+        .ok_or_else(|| ServerError::bad_request("missing x-qslib-sha256 header"))?;
+    if expected.len() != 64 || !expected.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ServerError::bad_request(
+            "x-qslib-sha256 must be a 64-char hex SHA-256",
+        ));
+    }
+
+    if body.is_empty() {
+        return Err(ServerError::bad_request("empty upgrade body"));
+    }
+    let received = sha256_hex(&body);
+    if received != expected {
+        return Err(ServerError::bad_request(format!(
+            "sha256 mismatch: got {received}, expected {expected}"
+        )));
+    }
+    if body.get(0..4) != Some(b"\x7fELF") {
+        return Err(ServerError::bad_request("upload is not an ELF binary"));
+    }
+
+    // Stage the new binary next to the current one (same filesystem, so the
+    // final rename is atomic). The temp name is process-unique.
+    let dir = exe.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = exe
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("qslib-server");
+    let tmp = dir.join(format!(".{file_name}.upgrade.{}", std::process::id()));
+
+    let result = stage_and_maybe_swap(&exe, &tmp, &body, params.is_dry_run()).await;
+    if result.is_err() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+    }
+    result?;
+
+    if params.is_dry_run() {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Ok(Json(serde_json::json!({
+            "status": "verified",
+            "dry_run": true,
+            "sha256": received,
+            "old_sha256": state.exe_sha256,
+        }))
+        .into_response());
+    }
+
+    // At this point the new binary is in place; hand off to the watchdog.
+    spawn_restart_watchdog(&exe, &state.restart_args)?;
+
+    Ok(Json(serde_json::json!({
+        "status": "upgrading",
+        "sha256": received,
+        "old_sha256": state.exe_sha256,
+        "restarting": true,
+    }))
+    .into_response())
+}
+
+/// Write the staged binary, verify it runs (`--version`), and — unless
+/// `dry_run` — back up the current exe and atomically swap the new one in.
+async fn stage_and_maybe_swap(
+    exe: &Path,
+    tmp: &Path,
+    body: &Bytes,
+    dry_run: bool,
+) -> Result<(), ServerError> {
+    tokio::fs::write(tmp, body)
+        .await
+        .map_err(|e| ServerError::internal(format!("failed to write staged binary: {e}")))?;
+    tokio::fs::set_permissions(tmp, std::fs::Permissions::from_mode(0o755))
+        .await
+        .map_err(|e| ServerError::internal(format!("failed to chmod staged binary: {e}")))?;
+
+    // Prove it actually runs on this instrument before committing to it.
+    let tmp_owned = tmp.to_path_buf();
+    let version_ok = tokio::task::spawn_blocking(move || {
+        Command::new(&tmp_owned)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    })
+    .await
+    .map_err(|e| ServerError::internal(format!("version pre-check join error: {e}")))?;
+    if !version_ok {
+        return Err(ServerError::bad_request(
+            "uploaded binary failed `--version` (wrong architecture or corrupt); not installed",
+        ));
+    }
+
+    if dry_run {
+        return Ok(());
+    }
+
+    let bak = with_suffix(exe, ".bak");
+    tokio::fs::copy(exe, &bak)
+        .await
+        .map_err(|e| ServerError::internal(format!("failed to back up current binary: {e}")))?;
+    tokio::fs::rename(tmp, exe)
+        .await
+        .map_err(|e| ServerError::internal(format!("failed to install new binary: {e}")))?;
+    Ok(())
+}
+
+/// Spawn a detached `sh` watchdog that stops this process, launches the new
+/// binary with `args`, and rolls back to `<exe>.bak` if it dies immediately.
+fn spawn_restart_watchdog(exe: &Path, args: &[String]) -> Result<(), ServerError> {
+    let exe_s = exe.to_string_lossy();
+    let bak_s = with_suffix(exe, ".bak").to_string_lossy().into_owned();
+    let log_s = with_suffix(exe, ".log").to_string_lossy().into_owned();
+    let args_q = args.iter().map(|a| shq(a)).collect::<Vec<_>>().join(" ");
+    let exe_q = shq(&exe_s);
+    let pid = std::process::id();
+
+    // The 1s sleep lets the 200 response flush before we stop this process.
+    let script = format!(
+        "sleep 1\n\
+         kill {pid} 2>/dev/null\n\
+         n=0\n\
+         while kill -0 {pid} 2>/dev/null && [ $n -lt 20 ]; do sleep 0.25; n=$((n+1)); done\n\
+         kill -9 {pid} 2>/dev/null\n\
+         sleep 0.5\n\
+         {exe_q} {args_q} >>{log} 2>&1 &\n\
+         np=$!\n\
+         sleep 3\n\
+         if kill -0 $np 2>/dev/null; then exit 0; fi\n\
+         cp -f {bak} {exe_q}\n\
+         exec {exe_q} {args_q} >>{log} 2>&1\n",
+        log = shq(&log_s),
+        bak = shq(&bak_s),
+    );
+
+    let mut cmd = Command::new("sh");
+    cmd.arg("-c")
+        .arg(&script)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    // Detach into its own session so it outlives this process and has no
+    // controlling terminal (no SIGHUP when we exit).
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::setsid();
+            Ok(())
+        });
+    }
+    cmd.spawn()
+        .map_err(|e| ServerError::internal(format!("failed to spawn restart watchdog: {e}")))?;
+    Ok(())
+}
+
+/// `path` with `suffix` appended to its file name (`/a/b` + `.bak` -> `/a/b.bak`).
+fn with_suffix(path: &Path, suffix: &str) -> PathBuf {
+    let mut name = path
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_default();
+    name.push(suffix);
+    path.with_file_name(name)
+}
+
+/// POSIX single-quote a string for safe interpolation into the `sh` script.
+fn shq(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('\'');
+    for c in s.chars() {
+        if c == '\'' {
+            out.push_str("'\\''");
+        } else {
+            out.push(c);
+        }
+    }
+    out.push('\'');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shq_escapes_single_quotes() {
+        assert_eq!(shq("plain"), "'plain'");
+        assert_eq!(shq("a b"), "'a b'");
+        assert_eq!(shq("it's"), "'it'\\''s'");
+    }
+
+    #[test]
+    fn with_suffix_appends_to_filename() {
+        assert_eq!(
+            with_suffix(Path::new("/data/qslib-server"), ".bak"),
+            Path::new("/data/qslib-server.bak")
+        );
+        assert_eq!(
+            with_suffix(Path::new("/data/qslib-server"), ".log"),
+            Path::new("/data/qslib-server.log")
+        );
+    }
+}

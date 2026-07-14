@@ -18,11 +18,12 @@ All routes require `Authorization: Bearer <token>` unless started with
 
 | Route | Description |
 |-------|-------------|
-| `GET /health` | `{"name","version","uptime_s","scpi_ok","file_root"}`; `scpi_ok` is a live TCP probe of the SCPI target; `file_root` is the canonicalized `--file-root` (clients use it to serve absolute paths). |
+| `GET /health` | `{"name","version","uptime_s","scpi_ok","file_root","exe_sha256"}`; `scpi_ok` is a live TCP probe of the SCPI target; `file_root` is the canonicalized `--file-root`; `exe_sha256` is the running binary's hash (used to confirm an `/upgrade`). |
 | `GET`/`HEAD /file/<path…>` | Bulk file off disk under `--file-root`. Supports `Range` (→ `206`), `ETag`, `Last-Modified`, `Accept-Ranges`. Traversal/symlink escape → `403`; missing/dir → `404`. |
 | `GET /list/<dir…>` | JSON manifest `{"files":[{"path","size"},…]}` of the regular files under a directory (recursive, dotfiles included, symlinked dirs not descended — matches the `EXP:ZIPREAD?` file set). Lets a client pull a run directory as raw files instead of a base64+deflate zip. Missing/not-a-dir → `404`/`400`. |
 | `POST /scpi` | Run one SCPI command. Body is the raw command or JSON `{"command","access","timeout_ms","encoding"}`; query `?access=&timeout_ms=&encoding=` also accepted. Response headers `X-SCPI-Status`, `X-SCPI-Access`. SCPI command error → `400` + `X-SCPI-Error`; access denied → `403`; timeout → `504`. |
 | `GET /scpi` (`Upgrade: qslib-scpi`) or `CONNECT /scpi` | Streaming SCPI tunnel spliced to `127.0.0.1:7000`. |
+| `POST /upgrade` | Replace the running binary and restart into it. Body is the new binary; `x-qslib-sha256` header must match. Verifies the hash + ELF magic + a `--version` run, then atomically swaps and restarts with rollback. `?dry_run=1` verifies only. `409`/`400` on bad upload. |
 
 ```bash
 # bulk pull with resume
@@ -144,6 +145,32 @@ qslib-server's HTTP port must be reachable from the client — on the QuantStudi
 fleet the Windows box that fronts each instrument forwards it, e.g. socat
 `TCP-LISTEN:7500,bind=<lab-ip> → TCP:169.254.x.x:7500` (plaintext is fine behind
 the mesh VPN), persisted the same way as the existing `:7443` SCPI forwards.
+
+## Upgrading
+
+Once qslib-server is running, upgrade it **through itself** — no SCPI, no
+base64, and it works while it is running (unlike `ensure_server`, which only
+helps when nothing is listening):
+
+```python
+m.upgrade_server("target/armv7-unknown-linux-musleabihf/min-size/qslib-server")
+```
+
+`upgrade_server` uploads the binary raw to `POST /upgrade`. The server verifies
+the SHA-256 (client-supplied in `x-qslib-sha256`), checks the ELF magic, and
+**runs the new binary with `--version`** — if it does not execute on this
+instrument (wrong arch, corrupt) the upgrade is refused before anything is
+touched. It then copies the current binary to `<exe>.bak`, atomically renames
+the new one into place, and hands off to a detached watchdog (`sh`, its own
+session) that stops the old process, launches the new one with the same argv,
+and — if the new process dies within a few seconds — restores `<exe>.bak` and
+relaunches it. The client confirms success by polling `/health` until
+`exe_sha256` equals the uploaded hash (a persistent old hash means it rolled
+back, and `upgrade_server` raises). The listener uses `SO_REUSEADDR` so the
+restart rebinds the port immediately.
+
+`ensure_server` remains the bootstrap path for the *first* install (over SCPI);
+`upgrade_server` is for every update after that.
 
 ## Windows box
 
