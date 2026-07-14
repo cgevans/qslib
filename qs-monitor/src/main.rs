@@ -10,6 +10,7 @@ use futures::stream;
 use influxdb2::Client;
 use influxdb2::models::DataPoint;
 use log::{debug, error, info, warn};
+use qslib::com_ext::QSConnectionExt;
 use qslib::parser::OkResponse;
 use qslib::{
     com::FilterDataFilename,

@@ -1,14 +1,16 @@
 #![cfg_attr(coverage_nightly, feature(coverage_attribute))]
 
+// The SCPI protocol/connection layer lives in the `qslib-core` crate (no
+// Polars/pyo3/TLS by default). Re-export its modules so existing `crate::com`,
+// `crate::parser`, etc. paths continue to resolve unchanged.
+pub use qslib_core::{com, commands, message_receiver, parser};
+
 pub mod calibration;
-pub mod com;
-pub mod commands;
+pub mod com_ext;
 pub mod data;
 pub mod eds;
 pub mod experiment_xml;
 pub mod message_log;
-pub mod message_receiver;
-pub mod parser;
 pub mod plate_setup;
 pub mod protocol;
 pub mod quant;

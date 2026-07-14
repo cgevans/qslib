@@ -1152,6 +1152,13 @@ pub enum ParseError {
     ParseError(String),
 }
 
+#[cfg(feature = "python")]
+impl From<ParseError> for pyo3::PyErr {
+    fn from(e: ParseError) -> Self {
+        pyo3::exceptions::PyValueError::new_err(e.to_string())
+    }
+}
+
 impl TryFrom<&[u8]> for MessageResponse {
     type Error = ParseError;
     fn try_from(s: &[u8]) -> Result<Self, ParseError> {

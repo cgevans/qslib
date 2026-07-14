@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "qs-monitor"]
+members = [".", "qs-monitor", "qslib-core"]
 resolver = "2"
 
 [workspace.package]
@@ -22,6 +22,7 @@ name = "qslib"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+qslib-core = { path = "qslib-core", default-features = false, features = ["tls"] }
 dashmap = "6.1"
 enum_dispatch = "0.3.13"
 futures = "0.3.31"
@@ -64,10 +65,10 @@ flate2 = "1"
 
 [features]
 default = ["abi3"]
-debug = ["winnow/debug"]
-python = ["pyo3", "pyo3-polars", "numpy"]
+debug = ["winnow/debug", "qslib-core/debug"]
+python = ["pyo3", "pyo3-polars", "numpy", "qslib-core/python"]
 abi3 = ["pyo3/abi3-py310"]
-simd = ["dep:memchr", "winnow/simd"]
+simd = ["dep:memchr", "winnow/simd", "qslib-core/simd"]
 
 [dev-dependencies]
 env_logger = "0.11.6"

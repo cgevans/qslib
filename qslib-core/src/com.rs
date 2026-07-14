@@ -1,14 +1,15 @@
-use anyhow::Context;
 use bstr::{BString, ByteSlice};
 use dashmap::DashMap;
 use hmac::{Hmac, Mac};
 use log::{error, trace, warn};
 use md5::Md5;
 type HmacMd5 = Hmac<Md5>;
+#[cfg(feature = "tls")]
 use rustls::{
     client::danger::HandshakeSignatureValid, client::danger::ServerCertVerified,
     client::danger::ServerCertVerifier, DigitallySignedStruct, Error as TLSError, SignatureScheme,
 };
+#[cfg(feature = "tls")]
 use rustls_pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use std::pin::Pin;
 use std::sync::Arc;
@@ -18,7 +19,9 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tokio::{net::TcpStream, select};
+#[cfg(feature = "tls")]
 use tokio_rustls::TlsConnector;
+#[cfg(feature = "tls")]
 use tokio_rustls::{
     client::TlsStream,
     rustls::{ClientConfig, RootCertStore},
@@ -27,17 +30,17 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
 
 use crate::commands::{self, AccessLevel, CommandBuilder, ReceiveOkResponseError};
-use crate::data::{FilterDataCollection, PlateData};
 use crate::message_receiver::{MsgReceiveError, MsgRecv};
 use crate::parser::Command;
-use crate::plate_setup::PlateSetup;
-use crate::protocol::Protocol;
 
 use lazy_static::lazy_static;
+#[cfg(feature = "tls")]
 use std::fs::File;
+#[cfg(feature = "tls")]
 use std::io::BufReader;
 
 /// TLS configuration options for client certificate authentication
+#[cfg(feature = "tls")]
 #[derive(Debug, Clone, Default)]
 pub struct TlsConfig {
     /// Path to PEM file containing client certificate chain
@@ -52,6 +55,7 @@ pub struct TlsConfig {
     pub tls_server_name: Option<String>,
 }
 
+#[cfg(feature = "tls")]
 impl TlsConfig {
     pub fn new() -> Self {
         Self::default()
@@ -88,9 +92,11 @@ lazy_static! {
         regex::Regex::new(r"x(\d)-m(\d)").expect("Invalid regex");
 }
 
+#[cfg(feature = "tls")]
 #[derive(Debug)]
 pub(crate) struct NoVerifier;
 
+#[cfg(feature = "tls")]
 impl ServerCertVerifier for NoVerifier {
     fn verify_server_cert(
         &self,
@@ -142,17 +148,20 @@ impl ServerCertVerifier for NoVerifier {
 
 /// A certificate verifier that verifies the certificate chain against trusted roots
 /// but does not verify the server hostname.
+#[cfg(feature = "tls")]
 #[derive(Debug)]
 pub(crate) struct ChainOnlyVerifier {
     roots: Arc<RootCertStore>,
 }
 
+#[cfg(feature = "tls")]
 impl ChainOnlyVerifier {
     pub fn new(roots: Arc<RootCertStore>) -> Self {
         Self { roots }
     }
 }
 
+#[cfg(feature = "tls")]
 impl ServerCertVerifier for ChainOnlyVerifier {
     fn verify_server_cert(
         &self,
@@ -224,6 +233,7 @@ impl ServerCertVerifier for ChainOnlyVerifier {
     }
 }
 
+#[cfg(feature = "tls")]
 #[derive(Debug)]
 pub struct IOConnection {
     pub stream: TlsStream<TcpStream>,
@@ -231,10 +241,12 @@ pub struct IOConnection {
 
 #[derive(Debug, Error)]
 pub enum ConnectionError {
+    #[cfg(feature = "tls")]
     #[error("TLS error: {0}")]
     TLSError(#[from] TLSError),
     #[error("IO error: {0}")]
     IOError(#[from] std::io::Error),
+    #[cfg(feature = "tls")]
     #[error("Invalid DNS name: {0}")]
     InvalidDnsNameError(#[from] rustls_pki_types::InvalidDnsNameError),
     #[error("Timeout")]
@@ -252,6 +264,7 @@ use tokio::{
 };
 
 enum ReadHalfOptions {
+    #[cfg(feature = "tls")]
     Tls(ReadHalf<TlsStream<TcpStream>>),
     Tcp(ReadHalf<TcpStream>),
 }
@@ -264,6 +277,7 @@ impl AsyncRead for ReadHalfOptions {
     ) -> std::task::Poll<std::io::Result<()>> {
         let this = self.get_mut();
         match this {
+            #[cfg(feature = "tls")]
             ReadHalfOptions::Tls(r) => Pin::new(r).poll_read(cx, buf),
             ReadHalfOptions::Tcp(r) => Pin::new(r).poll_read(cx, buf),
         }
@@ -505,6 +519,7 @@ impl QSConnectionInner {
 }
 
 enum WriteHalfOptions {
+    #[cfg(feature = "tls")]
     Tls(WriteHalf<TlsStream<TcpStream>>),
     Tcp(WriteHalf<TcpStream>),
 }
@@ -517,6 +532,7 @@ impl AsyncWrite for WriteHalfOptions {
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
         let this = self.get_mut();
         match this {
+            #[cfg(feature = "tls")]
             WriteHalfOptions::Tls(w) => Pin::new(w).poll_write(cx, buf),
             WriteHalfOptions::Tcp(w) => Pin::new(w).poll_write(cx, buf),
         }
@@ -528,6 +544,7 @@ impl AsyncWrite for WriteHalfOptions {
     ) -> std::task::Poll<Result<(), std::io::Error>> {
         let this = self.get_mut();
         match this {
+            #[cfg(feature = "tls")]
             WriteHalfOptions::Tls(w) => Pin::new(w).poll_flush(cx),
             WriteHalfOptions::Tcp(w) => Pin::new(w).poll_flush(cx),
         }
@@ -539,6 +556,7 @@ impl AsyncWrite for WriteHalfOptions {
     ) -> std::task::Poll<Result<(), std::io::Error>> {
         let this = self.get_mut();
         match this {
+            #[cfg(feature = "tls")]
             WriteHalfOptions::Tls(w) => Pin::new(w).poll_shutdown(cx),
             WriteHalfOptions::Tcp(w) => Pin::new(w).poll_shutdown(cx),
         }
@@ -755,6 +773,30 @@ pub enum SendCommandError {
     ConnectionClosed(String),
 }
 
+// `From<CoreError> for PyErr` conversions. The orphan rule requires these to
+// live in the crate that defines the error type; they are used by the pyo3
+// bindings in the `qslib` crate as well as by any pymethods here.
+#[cfg(feature = "python")]
+impl From<ConnectionError> for pyo3::PyErr {
+    fn from(e: ConnectionError) -> Self {
+        pyo3::exceptions::PyValueError::new_err(e.to_string())
+    }
+}
+
+#[cfg(feature = "python")]
+impl From<QSConnectionError> for pyo3::PyErr {
+    fn from(e: QSConnectionError) -> Self {
+        pyo3::exceptions::PyValueError::new_err(e.to_string())
+    }
+}
+
+#[cfg(feature = "python")]
+impl From<SendCommandError> for pyo3::PyErr {
+    fn from(e: SendCommandError) -> Self {
+        pyo3::exceptions::PyValueError::new_err(e.to_string())
+    }
+}
+
 impl QSConnection {
     pub async fn send_command(
         &self,
@@ -821,6 +863,7 @@ impl QSConnection {
         })
     }
 
+    #[cfg(feature = "tls")]
     pub async fn connect(
         host: &str,
         port: u16,
@@ -829,6 +872,7 @@ impl QSConnection {
         Self::connect_with_config(host, port, connection_type, TlsConfig::default()).await
     }
 
+    #[cfg(feature = "tls")]
     pub async fn connect_with_config(
         host: &str,
         port: u16,
@@ -856,6 +900,7 @@ impl QSConnection {
         }
     }
 
+    #[cfg(feature = "tls")]
     pub async fn connect_with_timeout(
         host: &str,
         port: u16,
@@ -872,6 +917,7 @@ impl QSConnection {
         .await
     }
 
+    #[cfg(feature = "tls")]
     pub async fn connect_with_timeout_and_config(
         host: &str,
         port: u16,
@@ -885,10 +931,12 @@ impl QSConnection {
         }
     }
 
+    #[cfg(feature = "tls")]
     pub async fn connect_ssl(host: &str, port: u16) -> Result<QSConnection, ConnectionError> {
         Self::connect_ssl_with_config(host, port, TlsConfig::default()).await
     }
 
+    #[cfg(feature = "tls")]
     pub async fn connect_ssl_with_config(
         host: &str,
         port: u16,
@@ -1292,22 +1340,6 @@ impl QSConnection {
         Ok(title_str)
     }
 
-    pub async fn get_plate_setup(
-        &self,
-        run: Option<String>,
-    ) -> Result<PlateSetup, CommandError<ErrorResponse>> {
-        let path = match run {
-            Some(r) => format!("{}/apldbio/sds/plate_setup.xml", r),
-            None => "${LogFolder}/plate_setup.xml".to_string(),
-        };
-        let x = self.get_exp_file(&path).await?;
-        let plate_setup: PlateSetup = quick_xml::de::from_str(&x.to_str_lossy())
-            .with_context(|| "PlateSetup deserialization error")
-            .map_err(CommandError::InternalError)?;
-
-        Ok(plate_setup)
-    }
-
     pub async fn get_current_run_name(
         &self,
     ) -> Result<Option<String>, CommandError<ErrorResponse>> {
@@ -1373,19 +1405,6 @@ impl QSConnection {
         Ok(prot_command)
     }
 
-    pub async fn get_running_protocol(&self) -> Result<Protocol, CommandError<ErrorResponse>> {
-        let prot_command = self.get_running_protocol_string().await?;
-
-        // Parse into Command and then Protocol
-        let cmd = Command::try_from(prot_command.clone()).map_err(|e| {
-            CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol command: {}", e))
-        })?;
-
-        Protocol::from_scpicommand(&cmd).map_err(|e| {
-            CommandError::InternalError(anyhow::anyhow!("Failed to parse protocol: {}", e))
-        })
-    }
-
     // In [8]: m.run_command("TBC:SETT?")
     // Out[8]: '-Zone1=25 -Zone2=25 -Zone3=25 -Zone4=25 -Zone5=25 -Zone6=25 -Fan1=44 -Cover=105'
     pub async fn get_current_temperature_setpoints(
@@ -1435,41 +1454,6 @@ impl QSConnection {
                 ))
             })?;
         Ok((zones?, fans?, cover))
-    }
-
-    pub async fn get_filterdata_one(
-        &self,
-        fref: FilterDataFilename,
-        run: Option<String>,
-    ) -> Result<PlateData, CommandError<ErrorResponse>> {
-        let path = match run {
-            Some(r) => format!("{}/apldbio/sds/filter/{}", r, fref),
-            None => format!("${{FilterFolder}}/{}", fref),
-        };
-        let x = self.get_exp_file(&path).await?;
-
-        let filter_data_collection: FilterDataCollection =
-            quick_xml::de::from_str(&x.to_str_lossy())
-                .with_context(|| "PlatePointData deserialization error")
-                .map_err(CommandError::InternalError)?;
-
-        // Directly access the first PlateData by value without unnecessary clones, if possible.
-        // Since we need to return an owned PlateData (not a reference), we can implement this
-        // by consuming the collection to extract the value.
-        // If there are no entries, return an error instead of panicking.
-        let plate_point_data = filter_data_collection
-            .plate_point_data
-            .into_iter()
-            .next()
-            .ok_or_else(|| {
-                CommandError::InternalError(anyhow::anyhow!("No PlatePointData found"))
-            })?;
-        let plate_data = plate_point_data
-            .plate_data
-            .into_iter()
-            .next()
-            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No PlateData found")))?;
-        Ok(plate_data)
     }
 
     pub async fn set_access_level(
@@ -1786,6 +1770,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "tls")]
     #[test]
     fn test_tls_config_builder() {
         let config = TlsConfig::new()

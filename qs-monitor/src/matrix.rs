@@ -21,6 +21,7 @@ use matrix_sdk::{
         },
     },
 };
+use qslib::com_ext::QSConnectionExt;
 use qslib::{
     com::{CommandError, QSConnection, SendCommandError},
     commands::{

@@ -1,13 +1,11 @@
-use crate::com::{ConnectionError, QSConnectionError, SendCommandError};
 use crate::com::{ConnectionType, QSConnection, ResponseReceiver, TlsConfig};
+use crate::com_ext::QSConnectionExt;
 use crate::commands::ReceiveOkResponseError;
 use crate::parser::Command;
-use crate::parser::ParseError;
 use crate::parser::{LogMessage, MessageIdent, MessageResponse};
 use crate::protocol::{Protocol, Stage, StageStep, Step};
 use pyo3::exceptions::{PyException, PyStopIteration, PyTimeoutError, PyValueError};
 use pyo3::prelude::*;
-use pyo3::PyErr;
 use std::future::Future;
 use std::sync::Arc;
 use tokio::runtime::Runtime;
@@ -955,26 +953,6 @@ impl PyQSConnection {
     }
 }
 
-impl From<ConnectionError> for PyErr {
-    fn from(e: ConnectionError) -> Self {
-        PyValueError::new_err(e.to_string())
-    }
-}
-
-impl From<ParseError> for PyErr {
-    fn from(e: ParseError) -> Self {
-        PyValueError::new_err(e.to_string())
-    }
-}
-
-impl From<QSConnectionError> for PyErr {
-    fn from(e: QSConnectionError) -> Self {
-        PyValueError::new_err(e.to_string())
-    }
-}
-
-impl From<SendCommandError> for PyErr {
-    fn from(e: SendCommandError) -> Self {
-        PyValueError::new_err(e.to_string())
-    }
-}
+// `From<CoreError> for PyErr` conversions for qslib-core error types live in
+// qslib-core (gated on its `python` feature); the orphan rule requires the impl
+// to sit in the crate that defines the error type.
