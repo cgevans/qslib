@@ -1,9 +1,20 @@
 [workspace]
-members = [".", "qs-monitor", "qslib-core"]
+members = [".", "qs-monitor", "qslib-core", "qslib-server"]
 resolver = "2"
 
 [workspace.package]
 version = "0.15.2"
+
+# Size-optimized profile for the cross-compiled agent binary. Applied only when
+# built with `--profile min-size` (e.g. the armv7 musl agent build), so the
+# normal `release` profile for qslib/qs-monitor is unaffected.
+[profile.min-size]
+inherits = "release"
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
 
 [package]
 name = "qslib"
