@@ -112,6 +112,77 @@ def test_get_file_traversal_blocked(agent):
     assert exc.value.status in (403, 404)
 
 
+def test_deploy_binary_chunk_roundtrip(monkeypatch):
+    """_deploy_binary chunks (gzip+base64) must be 4-aligned and reassemble to
+    the original binary, with on-device verification passing. Simulates the
+    instrument's shell without a real machine."""
+    import base64
+    import gzip
+    import hashlib
+    import os
+    import re
+    import shlex
+
+    from qslib.machine import Machine
+
+    files: dict[str, bytes] = {}
+
+    def fake_run(self, cmd):
+        assert cmd.startswith('SYST:EXEC "') and cmd.endswith('"'), cmd
+        inner = cmd[len('SYST:EXEC "') : -1]
+        if inner.startswith("rm -f "):
+            for p in shlex.split(inner[len("rm -f ") :]):
+                files.pop(p, None)
+        elif inner.startswith("echo -n "):
+            b64, rest = inner[len("echo -n ") :].split(" | ", 1)
+            path = shlex.split(rest)[-1]
+            # b64decode raises if the chunk is not 4-aligned -> catches bad chunking
+            files[path] = files.get(path, b"") + base64.b64decode(b64)
+        elif inner.startswith("gunzip -f "):
+            p = shlex.split(inner[len("gunzip -f ") :])[0]
+            files[p[:-3]] = gzip.decompress(files.pop(p))
+        elif inner.startswith("("):
+            mo = re.search(r"md5sum (\S+) \) > (\S+)", inner)
+            q, check = mo.group(1), mo.group(2)
+            body = files[q]
+            files[check] = f"{len(body)} {q}\n{hashlib.md5(body).hexdigest()}  {q}\n".encode()
+        return ""
+
+    def fake_read(self, path, *a, **k):
+        for key, val in files.items():
+            if key.endswith(path.lstrip("/")):
+                return val
+        raise KeyError(path)
+
+    monkeypatch.setattr(Machine, "run_command", fake_run)
+    monkeypatch.setattr(Machine, "read_file", fake_read)
+
+    m = Machine("127.0.0.1", agent_port=1)
+    data = os.urandom(150_003)  # not a multiple of the chunk size
+    m._deploy_binary("/data/qslib-server", data, file_root="/froot", chunk_chars=40000)
+    assert files["/data/qslib-server"] == data
+
+
+def test_deploy_binary_detects_corruption(monkeypatch):
+    """If the device file does not match, _deploy_binary raises."""
+    import os
+
+    from qslib.agent import AgentError
+    from qslib.machine import Machine
+
+    def fake_run(self, cmd):
+        return ""
+
+    def fake_read(self, path, *a, **k):
+        return b"999 /data/qslib-server\ndeadbeef" + b"0" * 24 + b"  /data/qslib-server\n"
+
+    monkeypatch.setattr(Machine, "run_command", fake_run)
+    monkeypatch.setattr(Machine, "read_file", fake_read)
+    m = Machine("127.0.0.1", agent_port=1)
+    with pytest.raises(AgentError):
+        m._deploy_binary("/data/qslib-server", os.urandom(1000), file_root="/froot")
+
+
 def test_ensure_agent_rejects_unsafe_exec_values():
     """ensure_agent must reject values that would break out of the SCPI
     SYST:EXEC string or trigger SCPI/shell substitution."""

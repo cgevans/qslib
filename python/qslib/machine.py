@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import base64
+import gzip
+import hashlib
 import logging
 import random
 import re
@@ -643,9 +645,10 @@ class Machine:
 
         If the agent already answers ``/health``, its client is returned
         immediately. Otherwise, when ``binary`` (a path or the raw bytes of a
-        cross-compiled agent) is given, it is pushed with :meth:`write_file`,
-        made executable, and started in the background via ``SYST:EXEC`` (root),
-        then polled until ready.
+        cross-compiled agent) is given, it is streamed to the instrument in
+        chunks over SCPI (:meth:`_deploy_binary`; ``FILE:WRITE`` is unreliable
+        for large files on some builds), made executable, and started in the
+        background via ``SYST:EXEC`` (root), then polled until ready.
 
         Parameters
         ----------
@@ -708,14 +711,17 @@ class Machine:
             _safe("extra_arg", a)
 
         data = Path(binary).read_bytes() if isinstance(binary, str) else binary
-        self.write_file(remote_path, data)
-        self.run_command(f'SYST:EXEC "chmod 755 {shlex.quote(remote_path)}"')
-
         args = [remote_path, "--listen", listen, "--file-root", file_root]
         args += ["--token", self.agent_token] if self.agent_token else ["--no-auth"]
         args += list(extra_args)
         cmdline = " ".join(shlex.quote(a) for a in args)
-        self.run_command(f'SYST:EXEC "{cmdline} &"')
+
+        # SYST:EXEC needs Controller; hold it for the whole deploy + launch.
+        with self.ensured_connection(AccessLevel.Controller):
+            self._deploy_binary(remote_path, data, file_root=file_root)
+            self.run_command(f'SYST:EXEC "chmod 755 {shlex.quote(remote_path)}"')
+            # nohup so the agent survives the SYST:EXEC shell exiting.
+            self.run_command(f'SYST:EXEC "nohup {cmdline} >/dev/null 2>&1 &"')
 
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -725,6 +731,54 @@ class Machine:
             except AgentError:
                 time.sleep(0.1)
         raise AgentError("agent did not become ready after deployment")
+
+    def _deploy_binary(
+        self,
+        remote_path: str,
+        data: bytes,
+        *,
+        file_root: str,
+        chunk_chars: int = 40000,
+    ) -> None:
+        """Transfer ``data`` to ``remote_path`` on the instrument over SCPI.
+
+        Streams the gzip-compressed binary as base64 in ``SYST:EXEC`` chunks
+        (``echo -n <b64> | base64 -d``), then gunzips on the instrument, and
+        verifies by size and (when ``md5sum`` is present) md5.
+
+        This is used instead of :meth:`write_file` because on some
+        InstrumentServer builds a single large ``FILE:WRITE`` times out; the
+        SCPI command-size limit is only tens of KB, so the payload is chunked
+        below that. Requires Controller access (caller supplies it) and
+        ``gunzip``/``base64`` on the instrument. ``file_root`` must be the
+        instrument's FILE-namespace root so the verification scratch file can be
+        read back.
+        """
+        gz = gzip.compress(data, 9)
+        b64 = base64.b64encode(gz).decode()  # only [A-Za-z0-9+/=], SCPI/shell-safe
+        # Each chunk must be a multiple of 4 base64 chars so it decodes on its
+        # own and the concatenation equals the whole payload.
+        step = max(4, chunk_chars - (chunk_chars % 4))
+        q = shlex.quote(remote_path)
+        gzq = shlex.quote(remote_path + ".gz")
+
+        self.run_command(f'SYST:EXEC "rm -f {gzq} {q}"')
+        for i in range(0, len(b64), step):
+            self.run_command(f'SYST:EXEC "echo -n {b64[i : i + step]} | base64 -d >> {gzq}"')
+        self.run_command(f'SYST:EXEC "gunzip -f {gzq}"')
+
+        # Verify: size is universal; md5 only if md5sum exists on the device.
+        check = file_root.rstrip("/") + "/.qslib_deploy_check"
+        self.run_command(f'SYST:EXEC "( wc -c {q}; md5sum {q} ) > {shlex.quote(check)} 2>/dev/null"')
+        raw = self.read_file(".qslib_deploy_check").decode(errors="replace")
+        self.run_command(f'SYST:EXEC "rm -f {shlex.quote(check)}"')
+
+        if str(len(data)) not in re.findall(r"\d+", raw):
+            raise AgentError(f"binary transfer size mismatch (expected {len(data)} bytes): {raw!r}")
+        remote_md5s = re.findall(r"\b[0-9a-f]{32}\b", raw)
+        local_md5 = hashlib.md5(data).hexdigest()
+        if remote_md5s and local_md5 not in remote_md5s:
+            raise AgentError(f"binary transfer md5 mismatch (expected {local_md5}): {raw!r}")
 
     @_ensure_connection(AccessLevel.Controller)
     def write_file(self, path: str, data: str | bytes) -> None:

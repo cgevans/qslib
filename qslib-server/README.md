@@ -102,10 +102,17 @@ m.ensure_agent(
 data = m.get_file("experiments/…/filterdata.zip")   # fast path, falls back to SCPI
 ```
 
-`ensure_agent` pushes the binary via `FILE:WRITE`, `chmod`s it, and launches it
-in the background with `SYST:EXEC "… &"` (root), then polls `/health`. It is
-idempotent: the agent refuses to double-bind and exits cleanly if the port is
-already taken.
+`ensure_agent` streams the binary to the instrument in chunks over SCPI
+(gzip + base64 via `SYST:EXEC "echo … | base64 -d"`, size/md5-verified — a
+single `FILE:WRITE` is unreliable for large files on some builds), `chmod`s it,
+and launches it in the background with `SYST:EXEC "nohup … &"` (root), then polls
+`/health`. It is idempotent: the agent refuses to double-bind and exits cleanly
+if the port is already taken.
+
+The agent's HTTP port must be reachable from the client — on the QuantStudio
+fleet the Windows box that fronts each instrument forwards it, e.g. socat
+`TCP-LISTEN:8770,bind=<lab-ip> → TCP:169.254.x.x:8770` (plaintext is fine behind
+the mesh VPN), persisted the same way as the existing `:7443` SCPI forwards.
 
 ## Windows box
 
