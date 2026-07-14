@@ -10,6 +10,7 @@ use futures::stream;
 use influxdb2::Client;
 use influxdb2::models::DataPoint;
 use log::{debug, error, info, warn};
+use qslib::agent_client::{AgentClient, DEFAULT_AGENT_PORT};
 use qslib::com_ext::QSConnectionExt;
 use qslib::parser::OkResponse;
 use qslib::{
@@ -65,6 +66,24 @@ struct GlobalConfig {
 pub(crate) struct MachineConfig {
     pub(crate) name: String,
     pub(crate) host: String,
+    /// Port of the on-instrument qslib-server, used to pull filter data and
+    /// plate setup over HTTP instead of SCPI. Defaults to
+    /// [`DEFAULT_AGENT_PORT`]; set to 0 to disable and use SCPI only.
+    #[serde(default = "default_agent_port")]
+    pub(crate) agent_port: u16,
+}
+
+fn default_agent_port() -> u16 {
+    DEFAULT_AGENT_PORT
+}
+
+/// Build a qslib-server client for a machine, or `None` if disabled
+/// (`agent_port = 0`).
+fn build_agent_client(config: &MachineConfig) -> Option<Arc<AgentClient>> {
+    match config.agent_port {
+        0 => None,
+        port => Some(Arc::new(AgentClient::new(&config.host, port, None))),
+    }
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -528,10 +547,11 @@ async fn log_machine(
     }
 
     let config_clone = config.clone();
+    let agent = build_agent_client(config);
 
     let aborthandle = log_tasks.spawn(async move {
         if let Err(e) =
-            influx_log_loop(&mut log_sub, tx, &config_clone, None, con.clone(), state).await
+            influx_log_loop(&mut log_sub, tx, &config_clone, None, con.clone(), state, agent).await
         {
             error!("Logging loop error: {}", e);
         }
@@ -550,6 +570,7 @@ async fn influx_log_loop(
     timeout_secs: Option<u64>,
     con: Arc<QSConnection>,
     mut state: MachineState,
+    agent: Option<Arc<AgentClient>>,
 ) -> Result<()> {
     let machine_name = config.name.as_ref();
     let mut last_message = tokio::time::Instant::now();
@@ -596,7 +617,7 @@ async fn influx_log_loop(
                             continue;
                         }
                     },
-                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp, Some(con.clone()), &mut state).await {
+                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp, Some(con.clone()), &mut state, agent.as_deref()).await {
                         Ok(points) => points,
                         Err(e) => {
                             error!("Error converting run data for {}: {}", config.name, e);
@@ -672,6 +693,7 @@ async fn run_to_lineprotocol(
     timestamp: chrono::DateTime<chrono::Utc>,
     con: Option<Arc<QSConnection>>,
     state: &mut MachineState,
+    agent: Option<&AgentClient>,
 ) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
     let mut parts = msg.message.splitn(2, ' ');
@@ -839,6 +861,7 @@ async fn run_to_lineprotocol(
                     con.clone(),
                     timestamp,
                     machine_name,
+                    agent,
                 )
                 .await
                 {
@@ -1111,6 +1134,7 @@ fn parse_line_protocol_to_datapoint(line: &str, machine_name: &str) -> Result<Da
     Ok(builder.timestamp(timestamp).build()?)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn docollect(
     stage: i64,
     cycle: i64,
@@ -1119,6 +1143,7 @@ async fn docollect(
     con: Arc<QSConnection>,
     timestamp: chrono::DateTime<chrono::Utc>,
     machine_name: &str,
+    agent: Option<&AgentClient>,
 ) -> Result<Vec<DataPoint>> {
     // Get plate setup samples if available
     // let sample_array = plate_setup.map(|ps| ps.well_samples_as_array());
@@ -1147,7 +1172,21 @@ async fn docollect(
     // Process filter data
     // info!("Getting filter data for {:?}", filter_files);
 
-    let plate_setup = match con.get_plate_setup(None).await {
+    // Resolve the run name first so it can be reused for the agent fast-path of
+    // both the plate setup and every filter file (avoiding a per-fetch
+    // RUNTitle? query).
+    let current_run_name = match con.get_current_run_name().await {
+        Ok(run_name) => run_name,
+        Err(e) => {
+            error!("Error getting current run name: {:?}", e);
+            return Err(anyhow::anyhow!("Error getting current run name: {:?}", e));
+        }
+    };
+
+    let plate_setup = match con
+        .get_plate_setup_via(agent, current_run_name.clone())
+        .await
+    {
         Ok(plate_setup) => Some(plate_setup),
         Err(e) => {
             error!("Error getting plate setup: {:?}", e);
@@ -1156,14 +1195,6 @@ async fn docollect(
     };
 
     let sample_array = plate_setup.as_ref().map(|ps| ps.well_samples_as_array());
-
-    let current_run_name = match con.get_current_run_name().await {
-        Ok(run_name) => run_name,
-        Err(e) => {
-            error!("Error getting current run name: {:?}", e);
-            return Err(anyhow::anyhow!("Error getting current run name: {:?}", e));
-        }
-    };
 
     let current_temperature_setpoints = match con.get_current_temperature_setpoints().await {
         Ok(setpoints) => setpoints,
@@ -1177,7 +1208,11 @@ async fn docollect(
     };
 
     for fdf in filter_files {
-        let filter_data_t = con.get_filterdata_one(fdf, None).await;
+        // Pass the resolved run name so the agent fast-path does not re-query
+        // the run title for every filter file.
+        let filter_data_t = con
+            .get_filterdata_one_via(agent, fdf, current_run_name.clone())
+            .await;
         let filter_data = match filter_data_t {
             Ok(filter_data) => filter_data,
             Err(e) => {
@@ -1280,7 +1315,7 @@ mod tests {
 
         let mut state = MachineState::default_idle();
         let points = futures::executor::block_on(run_to_lineprotocol(
-            &msg, "qpcr1", timestamp, None, &mut state,
+            &msg, "qpcr1", timestamp, None, &mut state, None,
         ))
         .unwrap();
         assert_eq!(points.len(), 2);
@@ -1312,7 +1347,7 @@ mod tests {
 
         let mut state = MachineState::default_idle();
         let points = futures::executor::block_on(run_to_lineprotocol(
-            &msg, "qpcr1", timestamp, None, &mut state,
+            &msg, "qpcr1", timestamp, None, &mut state, None,
         ))
         .unwrap();
         assert_eq!(points.len(), 1);
@@ -1403,7 +1438,7 @@ mod tests {
         assert_eq!(state.zone_targets, vec![25.0; 6]);
 
         let points = futures::executor::block_on(run_to_lineprotocol(
-            &msg, "qpcr1", timestamp, None, &mut state,
+            &msg, "qpcr1", timestamp, None, &mut state, None,
         ))
         .unwrap();
 

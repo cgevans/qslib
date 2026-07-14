@@ -8,6 +8,10 @@
 [[machines]]
 name = "qpcr1"
 host = "qpcr1"
+## Port of the on-instrument qslib-server, used to pull filter data and plate
+## setup over HTTP instead of SCPI (falls back to SCPI when unreachable).
+## Defaults to 7500; set to 0 to disable and use SCPI only.
+# agent_port = 7500
 
 
 [[machines]]
