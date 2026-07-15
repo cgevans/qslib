@@ -25,7 +25,8 @@ pub struct Config {
     #[arg(long, default_value = "/data/vendor/IS")]
     pub file_root: PathBuf,
 
-    /// Root-readable TOML file containing role-bearing token hashes.
+    /// Root-readable TOML file containing role-bearing token hashes and an
+    /// optional unauthenticated fallback role.
     #[arg(long, env = "QSLIB_SERVER_AUTH_CONFIG")]
     pub auth_config: Option<PathBuf>,
 

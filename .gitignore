@@ -150,6 +150,7 @@ Cargo.lock
 *.ipynb
 *.crt
 *.key
+.qslib-server-auth.toml
 .aider*
 example-eds/
 uv.lock

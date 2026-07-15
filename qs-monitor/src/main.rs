@@ -71,8 +71,8 @@ pub(crate) struct MachineConfig {
     /// uses its permanent direct-SCPI subscription mode.
     #[serde(default, alias = "agent_port")]
     pub(crate) server_port: Option<u16>,
-    /// Bearer token for qslib-server. Required unless it was started with
-    /// `--no-auth`.
+    /// Bearer token for qslib-server. May be omitted when the server ACL grants
+    /// an unauthenticated role sufficient for monitoring.
     pub(crate) server_token: Option<String>,
 }
 

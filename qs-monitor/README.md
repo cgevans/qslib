@@ -30,7 +30,7 @@ Configuration is provided via a TOML file (default: `config.toml`). See `example
 name = "qpcr1"
 host = "1.2.3.4"
 # server_port = 7500  # opt in to qslib-server status/SSE mode
-# server_token = "..."  # required unless qslib-server uses --no-auth
+# server_token = "..."  # omit when the server permits unauthenticated monitoring
 ```
 
 Direct SCPI subscription mode is the default: omit `server_port` to retain the

@@ -60,19 +60,22 @@ Authentication uses a root-readable TOML file supplied by `--auth-config` or
 `QSLIB_SERVER_AUTH_CONFIG`. Store SHA-256 digests, not bearer tokens:
 
 ```toml
-[[tokens]]
-name = "monitor"
-sha256 = "<64 lowercase hexadecimal characters>"
-role = "observer"
+unauthenticated_role = "controller"
 
 [[tokens]]
-name = "automation"
+name = "owner"
 sha256 = "<64 lowercase hexadecimal characters>"
-role = "controller"
+role = "administrator"
 ```
 
 Roles are `observer`, `controller`, and `administrator`. For an explicitly
-trusted private deployment, `--no-auth` must be paired with an explicit
+trusted private deployment, the optional top-level `unauthenticated_role`
+grants requests without an Authorization header that role while retaining the
+token entries for higher privileges. A supplied but invalid bearer token is
+rejected rather than falling back. Omit `unauthenticated_role` to require a
+valid token for every request.
+
+When no token ACL is needed, `--no-auth` must be paired with an explicit
 `--unauthenticated-role`; its default cap is Observer.
 
 Important policy flags:

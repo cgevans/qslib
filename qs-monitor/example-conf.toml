@@ -11,7 +11,8 @@ host = "qpcr1"
 ## Optional qslib-server semantic status/SSE mode. Omit this setting for the
 ## default direct-SCPI subscription mode.
 # server_port = 7500
-## Bearer token for qslib-server. Omit only when it runs with --no-auth.
+## Bearer token for qslib-server. Omit when its ACL grants an unauthenticated
+## role sufficient for monitoring, or when it runs with --no-auth.
 # server_token = "replace-me"
 
 

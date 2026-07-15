@@ -25,7 +25,7 @@ Influx measurements.
    name = "qpcr1"
    host = "qpcr1"
    # server_port = 7500
-   # server_token = "observer-token"
+   # server_token = "observer-token"  # optional with an unauthenticated ACL role
 
 Command line
 ------------

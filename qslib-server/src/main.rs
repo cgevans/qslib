@@ -9,8 +9,8 @@ fn main() -> anyhow::Result<()> {
     let config = Config::parse();
     init_logging(&config)?;
     let auth = config.resolve_auth()?;
-    if config.no_auth {
-        warn!(role = ?config.unauthenticated_role, "authentication is disabled");
+    if let Some(role) = auth.unauthenticated_role() {
+        warn!(?role, "unauthenticated HTTP requests are enabled");
     }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

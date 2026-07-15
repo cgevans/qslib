@@ -1077,6 +1077,7 @@ class Machine:
         listen: str,
         remote_path: str = "/data/qslib-server",
         file_root: str = "/data/vendor/IS",
+        unauthenticated_role: Literal["observer", "controller", "administrator"] | None = None,
         extra_args: tuple[str, ...] = (),
         timeout: float = 5.0,
     ) -> ServerClient:
@@ -1106,6 +1107,11 @@ class Machine:
         file_root
             Base of qslib-server's named InstrumentServer contexts. Completed
             run contexts are resolved separately under ``/sdcard``.
+        unauthenticated_role
+            Optional HTTP role granted when a request omits its bearer token.
+            This can be combined with ``server_token``; a valid token retains
+            its configured Administrator role. Invalid supplied tokens are
+            rejected rather than treated as unauthenticated.
         extra_args
             Additional qslib-server CLI arguments.
 
@@ -1148,6 +1154,10 @@ class Machine:
         _safe("remote_path", remote_path)
         _safe("listen", listen)
         _safe("file_root", file_root)
+        if unauthenticated_role not in {None, "observer", "controller", "administrator"}:
+            raise ValueError(
+                "unauthenticated_role must be observer, controller, administrator, or None"
+            )
         if self.server_token:
             _safe("server_token", self.server_token)
         for a in extra_args:
@@ -1167,8 +1177,14 @@ class Machine:
         ]
         if self.server_token:
             token_hash = hashlib.sha256(self.server_token.encode()).hexdigest()
+            fallback = (
+                f'unauthenticated_role = "{unauthenticated_role}"\n\n'
+                if unauthenticated_role is not None
+                else ""
+            )
             auth_toml = (
-                "[[tokens]]\n"
+                fallback
+                + "[[tokens]]\n"
                 'name = "qslib-bootstrap"\n'
                 f'sha256 = "{token_hash}"\n'
                 'role = "administrator"\n'
@@ -1176,7 +1192,11 @@ class Machine:
             args += ["--auth-config", auth_path]
         else:
             auth_toml = None
-            args += ["--no-auth", "--unauthenticated-role", "administrator"]
+            args += [
+                "--no-auth",
+                "--unauthenticated-role",
+                unauthenticated_role or "administrator",
+            ]
         args += list(extra_args)
         cmdline = " ".join(shlex.quote(a) for a in args)
 

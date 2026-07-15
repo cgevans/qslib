@@ -39,6 +39,8 @@ impl FromStr for Role {
 
 #[derive(Debug, Clone, Deserialize)]
 struct AuthFile {
+    #[serde(default)]
+    unauthenticated_role: Option<Role>,
     tokens: Vec<TokenConfig>,
 }
 
@@ -72,6 +74,7 @@ impl AuthPolicy {
         if parsed.tokens.is_empty() {
             anyhow::bail!("auth config must contain at least one [[tokens]] entry");
         }
+        let unauthenticated_role = parsed.unauthenticated_role;
         let mut tokens = Vec::with_capacity(parsed.tokens.len());
         for entry in parsed.tokens {
             let bytes = hex_decode_sha256(&entry.sha256)
@@ -87,7 +90,7 @@ impl AuthPolicy {
         }
         Ok(Self {
             tokens,
-            unauthenticated_role: None,
+            unauthenticated_role,
         })
     }
 
@@ -99,19 +102,23 @@ impl AuthPolicy {
     }
 
     fn authenticate(&self, token: Option<&str>) -> Option<Principal> {
-        if let Some(role) = self.unauthenticated_role {
-            return Some(Principal {
-                name: "unauthenticated".to_string(),
-                role,
+        if let Some(token) = token {
+            let digest: [u8; 32] = Sha256::digest(token.as_bytes()).into();
+            return self.tokens.iter().find_map(|record| {
+                constant_time_eq(&digest, &record.sha256).then(|| Principal {
+                    name: record.name.clone(),
+                    role: record.role,
+                })
             });
         }
-        let digest: [u8; 32] = Sha256::digest(token?.as_bytes()).into();
-        self.tokens.iter().find_map(|record| {
-            constant_time_eq(&digest, &record.sha256).then(|| Principal {
-                name: record.name.clone(),
-                role: record.role,
-            })
+        self.unauthenticated_role.map(|role| Principal {
+            name: "unauthenticated".to_string(),
+            role,
         })
+    }
+
+    pub fn unauthenticated_role(&self) -> Option<Role> {
+        self.unauthenticated_role
     }
 }
 
@@ -200,5 +207,55 @@ mod tests {
         assert_eq!(principal.name, "monitor");
         assert_eq!(principal.role, Role::Observer);
         assert!(policy.authenticate(Some("wrong")).is_none());
+    }
+
+    #[test]
+    fn token_acl_can_have_a_lower_unauthenticated_fallback() {
+        let hash: [u8; 32] = Sha256::digest(b"admin-secret").into();
+        let policy = AuthPolicy {
+            tokens: vec![TokenRecord {
+                name: "owner".into(),
+                sha256: hash,
+                role: Role::Administrator,
+            }],
+            unauthenticated_role: Some(Role::Controller),
+        };
+
+        let administrator = policy.authenticate(Some("admin-secret")).unwrap();
+        assert_eq!(administrator.name, "owner");
+        assert_eq!(administrator.role, Role::Administrator);
+
+        let unauthenticated = policy.authenticate(None).unwrap();
+        assert_eq!(unauthenticated.name, "unauthenticated");
+        assert_eq!(unauthenticated.role, Role::Controller);
+
+        // A caller that explicitly supplied a bad credential is rejected; it
+        // is not silently treated as an unauthenticated request.
+        assert!(policy.authenticate(Some("wrong")).is_none());
+    }
+
+    #[test]
+    fn auth_file_parses_unauthenticated_fallback_with_tokens() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.toml");
+        let hash = crate::state::sha256_hex(b"admin-secret");
+        std::fs::write(
+            &path,
+            format!(
+                "unauthenticated_role = \"controller\"\n\n\
+                 [[tokens]]\n\
+                 name = \"owner\"\n\
+                 sha256 = \"{hash}\"\n\
+                 role = \"administrator\"\n"
+            ),
+        )
+        .unwrap();
+
+        let policy = AuthPolicy::from_file(&path).unwrap();
+        assert_eq!(policy.authenticate(None).unwrap().role, Role::Controller);
+        assert_eq!(
+            policy.authenticate(Some("admin-secret")).unwrap().role,
+            Role::Administrator
+        );
     }
 }
