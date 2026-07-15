@@ -19,12 +19,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import posixpath
-import shutil
+import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from http.client import HTTPException
 from pathlib import Path
 from typing import IO, Any, BinaryIO
 
@@ -79,7 +81,10 @@ class ServerClient:
             try:
                 self._file_root = self.health().get("file_root")
             except ServerError:
-                self._file_root = None
+                # A transient outage must not permanently disable the fast path.
+                # Leave the result uncached so a later call retries, matching the
+                # Rust client which never caches a transport failure.
+                return None
             self._file_root_fetched = True
         return self._file_root
 
@@ -147,7 +152,7 @@ class ServerClient:
             h = self.health()
         except ServerError:
             return False
-        return bool(h.get("scpi_ok", True))
+        return bool(h.get("scpi_ok", False))
 
     def get_file(
         self,
@@ -169,16 +174,36 @@ class ServerClient:
         """
         quoted = urllib.parse.quote(path.lstrip("/"))
         req = urllib.request.Request(f"{self.base_url}/file/{quoted}", headers=self._headers(), method="GET")
-        with self._open(req) as resp:
-            if dest is None:
-                return resp.read()
-            if isinstance(dest, (str, Path)):
-                with open(dest, "wb") as f:
-                    shutil.copyfileobj(resp, f, chunk_size)
-            else:
-                out: IO[bytes] = dest
-                shutil.copyfileobj(resp, out, chunk_size)
-            return None
+        temp_path: Path | None = None
+        try:
+            with self._open(req) as resp:
+                if dest is None:
+                    data = resp.read()
+                    _validate_response_size(resp, len(data))
+                    return data
+                if isinstance(dest, (str, Path)):
+                    final_path = Path(dest)
+                    with tempfile.NamedTemporaryFile(
+                        mode="wb",
+                        dir=final_path.parent,
+                        prefix=f".{final_path.name}.download.",
+                        delete=False,
+                    ) as f:
+                        temp_path = Path(f.name)
+                        _copy_response(resp, f, chunk_size)
+                    os.replace(temp_path, final_path)
+                    temp_path = None
+                else:
+                    out: IO[bytes] = dest
+                    _copy_response(resp, out, chunk_size)
+                return None
+        except ServerError:
+            raise
+        except (OSError, HTTPException) as e:
+            raise ServerError(f"qslib-server file transfer failed for {path!r}: {e}") from e
+        finally:
+            if temp_path is not None:
+                temp_path.unlink(missing_ok=True)
 
     def get_abs_file(
         self,
@@ -211,8 +236,13 @@ class ServerClient:
             headers=self._headers({"Content-Type": "application/octet-stream"}),
             method="PUT",
         )
-        with self._open(req) as resp:
-            resp.read()
+        try:
+            with self._open(req) as resp:
+                resp.read()
+        except ServerError:
+            raise
+        except (OSError, HTTPException) as e:
+            raise ServerError(f"qslib-server file upload failed for {path!r}: {e}") from e
 
     def put_abs_file(self, abspath: str, data: bytes) -> None:
         """Write a file by its absolute on-instrument path.
@@ -253,18 +283,40 @@ class ServerClient:
 
         Enumerates the directory via :meth:`list_dir` and fetches each file raw
         (no compression), preserving the relative structure under ``dest_dir``.
-        Returns the number of files written. Raises :class:`ServerError` on any
-        failure (so callers can fall back to SCPI).
+        Returns the number of files written.
+
+        Raises :class:`FileNotFoundError` if the directory itself does not exist
+        (a 404 on the listing), and :class:`ServerError` (or a transport error
+        such as :class:`OSError`) on any other failure, so callers can tell a
+        genuinely missing directory from a transfer failure and fall back to
+        SCPI accordingly. A per-file 404 (a file removed between the listing and
+        its fetch) surfaces as :class:`ServerError`, not ``FileNotFoundError``.
         """
         dest = Path(dest_dir)
+        try:
+            manifest = self.list_dir(abspath)
+        except ServerError as e:
+            if e.status == 404:
+                raise FileNotFoundError(abspath) from e
+            raise
         n = 0
-        for entry in self.list_dir(abspath):
+        for entry in manifest:
             rel = entry["path"]
             if rel.startswith("/") or ".." in rel.split("/"):
                 raise ServerError(f"unsafe path in /list manifest: {rel!r}")
+            expected_size = entry.get("size")
+            if not isinstance(expected_size, int) or expected_size < 0:
+                raise ServerError(f"invalid size in /list manifest for {rel!r}: {expected_size!r}")
             out = dest.joinpath(*rel.split("/"))
             out.parent.mkdir(parents=True, exist_ok=True)
             self.get_abs_file(posixpath.join(abspath, rel), dest=out, chunk_size=chunk_size)
+            actual_size = out.stat().st_size
+            if actual_size != expected_size:
+                out.unlink(missing_ok=True)
+                raise ServerError(
+                    f"qslib-server file changed or was truncated during download: "
+                    f"{rel!r} has {actual_size} bytes, expected {expected_size}"
+                )
             n += 1
         return n
 
@@ -293,7 +345,7 @@ class ServerClient:
             headers=self._headers({"Content-Type": "text/plain"}),
             method="POST",
         )
-        with self._open(req, timeout=(timeout_ms / 1000.0 + 5.0) if timeout_ms else None) as resp:
+        with self._open(req, timeout=(timeout_ms / 1000.0 + 5.0) if timeout_ms is not None else None) as resp:
             data = resp.read()
         return data if encoding == "bytes" else data.decode()
 
@@ -329,3 +381,25 @@ def _parse_error_body(body: bytes, default: str) -> tuple[str, str | None]:
     except Exception:
         text = body.decode(errors="replace").strip()
         return (text or default), None
+
+
+def _validate_response_size(resp: Any, actual: int) -> None:
+    """Reject a short HTTP body even when ``HTTPResponse.read(amt)`` silently
+    returns EOF before satisfying ``Content-Length``."""
+    raw = resp.headers.get("Content-Length")
+    if raw is None:
+        return
+    try:
+        expected = int(raw)
+    except (TypeError, ValueError) as e:
+        raise ServerError(f"invalid qslib-server Content-Length: {raw!r}") from e
+    if actual != expected:
+        raise ServerError(f"short qslib-server response: received {actual} bytes, expected {expected}")
+
+
+def _copy_response(resp: Any, out: IO[bytes], chunk_size: int) -> None:
+    total = 0
+    while chunk := resp.read(chunk_size):
+        out.write(chunk)
+        total += len(chunk)
+    _validate_response_size(resp, total)

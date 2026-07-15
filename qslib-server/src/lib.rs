@@ -48,6 +48,8 @@ pub fn build_router(state: AppState) -> Router {
                 // well over axum's 2 MB default. GET/HEAD carry no body.
                 .layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
         )
+        .route("/list", get(file::list_root))
+        .route("/list/", get(file::list_root))
         .route("/list/{*path}", get(file::list_dir))
         // The uploaded binary is several MB — well over axum's 2 MB default.
         .route(

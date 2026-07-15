@@ -45,6 +45,10 @@ impl ServerError {
         Self::new(StatusCode::BAD_REQUEST, msg)
     }
 
+    pub fn conflict(msg: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, msg)
+    }
+
     pub fn unauthorized(msg: impl Into<String>) -> Self {
         Self::new(StatusCode::UNAUTHORIZED, msg)
     }

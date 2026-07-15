@@ -10,9 +10,9 @@ use futures::stream;
 use influxdb2::Client;
 use influxdb2::models::DataPoint;
 use log::{debug, error, info, warn};
-use qslib::server_client::{ServerClient, DEFAULT_SERVER_PORT};
 use qslib::com_ext::QSConnectionExt;
 use qslib::parser::OkResponse;
+use qslib::server_client::{DEFAULT_SERVER_PORT, ServerClient};
 use qslib::{
     com::FilterDataFilename,
     com::QSConnection,
@@ -71,6 +71,9 @@ pub(crate) struct MachineConfig {
     /// [`DEFAULT_SERVER_PORT`]; set to 0 to disable and use SCPI only.
     #[serde(default = "default_server_port", alias = "agent_port")]
     pub(crate) server_port: u16,
+    /// Bearer token for qslib-server. Required unless it was started with
+    /// `--no-auth`.
+    pub(crate) server_token: Option<String>,
 }
 
 fn default_server_port() -> u16 {
@@ -82,7 +85,11 @@ fn default_server_port() -> u16 {
 fn build_server_client(config: &MachineConfig) -> Option<Arc<ServerClient>> {
     match config.server_port {
         0 => None,
-        port => Some(Arc::new(ServerClient::new(&config.host, port, None))),
+        port => Some(Arc::new(ServerClient::new(
+            &config.host,
+            port,
+            config.server_token.clone(),
+        ))),
     }
 }
 
@@ -228,8 +235,8 @@ async fn refresh_state(
     // only when the run changed (it is otherwise stable for the whole run).
     match &state.run_name {
         Some(run) => {
-            let have_current =
-                state.plate_setup.is_some() && state.plate_setup_run.as_deref() == Some(run.as_str());
+            let have_current = state.plate_setup.is_some()
+                && state.plate_setup_run.as_deref() == Some(run.as_str());
             if !have_current {
                 match con.get_plate_setup_via(server, Some(run.clone())).await {
                     Ok(ps) => {
@@ -567,8 +574,16 @@ async fn log_machine(
     let config_clone = config.clone();
 
     let aborthandle = log_tasks.spawn(async move {
-        if let Err(e) =
-            influx_log_loop(&mut log_sub, tx, &config_clone, None, con.clone(), state, server).await
+        if let Err(e) = influx_log_loop(
+            &mut log_sub,
+            tx,
+            &config_clone,
+            None,
+            con.clone(),
+            state,
+            server,
+        )
+        .await
         {
             error!("Logging loop error: {}", e);
         }
@@ -878,6 +893,7 @@ async fn run_to_lineprotocol(
                     con.clone(),
                     timestamp,
                     machine_name,
+                    state,
                     server,
                 )
                 .await
@@ -1160,6 +1176,7 @@ async fn docollect(
     con: Arc<QSConnection>,
     timestamp: chrono::DateTime<chrono::Utc>,
     machine_name: &str,
+    state: &MachineState,
     server: Option<&ServerClient>,
 ) -> Result<Vec<DataPoint>> {
     // Get plate setup samples if available
@@ -1200,18 +1217,28 @@ async fn docollect(
         }
     };
 
-    let plate_setup = match con
-        .get_plate_setup_via(server, current_run_name.clone())
-        .await
+    // Reuse the run-scoped plate setup that refresh_state cached for this run
+    // (it is stable for the whole run); fetch only on a cache miss.
+    let fetched_plate_setup;
+    let plate_setup: Option<&PlateSetup> = if state.plate_setup.is_some()
+        && state.plate_setup_run.as_deref() == current_run_name.as_deref()
     {
-        Ok(plate_setup) => Some(plate_setup),
-        Err(e) => {
-            error!("Error getting plate setup: {:?}", e);
-            None
-        }
+        state.plate_setup.as_ref()
+    } else {
+        fetched_plate_setup = match con
+            .get_plate_setup_via(server, current_run_name.clone())
+            .await
+        {
+            Ok(plate_setup) => Some(plate_setup),
+            Err(e) => {
+                error!("Error getting plate setup: {:?}", e);
+                None
+            }
+        };
+        fetched_plate_setup.as_ref()
     };
 
-    let sample_array = plate_setup.as_ref().map(|ps| ps.well_samples_as_array());
+    let sample_array = plate_setup.map(|ps| ps.well_samples_as_array());
 
     let current_temperature_setpoints = match con.get_current_temperature_setpoints().await {
         Ok(setpoints) => setpoints,
@@ -1246,7 +1273,7 @@ async fn docollect(
             )
             .map_err(|e| anyhow::anyhow!("Error converting to line protocol: {}", e))?;
 
-        if let Some(plate_setup) = plate_setup.as_ref() {
+        if let Some(plate_setup) = plate_setup {
             let plate_setup_ts = timestamp
                 .timestamp_nanos_opt()
                 .ok_or(anyhow::anyhow!("Timestamp out of range"))?;

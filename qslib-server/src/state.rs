@@ -2,6 +2,7 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -30,6 +31,11 @@ pub struct AppStateInner {
     pub tunnels: Arc<tokio::sync::Semaphore>,
     /// When true, `PUT /file` is refused (403).
     pub read_only: bool,
+    /// Set while a non-dry-run upgrade owns the executable/backup/watchdog
+    /// lifecycle. It intentionally remains set after a successful swap: the
+    /// current process is about to exit, and accepting another upgrade during
+    /// the watchdog handoff would race the shared executable and `.bak` paths.
+    pub upgrade_in_progress: AtomicBool,
     /// Absolute path of the running executable (for in-place `/upgrade`).
     pub exe_path: PathBuf,
     /// SHA-256 (lowercase hex) of the running executable, computed at startup.
@@ -73,6 +79,7 @@ impl AppState {
             started: Instant::now(),
             tunnels: Arc::new(tokio::sync::Semaphore::new(config.max_tunnels.max(1))),
             read_only: config.read_only,
+            upgrade_in_progress: AtomicBool::new(false),
             exe_path,
             exe_sha256,
             restart_args,

@@ -18,6 +18,7 @@ All routes require `Authorization: Bearer <token>` unless started with
 |-------|-------------|
 | `GET /health` | `{"name","version","uptime_s","scpi_ok","file_root","exe_sha256"}`; `scpi_ok` is a live TCP probe of the SCPI target; `file_root` is the canonicalized `--file-root`; `exe_sha256` is the running binary's hash (used to confirm an `/upgrade`). |
 | `GET`/`HEAD /file/<path…>` | Bulk file off disk under `--file-root`. Supports `Range` (→ `206`), `ETag`, `Last-Modified`, `Accept-Ranges`. Traversal/symlink escape → `403`; missing/dir → `404`. |
+| `PUT /file/<path…>` | Atomically replace a file under `--file-root`, creating safe parent directories. Disabled by `--read-only`. |
 | `GET /list/<dir…>` | JSON manifest `{"files":[{"path","size"},…]}` of the regular files under a directory (recursive, dotfiles included, symlinked dirs not descended — matches the `EXP:ZIPREAD?` file set). Lets a client pull a run directory as raw files instead of a base64+deflate zip. Missing/not-a-dir → `404`/`400`. |
 | `POST /scpi` | Run one SCPI command. Body is the raw command or JSON `{"command","access","timeout_ms","encoding"}`; query `?access=&timeout_ms=&encoding=` also accepted. Response headers `X-SCPI-Status`, `X-SCPI-Access`. SCPI command error → `400` + `X-SCPI-Error`; access denied → `403`; timeout → `504`. |
 | `GET /scpi` (`Upgrade: qslib-scpi`) or `CONNECT /scpi` | Streaming SCPI tunnel spliced to `127.0.0.1:7000`. |
@@ -45,6 +46,7 @@ All options have `--help`. Key ones:
 | `--default-access` / `--max-access` | `Observer` / `Controller` | Default and hard-capped SCPI access levels. |
 | `--token` / `--token-file` / `QSLIB_SERVER_TOKEN` | — | Bearer token (auth is on by default). |
 | `--no-auth` | off | Disable auth (private trusted link only). |
+| `--read-only` | off | Refuse `PUT /file` uploads. |
 | `--scpi-password` / `QSLIB_SERVER_SCPI_PASSWORD` | — | Password for password-gated access levels. |
 | `--log` | stderr | Write logs to a file instead of stderr. |
 
@@ -99,7 +101,7 @@ qslib-server is started on demand, mirroring qslib's dropbear pattern. From Pyth
 from qslib.machine import Machine
 from qslib.experiment import Experiment
 
-m = Machine("instr-host", password="…", server_token="…")   # server_port defaults to 7500
+m = Machine("instr-host", password="…", server_port=7500, server_token="…")
 m.ensure_server(
     binary="target/armv7-unknown-linux-musleabihf/min-size/qslib-server",
     listen="169.254.217.190:7500",   # the instrument's private eth0 IP
@@ -108,11 +110,11 @@ data = m.read_file("experiments/…/filterdata.zip")   # fast HTTP path, falls b
 exp  = Experiment.from_machine_storage(m, "myrun")    # completed .eds pulled over HTTP
 ```
 
-When `server_port` is set (default 7500), `Machine` **auto-connects its SCPI session
+When `server_port` is set, `Machine` **auto-connects its SCPI session
 through the qslib-server tunnel** — the client speaks plaintext SCPI over qslib-server
 (no instrument-side TLS) — and falls back to a direct SSL/TCP connection if qslib-server
-is not reachable, analogous to the automatic SSL/TCP selection. Pass `server_port=None`
-to disable qslib-server entirely. Once connected (or once `ensure_server` confirms it is
+is not reachable, analogous to the automatic SSL/TCP selection. The tunnel is opt-in;
+pass `server_port=7500` to enable it. Once connected (or once `ensure_server` confirms it is
 running), `Machine.read_file` prefers qslib-server's HTTP `/file` transfer, falling back
 to `FILE:READ` over SCPI.
 

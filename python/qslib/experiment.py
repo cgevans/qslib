@@ -1364,10 +1364,14 @@ table, th, td {{
             # directory transfer and fall back to SCPI ZIPREAD.
             for candidate in (_safe_exp_name(name), name):
                 try:
-                    if machine.download_dir(candidate, exp._dir_base, leaf="EXP"):
-                        break
+                    downloaded = machine.download_dir(candidate, exp._dir_base, leaf="EXP")
+                except FileNotFoundError:
+                    downloaded = False
+                if downloaded:
+                    break
+                try:
                     z = machine.read_dir_as_zip(candidate, leaf="EXP")
-                except (IOError, FileNotFoundError):  # FIXME
+                except (IOError, FileNotFoundError):
                     continue
                 _safe_extractall(z, exp._dir_base)
                 break

@@ -26,6 +26,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};
@@ -56,12 +57,47 @@ impl UpgradeParams {
     }
 }
 
+/// Exclusive ownership of the non-dry-run upgrade lifecycle.
+///
+/// Failed upgrades release the claim on drop. A successful upgrade calls
+/// [`UpgradeClaim::keep_until_exit`] so the flag remains set during the
+/// watchdog handoff and this soon-to-exit process cannot accept another swap.
+#[derive(Debug)]
+struct UpgradeClaim<'a> {
+    flag: &'a AtomicBool,
+    release_on_drop: bool,
+}
+
+impl<'a> UpgradeClaim<'a> {
+    fn acquire(flag: &'a AtomicBool) -> Result<Self, ServerError> {
+        flag.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| ServerError::conflict("an upgrade is already in progress"))?;
+        Ok(Self {
+            flag,
+            release_on_drop: true,
+        })
+    }
+
+    fn keep_until_exit(&mut self) {
+        self.release_on_drop = false;
+    }
+}
+
+impl Drop for UpgradeClaim<'_> {
+    fn drop(&mut self) {
+        if self.release_on_drop {
+            self.flag.store(false, Ordering::Release);
+        }
+    }
+}
+
 pub async fn upgrade(
     State(state): State<AppState>,
     Query(params): Query<UpgradeParams>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
+    let dry_run = params.is_dry_run();
     let exe = state.exe_path.clone();
     if exe.as_os_str().is_empty() {
         return Err(ServerError::internal(
@@ -93,22 +129,38 @@ pub async fn upgrade(
         return Err(ServerError::bad_request("upload is not an ELF binary"));
     }
 
+    // Temp-name uniqueness alone is insufficient: every real upgrade also
+    // shares the executable, `.bak`, and detached watchdog. Claim the whole
+    // lifecycle, and keep the claim set after success until this process exits.
+    let mut upgrade_claim = if dry_run {
+        None
+    } else {
+        Some(UpgradeClaim::acquire(&state.upgrade_in_progress)?)
+    };
+
     // Stage the new binary next to the current one (same filesystem, so the
-    // final rename is atomic). The temp name is process-unique.
+    // final rename is atomic). The temp name is unique per request: the pid
+    // alone collides when two concurrent upgrades run in one process, so they
+    // would stage over the same temp file and race the swap.
+    static UPGRADE_SEQ: AtomicU64 = AtomicU64::new(0);
     let dir = exe.parent().unwrap_or_else(|| Path::new("."));
     let file_name = exe
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("qslib-server");
-    let tmp = dir.join(format!(".{file_name}.upgrade.{}", std::process::id()));
+    let tmp = dir.join(format!(
+        ".{file_name}.upgrade.{}.{}",
+        std::process::id(),
+        UPGRADE_SEQ.fetch_add(1, Ordering::Relaxed)
+    ));
 
-    let result = stage_and_maybe_swap(&exe, &tmp, &body, params.is_dry_run()).await;
+    let result = stage_and_maybe_swap(&exe, &tmp, &body, dry_run).await;
     if result.is_err() {
         let _ = tokio::fs::remove_file(&tmp).await;
     }
     result?;
 
-    if params.is_dry_run() {
+    if dry_run {
         let _ = tokio::fs::remove_file(&tmp).await;
         return Ok(Json(serde_json::json!({
             "status": "verified",
@@ -121,6 +173,9 @@ pub async fn upgrade(
 
     // At this point the new binary is in place; hand off to the watchdog.
     spawn_restart_watchdog(&exe, &state.restart_args)?;
+    if let Some(claim) = upgrade_claim.as_mut() {
+        claim.keep_until_exit();
+    }
 
     Ok(Json(serde_json::json!({
         "status": "upgrading",
@@ -273,5 +328,27 @@ mod tests {
             with_suffix(Path::new("/data/qslib-server"), ".log"),
             Path::new("/data/qslib-server.log")
         );
+    }
+
+    #[test]
+    fn upgrade_claim_excludes_competitors_and_releases_on_failure() {
+        let flag = AtomicBool::new(false);
+        {
+            let _claim = UpgradeClaim::acquire(&flag).unwrap();
+            let err = UpgradeClaim::acquire(&flag).unwrap_err();
+            assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
+        }
+        assert!(!flag.load(Ordering::Acquire));
+        assert!(UpgradeClaim::acquire(&flag).is_ok());
+    }
+
+    #[test]
+    fn successful_upgrade_claim_stays_set_until_process_exit() {
+        let flag = AtomicBool::new(false);
+        {
+            let mut claim = UpgradeClaim::acquire(&flag).unwrap();
+            claim.keep_until_exit();
+        }
+        assert!(flag.load(Ordering::Acquire));
     }
 }

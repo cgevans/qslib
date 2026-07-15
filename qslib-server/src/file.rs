@@ -10,6 +10,7 @@
 
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
@@ -28,13 +29,11 @@ use crate::state::AppState;
 /// instrument's gigabit link.
 const READ_BUFFER: usize = 256 * 1024;
 
-/// Resolve `rel` (the wildcard path component) to a real file under `root`,
-/// rejecting any traversal or symlink escape.
-///
-/// Returns the canonical path on success.
-pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, ServerError> {
-    // Reject non-`Normal` components up front: `..`, absolute roots, Windows
-    // prefixes. `CurDir` (`.`) is harmless and skipped.
+/// Filter `rel` to a root-relative path, rejecting any non-`Normal` component:
+/// `..`, an absolute root, or a Windows prefix. `CurDir` (`.`) is harmless and
+/// dropped. Shared by [`resolve_under_root`] (read) and [`resolve_write_target`]
+/// (write) so both reject the same set of escaping paths.
+fn safe_relative(rel: &str) -> Result<PathBuf, ServerError> {
     let mut safe = PathBuf::new();
     for comp in Path::new(rel).components() {
         match comp {
@@ -47,6 +46,15 @@ pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, Serve
             }
         }
     }
+    Ok(safe)
+}
+
+/// Resolve `rel` (the wildcard path component) to a real file under `root`,
+/// rejecting any traversal or symlink escape.
+///
+/// Returns the canonical path on success.
+pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, ServerError> {
+    let safe = safe_relative(rel)?;
 
     let joined = root.join(&safe);
 
@@ -58,7 +66,9 @@ pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, Serve
     // Even after component filtering, a symlink inside the tree could point
     // outside; verify the real path is still under the (canonical) root.
     if !canonical.starts_with(root) {
-        return Err(ServerError::forbidden("path escapes the file root via symlink"));
+        return Err(ServerError::forbidden(
+            "path escapes the file root via symlink",
+        ));
     }
     Ok(canonical)
 }
@@ -73,38 +83,69 @@ pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, Serve
 /// [`put_file`] replaces any existing file or symlink at that name, so a symlink
 /// occupying the name cannot redirect the write outside the (canonical) parent.
 async fn resolve_write_target(root: &Path, rel: &str) -> Result<(PathBuf, OsString), ServerError> {
-    let mut safe = PathBuf::new();
-    for comp in Path::new(rel).components() {
-        match comp {
-            Component::Normal(c) => safe.push(c),
-            Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                return Err(ServerError::forbidden(
-                    "path escapes the file root (`..`, absolute, or prefix component)",
-                ));
-            }
-        }
-    }
+    let safe = safe_relative(rel)?;
 
     let file_name = safe
         .file_name()
         .map(|s| s.to_os_string())
         .ok_or_else(|| ServerError::bad_request("no file name in path"))?;
     let parent_rel = safe.parent().map(Path::to_path_buf).unwrap_or_default();
-    let parent_abs = root.join(&parent_rel);
 
-    tokio::fs::create_dir_all(&parent_abs)
-        .await
-        .map_err(|e| ServerError::internal(format!("failed to create parent directory: {e}")))?;
-    let canonical_parent = tokio::fs::canonicalize(&parent_abs)
-        .await
-        .map_err(|e| ServerError::internal(format!("failed to resolve parent directory: {e}")))?;
-    if !canonical_parent.starts_with(root) {
-        return Err(ServerError::forbidden(
-            "path escapes the file root via symlink",
-        ));
+    // Walk one component at a time from the already-canonical root. Calling
+    // create_dir_all(root.join(parent_rel)) first would follow a pre-existing
+    // symlink and create directories outside the root before the later
+    // canonicalization noticed the escape.
+    let mut parent = root.to_path_buf();
+    for comp in parent_rel.components() {
+        let Component::Normal(name) = comp else {
+            unreachable!("safe_relative returned a non-normal component")
+        };
+        let next = parent.join(name);
+        let mut meta = tokio::fs::symlink_metadata(&next).await;
+        if matches!(&meta, Err(e) if e.kind() == std::io::ErrorKind::NotFound) {
+            match tokio::fs::create_dir(&next).await {
+                Ok(()) => {}
+                // Another concurrent upload may have created the same parent.
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(e) => {
+                    return Err(ServerError::internal(format!(
+                        "failed to create parent directory: {e}"
+                    )))
+                }
+            }
+            meta = tokio::fs::symlink_metadata(&next).await;
+        }
+
+        let meta = meta.map_err(|e| {
+            ServerError::internal(format!("failed to inspect parent directory: {e}"))
+        })?;
+        if meta.file_type().is_symlink() {
+            let canonical = tokio::fs::canonicalize(&next).await.map_err(|e| {
+                ServerError::internal(format!("failed to resolve parent symlink: {e}"))
+            })?;
+            if !canonical.starts_with(root) {
+                return Err(ServerError::forbidden(
+                    "path escapes the file root via symlink",
+                ));
+            }
+            let target_meta = tokio::fs::metadata(&canonical).await.map_err(|e| {
+                ServerError::internal(format!("failed to inspect parent symlink target: {e}"))
+            })?;
+            if !target_meta.is_dir() {
+                return Err(ServerError::bad_request(
+                    "a parent path component is not a directory",
+                ));
+            }
+            parent = canonical;
+        } else if meta.is_dir() {
+            parent = next;
+        } else {
+            return Err(ServerError::bad_request(
+                "a parent path component is not a directory",
+            ));
+        }
     }
-    Ok((canonical_parent, file_name))
+    Ok((parent, file_name))
 }
 
 /// A parsed, validated single byte range.
@@ -306,10 +347,16 @@ pub async fn put_file(
 
     let (parent, file_name) = resolve_write_target(&state.file_root, &rel).await?;
     let target = parent.join(&file_name);
+    // Uniquify the temp name per upload: the pid alone collides when two
+    // concurrent PUTs to the same target run in one server process, so they
+    // would share a temp file and clobber each other. A process-wide counter
+    // gives each in-flight write its own temp file.
+    static UPLOAD_SEQ: AtomicU64 = AtomicU64::new(0);
     let tmp = parent.join(format!(
-        ".{}.upload.{}",
+        ".{}.upload.{}.{}",
         file_name.to_string_lossy(),
-        std::process::id()
+        std::process::id(),
+        UPLOAD_SEQ.fetch_add(1, Ordering::Relaxed)
     ));
 
     let size = body.len();
@@ -359,6 +406,15 @@ pub async fn list_dir(
     State(state): State<AppState>,
     AxumPath(rel): AxumPath<String>,
 ) -> Result<Response, ServerError> {
+    list_dir_at(state, &rel).await
+}
+
+/// `GET /list` or `/list/` — enumerate the configured file root itself.
+pub async fn list_root(State(state): State<AppState>) -> Result<Response, ServerError> {
+    list_dir_at(state, "").await
+}
+
+async fn list_dir_at(state: AppState, rel: &str) -> Result<Response, ServerError> {
     let root = resolve_under_root(&state.file_root, &rel).await?;
     let meta = tokio::fs::metadata(&root)
         .await
@@ -475,7 +531,10 @@ mod tests {
     #[test]
     fn range_start_past_end_unsatisfiable() {
         assert_eq!(parse_range("bytes=1000-", 1000), RangeResult::Unsatisfiable);
-        assert_eq!(parse_range("bytes=1500-2000", 1000), RangeResult::Unsatisfiable);
+        assert_eq!(
+            parse_range("bytes=1500-2000", 1000),
+            RangeResult::Unsatisfiable
+        );
     }
 
     #[test]
@@ -511,7 +570,9 @@ mod tests {
     #[tokio::test]
     async fn resolve_valid_file() {
         let (_dir, root) = tmp_root().await;
-        tokio::fs::write(root.join("data.bin"), b"hello").await.unwrap();
+        tokio::fs::write(root.join("data.bin"), b"hello")
+            .await
+            .unwrap();
         let p = resolve_under_root(&root, "data.bin").await.unwrap();
         assert_eq!(p, root.join("data.bin"));
     }
@@ -520,7 +581,9 @@ mod tests {
     async fn resolve_valid_nested_file() {
         let (_dir, root) = tmp_root().await;
         tokio::fs::create_dir_all(root.join("a/b")).await.unwrap();
-        tokio::fs::write(root.join("a/b/c.bin"), b"x").await.unwrap();
+        tokio::fs::write(root.join("a/b/c.bin"), b"x")
+            .await
+            .unwrap();
         let p = resolve_under_root(&root, "a/b/c.bin").await.unwrap();
         assert_eq!(p, root.join("a/b/c.bin"));
     }
@@ -530,7 +593,9 @@ mod tests {
         let (_dir, root) = tmp_root().await;
         let e = resolve_under_root(&root, "../secret").await.unwrap_err();
         assert_eq!(e.status, StatusCode::FORBIDDEN);
-        let e = resolve_under_root(&root, "a/../../secret").await.unwrap_err();
+        let e = resolve_under_root(&root, "a/../../secret")
+            .await
+            .unwrap_err();
         assert_eq!(e.status, StatusCode::FORBIDDEN);
     }
 
@@ -569,15 +634,24 @@ mod tests {
     async fn write_target_rejects_traversal_and_absolute() {
         let (_dir, root) = tmp_root().await;
         assert_eq!(
-            resolve_write_target(&root, "../x").await.unwrap_err().status,
+            resolve_write_target(&root, "../x")
+                .await
+                .unwrap_err()
+                .status,
             StatusCode::FORBIDDEN
         );
         assert_eq!(
-            resolve_write_target(&root, "a/../../x").await.unwrap_err().status,
+            resolve_write_target(&root, "a/../../x")
+                .await
+                .unwrap_err()
+                .status,
             StatusCode::FORBIDDEN
         );
         assert_eq!(
-            resolve_write_target(&root, "/etc/passwd").await.unwrap_err().status,
+            resolve_write_target(&root, "/etc/passwd")
+                .await
+                .unwrap_err()
+                .status,
             StatusCode::FORBIDDEN
         );
     }
@@ -593,10 +667,26 @@ mod tests {
 
     #[cfg(unix)]
     #[tokio::test]
+    async fn write_target_rejects_symlink_before_creating_outside_root() {
+        let (_dir, root) = tmp_root().await;
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.join("outside")).unwrap();
+
+        let err = resolve_write_target(&root, "outside/new/dir/file.bin")
+            .await
+            .unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        assert!(!outside.path().join("new").exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
     async fn resolve_rejects_symlink_escape() {
         let (_dir, root) = tmp_root().await;
         let outside = tempfile::tempdir().unwrap();
-        tokio::fs::write(outside.path().join("secret"), b"s").await.unwrap();
+        tokio::fs::write(outside.path().join("secret"), b"s")
+            .await
+            .unwrap();
         std::os::unix::fs::symlink(outside.path().join("secret"), root.join("link")).unwrap();
         let e = resolve_under_root(&root, "link").await.unwrap_err();
         assert_eq!(e.status, StatusCode::FORBIDDEN);

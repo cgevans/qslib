@@ -53,7 +53,9 @@ async fn spawn_fake_scpi() -> SocketAddr {
                         let (ident, cmd) = if first.parse::<u32>().is_ok() {
                             (
                                 Some(first.to_string()),
-                                l.split_once(' ').map(|x| x.1.to_string()).unwrap_or_default(),
+                                l.split_once(' ')
+                                    .map(|x| x.1.to_string())
+                                    .unwrap_or_default(),
                             )
                         } else {
                             (None, l.clone())
@@ -155,10 +157,7 @@ async fn file_full_download() {
         .unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.headers()["accept-ranges"], "bytes");
-    assert_eq!(
-        resp.headers()["content-type"],
-        "application/octet-stream"
-    );
+    assert_eq!(resp.headers()["content-type"], "application/octet-stream");
     assert!(resp.headers().contains_key("etag"));
     let body = resp.bytes().await.unwrap();
     assert_eq!(body.as_ref(), content.as_slice());
@@ -170,7 +169,9 @@ async fn put_file_round_trips() {
     let content = b"<PlateSetup/>".repeat(500);
 
     let resp = client()
-        .put(format!("http://{addr}/file/exp/apldbio/sds/plate_setup.xml"))
+        .put(format!(
+            "http://{addr}/file/exp/apldbio/sds/plate_setup.xml"
+        ))
         .body(content.clone())
         .send()
         .await
@@ -185,7 +186,9 @@ async fn put_file_round_trips() {
 
     // And are served back byte-identically over GET.
     let got = client()
-        .get(format!("http://{addr}/file/exp/apldbio/sds/plate_setup.xml"))
+        .get(format!(
+            "http://{addr}/file/exp/apldbio/sds/plate_setup.xml"
+        ))
         .send()
         .await
         .unwrap()
@@ -198,7 +201,9 @@ async fn put_file_round_trips() {
 #[tokio::test]
 async fn put_file_overwrites_atomically() {
     let (addr, dir) = setup(None).await;
-    tokio::fs::write(dir.path().join("f.bin"), b"old").await.unwrap();
+    tokio::fs::write(dir.path().join("f.bin"), b"old")
+        .await
+        .unwrap();
     let resp = client()
         .put(format!("http://{addr}/file/f.bin"))
         .body(b"new-and-longer".to_vec())
@@ -250,7 +255,9 @@ async fn list_dir_enumerates_recursively() {
     tokio::fs::create_dir_all(root.join("run/apldbio/sds"))
         .await
         .unwrap();
-    tokio::fs::write(root.join("run/top.txt"), b"top").await.unwrap();
+    tokio::fs::write(root.join("run/top.txt"), b"top")
+        .await
+        .unwrap();
     tokio::fs::write(root.join("run/apldbio/sds/a.xml"), b"aaaa")
         .await
         .unwrap();
@@ -285,6 +292,26 @@ async fn list_dir_enumerates_recursively() {
             ("top.txt".to_string(), 3),
         ]
     );
+}
+
+#[tokio::test]
+async fn list_root_enumerates_the_file_root() {
+    let (addr, dir) = setup(None).await;
+    tokio::fs::write(dir.path().join("root.txt"), b"root")
+        .await
+        .unwrap();
+
+    for suffix in ["/list", "/list/"] {
+        let resp = client()
+            .get(format!("http://{addr}{suffix}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(body["files"][0]["path"], "root.txt");
+        assert_eq!(body["files"][0]["size"], 4);
+    }
 }
 
 #[tokio::test]
@@ -443,7 +470,9 @@ async fn file_traversal_encoded_forbidden() {
 #[tokio::test]
 async fn auth_enforced() {
     let (addr, dir) = setup(Some("s3cr3t")).await;
-    tokio::fs::write(dir.path().join("a.bin"), b"x").await.unwrap();
+    tokio::fs::write(dir.path().join("a.bin"), b"x")
+        .await
+        .unwrap();
 
     // No token -> 401
     let resp = client()

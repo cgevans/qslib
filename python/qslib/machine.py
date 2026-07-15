@@ -22,6 +22,7 @@ from datetime import datetime, timezone
 from typing import TypedDict
 from ._qslib import QSConnection, CommandError
 import io
+from http.client import HTTPException
 from .server import ServerClient, ServerError
 from .data import FilterSet
 
@@ -251,10 +252,9 @@ class Machine:
     _initial_access_level: AccessLevel = AccessLevel.Observer
     _current_access_level: AccessLevel = AccessLevel.Guest
     _connection: QSConnection | None = None
-    server_port: int | None = 7500
+    server_port: int | None = None
     server_token: str | None = None
     _server: ServerClient | None = None
-    _server_connect_timeout: int = 3
     _prefer_server_files: bool = False
 
     def asdict(self, password: bool = False) -> dict[str, str | int | None]:
@@ -269,6 +269,10 @@ class Machine:
             d["ssl"] = self.ssl
         if self.automatic != Machine.automatic:
             d["automatic"] = self.automatic
+        if self.server_port != Machine.server_port:
+            d["server_port"] = self.server_port
+        if self.server_token and password:
+            d["server_token"] = self.server_token
 
         return d
 
@@ -307,7 +311,7 @@ class Machine:
         client_key_path: str | None = None,
         server_ca_file: str | None = None,
         tls_server_name: str | None = None,
-        server_port: int | None = 7500,
+        server_port: int | None = None,
         server_token: str | None = None,
         server_connect_timeout: int = 3,
         _initial_access_level: AccessLevel | str = AccessLevel.Observer,
@@ -340,13 +344,18 @@ class Machine:
     def connect(self) -> None:
         """Open the connection manually.
 
-        When ``server_port`` is set (the default), this first tries to connect
-        through a ``qslib-server`` SCPI tunnel on that port, falling back to a
-        direct SSL/TCP SCPI connection if qslib-server is not reachable —
-        analogous to the automatic SSL/TCP selection. Pass ``server_port=None``
-        to disable qslib-server entirely.
+        When ``server_port`` is set and no secure direct channel
+        was requested, this first tries to connect through a ``qslib-server``
+        SCPI tunnel on that port, falling back to a direct SSL/TCP SCPI
+        connection if qslib-server is not reachable. An explicit secure direct
+        channel — ``ssl=True`` or any TLS certificate/verification option — is
+        honored directly and never replaced by the plaintext tunnel. The
+        qslib-server tunnel is opt-in; pass its port (normally ``7500``) as
+        ``server_port`` to enable it.
         """
-        conn = self._try_server_connection()
+        conn = None
+        if self.server_port is not None and not self._prefers_direct_connection():
+            conn = self._try_server_connection()
         if conn is None:
             conn = self._direct_connection()
         self.connection = conn
@@ -366,6 +375,21 @@ class Machine:
                     ) from e
                 raise
         self._current_access_level = self.get_access_level()[0]
+
+    def _prefers_direct_connection(self) -> bool:
+        """Whether the caller explicitly asked for a secure direct SCPI channel
+        (``ssl=True`` or any TLS certificate/verification option). That request
+        is honored directly rather than being silently replaced by the
+        plaintext qslib-server tunnel."""
+        return self.ssl is True or any(
+            value is not None
+            for value in (
+                self.client_certificate_path,
+                self.client_key_path,
+                self.server_ca_file,
+                self.tls_server_name,
+            )
+        )
 
     def _try_server_connection(self) -> QSConnection | None:
         """Try to connect through the qslib-server SCPI tunnel.
@@ -585,9 +609,7 @@ class Machine:
         ``ZIPREAD``). Raises :class:`FileNotFoundError` if the directory does not
         exist on the server (distinct from the fallback signal, for name probing).
         """
-        if not (fast and self._prefer_server_files):
-            return False
-        server = self.server
+        server = self._fast_server(fast)
         if server is None:
             return False
         context = _SCPI_LEAF_DEFAULT_CONTEXT.get(leaf, leaf)
@@ -597,9 +619,14 @@ class Machine:
             return False
         try:
             server.download_dir(abspath, dest_dir)
-        except ServerError as e:
-            if e.status == 404:
-                raise FileNotFoundError(remote_dir) from e
+        except FileNotFoundError as e:
+            # The directory itself is missing (a 404 on the listing): a genuine
+            # "not found", which callers use for name probing.
+            raise FileNotFoundError(remote_dir) from e
+        except (ServerError, OSError, HTTPException):
+            # A transfer error (network drop, a file removed mid-download, a torn
+            # body read) is not a missing directory: fall back to SCPI ZIPREAD
+            # rather than report the run as absent.
             log.warning("qslib-server download_dir failed for %r; falling back to SCPI", remote_dir, exc_info=True)
             return False
         return True
@@ -734,15 +761,18 @@ class Machine:
         else:
             contexts = context + ":"
 
-        abspath = _scpi_locator_abspath(contexts + path) if leaf == "FILE" else None
-        server = self.server if (fast and self._prefer_server_files and abspath is not None) else None
+        locator = contexts + path
+        abspath = _scpi_locator_abspath(locator) if (leaf == "FILE" and "${" not in locator) else None
+        server = self._fast_server(fast) if abspath is not None else None
         if server is not None:
             assert abspath is not None
             try:
                 data = server.get_abs_file(abspath)
                 assert data is not None
                 return data
-            except ServerError:
+            except (ServerError, OSError, HTTPException):
+                # A ServerError or a transport failure mid-transfer (network
+                # drop, torn body read): fall back to SCPI unless disabled.
                 log.warning("qslib-server file read failed for %r; falling back to SCPI", path, exc_info=True)
                 if not fallback:
                     raise
@@ -768,6 +798,14 @@ class Machine:
         if self._server is None:
             self._server = ServerClient(self.host, port=self.server_port, token=self.server_token)
         return self._server
+
+    def _fast_server(self, fast: bool) -> ServerClient | None:
+        """The qslib-server client to use for a fast-path file transfer, or
+        ``None`` when the fast path is disabled (``fast`` false), not preferred
+        (not connected through the tunnel), or unavailable (no ``server_port``)."""
+        if not (fast and self._prefer_server_files):
+            return None
+        return self.server
 
     def ensure_server(
         self,
@@ -874,7 +912,7 @@ class Machine:
                 client.health()
                 self._prefer_server_files = True
                 return client
-            except ServerError:
+            except (ServerError, OSError, HTTPException):
                 time.sleep(0.1)
         raise ServerError("qslib-server did not become ready after deployment")
 
@@ -1004,13 +1042,13 @@ class Machine:
             data = data.encode()
 
         abspath = _scpi_locator_abspath(path) if "${" not in path else None
-        server = self.server if (fast and self._prefer_server_files and abspath is not None) else None
+        server = self._fast_server(fast) if abspath is not None else None
         if server is not None:
             assert abspath is not None
             try:
                 server.put_abs_file(abspath, data)
                 return
-            except ServerError:
+            except (ServerError, OSError, HTTPException):
                 log.warning("qslib-server file write failed for %r; falling back to SCPI", path, exc_info=True)
                 if not fallback:
                     raise
@@ -1035,9 +1073,7 @@ class Machine:
         or a transfer failed -- so the caller falls back to SCPI ``EXP:ZIPWRITE``.
         A partial upload is harmless: the SCPI fallback rewrites every file.
         """
-        if not (fast and self._prefer_server_files):
-            return False
-        server = self.server
+        server = self._fast_server(fast)
         if server is None:
             return False
         base = _scpi_locator_abspath(context_path)
@@ -1052,10 +1088,8 @@ class Machine:
                     if not parts:
                         continue
                     server.put_abs_file(posixpath.join(base, *parts), zf.read(info))
-        except (ServerError, OSError, zipfile.BadZipFile):
-            log.warning(
-                "qslib-server folder upload to %r failed; falling back to SCPI", context_path, exc_info=True
-            )
+        except (ServerError, OSError, HTTPException, zipfile.BadZipFile):
+            log.warning("qslib-server folder upload to %r failed; falling back to SCPI", context_path, exc_info=True)
             return False
         return True
 
@@ -1325,17 +1359,13 @@ class Machine:
         Setting accepts a color name/:any:`StatusLedColor` (solid on), or a
         ``(color, mode)`` tuple.
         """
-        return StatusLedState.from_bytes(
-            self.run_command_bytes(StatusLedState.command())
-        )
+        return StatusLedState.from_bytes(self.run_command_bytes(StatusLedState.command()))
 
     @status_led.setter
     @_ensure_connection(AccessLevel.Controller)
     def status_led(
         self,
-        value: StatusLedColor
-        | str
-        | tuple[StatusLedColor | str, StatusLedMode | str],
+        value: StatusLedColor | str | tuple[StatusLedColor | str, StatusLedMode | str],
     ) -> None:
         if isinstance(value, tuple):
             color, mode = value

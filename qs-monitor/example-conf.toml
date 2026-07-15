@@ -12,6 +12,8 @@ host = "qpcr1"
 ## setup over HTTP instead of SCPI (falls back to SCPI when unreachable).
 ## Defaults to 7500; set to 0 to disable and use SCPI only.
 # server_port = 7500
+## Bearer token for qslib-server. Omit only when it runs with --no-auth.
+# server_token = "replace-me"
 
 
 [[machines]]

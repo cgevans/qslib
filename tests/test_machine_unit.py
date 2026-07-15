@@ -43,6 +43,97 @@ def test_machine_ssl_true_default_port():
     assert m.port == 7443
 
 
+def test_machine_server_settings_asdict():
+    m = Machine("example.com", server_port=7500, server_token="secret")
+    assert m.asdict()["server_port"] == 7500
+    assert "server_token" not in m.asdict()
+    assert m.asdict(password=True)["server_token"] == "secret"
+
+
+# --- connect() precedence: secure direct vs qslib-server tunnel ---
+
+
+def test_prefers_direct_connection_signals():
+    # No secure channel requested -> the qslib-server tunnel may be preferred.
+    assert Machine("h")._prefers_direct_connection() is False
+    assert Machine("h", ssl=False)._prefers_direct_connection() is False
+    # Explicit ssl=True or a client certificate -> secure direct path.
+    assert Machine("h", ssl=True)._prefers_direct_connection() is True
+    assert Machine("h", client_certificate_path="/c.pem")._prefers_direct_connection() is True
+    assert Machine("h", client_key_path="/k.pem")._prefers_direct_connection() is True
+    assert Machine("h", server_ca_file="/ca.pem")._prefers_direct_connection() is True
+    assert Machine("h", tls_server_name="instrument.example")._prefers_direct_connection() is True
+
+
+class _FakeConn:
+    """Stand-in for a QSConnection; ``connected`` is False so Machine.__del__
+    does not try to disconnect a sentinel at teardown."""
+
+    connected = False
+
+    def disconnect(self):
+        pass
+
+
+def _stub_post_connect(monkeypatch, m):
+    monkeypatch.setattr(m, "set_access_level", lambda *a, **k: None)
+    monkeypatch.setattr(m, "get_access_level", lambda: (AccessLevel.Observer,))
+
+
+def test_connect_skips_tunnel_when_secure(monkeypatch):
+    """An explicit secure config (ssl=True / client cert) must not be silently
+    replaced by the plaintext qslib-server tunnel."""
+    m = Machine("h", ssl=True, client_certificate_path="/c.pem")
+    direct = _FakeConn()
+
+    def boom():
+        raise AssertionError("must not probe the qslib-server tunnel for a secure config")
+
+    monkeypatch.setattr(m, "_try_server_connection", boom)
+    monkeypatch.setattr(m, "_direct_connection", lambda: direct)
+    _stub_post_connect(monkeypatch, m)
+    m.connect()
+    assert m._connection is direct
+
+
+def test_connect_prefers_tunnel_when_not_secure(monkeypatch):
+    """Without a secure config, connect() prefers the qslib-server tunnel."""
+    m = Machine("h", server_port=7500)
+    tunnel, direct = _FakeConn(), _FakeConn()
+    monkeypatch.setattr(m, "_try_server_connection", lambda: tunnel)
+    monkeypatch.setattr(m, "_direct_connection", lambda: direct)
+    _stub_post_connect(monkeypatch, m)
+    m.connect()
+    assert m._connection is tunnel
+
+
+def test_connect_falls_back_to_direct_when_tunnel_absent(monkeypatch):
+    """Without a secure config and no tunnel, connect() uses the direct path."""
+    m = Machine("h", server_port=7500)
+    direct = _FakeConn()
+    monkeypatch.setattr(m, "_try_server_connection", lambda: None)
+    monkeypatch.setattr(m, "_direct_connection", lambda: direct)
+    _stub_post_connect(monkeypatch, m)
+    m.connect()
+    assert m._connection is direct
+
+
+def test_connect_does_not_probe_server_by_default(monkeypatch):
+    """Ordinary connections stay on the existing direct Auto path unless the
+    caller explicitly opts into qslib-server with server_port."""
+    m = Machine("h")
+    direct = _FakeConn()
+
+    def boom():
+        raise AssertionError("must not probe qslib-server without an explicit server_port")
+
+    monkeypatch.setattr(m, "_try_server_connection", boom)
+    monkeypatch.setattr(m, "_direct_connection", lambda: direct)
+    _stub_post_connect(monkeypatch, m)
+    m.connect()
+    assert m._connection is direct
+
+
 # --- set_access_level validation ---
 
 

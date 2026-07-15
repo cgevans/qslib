@@ -15,6 +15,7 @@ import os
 import socket
 import subprocess
 import time
+from http.client import IncompleteRead
 from pathlib import Path
 
 import pytest
@@ -106,6 +107,51 @@ def test_get_file_bytes(server):
     assert client.get_file("sub/data.bin") == data
 
 
+class _ShortResponse:
+    headers = {"Content-Length": "10"}
+
+    def __init__(self):
+        self._chunks = iter((b"abc", b""))
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def read(self, _amount=None):
+        return next(self._chunks)
+
+
+def test_streamed_get_rejects_short_body_and_keeps_destination(monkeypatch, tmp_path):
+    client = ServerClient("127.0.0.1", port=1)
+    destination = tmp_path / "data.bin"
+    destination.write_bytes(b"existing")
+    monkeypatch.setattr(client, "_open", lambda request: _ShortResponse())
+
+    with pytest.raises(ServerError, match="received 3 bytes, expected 10"):
+        client.get_file("data.bin", dest=destination, chunk_size=2)
+
+    assert destination.read_bytes() == b"existing"
+
+
+def test_put_wraps_incomplete_response_as_server_error(monkeypatch):
+    class BrokenPutResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            raise IncompleteRead(b"{", 10)
+
+    client = ServerClient("127.0.0.1", port=1)
+    monkeypatch.setattr(client, "_open", lambda request: BrokenPutResponse())
+    with pytest.raises(ServerError, match="file upload failed"):
+        client.put_file("data.bin", b"payload")
+
+
 def test_get_abs_file(server):
     """get_abs_file fetches by absolute path, made relative to file_root."""
     client, root = server
@@ -181,6 +227,16 @@ def test_download_dir_reproduces_zipread_tree(server, tmp_path):
     assert got == expected
 
 
+def test_download_dir_missing_directory_raises_filenotfound(server, tmp_path):
+    """download_dir raises FileNotFoundError (not a bare ServerError) when the
+    directory itself does not exist, so callers can tell a missing run from a
+    transfer failure."""
+    client, root = server
+    abspath = str(Path(client.file_root) / "no_such_run")
+    with pytest.raises(FileNotFoundError):
+        client.download_dir(abspath, tmp_path / "out")
+
+
 def test_upgrade_dry_run_verifies_real_binary(server):
     """ServerClient.upgrade(dry_run=True) verifies a real binary end to end
     (sha + ELF + --version) without installing or restarting."""
@@ -251,11 +307,42 @@ def test_health_on_dead_port_raises_servererror():
     assert client.available() is False
 
 
+def test_available_defaults_false_without_scpi_ok(monkeypatch):
+    """available() treats a /health doc lacking scpi_ok as not-up (matching the
+    Rust client), so callers do not issue SCPI against an unconfirmed target."""
+    client = ServerClient("127.0.0.1", port=1)
+    monkeypatch.setattr(client, "health", lambda: {"name": "qslib-server"})
+    assert client.available() is False
+
+
+def test_file_root_not_cached_after_transient_error(monkeypatch):
+    """A transient health() failure must not permanently disable the fast path:
+    file_root returns None on the failure but re-probes and succeeds after."""
+    client = ServerClient("127.0.0.1", port=1)
+    calls = {"n": 0}
+
+    def flaky_health():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise ServerError("transient")
+        return {"file_root": "/data"}
+
+    monkeypatch.setattr(client, "health", flaky_health)
+    assert client.file_root is None  # transient failure -> not cached
+    assert client.file_root == "/data"  # recovers on the next probe
+
+
 def test_list_dir_missing_is_404(server):
     client, root = server
     with pytest.raises(ServerError) as exc:
         client.list_dir(str(Path(client.file_root) / "does_not_exist"))
     assert exc.value.status == 404
+
+
+def test_list_dir_can_enumerate_file_root(server):
+    client, root = server
+    (root / "root.txt").write_bytes(b"root")
+    assert client.list_dir(str(root)) == [{"path": "root.txt", "size": 4}]
 
 
 def test_get_file_to_dest(server, tmp_path):
@@ -515,6 +602,24 @@ def test_write_file_falls_back_to_scpi_on_server_error(monkeypatch):
     assert seen["command"].startswith(b"FILE:WRITE f.bin")
 
 
+def test_write_file_falls_back_on_incomplete_http_response(monkeypatch):
+    def raising(abspath, data):
+        raise IncompleteRead(b"{", 10)
+
+    m = _machine_with_fake_write_server(monkeypatch, put_abs_file=raising)
+    m._prefer_server_files = True
+
+    seen = {}
+
+    def fake_scpi(self, command):
+        seen["command"] = command
+        return b"OK"
+
+    monkeypatch.setattr(type(m), "run_command_bytes", fake_scpi)
+    m.write_file("f.bin", b"data")
+    assert seen["command"].startswith(b"FILE:WRITE f.bin")
+
+
 def _zip_of(members: dict[str, bytes]) -> bytes:
     import io as _io
     import zipfile as _zip
@@ -566,6 +671,15 @@ def test_upload_zip_as_files_falls_back_on_error(monkeypatch):
 
     def raising(abspath, data):
         raise ServerError("boom", status=403)
+
+    m = _machine_with_fake_write_server(monkeypatch, put_abs_file=raising)
+    m._prefer_server_files = True
+    assert m.upload_zip_as_files("experiments:run1", _zip_of({"a.xml": b"x"})) is False
+
+
+def test_upload_zip_as_files_falls_back_on_incomplete_http_response(monkeypatch):
+    def raising(abspath, data):
+        raise IncompleteRead(b"{", 10)
 
     m = _machine_with_fake_write_server(monkeypatch, put_abs_file=raising)
     m._prefer_server_files = True
@@ -643,9 +757,13 @@ def test_machine_download_dir_not_preferred_returns_false(monkeypatch, tmp_path)
     assert m.download_dir("run1", tmp_path, leaf="EXP") is False
 
 
-def test_machine_download_dir_404_raises_filenotfound(monkeypatch, tmp_path):
+def test_machine_download_dir_missing_dir_raises_filenotfound(monkeypatch, tmp_path):
+    """A genuinely missing directory (ServerClient.download_dir raises
+    FileNotFoundError from the listing 404) surfaces as FileNotFoundError so
+    callers can probe candidate names."""
+
     def missing(abspath, dest_dir):
-        raise ServerError("nope", status=404)
+        raise FileNotFoundError(abspath)
 
     m = _machine_with_fake_server_dir(monkeypatch, download_dir=missing)
     m._prefer_server_files = True
@@ -653,11 +771,36 @@ def test_machine_download_dir_404_raises_filenotfound(monkeypatch, tmp_path):
         m.download_dir("run1", tmp_path, leaf="EXP")
 
 
+def test_machine_download_dir_per_file_404_falls_back(monkeypatch, tmp_path):
+    """A per-file 404 during the transfer (a file removed mid-download) is a
+    ServerError, not a missing directory: fall back to SCPI rather than report
+    the run as absent."""
+
+    def vanished(abspath, dest_dir):
+        raise ServerError("gone", status=404)
+
+    m = _machine_with_fake_server_dir(monkeypatch, download_dir=vanished)
+    m._prefer_server_files = True
+    assert m.download_dir("run1", tmp_path, leaf="EXP") is False
+
+
 def test_machine_download_dir_other_error_returns_false(monkeypatch, tmp_path):
     def err(abspath, dest_dir):
         raise ServerError("boom", status=500)
 
     m = _machine_with_fake_server_dir(monkeypatch, download_dir=err)
+    m._prefer_server_files = True
+    assert m.download_dir("run1", tmp_path, leaf="EXP") is False
+
+
+def test_machine_download_dir_transport_error_falls_back(monkeypatch, tmp_path):
+    """A non-ServerError transport failure mid-transfer (socket timeout, torn
+    body read) falls back to SCPI instead of propagating and aborting the load."""
+
+    def dropped(abspath, dest_dir):
+        raise TimeoutError("connection dropped mid-transfer")
+
+    m = _machine_with_fake_server_dir(monkeypatch, download_dir=dropped)
     m._prefer_server_files = True
     assert m.download_dir("run1", tmp_path, leaf="EXP") is False
 

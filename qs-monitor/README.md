@@ -30,6 +30,7 @@ Configuration is provided via a TOML file (default: `config.toml`). See `example
 name = "qpcr1"
 host = "1.2.3.4"
 # server_port = 7500  # qslib-server port; 0 to disable
+# server_token = "..."  # required unless qslib-server uses --no-auth
 ```
 
 When a machine runs the on-instrument `qslib-server`, filter data and plate

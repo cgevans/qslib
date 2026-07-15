@@ -12,8 +12,8 @@
 //! qs-monitor) use. The client lives in `qslib` rather than `qslib-core` so the
 //! core protocol layer shared with `qslib-server` itself carries no HTTP client.
 
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 use tokio::sync::OnceCell;
@@ -30,6 +30,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 /// Overall per-request timeout. Generous enough not to truncate a normal
 /// transfer, while still bounding a stuck read.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Back off after a failed `/health` probe. Without a negative-cache window,
+/// qs-monitor retries the three-second connect timeout once per filter file.
+const FILE_ROOT_RETRY_DELAY: Duration = Duration::from_secs(30);
 
 /// An error contacting, or returned by, qslib-server.
 #[derive(Debug, thiserror::Error)]
@@ -103,6 +107,9 @@ pub struct ServerClient {
     /// the field is not re-probed on every fetch. A transport failure is not
     /// cached, so a transient outage does not permanently disable the path.
     file_root: Arc<OnceCell<Option<String>>>,
+    /// Earliest time to retry `/health` after a transport/auth/decode failure.
+    /// Shared by clones so one failed hot-path request suppresses the rest.
+    file_root_retry_at: Arc<Mutex<Option<Instant>>>,
 }
 
 impl ServerClient {
@@ -121,6 +128,7 @@ impl ServerClient {
             token,
             client,
             file_root: Arc::new(OnceCell::new()),
+            file_root_retry_at: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -166,8 +174,11 @@ impl ServerClient {
             .bytes()
             .await
             .map_err(|e| ServerError::Decode(format!("reading /health body: {e}")))?;
-        serde_json::from_slice(&bytes)
-            .map_err(|e| ServerError::Decode(format!("qslib-server /health returned a non-JSON body: {e}")))
+        serde_json::from_slice(&bytes).map_err(|e| {
+            ServerError::Decode(format!(
+                "qslib-server /health returned a non-JSON body: {e}"
+            ))
+        })
     }
 
     /// Return true if qslib-server answers `/health` with the SCPI target up.
@@ -181,13 +192,34 @@ impl ServerClient {
         if let Some(v) = self.file_root.get() {
             return v.clone();
         }
+        if self.file_root_probe_suppressed() {
+            return None;
+        }
         match self.health().await {
             Ok(h) => {
+                *self
+                    .file_root_retry_at
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
                 let _ = self.file_root.set(h.file_root.clone());
                 h.file_root
             }
-            Err(_) => None,
+            Err(_) => {
+                *self
+                    .file_root_retry_at
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                    Some(Instant::now() + FILE_ROOT_RETRY_DELAY);
+                None
+            }
         }
+    }
+
+    fn file_root_probe_suppressed(&self) -> bool {
+        self.file_root_retry_at
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some_and(|retry_at| Instant::now() < retry_at)
     }
 
     /// Fetch a file addressed relative to the server's `--file-root`.
@@ -206,10 +238,11 @@ impl ServerClient {
     /// when the path is outside the served root (so callers fall back to SCPI).
     pub async fn get_abs_file(&self, abspath: &str) -> Result<Vec<u8>, ServerError> {
         let root = self.file_root().await;
-        let rel = rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
-            abspath: abspath.to_string(),
-            root: root.clone(),
-        })?;
+        let rel =
+            rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
+                abspath: abspath.to_string(),
+                root: root.clone(),
+            })?;
         self.get_file(&rel).await
     }
 
@@ -230,10 +263,11 @@ impl ServerClient {
     /// the path is outside the served root (so callers fall back to SCPI).
     pub async fn put_abs_file(&self, abspath: &str, body: Vec<u8>) -> Result<(), ServerError> {
         let root = self.file_root().await;
-        let rel = rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
-            abspath: abspath.to_string(),
-            root: root.clone(),
-        })?;
+        let rel =
+            rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
+                abspath: abspath.to_string(),
+                root: root.clone(),
+            })?;
         self.put_file(&rel, body).await
     }
 
@@ -241,18 +275,20 @@ impl ServerClient {
     /// (`GET /list`). Entries' `path` fields are relative to `abspath`.
     pub async fn list_dir(&self, abspath: &str) -> Result<Vec<ListEntry>, ServerError> {
         let root = self.file_root().await;
-        let rel = rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
-            abspath: abspath.to_string(),
-            root: root.clone(),
-        })?;
+        let rel =
+            rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
+                abspath: abspath.to_string(),
+                root: root.clone(),
+            })?;
         let url = self.url("list", &rel)?;
         let resp = self.send(self.get(url)).await?;
         let bytes = resp
             .bytes()
             .await
             .map_err(|e| ServerError::Decode(format!("reading /list body: {e}")))?;
-        let parsed: ListResponse = serde_json::from_slice(&bytes)
-            .map_err(|e| ServerError::Decode(format!("qslib-server /list returned a non-JSON body: {e}")))?;
+        let parsed: ListResponse = serde_json::from_slice(&bytes).map_err(|e| {
+            ServerError::Decode(format!("qslib-server /list returned a non-JSON body: {e}"))
+        })?;
         Ok(parsed.files)
     }
 
@@ -269,7 +305,8 @@ impl ServerClient {
             return Ok(resp);
         }
         let body = resp.bytes().await.unwrap_or_default();
-        let (message, detail) = parse_error_body(&body, status.canonical_reason().unwrap_or("error"));
+        let (message, detail) =
+            parse_error_body(&body, status.canonical_reason().unwrap_or("error"));
         Err(ServerError::Http {
             status: status.as_u16(),
             message,
@@ -330,11 +367,21 @@ fn parse_error_body(body: &[u8], default: &str) -> (String, Option<String>) {
             .and_then(|e| e.as_str())
             .unwrap_or(default)
             .to_string();
-        let detail = v.get("detail").and_then(|d| d.as_str()).map(|s| s.to_string());
+        let detail = v
+            .get("detail")
+            .and_then(|d| d.as_str())
+            .map(|s| s.to_string());
         return (message, detail);
     }
     let text = String::from_utf8_lossy(body).trim().to_string();
-    (if text.is_empty() { default.to_string() } else { text }, None)
+    (
+        if text.is_empty() {
+            default.to_string()
+        } else {
+            text
+        },
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -344,14 +391,20 @@ mod tests {
     #[test]
     fn rel_under_root() {
         assert_eq!(
-            rel_to_root(Some("/data/vendor/IS"), "/data/vendor/IS/experiments/run/x.xml"),
+            rel_to_root(
+                Some("/data/vendor/IS"),
+                "/data/vendor/IS/experiments/run/x.xml"
+            ),
             Some("experiments/run/x.xml".to_string())
         );
     }
 
     #[test]
     fn rel_equal_root() {
-        assert_eq!(rel_to_root(Some("/data/vendor/IS"), "/data/vendor/IS"), Some(String::new()));
+        assert_eq!(
+            rel_to_root(Some("/data/vendor/IS"), "/data/vendor/IS"),
+            Some(String::new())
+        );
     }
 
     #[test]
@@ -398,6 +451,19 @@ mod tests {
             c.url("file", "a dir/b#c.xml").unwrap().as_str(),
             "http://host:7500/file/a%20dir/b%23c.xml"
         );
+    }
+
+    #[test]
+    fn empty_relative_path_targets_static_root_route() {
+        let c = ServerClient::new("host", 7500, None);
+        assert_eq!(c.url("list", "").unwrap().as_str(), "http://host:7500/list");
+    }
+
+    #[test]
+    fn failed_file_root_probe_is_temporarily_suppressed() {
+        let c = ServerClient::new("host", 7500, None);
+        *c.file_root_retry_at.lock().unwrap() = Some(Instant::now() + Duration::from_secs(1));
+        assert!(c.file_root_probe_suppressed());
     }
 
     #[test]
