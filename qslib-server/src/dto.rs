@@ -92,7 +92,7 @@ impl RunStatusDto {
             num_cycles: value.num_cycles,
             step: value.step,
             point: value.point,
-            state: value.state.to_ascii_lowercase(),
+            state: value.state,
             remaining_time_s,
         }
     }
@@ -138,9 +138,9 @@ impl InstrumentStatusDto {
             power_enabled: matches!(power, PowerStatus::On),
             block: block.into(),
             zone_count,
-            drawer: machine.drawer.to_ascii_lowercase(),
-            cover: machine.cover.to_ascii_lowercase(),
-            lamp_status: machine.lamp_status.to_ascii_lowercase(),
+            drawer: machine.drawer,
+            cover: machine.cover,
+            lamp_status: machine.lamp_status,
             sample_temperatures_c: machine.sample_temperatures,
             block_temperatures_c: machine.block_temperatures,
             cover_temperature_c: machine.cover_temperature,

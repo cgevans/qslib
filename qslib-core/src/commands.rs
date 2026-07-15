@@ -1732,6 +1732,7 @@ macro_rules! unit_command {
 unit_command!(DrawerOpen, b"OPEN");
 unit_command!(DrawerClose, b"CLOSE");
 unit_command!(CoverDown, b"COVerDOWN");
+unit_command!(StatusLedOff, b"LED:LightOFF");
 unit_command!(PauseRun, b"PAUSe");
 unit_command!(ResumeRun, b"RESume");
 
@@ -1851,7 +1852,7 @@ impl CommandBuilder for RestartSystem {
     const COMMAND: &'static [u8] = b"SYST:EXEC";
 
     fn args(&self) -> Option<Vec<Value>> {
-        Some(vec![Value::String("killall zygote".to_string())])
+        Some(vec![Value::QuotedString("killall zygote".to_string())])
     }
 }
 
@@ -2743,6 +2744,16 @@ mod tests {
     fn test_random_key_query_to_bytes() {
         let bytes = RandomKeyQuery.to_bytes();
         assert_eq!(&bytes, b"RAND?");
+    }
+
+    #[test]
+    fn test_status_led_off_to_bytes() {
+        assert_eq!(StatusLedOff.to_bytes(), b"LED:LightOFF");
+    }
+
+    #[test]
+    fn test_restart_system_to_bytes() {
+        assert_eq!(RestartSystem.to_bytes(), b"SYST:EXEC \"killall zygote\"");
     }
 
     #[test]

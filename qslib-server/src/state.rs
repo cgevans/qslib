@@ -6,6 +6,8 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
+use axum::http::StatusCode;
+
 use crate::auth::AuthPolicy;
 use crate::config::Config;
 use crate::error::ServerError;
@@ -89,7 +91,13 @@ impl AppState {
         self.contexts
             .get(&context.to_ascii_lowercase())
             .map(PathBuf::as_path)
-            .ok_or_else(|| ServerError::not_found(format!("unknown file context {context:?}")))
+            .ok_or_else(|| {
+                ServerError::coded(
+                    StatusCode::NOT_FOUND,
+                    "unknown_context",
+                    format!("unknown file context {context:?}"),
+                )
+            })
     }
 }
 

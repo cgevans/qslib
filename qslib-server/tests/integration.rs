@@ -49,6 +49,7 @@ async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mu
                 let mut pending = String::new();
                 let mut access_level = "Observer".to_string();
                 let mut exclusive = false;
+                let mut drawer_open = false;
                 let mut buffer = [0_u8; 4096];
                 loop {
                     let count = match socket.read(&mut buffer).await {
@@ -81,6 +82,16 @@ async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mu
                             "ON 60".to_string()
                         } else if command.starts_with("LED:STATus?") {
                             "green on".to_string()
+                        } else if command == "RAND?" {
+                            "142371".to_string()
+                        } else if command.eq_ignore_ascii_case("drawer?") {
+                            if drawer_open {
+                                "Open".to_string()
+                            } else {
+                                "Closed".to_string()
+                            }
+                        } else if command.eq_ignore_ascii_case("eng?") {
+                            "Down".to_string()
                         } else if command.starts_with("RET ${RunTitle") {
                             if running {
                                 "active_run 1 1 1 1 1 1 Running".to_string()
@@ -104,6 +115,10 @@ async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mu
                                     .to_string();
                                 exclusive =
                                     command.to_ascii_lowercase().contains("-exclusive=true");
+                            } else if command == "OPEN" {
+                                drawer_open = true;
+                            } else if command == "CLOSE" {
+                                drawer_open = false;
                             }
                             String::new()
                         };
@@ -205,6 +220,32 @@ async fn wait_ready(address: SocketAddr) -> serde_json::Value {
     panic!("managed actor did not become ready")
 }
 
+async fn wait_operation(
+    client: &reqwest::Client,
+    address: SocketAddr,
+    initial: serde_json::Value,
+) -> serde_json::Value {
+    let id = initial["id"].as_str().unwrap();
+    for _ in 0..200 {
+        let record: serde_json::Value = client
+            .get(format!("http://{address}/api/v1/operations/{id}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if matches!(
+            record["state"].as_str(),
+            Some("succeeded" | "failed" | "unknown")
+        ) {
+            return record;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("operation did not finish")
+}
+
 #[tokio::test]
 async fn health_uses_the_single_managed_connection() {
     let (address, _root, connections, _commands) = setup(Role::Observer).await;
@@ -245,7 +286,7 @@ async fn capabilities_and_status_follow_the_v1_contract() {
     assert!(response.headers().contains_key("x-request-id"));
     let status: serde_json::Value = response.json().await.unwrap();
     assert_eq!(status["zone_count"], 6);
-    assert_eq!(status["run"]["state"], "idle");
+    assert_eq!(status["run"]["state"], "Idle");
 }
 
 #[tokio::test]
@@ -321,6 +362,25 @@ async fn protocol_update_sends_exact_scpi_and_stores_display_xml_separately() {
         .unwrap()
         .iter()
         .any(|command| command == scpi));
+
+    let other_dir = root.path().join("experiments/other_run/apldbio/sds");
+    std::fs::create_dir_all(&other_dir).unwrap();
+    let response = reqwest::Client::new()
+        .put(format!(
+            "http://{address}/api/v1/runs/other_run/protocol?mode=replace"
+        ))
+        .json(&serde_json::json!({
+            "scpi": scpi,
+            "tcprotocol_xml": display,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 409);
+    let error: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(error["error"]["code"], "not_running");
+    assert_eq!(error["error"]["details"]["requested"], "other_run");
+    assert_eq!(error["error"]["details"]["current"]["name"], "active_run");
 }
 
 #[tokio::test]
@@ -467,4 +527,260 @@ async fn router_errors_use_the_structured_contract() {
         assert_eq!(body["error"]["code"], code);
         assert_eq!(body["request_id"], request_id);
     }
+}
+
+#[tokio::test]
+async fn explicit_status_requests_are_fresh_and_preserve_raw_casing() {
+    let (address, _root, _connections, commands) = setup(Role::Observer).await;
+    wait_ready(address).await;
+    commands.lock().unwrap().clear();
+    for _ in 0..2 {
+        let status: serde_json::Value =
+            reqwest::get(format!("http://{address}/api/v1/instrument/status"))
+                .await
+                .unwrap()
+                .json()
+                .await
+                .unwrap();
+        assert_eq!(status["run"]["state"], "Idle");
+        assert_eq!(status["drawer"], "Closed");
+        assert_eq!(status["cover"], "Down");
+    }
+    let commands = commands.lock().unwrap();
+    assert_eq!(
+        commands
+            .iter()
+            .filter(|command| command.starts_with("RET $(DRAWER?)"))
+            .count(),
+        2
+    );
+}
+
+#[tokio::test]
+async fn led_off_and_conditional_cover_lower_emit_direct_scpi_macros() {
+    let (address, _root, _connections, commands) = setup(Role::Controller).await;
+    wait_ready(address).await;
+    commands.lock().unwrap().clear();
+    let client = reqwest::Client::new();
+
+    let response = client
+        .post(format!(
+            "http://{address}/api/v1/instrument/indicator/actions/off"
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+    let response = client
+        .put(format!("http://{address}/api/v1/instrument/cover"))
+        .json(&serde_json::json!({
+            "position": "down",
+            "verify": true,
+            "ensure_drawer": true,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 204);
+
+    let commands = commands.lock().unwrap();
+    assert!(commands.iter().any(|command| command == "LED:LightOFF"));
+    assert!(commands.iter().any(|command| command == "drawer?"));
+    assert!(commands.iter().any(|command| command == "COVerDOWN"));
+    assert!(!commands.iter().any(|command| command == "CLOSE"));
+}
+
+#[tokio::test]
+async fn key_and_restart_are_controller_authorized_at_controller_access() {
+    let (scpi, _connections, commands) = spawn_fake_scpi(false).await;
+    let root = tempfile::tempdir().unwrap();
+    for context in [
+        "experiments",
+        "runs",
+        "logs",
+        "templates",
+        "calibrations",
+        "public_run_complete",
+        "private_run_complete",
+    ] {
+        std::fs::create_dir_all(root.path().join(context)).unwrap();
+    }
+    let mut config = test_config(scpi, root.path().to_path_buf());
+    config.max_access = AccessLevel::Controller;
+    let state = AppState::new(&config, AuthPolicy::unauthenticated(Role::Controller)).unwrap();
+    let address = spawn_http(state).await;
+    wait_ready(address).await;
+    commands.lock().unwrap().clear();
+    let client = reqwest::Client::new();
+
+    let key: serde_json::Value = client
+        .post(format!("http://{address}/api/v1/instrument/access-keys"))
+        .header("Idempotency-Key", "key-operation")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let key = wait_operation(&client, address, key).await;
+    assert_eq!(key["state"], "succeeded");
+    assert_eq!(key["result"]["key"], "142371");
+
+    let restart: serde_json::Value = client
+        .post(format!(
+            "http://{address}/api/v1/instrument/actions/restart"
+        ))
+        .header("Idempotency-Key", "restart-operation")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let restart = wait_operation(&client, address, restart).await;
+    assert_eq!(restart["state"], "succeeded");
+
+    let commands = commands.lock().unwrap();
+    assert!(commands.iter().any(|command| command == "RAND?"));
+    assert!(commands
+        .iter()
+        .any(|command| command == "SYST:EXEC \"killall zygote\""));
+    assert!(!commands
+        .iter()
+        .any(|command| command.ends_with(" Administrator")));
+}
+
+#[tokio::test]
+async fn key_and_restart_obey_control_policy() {
+    let (scpi, _connections, _commands) = spawn_fake_scpi(false).await;
+    let root = tempfile::tempdir().unwrap();
+    for context in [
+        "experiments",
+        "runs",
+        "logs",
+        "templates",
+        "calibrations",
+        "public_run_complete",
+        "private_run_complete",
+    ] {
+        std::fs::create_dir_all(root.path().join(context)).unwrap();
+    }
+    let mut config = test_config(scpi, root.path().to_path_buf());
+    config.allow_controls = false;
+    let state = AppState::new(&config, AuthPolicy::unauthenticated(Role::Controller)).unwrap();
+    let address = spawn_http(state).await;
+    wait_ready(address).await;
+    let client = reqwest::Client::new();
+    for route in [
+        "/api/v1/instrument/access-keys",
+        "/api/v1/instrument/actions/restart",
+    ] {
+        let response = client
+            .post(format!("http://{address}{route}"))
+            .header("Idempotency-Key", route)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+    }
+}
+
+#[tokio::test]
+async fn preflight_and_compile_failures_use_stable_codes_and_details() {
+    let (busy_address, _busy_root, _connections, _commands) =
+        setup_with_running(Role::Controller, true).await;
+    wait_ready(busy_address).await;
+    let busy = reqwest::Client::new()
+        .get(format!("http://{busy_address}/api/v1/runs/preflight"))
+        .query(&[("experiment", "new_run"), ("overwrite", "false")])
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(busy.status(), 409);
+    let busy: serde_json::Value = busy.json().await.unwrap();
+    assert_eq!(busy["error"]["code"], "machine_busy");
+    assert_eq!(busy["error"]["details"]["current"]["state"], "Running");
+
+    let (address, root, _connections, commands) = setup(Role::Controller).await;
+    wait_ready(address).await;
+    let experiments = root.path().join("experiments");
+    for (name, attributes) in [
+        ("missing_attributes", None),
+        (
+            "active_run",
+            Some("[.]\nrun = -\nstate = Running\ncollected = False\n"),
+        ),
+        (
+            "collected_run",
+            Some("[.]\nrun = -\nstate = Completed\ncollected = True\n"),
+        ),
+    ] {
+        let directory = experiments.join(name);
+        std::fs::create_dir_all(&directory).unwrap();
+        if let Some(attributes) = attributes {
+            std::fs::write(directory.join(".attributes"), attributes).unwrap();
+        }
+    }
+    commands.lock().unwrap().clear();
+    let client = reqwest::Client::new();
+    for (name, code) in [
+        ("missing_attributes", "run_not_found"),
+        ("active_run", "run_not_finished"),
+        ("collected_run", "already_collected"),
+    ] {
+        let initial: serde_json::Value = client
+            .post(format!(
+                "http://{address}/api/v1/runs/{name}/actions/compile"
+            ))
+            .header("Idempotency-Key", format!("compile-{name}"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let operation = wait_operation(&client, address, initial).await;
+        assert_eq!(operation["state"], "failed");
+        assert_eq!(operation["error"]["code"], code);
+        assert_eq!(operation["error"]["details"]["name"], name);
+    }
+    assert!(!commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|command| command.starts_with("EXP:RUN")));
+}
+
+#[tokio::test]
+async fn staged_package_delete_requires_matching_etag() {
+    let (address, root, _connections, _commands) = setup(Role::Controller).await;
+    wait_ready(address).await;
+    let staged = root.path().join("experiments/.qslib-staging/run");
+    std::fs::create_dir_all(&staged).unwrap();
+    std::fs::write(staged.join(".qslib-package.etag"), "\"etag\"").unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("http://{address}/api/v1/experiments/run/package");
+
+    assert_eq!(client.delete(&url).send().await.unwrap().status(), 400);
+    assert_eq!(
+        client
+            .delete(&url)
+            .header("If-Match", "\"wrong\"")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        409
+    );
+    assert_eq!(
+        client
+            .delete(&url)
+            .header("If-Match", "\"etag\"")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        204
+    );
+    assert!(!staged.exists());
 }

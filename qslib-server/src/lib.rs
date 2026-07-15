@@ -45,6 +45,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/v1/instrument/power", put(api::set_power))
         .route("/api/v1/instrument/block", put(api::set_block))
         .route("/api/v1/instrument/indicator", put(api::set_indicator))
+        .route(
+            "/api/v1/instrument/indicator/actions/off",
+            post(api::indicator_off),
+        )
         .route("/api/v1/instrument/drawer", put(api::set_drawer))
         .route("/api/v1/instrument/cover", put(api::set_cover))
         .route("/api/v1/instrument/access-keys", post(api::access_key))
@@ -70,9 +74,11 @@ pub fn build_router(state: AppState) -> Router {
             "/api/v1/experiments/{name}/package",
             get(api::get_package)
                 .put(api::put_package)
+                .delete(api::delete_package)
                 .layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
         )
         .route("/api/v1/runs", get(api::list_runs).post(api::start_run))
+        .route("/api/v1/runs/preflight", get(api::preflight_run))
         .route("/api/v1/runs/current", get(api::current_run))
         .route("/api/v1/runs/current/protocol", get(api::current_protocol))
         .route("/api/v1/runs/{name}", get(api::get_run))

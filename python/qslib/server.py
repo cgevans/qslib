@@ -35,6 +35,7 @@ class ServerError(RuntimeError):
         retryable: bool = False,
         outcome: str | None = None,
         request_id: str | None = None,
+        details: Any | None = None,
     ):
         super().__init__(message)
         self.status = status
@@ -42,13 +43,32 @@ class ServerError(RuntimeError):
         self.retryable = retryable
         self.outcome = outcome
         self.request_id = request_id
+        self.details = details
 
 
 class ServerOutcomeUnknown(ServerError):
     """A mutation may have reached the server and must not be repeated."""
 
-    def __init__(self, message: str, state_query: str):
-        super().__init__(message, retryable=False, outcome="unknown")
+    def __init__(
+        self,
+        message: str,
+        state_query: str,
+        *,
+        status: int | None = None,
+        code: str | None = None,
+        retryable: bool = False,
+        request_id: str | None = None,
+        details: Any | None = None,
+    ):
+        super().__init__(
+            message,
+            status=status,
+            code=code,
+            retryable=retryable,
+            outcome="unknown",
+            request_id=request_id,
+            details=details,
+        )
         self.state_query = state_query
 
 
@@ -115,6 +135,16 @@ class ServerClient:
             except Exception:
                 pass
             parsed = _parse_error(body, str(error))
+            if mutation and parsed.get("outcome") == "unknown":
+                raise ServerOutcomeUnknown(
+                    parsed["message"],
+                    state_query or "/api/v1/instrument/status",
+                    status=error.code,
+                    code=parsed.get("code"),
+                    retryable=bool(parsed.get("retryable", False)),
+                    request_id=parsed.get("request_id"),
+                    details=parsed.get("details"),
+                ) from error
             raise ServerError(
                 parsed["message"],
                 status=error.code,
@@ -122,6 +152,7 @@ class ServerClient:
                 retryable=bool(parsed.get("retryable", False)),
                 outcome=parsed.get("outcome"),
                 request_id=parsed.get("request_id"),
+                details=parsed.get("details"),
             ) from error
         except (urllib.error.URLError, OSError, HTTPException) as error:
             if mutation:
@@ -153,23 +184,41 @@ class ServerClient:
         request_headers = {"Content-Type": "application/json"} if data is not None else {}
         if headers:
             request_headers.update(headers)
-        with self._request(
-            path,
-            method=method,
-            data=data,
-            headers=request_headers,
-            timeout=timeout,
-            mutation=mutation,
-            state_query=state_query,
-        ) as response:
-            body = response.read()
+        try:
+            with self._request(
+                path,
+                method=method,
+                data=data,
+                headers=request_headers,
+                timeout=timeout,
+                mutation=mutation,
+                state_query=state_query,
+            ) as response:
+                body = response.read()
+        except (OSError, HTTPException) as error:
+            if mutation:
+                raise ServerOutcomeUnknown(
+                    f"qslib-server mutation response failed: {error}",
+                    state_query or "/api/v1/instrument/status",
+                ) from error
+            raise ServerError(f"qslib-server response failed for {path}: {error}") from error
         if not body:
             return {}
         try:
             result = json.loads(body)
         except (UnicodeDecodeError, ValueError) as error:
+            if mutation:
+                raise ServerOutcomeUnknown(
+                    f"qslib-server returned invalid JSON for mutation {path}",
+                    state_query or "/api/v1/instrument/status",
+                ) from error
             raise ServerError(f"qslib-server returned invalid JSON for {path}") from error
         if not isinstance(result, dict):
+            if mutation:
+                raise ServerOutcomeUnknown(
+                    f"qslib-server returned a non-object JSON mutation response for {path}",
+                    state_query or "/api/v1/instrument/status",
+                )
             raise ServerError(f"qslib-server returned a non-object JSON response for {path}")
         return result
 
@@ -245,11 +294,25 @@ class ServerClient:
             state_query="/api/v1/instrument/status",
         )
 
-    def set_cover(self, position: str = "down", *, verify: bool = True) -> None:
+    def set_cover(
+        self,
+        position: str = "down",
+        *,
+        verify: bool = True,
+        ensure_drawer: bool = False,
+    ) -> None:
         self._json(
             "/api/v1/instrument/cover",
             method="PUT",
-            value={"position": position.lower(), "verify": verify},
+            value={"position": position.lower(), "verify": verify, "ensure_drawer": ensure_drawer},
+            mutation=True,
+            state_query="/api/v1/instrument/status",
+        )
+
+    def indicator_off(self) -> None:
+        self._json(
+            "/api/v1/instrument/indicator/actions/off",
+            method="POST",
             mutation=True,
             state_query="/api/v1/instrument/status",
         )
@@ -292,20 +355,38 @@ class ServerClient:
 
     def stage_package(self, name: str, package: bytes) -> str:
         path = f"/api/v1/experiments/{_quote(name)}/package"
+        state_query = f"/api/v1/experiments/{_quote(name)}"
+        try:
+            with self._request(
+                path,
+                method="PUT",
+                data=package,
+                headers={"Content-Type": "application/zip"},
+                timeout=130.0,
+                mutation=True,
+                state_query=state_query,
+            ) as response:
+                response.read()
+                etag = response.headers.get("ETag")
+        except (OSError, HTTPException) as error:
+            raise ServerOutcomeUnknown("qslib-server package staging response failed", state_query) from error
+        if not etag:
+            raise ServerOutcomeUnknown("qslib-server package response omitted ETag", state_query)
+        return etag
+
+    def delete_staged_package(self, name: str, etag: str) -> None:
         with self._request(
-            path,
-            method="PUT",
-            data=package,
-            headers={"Content-Type": "application/zip"},
-            timeout=130.0,
+            f"/api/v1/experiments/{_quote(name)}/package",
+            method="DELETE",
+            headers={"If-Match": etag},
             mutation=True,
             state_query=f"/api/v1/experiments/{_quote(name)}",
         ) as response:
             response.read()
-            etag = response.headers.get("ETag")
-        if not etag:
-            raise ServerError("qslib-server package response omitted ETag")
-        return etag
+
+    def preflight_run(self, experiment: str, *, overwrite: bool | str = False) -> None:
+        query = urllib.parse.urlencode({"experiment": experiment, "overwrite": str(overwrite).lower()})
+        self._json(f"/api/v1/runs/preflight?{query}")
 
     def start_run(
         self,
@@ -393,9 +474,41 @@ class ServerClient:
         operation_id = operation if isinstance(operation, str) else str(operation["id"])
         deadline = time.monotonic() + timeout
         while True:
-            current = self.operation(operation_id)
-            if current.get("state") in {"succeeded", "failed", "unknown"}:
+            try:
+                current = self.operation(operation_id)
+            except ServerError as error:
+                raise ServerOutcomeUnknown(
+                    f"could not determine outcome of operation {operation_id}: {error}",
+                    f"/api/v1/operations/{operation_id}",
+                    status=error.status,
+                    code=error.code,
+                    retryable=error.retryable,
+                    request_id=error.request_id,
+                    details=error.details,
+                ) from error
+            state = current.get("state")
+            if state == "succeeded":
                 return current
+            if state == "failed":
+                error = current.get("error") or {}
+                raise ServerError(
+                    str(error.get("message") or f"operation {operation_id} failed"),
+                    status=error.get("status"),
+                    code=error.get("code"),
+                    retryable=bool(error.get("retryable", False)),
+                    outcome=str(error.get("outcome") or current.get("outcome") or "not_started"),
+                    details=error.get("details"),
+                )
+            if state == "unknown":
+                error = current.get("error") or {}
+                raise ServerOutcomeUnknown(
+                    str(error.get("message") or f"operation {operation_id} outcome is unknown"),
+                    f"/api/v1/operations/{operation_id}",
+                    status=error.get("status"),
+                    code=error.get("code"),
+                    retryable=bool(error.get("retryable", False)),
+                    details=error.get("details"),
+                )
             if time.monotonic() >= deadline:
                 raise ServerOutcomeUnknown(
                     f"timed out waiting for operation {operation_id}",
@@ -467,7 +580,7 @@ class ServerClient:
                 if temp_path is not None:
                     temp_path.unlink(missing_ok=True)
         except ServerError as error:
-            if error.status == 404:
+            if error.status == 404 and error.code != "unknown_context":
                 raise FileNotFoundError(path) from error
             raise
 
@@ -499,23 +612,37 @@ class ServerClient:
         context, relative = _absolute_context(abspath)
         self.put_file(relative, data, context=context)
 
-    def list_context_dir(self, context: str, path: str = "") -> list[dict[str, Any]]:
+    def list_context_dir(
+        self,
+        context: str,
+        path: str = "",
+        *,
+        pattern: str = "*",
+        recursive: bool = False,
+    ) -> list[dict[str, Any]]:
         suffix = f"/{_quote_path(path)}" if path else ""
+        query = urllib.parse.urlencode({"pattern": pattern, "recursive": str(recursive).lower()})
         try:
-            return self._json(f"/api/v1/directories/{_quote(context)}{suffix}").get("files", [])
+            return self._json(f"/api/v1/directories/{_quote(context)}{suffix}?{query}").get("entries", [])
         except ServerError as error:
-            if error.status == 404:
+            if error.status == 404 and error.code != "unknown_context":
                 raise FileNotFoundError(path) from error
             raise
 
-    def list_dir(self, abspath: str) -> list[dict[str, Any]]:
+    def list_dir(
+        self,
+        abspath: str,
+        *,
+        pattern: str = "*",
+        recursive: bool = False,
+    ) -> list[dict[str, Any]]:
         context, relative = _absolute_context(abspath)
-        return self.list_context_dir(context, relative)
+        return self.list_context_dir(context, relative, pattern=pattern, recursive=recursive)
 
     def download_dir(self, abspath: str, dest_dir: str | Path, chunk_size: int = 1 << 20) -> int:
         context, root = _absolute_context(abspath)
         destination = Path(dest_dir)
-        manifest = self.list_context_dir(context, root)
+        manifest = self.list_context_dir(context, root, recursive=True)
         for entry in manifest:
             relative = str(entry["path"])
             if relative.startswith("/") or ".." in relative.split("/"):

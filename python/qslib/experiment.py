@@ -56,8 +56,8 @@ from .data import (
     _parse_multicomponent_data_v1,
     _parse_multicomponent_data_v2,
 )
-from .machine import Machine
-from .server import ServerError, ServerUnavailable
+from .machine import AlreadyCollectedError, Machine, RunNotFinishedError
+from .server import ServerError, ServerOutcomeUnknown, ServerUnavailable
 from .processors import NormRaw
 from .protocol import Protocol, Stage, Step
 from .version import __version__
@@ -188,6 +188,27 @@ class AlreadyExistsCompleteError(AlreadyExistsError):
             f"Run {self.name} is in completed run storage. This may be caused by "
             "a failed previous run.  Start run with `overwrite=True` to overwrite."
         )
+
+
+def _direct_exception_for_server_error(error: ServerError, machine: Machine, name: str) -> BaseException:
+    details = error.details if isinstance(error.details, dict) else {}
+    current_value = details.get("current")
+    current = Machine._run_status_from_server(current_value if isinstance(current_value, dict) else {})
+    if error.code == "machine_busy":
+        return MachineBusyError(machine, current)
+    if error.code == "working_exists":
+        return AlreadyExistsWorkingError(machine, name)
+    if error.code == "completed_exists":
+        return AlreadyExistsCompleteError(machine, name)
+    if error.code == "run_not_found":
+        return FileNotFoundError(name)
+    if error.code == "run_not_finished":
+        return RunNotFinishedError(details)
+    if error.code == "already_collected":
+        return AlreadyCollectedError(details)
+    if error.code == "not_running":
+        return NotRunningError(machine, name, current)
+    return error
 
 
 @dataclass
@@ -662,35 +683,70 @@ table, th, td {{
         if server is not None:
             capabilities = server.capabilities()
             if capabilities.get("file_writes", False) and "runs" in capabilities.get("resources", []):
-                if self.runstate != "INIT":
-                    raise AlreadyStartedError(self.runtitle_safe, self.runstate)
                 previous_start = self.runstarttime
                 previous_state = self.runstate
-                self.runstarttime = datetime.now()
-                self.runstate = "RUNNING"
-                self._update_files()
-                package_stream = io.BytesIO()
-                self.save_file(package_stream)
-                try:
-                    package_etag = server.stage_package(self.runtitle_safe, package_stream.getvalue())
-                    operation = server.start_run(
-                        self.runtitle_safe,
-                        package_etag,
-                        overwrite=overwrite,
-                        require_exclusive=require_exclusive,
-                        require_drawer_check=require_drawer_check,
-                    )
-                    completed = server.wait_operation(operation, timeout=130.0)
-                    if completed.get("state") != "succeeded":
-                        raise ServerError(f"server run-start operation failed: {completed.get('error')}")
-                    log.info("Run %s started on %s through qslib-server.", self.runtitle_safe, machine.host)
-                    return
-                except ServerUnavailable:
-                    # No mutation request was submitted. Restore local state so
-                    # the permanent direct implementation can proceed normally.
+
+                def restore_local_state() -> None:
                     self.runstarttime = previous_start
                     self.runstate = previous_state
                     self._update_files()
+
+                def discard_staged(etag: str) -> None:
+                    try:
+                        server.delete_staged_package(self.runtitle_safe, etag)
+                    except (ServerError, OSError):
+                        log.warning("Could not discard staged package for %s", self.runtitle_safe, exc_info=True)
+
+                try:
+                    server.preflight_run(self.runtitle_safe, overwrite=overwrite)
+                except ServerError as error:
+                    if error.code in {"machine_busy", "working_exists", "completed_exists"}:
+                        raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
+                    log.debug("semantic run preflight failed; using direct SCPI", exc_info=True)
+                else:
+                    if self.runstate != "INIT":
+                        raise AlreadyStartedError(self.runtitle_safe, self.runstate)
+                    self.runstarttime = datetime.now()
+                    self.runstate = "RUNNING"
+                    self._update_files()
+                    package_stream = io.BytesIO()
+                    try:
+                        self.save_file(package_stream)
+                        package_etag = server.stage_package(self.runtitle_safe, package_stream.getvalue())
+                    except (ServerUnavailable, ServerOutcomeUnknown):
+                        # Package staging cannot start an instrument run. Even
+                        # when the upload outcome is unknown, direct fallback is
+                        # safe after restoring the client-side state.
+                        restore_local_state()
+                    except BaseException:
+                        restore_local_state()
+                        raise
+                    else:
+                        try:
+                            operation = server.start_run(
+                                self.runtitle_safe,
+                                package_etag,
+                                overwrite=overwrite,
+                                require_exclusive=require_exclusive,
+                                require_drawer_check=require_drawer_check,
+                            )
+                            server.wait_operation(operation, timeout=130.0)
+                        except ServerUnavailable:
+                            restore_local_state()
+                            discard_staged(package_etag)
+                        except ServerOutcomeUnknown:
+                            # RUNNING is the only honest local representation
+                            # until the durable operation/current-run resource
+                            # is reconciled by the caller.
+                            raise
+                        except ServerError as error:
+                            restore_local_state()
+                            discard_staged(package_etag)
+                            raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
+                        else:
+                            discard_staged(package_etag)
+                            log.info("Run %s started on %s through qslib-server.", self.runtitle_safe, machine.host)
+                            return
 
         with machine.ensured_connection():
             # Ensure machine isn't running:
@@ -766,7 +822,12 @@ table, th, td {{
         )
         with context:
             self._ensure_running(machine)
-            machine.pause_current_run()
+            try:
+                machine.pause_current_run()
+            except ServerOutcomeUnknown:
+                raise
+            except ServerError as error:
+                raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
 
     def resume(self, machine: MachineReference | None = None) -> None:
         """
@@ -787,7 +848,12 @@ table, th, td {{
         )
         with context:
             self._ensure_running(machine)
-            machine.resume_current_run()
+            try:
+                machine.resume_current_run()
+            except ServerOutcomeUnknown:
+                raise
+            except ServerError as error:
+                raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
 
     def stop(self, machine: MachineReference | None = None) -> None:
         """
@@ -808,7 +874,12 @@ table, th, td {{
         )
         with context:
             self._ensure_running(machine)
-            machine.stop_current_run()
+            try:
+                machine.stop_current_run()
+            except ServerOutcomeUnknown:
+                raise
+            except ServerError as error:
+                raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
 
     def abort(self, machine: MachineReference | None = None) -> None:
         """
@@ -829,7 +900,12 @@ table, th, td {{
         )
         with context:
             self._ensure_running(machine)
-            machine.abort_current_run()
+            try:
+                machine.abort_current_run()
+            except ServerOutcomeUnknown:
+                raise
+            except ServerError as error:
+                raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
 
     def get_status(self, machine: MachineReference | None = None) -> RunStatus:
         """
@@ -1005,6 +1081,10 @@ table, th, td {{
                 return
             except ServerUnavailable:
                 pass
+            except ServerOutcomeUnknown:
+                raise
+            except ServerError as error:
+                raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
         with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
 
@@ -1080,6 +1160,10 @@ table, th, td {{
                 return
             except ServerUnavailable:
                 pass
+            except ServerOutcomeUnknown:
+                raise
+            except ServerError as error:
+                raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
         with machine.ensured_connection(AccessLevel.Controller):
             if not force:
                 self._ensure_running(machine)
@@ -1492,9 +1576,7 @@ table, th, td {{
         machine = exp._ensure_machine(machine)
 
         context = (
-            nullcontext(machine)
-            if machine._semantic_server("files") is not None
-            else machine.ensured_connection()
+            nullcontext(machine) if machine._semantic_server("files") is not None else machine.ensured_connection()
         )
         with context:
             if move:
@@ -1553,9 +1635,7 @@ table, th, td {{
         machine = exp._ensure_machine(machine)
 
         context = (
-            nullcontext(machine)
-            if machine._semantic_server("files") is not None
-            else machine.ensured_connection()
+            nullcontext(machine) if machine._semantic_server("files") is not None else machine.ensured_connection()
         )
         with context:
             o = None

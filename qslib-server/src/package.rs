@@ -202,6 +202,22 @@ pub fn package_etag(experiments_root: &Path, name: &str) -> Result<String, Serve
         .map_err(|_| ServerError::not_found("staged experiment package not found"))
 }
 
+pub fn delete_staged_package(
+    experiments_root: &Path,
+    name: &str,
+    expected_etag: &str,
+) -> Result<(), ServerError> {
+    let root = staged_path(experiments_root, name)?;
+    let actual = package_etag(experiments_root, name)?;
+    if expected_etag != actual {
+        return Err(ServerError::conflict(format!(
+            "package ETag mismatch: current value is {actual}"
+        )));
+    }
+    std::fs::remove_dir_all(&root)
+        .map_err(|error| ServerError::internal(format!("failed to delete staged package: {error}")))
+}
+
 pub fn load_protocol(
     experiments_root: &Path,
     name: &str,

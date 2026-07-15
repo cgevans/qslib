@@ -3,6 +3,7 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
+use axum::http::StatusCode;
 use chrono::{DateTime, Utc};
 use futures::StreamExt;
 use qslib_core::com::QSConnection;
@@ -13,12 +14,12 @@ use qslib_core::commands::{
     ExperimentNew, FileMove, MachineStatusQuery, OkParseError, PauseRun, PowerQuery, PowerSet,
     RandomKeyQuery, ReceiveNextResponseError, ReceiveOkResponseError, RemainingTimeQuery,
     RestartSystem, ResumeRun, RunStart, RunStatusQuery, RunningProtocolBodyQuery,
-    RunningProtocolMetadataQuery, StatusLedColor, StatusLedMode, StatusLedQuery, StatusLedSet,
-    StopRun, Subscribe,
+    RunningProtocolMetadataQuery, StatusLedColor, StatusLedMode, StatusLedOff, StatusLedQuery,
+    StatusLedSet, StopRun, Subscribe,
 };
 use qslib_core::parser::{ErrorResponse, OkResponse};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
@@ -32,7 +33,6 @@ use qslib_core::protocol::ProtocolDefinition;
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 const QUERY_DEADLINE: Duration = Duration::from_secs(10);
 const CONTROL_DEADLINE: Duration = Duration::from_secs(30);
-const STATUS_CACHE: Duration = Duration::from_millis(250);
 
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
@@ -65,6 +65,7 @@ pub enum InstrumentOperation {
         color: StatusLedColor,
         mode: StatusLedMode,
     },
+    IndicatorOff,
     Drawer {
         open: bool,
         lower_cover: bool,
@@ -72,6 +73,7 @@ pub enum InstrumentOperation {
     },
     CoverDown {
         verify: bool,
+        ensure_drawer: bool,
     },
     Pause {
         name: Option<String>,
@@ -86,6 +88,7 @@ pub enum InstrumentOperation {
         name: Option<String>,
     },
     StartRun(StartRunInput),
+    PreflightRun(PreflightRunInput),
     Compile {
         name: String,
         experiments_root: std::path::PathBuf,
@@ -125,12 +128,22 @@ pub struct StartRunInput {
     pub run_mode: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct PreflightRunInput {
+    pub experiment: String,
+    pub overwrite: OverwriteMode,
+    pub experiments_root: std::path::PathBuf,
+    pub completed_root: std::path::PathBuf,
+}
+
 impl InstrumentOperation {
     fn required_access(&self) -> AccessLevel {
         match self {
-            Self::Status | Self::RunStatus | Self::RunningProtocol => AccessLevel::Observer,
+            Self::Status | Self::RunStatus | Self::RunningProtocol | Self::PreflightRun(_) => {
+                AccessLevel::Observer
+            }
             Self::GenerateAccessKey => AccessLevel::Controller,
-            Self::Restart => AccessLevel::Administrator,
+            Self::Restart => AccessLevel::Controller,
             _ => AccessLevel::Controller,
         }
     }
@@ -143,12 +156,17 @@ impl InstrumentOperation {
     }
 
     fn read_only(&self) -> bool {
-        matches!(self, Self::Status | Self::RunStatus | Self::RunningProtocol)
+        matches!(
+            self,
+            Self::Status | Self::RunStatus | Self::RunningProtocol | Self::PreflightRun(_)
+        )
     }
 
     fn deadline(&self) -> Duration {
         match self {
-            Self::Status | Self::RunStatus | Self::RunningProtocol => QUERY_DEADLINE,
+            Self::Status | Self::RunStatus | Self::RunningProtocol | Self::PreflightRun(_) => {
+                QUERY_DEADLINE
+            }
             Self::StartRun(_) => Duration::from_secs(120),
             Self::Compile { .. } => Duration::from_secs(10 * 60),
             _ => CONTROL_DEADLINE,
@@ -499,19 +517,12 @@ async fn execute_operation(
         match tokio::time::timeout(operation.deadline(), async {
             match operation {
                 InstrumentOperation::Status => {
-                    if let Some((created, status)) = status_cache {
-                        if created.elapsed() <= STATUS_CACHE {
-                            Ok(InstrumentResult::Status(Box::new(status.clone())))
-                        } else {
-                            let status = fetch_status(connection).await?;
-                            *status_cache = Some((Instant::now(), status.clone()));
-                            Ok(InstrumentResult::Status(Box::new(status)))
-                        }
-                    } else {
-                        let status = fetch_status(connection).await?;
-                        *status_cache = Some((Instant::now(), status.clone()));
-                        Ok(InstrumentResult::Status(Box::new(status)))
-                    }
+                    // Explicit status requests always reflect a fresh SCPI
+                    // observation. The cached snapshot is retained only for
+                    // event/reset bookkeeping, never as a public query result.
+                    let status = fetch_status(connection).await?;
+                    *status_cache = Some((Instant::now(), status.clone()));
+                    Ok(InstrumentResult::Status(Box::new(status)))
                 }
                 InstrumentOperation::RunStatus => {
                     let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
@@ -584,6 +595,11 @@ async fn execute_operation(
                     *status_cache = None;
                     Ok(InstrumentResult::Unit)
                 }
+                InstrumentOperation::IndicatorOff => {
+                    run_command(connection, StatusLedOff, operation.deadline()).await?;
+                    *status_cache = None;
+                    Ok(InstrumentResult::Unit)
+                }
                 InstrumentOperation::Drawer {
                     open,
                     lower_cover,
@@ -627,9 +643,30 @@ async fn execute_operation(
                     *status_cache = None;
                     Ok(InstrumentResult::Unit)
                 }
-                InstrumentOperation::CoverDown { verify } => {
+                InstrumentOperation::CoverDown {
+                    verify,
+                    ensure_drawer,
+                } => {
+                    if *ensure_drawer {
+                        let drawer =
+                            run_command(connection, DrawerStatusQuery, QUERY_DEADLINE).await?;
+                        if matches!(drawer, DrawerStatus::Open | DrawerStatus::Unknown) {
+                            run_command(connection, DrawerClose, operation.deadline()).await?;
+                        }
+                    }
                     run_command(connection, CoverDown, operation.deadline()).await?;
                     if *verify {
+                        if *ensure_drawer {
+                            let drawer =
+                                run_command(connection, DrawerStatusQuery, QUERY_DEADLINE).await?;
+                            if drawer != DrawerStatus::Closed {
+                                return Err(ExecutionFailure::semantic(ServerError::conflict(
+                                    format!(
+                                        "drawer verification failed: expected closed, got {drawer:?}"
+                                    ),
+                                )));
+                            }
+                        }
                         let cover =
                             run_command(connection, CoverPositionQuery, QUERY_DEADLINE).await?;
                         if cover != CoverPosition::Down {
@@ -678,6 +715,10 @@ async fn execute_operation(
                     *status_cache = None;
                     Ok(InstrumentResult::Unit)
                 }
+                InstrumentOperation::PreflightRun(input) => {
+                    preflight_run(connection, input).await?;
+                    Ok(InstrumentResult::Unit)
+                }
                 InstrumentOperation::Compile {
                     name,
                     experiments_root,
@@ -685,16 +726,70 @@ async fn execute_operation(
                 } => {
                     let working = experiments_root.join(name);
                     if !working.is_dir() {
-                        return Err(ExecutionFailure::semantic(ServerError::not_found(
-                            "working run not found",
-                        )));
+                        return Err(ExecutionFailure::semantic(
+                            ServerError::coded(
+                                StatusCode::NOT_FOUND,
+                                "run_not_found",
+                                "working run not found",
+                            )
+                            .details(json!({"name": name})),
+                        ));
+                    }
+                    let attributes = crate::file::read_attributes(&working)
+                        .map_err(ExecutionFailure::semantic)?;
+                    if !attributes.contains_key("run") {
+                        return Err(ExecutionFailure::semantic(
+                            ServerError::coded(
+                                StatusCode::NOT_FOUND,
+                                "run_not_found",
+                                "working directory is not marked as a run",
+                            )
+                            .details(json!({"name": name, "attributes": attributes})),
+                        ));
+                    }
+                    let finished = attributes
+                        .get("state")
+                        .and_then(Value::as_str)
+                        .is_some_and(|state| {
+                            state.eq_ignore_ascii_case("Completed")
+                                || state.eq_ignore_ascii_case("Terminated")
+                        });
+                    if !finished {
+                        return Err(ExecutionFailure::semantic(
+                            ServerError::coded(
+                                StatusCode::CONFLICT,
+                                "run_not_finished",
+                                "run state is not Completed or Terminated",
+                            )
+                            .details(json!({"name": name, "attributes": attributes})),
+                        ));
+                    }
+                    let collected = attributes.get("collected").is_some_and(|value| match value {
+                        Value::Bool(value) => *value,
+                        Value::String(value) => value.eq_ignore_ascii_case("true"),
+                        _ => false,
+                    });
+                    if collected {
+                        return Err(ExecutionFailure::semantic(
+                            ServerError::coded(
+                                StatusCode::CONFLICT,
+                                "already_collected",
+                                "run has already been collected",
+                            )
+                            .details(json!({"name": name, "attributes": attributes})),
+                        ));
                     }
                     let generated = experiments_root.join(format!("{name}.eds"));
                     let completed = completed_root.join(format!("{name}.eds"));
                     if completed.exists() {
-                        return Err(ExecutionFailure::semantic(ServerError::conflict(
-                            "completed EDS already exists",
-                        )));
+                        return Err(ExecutionFailure::semantic(
+                            ServerError::coded(
+                                StatusCode::CONFLICT,
+                                "completed_exists",
+                                "completed EDS already exists",
+                            )
+                            .details(json!({"name": name})),
+                        ));
                     }
 
                     // EXP:RUN returns NEXT when the compilation is accepted. Release
@@ -773,10 +868,18 @@ async fn execute_operation(
                 InstrumentOperation::ReplaceProtocol { name, protocol } => {
                     let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
                     if status.name != *name || status.state.eq_ignore_ascii_case("IDLE") {
-                        return Err(ExecutionFailure::semantic(ServerError::conflict(format!(
-                            "current run is {:?}, not {:?}",
-                            status.name, name
-                        ))));
+                        let current_name = status.name.clone();
+                        return Err(ExecutionFailure::semantic(
+                            ServerError::coded(
+                                StatusCode::CONFLICT,
+                                "not_running",
+                                format!("current run is {:?}, not {:?}", current_name, name),
+                            )
+                            .details(json!({
+                                "requested": name,
+                                "current": RunStatusDto::from(status),
+                            })),
+                        ));
                     }
                     run_command(connection, protocol.clone(), operation.deadline()).await?;
                     Ok(InstrumentResult::Unit)
@@ -827,28 +930,21 @@ async fn start_run(
     input: &StartRunInput,
     deadline: Duration,
 ) -> Result<(), ExecutionFailure> {
-    let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
-    if !status.state.eq_ignore_ascii_case("IDLE") {
-        return Err(ExecutionFailure::semantic(ServerError::conflict(format!(
-            "instrument is not idle (state {})",
-            status.state
-        ))));
-    }
+    preflight_run(
+        connection,
+        &PreflightRunInput {
+            experiment: input.experiment.clone(),
+            overwrite: input.overwrite,
+            experiments_root: input.experiments_root.clone(),
+            completed_root: input.completed_root.clone(),
+        },
+    )
+    .await?;
 
     let working = input.experiments_root.join(&input.experiment);
     let completed = input
         .completed_root
         .join(format!("{}.eds", input.experiment));
-    if working.exists() && input.overwrite == OverwriteMode::False {
-        return Err(ExecutionFailure::semantic(ServerError::conflict(
-            "working experiment already exists",
-        )));
-    }
-    if completed.exists() && input.overwrite != OverwriteMode::True {
-        return Err(ExecutionFailure::semantic(ServerError::conflict(
-            "completed run already exists",
-        )));
-    }
 
     let suffix = uuid::Uuid::new_v4();
     let working_backup = input
@@ -954,6 +1050,52 @@ async fn start_run(
             Err(failure)
         }
     }
+}
+
+async fn preflight_run(
+    connection: &QSConnection,
+    input: &PreflightRunInput,
+) -> Result<(), ExecutionFailure> {
+    let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
+    if !status.state.eq_ignore_ascii_case("IDLE") {
+        return Err(ExecutionFailure::semantic(
+            ServerError::coded(
+                StatusCode::CONFLICT,
+                "machine_busy",
+                format!("instrument is not idle (state {})", status.state),
+            )
+            .details(json!({"current": RunStatusDto::from(status)})),
+        ));
+    }
+
+    if input.experiments_root.join(&input.experiment).exists()
+        && input.overwrite == OverwriteMode::False
+    {
+        return Err(ExecutionFailure::semantic(
+            ServerError::coded(
+                StatusCode::CONFLICT,
+                "working_exists",
+                "working experiment already exists",
+            )
+            .details(json!({"name": input.experiment})),
+        ));
+    }
+    if input
+        .completed_root
+        .join(format!("{}.eds", input.experiment))
+        .exists()
+        && input.overwrite != OverwriteMode::True
+    {
+        return Err(ExecutionFailure::semantic(
+            ServerError::coded(
+                StatusCode::CONFLICT,
+                "completed_exists",
+                "completed run already exists",
+            )
+            .details(json!({"name": input.experiment})),
+        ));
+    }
+    Ok(())
 }
 
 fn merge_staged_experiment(
@@ -1136,16 +1278,29 @@ async fn verify_requested_run(
 ) -> Result<String, ExecutionFailure> {
     let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
     if status.state.eq_ignore_ascii_case("IDLE") || status.name == "-" {
-        return Err(ExecutionFailure::semantic(ServerError::conflict(
-            "there is no current run",
-        )));
+        return Err(ExecutionFailure::semantic(
+            ServerError::coded(
+                StatusCode::CONFLICT,
+                "not_running",
+                "there is no current run",
+            )
+            .details(json!({"current": RunStatusDto::from(status)})),
+        ));
     }
     if let Some(requested) = requested {
         if status.name != requested {
-            return Err(ExecutionFailure::semantic(ServerError::conflict(format!(
-                "current run is {:?}, not {:?}",
-                status.name, requested
-            ))));
+            let current_name = status.name.clone();
+            return Err(ExecutionFailure::semantic(
+                ServerError::coded(
+                    StatusCode::CONFLICT,
+                    "not_running",
+                    format!("current run is {:?}, not {:?}", current_name, requested),
+                )
+                .details(json!({
+                    "requested": requested,
+                    "current": RunStatusDto::from(status),
+                })),
+            ));
         }
     }
     Ok(status.name)

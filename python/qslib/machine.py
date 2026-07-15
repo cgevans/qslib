@@ -7,7 +7,6 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
-import fnmatch
 import logging
 import random
 import re
@@ -111,6 +110,13 @@ def _join_scpi_path(prefix: str, relative: str) -> str:
     return posixpath.join(prefix, relative)
 
 
+def _context_prefix(context: object | None) -> str:
+    if context is None or context == "":
+        return ""
+    value = str(context)
+    return value if value.endswith(":") else value + ":"
+
+
 class FileListInfo(TypedDict, total=False):
     """Information about a file when verbose=True"""
 
@@ -188,7 +194,7 @@ def _ensure_connection(level: AccessLevel = AccessLevel.Observer) -> Any:
     def wrap(func):
         @wraps(func)
         def wrapped(m: Machine, *args: Any, **kwargs: Any) -> Any:
-            semantic = m._semantic_dispatch(func.__name__, args, kwargs)
+            semantic = m._semantic_dispatch(func.__name__, args, kwargs, required_access=level)
             if semantic is not _NO_SEMANTIC_RESULT:
                 return semantic
             if m.automatic:
@@ -761,7 +767,13 @@ class Machine:
             )
         return self._server
 
-    def _semantic_server(self, resource: str, *, mutation: bool = False) -> ServerClient | None:
+    def _semantic_server(
+        self,
+        resource: str,
+        *,
+        mutation: bool = False,
+        strict: bool = False,
+    ) -> ServerClient | None:
         """Select the semantic backend without opening a SCPI connection.
 
         A manually owned/direct connection always wins. Capability failures are
@@ -775,6 +787,8 @@ class Machine:
         try:
             capabilities = server.capabilities()
         except ServerError:
+            if strict:
+                raise
             return None
         if resource not in capabilities.get("resources", []):
             return None
@@ -784,6 +798,13 @@ class Machine:
             if resource != "files" and not capabilities.get("controls", False):
                 return None
         return server
+
+    def _require_access_cap(self, access_level: AccessLevel) -> None:
+        if access_level > AccessLevel(self.max_access_level):
+            raise ValueError(
+                f"Access level {access_level} is above maximum {self.max_access_level}."
+                " Change max_access level to continue."
+            )
 
     @staticmethod
     def _run_status_from_server(value: dict[str, Any]) -> RunStatus:
@@ -795,7 +816,7 @@ class Machine:
             str(value.get("num_cycles", -1)),
             str(value.get("step", -1)),
             str(value.get("point", -1)),
-            str(value.get("state", "unknown")).upper(),
+            str(value.get("state", "Unknown")),
         ]
         return RunStatus.from_bytes(shlex.join(fields).encode())
 
@@ -809,8 +830,8 @@ class Machine:
             for key, controlled in value.get("target_controlled", {}).items()
         )
         fields = [
-            str(value.get("drawer", "unknown")).title(),
-            str(value.get("cover", "unknown")).title(),
+            str(value.get("drawer", "Unknown")),
+            str(value.get("cover", "Unknown")),
             str(value.get("lamp_status", "unknown")),
             " ".join(str(number) for number in value.get("sample_temperatures_c", [])),
             " ".join(str(number) for number in value.get("block_temperatures_c", [])),
@@ -821,7 +842,14 @@ class Machine:
         ]
         return MachineStatus.from_bytes(shlex.join(fields).encode())
 
-    def _semantic_dispatch(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+    def _semantic_dispatch(
+        self,
+        name: str,
+        args: tuple[Any, ...],
+        kwargs: dict[str, Any],
+        *,
+        required_access: AccessLevel,
+    ) -> Any:
         """Dispatch bounded high-level calls before the connection decorator.
 
         Returning ``_NO_SEMANTIC_RESULT`` means the permanent direct-SCPI
@@ -857,7 +885,11 @@ class Machine:
             fast = bool(kwargs.get("fast", True))
             if not fast:
                 return _NO_SEMANTIC_RESULT
-            server = self._semantic_server("files", mutation=name == "write_file")
+            server = self._semantic_server(
+                "files",
+                mutation=name == "write_file",
+                strict=name in {"read_file", "write_file"} and not bool(kwargs.get("fallback", True)),
+            )
         elif name in {
             "run_status",
             "pause_current_run",
@@ -871,6 +903,7 @@ class Machine:
             server = self._semantic_server("instrument", mutation=is_mutation)
         if server is None:
             return _NO_SEMANTIC_RESULT
+        self._require_access_cap(required_access)
 
         try:
             if name == "run_status":
@@ -890,10 +923,7 @@ class Machine:
             if name == "cover_lower":
                 check = bool(args[0]) if args else bool(kwargs.get("check", True))
                 ensure_drawer = bool(args[1]) if len(args) > 1 else bool(kwargs.get("ensure_drawer", True))
-                if ensure_drawer:
-                    server.set_drawer("closed", lower_cover=True, verify=check)
-                else:
-                    server.set_cover("down", verify=check)
+                server.set_cover("down", verify=check, ensure_drawer=ensure_drawer)
                 return None
             if name == "set_status_led":
                 color = args[0] if args else kwargs["color"]
@@ -903,8 +933,7 @@ class Machine:
                 server.set_indicator(color_name, mode_name)
                 return None
             if name == "status_led_off":
-                current = server.instrument_status().get("indicator", {})
-                server.set_indicator(str(current.get("color") or "white"), "off")
+                server.indicator_off()
                 return None
             if name == "status_led":
                 if args:
@@ -939,15 +968,24 @@ class Machine:
                 action = name.removesuffix("_current_run")
                 current = server.current_run().get("name", "")
                 operation = server.run_action(str(current), action)
-                completed = server.wait_operation(operation)
-                if completed.get("state") != "succeeded":
-                    raise ServerError(f"server {action} operation failed: {completed.get('error')}")
+                server.wait_operation(operation)
                 return None
             if name == "compile_eds":
                 operation = server.run_action(str(args[0]), "compile")
-                completed = server.wait_operation(operation, timeout=610.0)
-                if completed.get("state") != "succeeded":
-                    raise ServerError(f"server compile operation failed: {completed.get('error')}")
+                try:
+                    server.wait_operation(operation, timeout=610.0)
+                except ServerError as error:
+                    if error.code == "run_not_found":
+                        raise FileNotFoundError(str(args[0])) from error
+                    if error.code == "run_not_finished":
+                        raise RunNotFinishedError(error.details) from error
+                    if error.code == "already_collected":
+                        raise AlreadyCollectedError(error.details) from error
+                    if error.code == "completed_exists":
+                        from .experiment import AlreadyExistsCompleteError
+
+                        raise AlreadyExistsCompleteError(self, str(args[0])) from error
+                    raise
                 return None
             if name == "read_file":
                 path = str(args[0])
@@ -955,7 +993,7 @@ class Machine:
                 leaf = args[2] if len(args) > 2 else kwargs.get("leaf", "FILE")
                 if leaf != "FILE" or "${" in path:
                     return _NO_SEMANTIC_RESULT
-                locator = (f"{context}:" if context else "") + path
+                locator = _context_prefix(context) + path
                 absolute = _scpi_locator_abspath(locator)
                 if absolute is None:
                     return _NO_SEMANTIC_RESULT
@@ -992,72 +1030,70 @@ class Machine:
                 leaf = str(kwargs.get("leaf", "FILE"))
                 verbose = bool(kwargs.get("verbose", False))
                 recursive = bool(kwargs.get("recursive", False))
+                if recursive and not verbose:
+                    raise NotImplementedError
                 if leaf.upper() not in {"FILE", "EXP"}:
                     return _NO_SEMANTIC_RESULT
-                if leaf.upper() == "EXP" and ":" not in path:
-                    names = [str(item) for item in server.list_experiments().get("experiments", [])]
-                    pattern = path.rstrip("/") or "*"
-                    names = [item for item in names if fnmatch.fnmatch(item, pattern)]
-                    if not verbose:
-                        return [f"{item}/" for item in names]
-                    epoch = datetime.fromtimestamp(0, tz=timezone.utc)
-                    return [
-                        FileListInfo(
-                            path=f"{item}/",
-                            type="folder",
-                            size=0,
-                            mtime=epoch,
-                            atime=epoch,
-                            ctime=epoch,
-                        )
-                        for item in names
-                    ]
                 context = _SCPI_LEAF_DEFAULT_CONTEXT.get(leaf, leaf)
-                absolute = _scpi_locator_abspath((f"{context}:" if context else "") + path)
+                absolute = _scpi_locator_abspath(_context_prefix(context) + path)
                 if absolute is None:
                     return _NO_SEMANTIC_RESULT
-                pattern = None
-                list_absolute = absolute
-                relative_name = posixpath.basename(absolute)
-                if any(character in relative_name for character in "*?["):
-                    pattern = relative_name
-                    list_absolute = posixpath.dirname(absolute)
-                entries = server.list_dir(list_absolute)
-                if pattern is not None:
-                    entries = [item for item in entries if fnmatch.fnmatch(posixpath.basename(str(item["path"])), pattern)]
-                    prefix = path[: len(path) - len(posixpath.basename(path))].rstrip("/")
-                else:
+                absolute_parts = absolute.split("/")
+                first_glob = next(
+                    (index for index, part in enumerate(absolute_parts) if any(char in part for char in "*?[")),
+                    None,
+                )
+                if first_glob is None:
+                    list_absolute = absolute
+                    pattern = "*"
                     prefix = path.rstrip("/")
-                if not recursive:
-                    entries = [item for item in entries if "/" not in str(item["path"])]
+                else:
+                    list_absolute = "/".join(absolute_parts[:first_glob]) or "/"
+                    pattern = "/".join(absolute_parts[first_glob:])
+                    glob_offset = min(path.index(char) for char in "*?[" if char in path)
+                    separator = max(
+                        path.rfind("/", 0, glob_offset),
+                        path.rfind("\\", 0, glob_offset),
+                        path.rfind(":", 0, glob_offset),
+                    )
+                    prefix = path[: separator + 1].rstrip("/\\") if separator >= 0 else ""
+                entries = server.list_dir(list_absolute, pattern=pattern, recursive=recursive)
                 if not verbose:
-                    return [_join_scpi_path(prefix, str(item["path"])) for item in entries]
+                    return [
+                        _join_scpi_path(prefix, str(item["path"])) + ("/" if item["type"] == "folder" else "")
+                        for item in entries
+                    ]
                 result: list[FileListInfo] = []
                 for item in entries:
-                    modified = item.get("modified_at")
-                    when = (
-                        datetime.fromisoformat(str(modified).replace("Z", "+00:00"))
-                        if modified
-                        else datetime.fromtimestamp(0, tz=timezone.utc)
+                    attributes = dict(item.get("attributes") or {})
+                    info = FileListInfo(
+                        path=_join_scpi_path(prefix, str(item["path"])),
+                        type=str(item["type"]),
+                        size=int(item["size"]),
+                        mtime=datetime.fromtimestamp(float(item["mtime"]), tz=timezone.utc),
+                        atime=datetime.fromtimestamp(float(item["atime"]), tz=timezone.utc),
+                        ctime=datetime.fromtimestamp(float(item["ctime"]), tz=timezone.utc),
                     )
-                    result.append(
-                        FileListInfo(
-                            path=_join_scpi_path(prefix, str(item["path"])),
-                            type="file",
-                            size=int(item["size"]),
-                            mtime=when,
-                            atime=when,
-                            ctime=when,
-                        )
-                    )
+                    info.update(attributes)  # type: ignore[typeddict-unknown-key]
+                    result.append(info)
                 return result
         except ServerUnavailable:
+            if name in {"read_file", "write_file"} and not bool(kwargs.get("fallback", True)):
+                raise
             return _NO_SEMANTIC_RESULT
         except ServerOutcomeUnknown:
             raise
-        except (ServerError, OSError, HTTPException):
-            if is_mutation:
+        except FileNotFoundError:
+            raise
+        except (ServerError, OSError, HTTPException) as error:
+            if name in {"read_file", "write_file"} and not bool(kwargs.get("fallback", True)):
                 raise
+            if name == "write_file" and (not isinstance(error, ServerError) or error.outcome != "not_started"):
+                raise
+            if is_mutation:
+                if name != "write_file":
+                    raise
+                return _NO_SEMANTIC_RESULT
             log.debug("semantic server read failed for %s; using direct SCPI", name, exc_info=True)
             return _NO_SEMANTIC_RESULT
         return _NO_SEMANTIC_RESULT
@@ -1154,9 +1190,7 @@ class Machine:
         _safe("listen", listen)
         _safe("file_root", file_root)
         if unauthenticated_role not in {None, "observer", "controller", "administrator"}:
-            raise ValueError(
-                "unauthenticated_role must be observer, controller, administrator, or None"
-            )
+            raise ValueError("unauthenticated_role must be observer, controller, administrator, or None")
         if self.server_token:
             _safe("server_token", self.server_token)
         for a in extra_args:
@@ -1177,16 +1211,10 @@ class Machine:
         if self.server_token:
             token_hash = hashlib.sha256(self.server_token.encode()).hexdigest()
             fallback = (
-                f'unauthenticated_role = "{unauthenticated_role}"\n\n'
-                if unauthenticated_role is not None
-                else ""
+                f'unauthenticated_role = "{unauthenticated_role}"\n\n' if unauthenticated_role is not None else ""
             )
             auth_toml = (
-                fallback
-                + "[[tokens]]\n"
-                'name = "qslib-bootstrap"\n'
-                f'sha256 = "{token_hash}"\n'
-                'role = "administrator"\n'
+                fallback + f'[[tokens]]\nname = "qslib-bootstrap"\nsha256 = "{token_hash}"\nrole = "administrator"\n'
             ).encode()
             args += ["--auth-config", auth_path]
         else:
@@ -1382,6 +1410,7 @@ class Machine:
         server = self._semantic_server("files", mutation=True) if fast else None
         if server is None:
             return False
+        self._require_access_cap(AccessLevel.Controller)
         base = _scpi_locator_abspath(context_path)
         if base is None:
             return False
@@ -1537,6 +1566,7 @@ class Machine:
         """
         server = self._semantic_server("runs")
         if server is not None:
+            self._require_access_cap(AccessLevel.Observer)
             try:
                 run = server.current_run()
                 name = str(run.get("name", "-"))
@@ -1607,12 +1637,14 @@ class Machine:
         """
         server = self._semantic_server("instrument", mutation=True)
         if server is not None:
+            self._require_access_cap(AccessLevel.Controller)
             try:
                 operation = server.generate_access_key()
                 completed = server.wait_operation(operation)
-                if completed.get("state") != "succeeded":
-                    raise ServerError(f"access-key operation failed: {completed.get('error')}")
-                return str(completed.get("result", {}).get("key", ""))
+                key = completed.get("result", {}).get("key")
+                if not isinstance(key, str) or not key:
+                    raise ServerError("access-key operation result omitted key")
+                return key
             except ServerUnavailable:
                 pass
         with self.ensured_connection(AccessLevel.Controller):
@@ -1626,6 +1658,7 @@ class Machine:
         """
         server = self._semantic_server("instrument")
         if server is not None:
+            self._require_access_cap(AccessLevel.Observer)
             try:
                 return int(server.instrument_status()["zone_count"])
             except (ServerError, OSError, HTTPException):
@@ -1762,6 +1795,7 @@ class Machine:
         """Return the current status of the run."""
         server = self._semantic_server("runs")
         if server is not None:
+            self._require_access_cap(AccessLevel.Observer)
             try:
                 return self._run_status_from_server(server.current_run())
             except ServerError:
@@ -1775,8 +1809,9 @@ class Machine:
         """Return the drawer position from the DRAW? command."""
         server = self._semantic_server("instrument")
         if server is not None:
+            self._require_access_cap(AccessLevel.Observer)
             try:
-                return cast(DrawerPosition, str(server.instrument_status()["drawer"]).title())
+                return cast(DrawerPosition, str(server.instrument_status()["drawer"]))
             except ServerError:
                 log.debug("semantic drawer status failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
@@ -1791,8 +1826,9 @@ class Machine:
         this does not always seem to work."""
         server = self._semantic_server("instrument")
         if server is not None:
+            self._require_access_cap(AccessLevel.Observer)
             try:
-                return cast(CoverPosition, str(server.instrument_status()["cover"]).title())
+                return cast(CoverPosition, str(server.instrument_status()["cover"]))
             except ServerError:
                 log.debug("semantic cover status failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
@@ -1867,6 +1903,7 @@ class Machine:
         """
         server = self._semantic_server("instrument")
         if server is not None:
+            self._require_access_cap(AccessLevel.Observer)
             try:
                 return bool(server.instrument_status()["power_enabled"])
             except ServerError:
@@ -1882,25 +1919,31 @@ class Machine:
 
     @power.setter
     def power(self, value: Literal["on", "off", True, False]) -> None:
+        if value is True:
+            enabled = True
+        elif value is False:
+            enabled = False
+        elif isinstance(value, str) and value.lower() in {"on", "off"}:
+            enabled = value.lower() == "on"
+        else:
+            raise ValueError("Power value must be True, False, 'on', or 'off'.")
         server = self._semantic_server("instrument", mutation=True)
         if server is not None:
+            self._require_access_cap(AccessLevel.Controller)
             try:
-                server.set_power(value is True or (isinstance(value, str) and value.lower() == "on"))
+                server.set_power(enabled)
                 return
             except ServerUnavailable:
                 pass
         with self.ensured_connection(AccessLevel.Controller):
-            if value is True:
-                value = "on"
-            elif value is False:
-                value = "off"
-            self.run_command(f"POW {value}")
+            self.run_command(f"POW {'on' if enabled else 'off'}")
 
     @property
     def current_run_name(self) -> str | None:
         """Name of current run, or None if no run is active."""
         server = self._semantic_server("runs")
         if server is not None:
+            self._require_access_cap(AccessLevel.Observer)
             try:
                 status = server.current_run()
                 if str(status.get("state", "")).lower() == "idle" or status.get("name") == "-":
@@ -1919,6 +1962,7 @@ class Machine:
         """Restart the system (both the InstrumentServer and android interface) by killing the zygote process."""
         server = self._semantic_server("instrument", mutation=True)
         if server is not None:
+            self._require_access_cap(AccessLevel.Controller)
             try:
                 operation = server.restart_instrument()
                 # The HTTP server may disappear after acknowledgement. The durable

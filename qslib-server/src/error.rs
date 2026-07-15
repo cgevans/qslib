@@ -4,6 +4,7 @@ use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
+use serde_json::Value;
 use uuid::Uuid;
 
 #[derive(Debug)]
@@ -15,6 +16,7 @@ pub struct ServerError {
     pub outcome: &'static str,
     pub scpi_error: bool,
     pub request_id: String,
+    pub details: Option<Value>,
 }
 
 #[derive(Serialize)]
@@ -29,6 +31,8 @@ struct ErrorDetail {
     message: String,
     retryable: bool,
     outcome: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    details: Option<Value>,
 }
 
 impl ServerError {
@@ -41,6 +45,7 @@ impl ServerError {
             outcome: "not_started",
             scpi_error: false,
             request_id: Uuid::new_v4().to_string(),
+            details: None,
         }
     }
 
@@ -52,6 +57,15 @@ impl ServerError {
     pub fn outcome(mut self, outcome: &'static str) -> Self {
         self.outcome = outcome;
         self
+    }
+
+    pub fn details(mut self, details: Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    pub fn coded(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
+        Self::new(status, code, message)
     }
 
     pub fn not_found(message: impl Into<String>) -> Self {
@@ -133,6 +147,7 @@ impl IntoResponse for ServerError {
                     message: self.message,
                     retryable: self.retryable,
                     outcome: self.outcome,
+                    details: self.details,
                 },
                 request_id: self.request_id.clone(),
             }),

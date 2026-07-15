@@ -39,6 +39,7 @@ uuid = { version = "1", features = ["v4", "serde"] }
 toml = "0.8"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 quick-xml = "0.38"
+glob = "0.3"
 
 clap = { version = "4", features = ["derive", "std", "env", "help", "usage", "error-context"], default-features = false }
 anyhow = "1"

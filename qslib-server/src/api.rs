@@ -25,7 +25,9 @@ use crate::error::ServerError;
 use crate::events::{EventEnvelope, Replay};
 use crate::operation::{CreateOperation, OperationRecord};
 use crate::package;
-use crate::service::{InstrumentOperation, InstrumentResult, OverwriteMode, StartRunInput};
+use crate::service::{
+    InstrumentOperation, InstrumentResult, OverwriteMode, PreflightRunInput, StartRunInput,
+};
 use crate::state::AppState;
 
 pub async fn capabilities(
@@ -125,6 +127,14 @@ pub async fn set_indicator(
     execute_unit(&state, InstrumentOperation::SetIndicator { color, mode }).await
 }
 
+pub async fn indicator_off(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Response, ServerError> {
+    require_controls(&state, principal)?;
+    execute_unit(&state, InstrumentOperation::IndicatorOff).await
+}
+
 #[derive(Deserialize, serde::Serialize)]
 pub struct DrawerRequest {
     position: String,
@@ -161,6 +171,8 @@ pub struct CoverRequest {
     position: String,
     #[serde(default = "default_true")]
     verify: bool,
+    #[serde(default)]
+    ensure_drawer: bool,
 }
 
 pub async fn set_cover(
@@ -178,6 +190,7 @@ pub async fn set_cover(
         &state,
         InstrumentOperation::CoverDown {
             verify: request.verify,
+            ensure_drawer: request.ensure_drawer,
         },
     )
     .await
@@ -188,7 +201,7 @@ pub async fn access_key(
     Extension(principal): Extension<Principal>,
     headers: HeaderMap,
 ) -> Result<Response, ServerError> {
-    require_role(Extension(principal.clone()), Role::Administrator)?;
+    require_controls(&state, principal.clone())?;
     enqueue_operation(
         &state,
         &principal,
@@ -204,8 +217,7 @@ pub async fn restart(
     Extension(principal): Extension<Principal>,
     headers: HeaderMap,
 ) -> Result<Response, ServerError> {
-    require_role(Extension(principal.clone()), Role::Administrator)?;
-    require_control_policy(&state)?;
+    require_controls(&state, principal.clone())?;
     enqueue_operation(
         &state,
         &principal,
@@ -386,6 +398,26 @@ pub async fn get_package(
         .into_response())
 }
 
+pub async fn delete_package(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    AxumPath(name): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<StatusCode, ServerError> {
+    require_role(Extension(principal), Role::Controller)?;
+    if !state.allow_file_writes {
+        return Err(ServerError::forbidden(
+            "file writes are disabled by server policy",
+        ));
+    }
+    let expected = headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ServerError::bad_request("If-Match header is required"))?;
+    package::delete_staged_package(state.context_root("experiments")?, &name, expected)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub async fn delete_experiment(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -481,7 +513,10 @@ pub async fn get_run(
         .join(format!("{name}.eds"))
         .is_file();
     if !working && !completed {
-        return Err(ServerError::not_found("run not found"));
+        return Err(
+            ServerError::coded(StatusCode::NOT_FOUND, "run_not_found", "run not found")
+                .details(json!({"name": name})),
+        );
     }
     Ok(Json(
         json!({"name": name, "working": working, "completed": completed}),
@@ -499,6 +534,32 @@ pub struct StartRequest {
     require_drawer_check: bool,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct PreflightQuery {
+    experiment: String,
+    overwrite: String,
+}
+
+pub async fn preflight_run(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+    Query(query): Query<PreflightQuery>,
+) -> Result<Response, ServerError> {
+    require_controls(&state, principal)?;
+    package::validate_experiment_name(&query.experiment)?;
+    let overwrite = parse_overwrite(&query.overwrite)?;
+    execute_unit(
+        &state,
+        InstrumentOperation::PreflightRun(PreflightRunInput {
+            experiment: query.experiment,
+            overwrite,
+            experiments_root: state.context_root("experiments")?.to_path_buf(),
+            completed_root: state.context_root("public_run_complete")?.to_path_buf(),
+        }),
+    )
+    .await
+}
+
 pub async fn start_run(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -513,16 +574,7 @@ pub async fn start_run(
             "package ETag mismatch: current value is {actual_etag}"
         )));
     }
-    let overwrite = match request.overwrite.as_str() {
-        "false" => OverwriteMode::False,
-        "true" => OverwriteMode::True,
-        "incomplete" => OverwriteMode::Incomplete,
-        _ => {
-            return Err(ServerError::bad_request(
-                "overwrite must be false, true, or incomplete",
-            ))
-        }
-    };
+    let overwrite = parse_overwrite(&request.overwrite)?;
     let (protocol, protocol_scpi) = package::load_protocol(&experiments_root, &request.experiment)?;
     let staged_root = package::staged_path(&experiments_root, &request.experiment)?;
     let fingerprint = serde_json::to_string(&request).map_err(|error| {
@@ -548,6 +600,19 @@ pub async fn start_run(
             run_mode: protocol.run_mode,
         }),
     )
+}
+
+fn parse_overwrite(value: &str) -> Result<OverwriteMode, ServerError> {
+    Ok(match value {
+        "false" => OverwriteMode::False,
+        "true" => OverwriteMode::True,
+        "incomplete" => OverwriteMode::Incomplete,
+        _ => {
+            return Err(ServerError::bad_request(
+                "overwrite must be false, true, or incomplete",
+            ))
+        }
+    })
 }
 
 pub async fn run_action(
@@ -621,7 +686,12 @@ pub async fn put_protocol(
         .join(&name)
         .join("apldbio/sds");
     if !root.is_dir() {
-        return Err(ServerError::not_found("working run not found"));
+        return Err(ServerError::coded(
+            StatusCode::NOT_FOUND,
+            "run_not_found",
+            "working run not found",
+        )
+        .details(json!({"name": name})));
     }
     execute_unit(
         &state,
@@ -663,7 +733,10 @@ pub async fn get_eds(
     let path = state
         .context_root("public_run_complete")?
         .join(format!("{name}.eds"));
-    let bytes = std::fs::read(path).map_err(|_| ServerError::not_found("EDS not found"))?;
+    let bytes = std::fs::read(path).map_err(|_| {
+        ServerError::coded(StatusCode::NOT_FOUND, "run_not_found", "EDS not found")
+            .details(json!({"name": name}))
+    })?;
     Ok(([(header::CONTENT_TYPE, "application/zip")], bytes).into_response())
 }
 

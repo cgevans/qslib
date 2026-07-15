@@ -27,10 +27,13 @@ pub enum OperationState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationErrorDto {
+    pub status: u16,
     pub code: String,
     pub message: String,
     pub retryable: bool,
     pub outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -173,10 +176,12 @@ impl OperationStore {
             record.finished_at = Some(Utc::now());
             record.outcome = error.outcome.to_string();
             record.error = Some(OperationErrorDto {
+                status: error.status.as_u16(),
                 code: error.code.to_string(),
                 message: error.message,
                 retryable: error.retryable,
                 outcome: error.outcome.to_string(),
+                details: error.details,
             });
         });
     }

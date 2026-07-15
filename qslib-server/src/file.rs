@@ -7,17 +7,20 @@
 //! creating parent directories under the root; it is refused with 403 when the
 //! server policy enables file writes.
 
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Extension, Path as AxumPath, State};
+use axum::extract::{Extension, Path as AxumPath, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use serde::Serialize;
+use glob::{MatchOptions, Pattern};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
@@ -408,111 +411,359 @@ pub async fn put_file(
         .into_response())
 }
 
-/// One file in a directory response: path relative to the listed directory.
-/// (forward-slash separated), and its size in bytes.
-#[derive(Serialize)]
+/// One InstrumentServer-compatible directory entry. Paths are relative to the
+/// requested directory; callers prepend their SCPI context/path spelling.
+#[derive(Debug, Clone, Serialize)]
 pub struct ListEntry {
     pub path: String,
+    #[serde(rename = "type")]
+    pub kind: String,
     pub size: u64,
-    pub modified_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub mtime: f64,
+    pub atime: f64,
+    pub ctime: f64,
+    pub attributes: BTreeMap<String, Value>,
 }
 
 #[derive(Serialize)]
 pub struct ListResponse {
-    pub files: Vec<ListEntry>,
+    pub entries: Vec<ListEntry>,
 }
 
-/// Recursively enumerate the regular files under a named-context directory.
-/// directory, off disk, returning a JSON manifest.
-///
-/// This mirrors the InstrumentServer `EXP:ZIPREAD?` file set (Python
-/// `os.walk(followlinks=False)` + zip of the `filelist`) so a client can pull a
-/// run directory as raw files instead of a base64+deflate zip: real
-/// subdirectories are descended; regular files and contained symlinks-to-files
-/// are listed (including dotfiles); escaping/broken symlinks and symlinks to
-/// directories are skipped. Paths are relative to the requested directory.
+#[derive(Debug, Default, Deserialize)]
+pub struct ListQuery {
+    pattern: Option<String>,
+    #[serde(default)]
+    recursive: bool,
+}
+
 pub async fn list_dir(
     State(state): State<AppState>,
     AxumPath((context, rel)): AxumPath<(String, String)>,
+    Query(query): Query<ListQuery>,
 ) -> Result<Response, ServerError> {
-    let root = state.context_root(&context)?;
-    list_dir_at(root, &rel).await
+    list_dir_at(&state, &context, &rel, query).await
 }
 
 pub async fn list_context_root(
     State(state): State<AppState>,
     AxumPath(context): AxumPath<String>,
+    Query(query): Query<ListQuery>,
 ) -> Result<Response, ServerError> {
-    let root = state.context_root(&context)?;
-    list_dir_at(root, "").await
+    list_dir_at(&state, &context, "", query).await
 }
 
-async fn list_dir_at(context_root: &Path, rel: &str) -> Result<Response, ServerError> {
+async fn list_dir_at(
+    state: &AppState,
+    context: &str,
+    rel: &str,
+    query: ListQuery,
+) -> Result<Response, ServerError> {
+    let context_root = state.context_root(context)?;
     let root = resolve_under_root(context_root, rel).await?;
-    let meta = tokio::fs::metadata(&root)
-        .await
-        .map_err(|_| ServerError::not_found("directory not found"))?;
-    if !meta.is_dir() {
+    if !root.is_dir() {
         return Err(ServerError::bad_request("not a directory"));
     }
 
-    let mut files: Vec<ListEntry> = Vec::new();
-    // DFS with an explicit stack: (absolute dir, path prefix relative to `root`).
-    let mut stack: Vec<(PathBuf, String)> = vec![(root.clone(), String::new())];
-    while let Some((cur, prefix)) = stack.pop() {
-        let mut rd = tokio::fs::read_dir(&cur)
-            .await
-            .map_err(|e| ServerError::internal(format!("failed to read directory: {e}")))?;
-        while let Some(entry) = rd
-            .next_entry()
-            .await
-            .map_err(|e| ServerError::internal(format!("failed to read directory entry: {e}")))?
-        {
-            let name = entry.file_name();
-            let name = name.to_string_lossy();
-            let rel_path = if prefix.is_empty() {
-                name.into_owned()
-            } else {
-                format!("{prefix}/{name}")
-            };
-            // `file_type()` does not follow symlinks, so `is_dir()` is true only
-            // for real directories — those we descend (matching `followlinks=False`).
-            let ft = entry
-                .file_type()
-                .await
-                .map_err(|e| ServerError::internal(format!("failed to stat entry: {e}")))?;
-            if ft.is_dir() {
-                stack.push((entry.path(), rel_path));
-            } else {
-                // Regular file or symlink. Follow it: a symlink-to-directory is
-                // skipped (as `os.walk` does not descend it and zips no file for
-                // it); a symlink-to-file or regular file is listed by target size;
-                // a broken symlink is skipped.
-                match tokio::fs::metadata(entry.path()).await {
-                    Ok(m) if m.is_file() => {
-                        if ft.is_symlink()
-                            && !tokio::fs::canonicalize(entry.path())
-                                .await
-                                .is_ok_and(|target| target.starts_with(context_root))
-                        {
-                            continue;
-                        }
-                        files.push(ListEntry {
-                            path: rel_path,
-                            size: m.len(),
-                            modified_at: m
-                                .modified()
-                                .ok()
-                                .map(chrono::DateTime::<chrono::Utc>::from),
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
+    let pattern_text = query.pattern.as_deref().unwrap_or("*");
+    validate_pattern(pattern_text)?;
+    let pattern = Pattern::new(pattern_text)
+        .map_err(|error| ServerError::bad_request(format!("invalid glob pattern: {error}")))?;
+    let mut entries = BTreeMap::new();
+    let mut visiting = HashSet::new();
+    collect_entries(
+        state,
+        context,
+        context_root,
+        &root,
+        "",
+        query.recursive,
+        &pattern,
+        &mut visiting,
+        &mut entries,
+    )?;
+    Ok(Json(ListResponse {
+        entries: entries.into_values().collect(),
+    })
+    .into_response())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_entries(
+    state: &AppState,
+    context: &str,
+    context_root: &Path,
+    directory: &Path,
+    logical_prefix: &str,
+    recursive: bool,
+    pattern: &Pattern,
+    visiting: &mut HashSet<String>,
+    output: &mut BTreeMap<String, ListEntry>,
+) -> Result<(), ServerError> {
+    let canonical = std::fs::canonicalize(directory)
+        .map_err(|_| ServerError::not_found("directory not found"))?;
+    if !canonical.starts_with(context_root) {
+        return Err(ServerError::forbidden(
+            "directory escapes the file root via symlink",
+        ));
+    }
+    let visit_key = format!("{}:{}", context.to_ascii_lowercase(), canonical.display());
+    if !visiting.insert(visit_key.clone()) {
+        return Ok(());
     }
 
-    Ok(Json(ListResponse { files }).into_response())
+    let result = (|| {
+        let mut children = std::fs::read_dir(&canonical)
+            .map_err(|error| ServerError::internal(format!("failed to read directory: {error}")))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| {
+                ServerError::internal(format!("failed to read directory entry: {error}"))
+            })?;
+        children.sort_by_key(|entry| entry.file_name());
+
+        for child in children {
+            let name = child.file_name().to_string_lossy().into_owned();
+            if name.starts_with('.') {
+                continue;
+            }
+            let path = child.path();
+            let metadata = std::fs::metadata(&path).map_err(|error| {
+                ServerError::internal(format!("failed to inspect directory entry: {error}"))
+            })?;
+            if child.file_type().is_ok_and(|kind| kind.is_symlink()) {
+                let target = std::fs::canonicalize(&path).map_err(|error| {
+                    ServerError::internal(format!("failed to resolve directory symlink: {error}"))
+                })?;
+                if !target.starts_with(context_root) {
+                    return Err(ServerError::forbidden(
+                        "directory entry escapes the file root via symlink",
+                    ));
+                }
+            }
+            if !metadata.is_file() && !metadata.is_dir() {
+                continue;
+            }
+            let attributes = read_attributes(&path)?;
+            if attributes
+                .get("hidden")
+                .is_some_and(|value| value == &Value::Bool(true))
+            {
+                continue;
+            }
+            let relative = join_relative(logical_prefix, &name);
+            let matches = pattern.matches_with(
+                &relative,
+                MatchOptions {
+                    case_sensitive: true,
+                    require_literal_separator: !recursive,
+                    require_literal_leading_dot: true,
+                },
+            );
+            if matches && (!recursive || metadata.is_file()) {
+                output.entry(relative.clone()).or_insert_with(|| {
+                    entry_from_metadata(
+                        relative.clone(),
+                        if metadata.is_dir() { "folder" } else { "file" },
+                        &metadata,
+                        attributes,
+                    )
+                });
+            }
+            if metadata.is_dir() {
+                collect_entries(
+                    state,
+                    context,
+                    context_root,
+                    &path,
+                    &relative,
+                    recursive,
+                    pattern,
+                    visiting,
+                    output,
+                )?;
+            }
+        }
+
+        let shadows = canonical.join(".shadows");
+        if shadows.is_file() {
+            let contents = std::fs::read_to_string(&shadows).map_err(|error| {
+                ServerError::internal(format!("failed to read shadow metadata: {error}"))
+            })?;
+            for target in contents
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+            {
+                let (target_context, target_rel) = target
+                    .split_once(':')
+                    .map_or(("default", target), |(context, rel)| (context, rel));
+                let Some(target_root) = state.contexts.get(&target_context.to_ascii_lowercase())
+                else {
+                    return Err(ServerError::coded(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "unsupported_shadow_target",
+                        format!("shadow references unsupported context {target_context:?}"),
+                    ));
+                };
+                let safe = safe_relative(target_rel)?;
+                let target_path = target_root.join(safe);
+                let target_path = std::fs::canonicalize(&target_path).map_err(|_| {
+                    ServerError::coded(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "unsupported_shadow_target",
+                        format!("shadow target {target:?} is unavailable"),
+                    )
+                })?;
+                if !target_path.starts_with(target_root) || !target_path.is_dir() {
+                    return Err(ServerError::coded(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        "unsupported_shadow_target",
+                        format!("shadow target {target:?} is not a supported directory"),
+                    ));
+                }
+                collect_entries(
+                    state,
+                    target_context,
+                    target_root,
+                    &target_path,
+                    logical_prefix,
+                    recursive,
+                    pattern,
+                    visiting,
+                    output,
+                )?;
+            }
+        }
+        Ok(())
+    })();
+    visiting.remove(&visit_key);
+    result
+}
+
+fn validate_pattern(pattern: &str) -> Result<(), ServerError> {
+    if pattern.starts_with('/')
+        || pattern.contains('\\')
+        || pattern.contains('\0')
+        || pattern.split('/').any(|part| part == "..")
+    {
+        return Err(ServerError::forbidden(
+            "glob pattern escapes the listed directory",
+        ));
+    }
+    Ok(())
+}
+
+fn join_relative(prefix: &str, name: &str) -> String {
+    if prefix.is_empty() {
+        name.to_string()
+    } else {
+        format!("{prefix}/{name}")
+    }
+}
+
+fn entry_from_metadata(
+    path: String,
+    kind: &str,
+    metadata: &std::fs::Metadata,
+    attributes: BTreeMap<String, Value>,
+) -> ListEntry {
+    let (atime, mtime, ctime) = metadata_times(metadata);
+    ListEntry {
+        path,
+        kind: kind.to_string(),
+        size: metadata.len(),
+        mtime,
+        atime,
+        ctime,
+        attributes,
+    }
+}
+
+#[cfg(unix)]
+fn metadata_times(metadata: &std::fs::Metadata) -> (f64, f64, f64) {
+    use std::os::unix::fs::MetadataExt;
+    let time = |seconds: i64, nanos: i64| seconds as f64 + nanos as f64 / 1_000_000_000.0;
+    (
+        time(metadata.atime(), metadata.atime_nsec()),
+        time(metadata.mtime(), metadata.mtime_nsec()),
+        time(metadata.ctime(), metadata.ctime_nsec()),
+    )
+}
+
+#[cfg(not(unix))]
+fn metadata_times(metadata: &std::fs::Metadata) -> (f64, f64, f64) {
+    let seconds = |value: Result<SystemTime, std::io::Error>| {
+        value
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs_f64())
+            .unwrap_or(0.0)
+    };
+    (
+        seconds(metadata.accessed()),
+        seconds(metadata.modified()),
+        seconds(metadata.created()),
+    )
+}
+
+/// Read InstrumentServer's per-directory INI metadata. Directory attributes
+/// live in section `[.]`; file attributes live in the parent `.attributes`
+/// under a section named for the file.
+pub(crate) fn read_attributes(path: &Path) -> Result<BTreeMap<String, Value>, ServerError> {
+    let (attribute_path, wanted_section) = if path.is_dir() {
+        (path.join(".attributes"), ".".to_string())
+    } else {
+        let Some(parent) = path.parent() else {
+            return Ok(BTreeMap::new());
+        };
+        let Some(name) = path.file_name() else {
+            return Ok(BTreeMap::new());
+        };
+        (
+            parent.join(".attributes"),
+            name.to_string_lossy().into_owned(),
+        )
+    };
+    let contents = match std::fs::read_to_string(attribute_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
+        Err(error) => {
+            return Err(ServerError::internal(format!(
+                "failed to read file attributes: {error}"
+            )))
+        }
+    };
+    let mut current_section = String::new();
+    let mut attributes = BTreeMap::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') || line.starts_with(';') {
+            continue;
+        }
+        if let Some(section) = line
+            .strip_prefix('[')
+            .and_then(|line| line.strip_suffix(']'))
+        {
+            current_section = section.trim().to_string();
+            continue;
+        }
+        if current_section != wanted_section {
+            continue;
+        }
+        let Some((key, raw_value)) = line.split_once('=').or_else(|| line.split_once(':')) else {
+            continue;
+        };
+        let raw_value = raw_value.trim();
+        let value = if raw_value.eq_ignore_ascii_case("true") {
+            Value::Bool(true)
+        } else if raw_value.eq_ignore_ascii_case("false") {
+            Value::Bool(false)
+        } else {
+            Value::String(raw_value.to_string())
+        };
+        attributes.insert(key.trim().to_ascii_lowercase(), value);
+    }
+    Ok(attributes)
 }
 
 #[cfg(test)]
