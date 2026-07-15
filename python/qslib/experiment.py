@@ -606,6 +606,13 @@ table, th, td {{
     def _populate_folder(self, machine: Machine) -> None:
         tempzip = io.BytesIO()
         self.save_file(tempzip)
+
+        # Prefer uploading the experiment files individually over qslib-server
+        # (raw PUT off the base64+TLS path); EXP:ZIPWRITE is a plain unpack to
+        # disk, so per-file writes reproduce it. Fall back to SCPI otherwise.
+        if machine.upload_zip_as_files("experiments:" + self.runtitle_safe, tempzip.getvalue()):
+            return
+
         exppath = self.runtitle_safe + "/"
         machine.run_command_bytes(
             b"EXP:ZIPWRITE "

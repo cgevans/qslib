@@ -197,6 +197,35 @@ class ServerClient:
             raise ServerError(f"{abspath!r} is not under qslib-server file root {self.file_root!r}")
         return self.get_file(rel, dest=dest, chunk_size=chunk_size)
 
+    def put_file(self, path: str, data: bytes) -> None:
+        """Write ``data`` to a file under qslib-server's file root (``PUT /file``).
+
+        The file is written atomically on the instrument (temp file + rename),
+        creating parent directories as needed. Raises :class:`ServerError` if the
+        server is read-only (403) or the path is unsafe.
+        """
+        quoted = urllib.parse.quote(path.lstrip("/"))
+        req = urllib.request.Request(
+            f"{self.base_url}/file/{quoted}",
+            data=data,
+            headers=self._headers({"Content-Type": "application/octet-stream"}),
+            method="PUT",
+        )
+        with self._open(req) as resp:
+            resp.read()
+
+    def put_abs_file(self, abspath: str, data: bytes) -> None:
+        """Write a file by its absolute on-instrument path.
+
+        The path is made relative to qslib-server's :attr:`file_root` and written
+        via :meth:`put_file`. Raises :class:`ServerError` if the path is not
+        under the root (so callers fall back to SCPI).
+        """
+        rel = self._rel_to_root(abspath)
+        if rel is None:
+            raise ServerError(f"{abspath!r} is not under qslib-server file root {self.file_root!r}")
+        self.put_file(rel, data)
+
     def list_dir(self, abspath: str) -> list[dict[str, Any]]:
         """Return the recursive file manifest of a directory (``GET /list``).
 

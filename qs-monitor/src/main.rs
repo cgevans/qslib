@@ -10,7 +10,7 @@ use futures::stream;
 use influxdb2::Client;
 use influxdb2::models::DataPoint;
 use log::{debug, error, info, warn};
-use qslib::agent_client::{AgentClient, DEFAULT_AGENT_PORT};
+use qslib::server_client::{ServerClient, DEFAULT_SERVER_PORT};
 use qslib::com_ext::QSConnectionExt;
 use qslib::parser::OkResponse;
 use qslib::{
@@ -68,21 +68,21 @@ pub(crate) struct MachineConfig {
     pub(crate) host: String,
     /// Port of the on-instrument qslib-server, used to pull filter data and
     /// plate setup over HTTP instead of SCPI. Defaults to
-    /// [`DEFAULT_AGENT_PORT`]; set to 0 to disable and use SCPI only.
-    #[serde(default = "default_agent_port")]
-    pub(crate) agent_port: u16,
+    /// [`DEFAULT_SERVER_PORT`]; set to 0 to disable and use SCPI only.
+    #[serde(default = "default_server_port", alias = "agent_port")]
+    pub(crate) server_port: u16,
 }
 
-fn default_agent_port() -> u16 {
-    DEFAULT_AGENT_PORT
+fn default_server_port() -> u16 {
+    DEFAULT_SERVER_PORT
 }
 
 /// Build a qslib-server client for a machine, or `None` if disabled
-/// (`agent_port = 0`).
-fn build_agent_client(config: &MachineConfig) -> Option<Arc<AgentClient>> {
-    match config.agent_port {
+/// (`server_port = 0`).
+fn build_server_client(config: &MachineConfig) -> Option<Arc<ServerClient>> {
+    match config.server_port {
         0 => None,
-        port => Some(Arc::new(AgentClient::new(&config.host, port, None))),
+        port => Some(Arc::new(ServerClient::new(&config.host, port, None))),
     }
 }
 
@@ -127,6 +127,10 @@ struct MachineState {
     cycle: Option<i64>,
     step: Option<i64>,
     plate_setup: Option<PlateSetup>,
+    /// The run name that `plate_setup` was fetched for. The plate setup only
+    /// changes when the run does, so it is refetched only when this no longer
+    /// matches `run_name` — not on every Run message.
+    plate_setup_run: Option<String>,
 }
 
 impl MachineState {
@@ -138,6 +142,7 @@ impl MachineState {
             cycle: None,
             step: None,
             plate_setup: None,
+            plate_setup_run: None,
         }
     }
 
@@ -180,6 +185,7 @@ async fn refresh_state(
     state: &mut MachineState,
     machine_name: &str,
     timestamp: chrono::DateTime<chrono::Utc>,
+    server: Option<&ServerClient>,
 ) -> Vec<DataPoint> {
     let mut points = Vec::new();
     let ts = match timestamp.timestamp_nanos_opt() {
@@ -218,18 +224,28 @@ async fn refresh_state(
         }
     }
 
-    // 3. If run active, get plate setup
-    if state.run_name.is_some() {
-        match con.get_plate_setup(None).await {
-            Ok(ps) => {
-                state.plate_setup = Some(ps);
-            }
-            Err(e) => {
-                warn!("Error getting plate setup: {}", e);
+    // 3. If run active, get plate setup — over qslib-server when available, and
+    // only when the run changed (it is otherwise stable for the whole run).
+    match &state.run_name {
+        Some(run) => {
+            let have_current =
+                state.plate_setup.is_some() && state.plate_setup_run.as_deref() == Some(run.as_str());
+            if !have_current {
+                match con.get_plate_setup_via(server, Some(run.clone())).await {
+                    Ok(ps) => {
+                        state.plate_setup = Some(ps);
+                        state.plate_setup_run = Some(run.clone());
+                    }
+                    Err(e) => {
+                        warn!("Error getting plate setup: {}", e);
+                    }
+                }
             }
         }
-    } else {
-        state.plate_setup = None;
+        None => {
+            state.plate_setup = None;
+            state.plate_setup_run = None;
+        }
     }
 
     // 4. Build run_state DataPoint
@@ -539,7 +555,9 @@ async fn log_machine(
     // Initialize machine state
     let mut state = MachineState::new(num_zones);
     let timestamp = chrono::Utc::now();
-    let initial_points = refresh_state(&con, &mut state, &config.name, timestamp).await;
+    let server = build_server_client(config);
+    let initial_points =
+        refresh_state(&con, &mut state, &config.name, timestamp, server.as_deref()).await;
     for point in initial_points {
         if let Err(e) = tx.send((config.name.clone(), point)).await {
             warn!("Failed to send initial state point: {}", e);
@@ -547,11 +565,10 @@ async fn log_machine(
     }
 
     let config_clone = config.clone();
-    let agent = build_agent_client(config);
 
     let aborthandle = log_tasks.spawn(async move {
         if let Err(e) =
-            influx_log_loop(&mut log_sub, tx, &config_clone, None, con.clone(), state, agent).await
+            influx_log_loop(&mut log_sub, tx, &config_clone, None, con.clone(), state, server).await
         {
             error!("Logging loop error: {}", e);
         }
@@ -570,7 +587,7 @@ async fn influx_log_loop(
     timeout_secs: Option<u64>,
     con: Arc<QSConnection>,
     mut state: MachineState,
-    agent: Option<Arc<AgentClient>>,
+    server: Option<Arc<ServerClient>>,
 ) -> Result<()> {
     let machine_name = config.name.as_ref();
     let mut last_message = tokio::time::Instant::now();
@@ -617,7 +634,7 @@ async fn influx_log_loop(
                             continue;
                         }
                     },
-                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp, Some(con.clone()), &mut state, agent.as_deref()).await {
+                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp, Some(con.clone()), &mut state, server.as_deref()).await {
                         Ok(points) => points,
                         Err(e) => {
                             error!("Error converting run data for {}: {}", config.name, e);
@@ -693,7 +710,7 @@ async fn run_to_lineprotocol(
     timestamp: chrono::DateTime<chrono::Utc>,
     con: Option<Arc<QSConnection>>,
     state: &mut MachineState,
-    agent: Option<&AgentClient>,
+    server: Option<&ServerClient>,
 ) -> Result<Vec<DataPoint>> {
     let mut points = Vec::new();
     let mut parts = msg.message.splitn(2, ' ');
@@ -861,7 +878,7 @@ async fn run_to_lineprotocol(
                     con.clone(),
                     timestamp,
                     machine_name,
-                    agent,
+                    server,
                 )
                 .await
                 {
@@ -937,7 +954,7 @@ async fn run_to_lineprotocol(
     }
     // After processing any Run message, refresh state if we have a connection
     if let Some(con) = con.as_ref() {
-        let refresh_points = refresh_state(con, state, machine_name, timestamp).await;
+        let refresh_points = refresh_state(con, state, machine_name, timestamp, server).await;
         points.extend(refresh_points);
     }
 
@@ -1143,7 +1160,7 @@ async fn docollect(
     con: Arc<QSConnection>,
     timestamp: chrono::DateTime<chrono::Utc>,
     machine_name: &str,
-    agent: Option<&AgentClient>,
+    server: Option<&ServerClient>,
 ) -> Result<Vec<DataPoint>> {
     // Get plate setup samples if available
     // let sample_array = plate_setup.map(|ps| ps.well_samples_as_array());
@@ -1172,7 +1189,7 @@ async fn docollect(
     // Process filter data
     // info!("Getting filter data for {:?}", filter_files);
 
-    // Resolve the run name first so it can be reused for the agent fast-path of
+    // Resolve the run name first so it can be reused for the server fast-path of
     // both the plate setup and every filter file (avoiding a per-fetch
     // RUNTitle? query).
     let current_run_name = match con.get_current_run_name().await {
@@ -1184,7 +1201,7 @@ async fn docollect(
     };
 
     let plate_setup = match con
-        .get_plate_setup_via(agent, current_run_name.clone())
+        .get_plate_setup_via(server, current_run_name.clone())
         .await
     {
         Ok(plate_setup) => Some(plate_setup),
@@ -1208,10 +1225,10 @@ async fn docollect(
     };
 
     for fdf in filter_files {
-        // Pass the resolved run name so the agent fast-path does not re-query
+        // Pass the resolved run name so the server fast-path does not re-query
         // the run title for every filter file.
         let filter_data_t = con
-            .get_filterdata_one_via(agent, fdf, current_run_name.clone())
+            .get_filterdata_one_via(server, fdf, current_run_name.clone())
             .await;
         let filter_data = match filter_data_t {
             Ok(filter_data) => filter_data,

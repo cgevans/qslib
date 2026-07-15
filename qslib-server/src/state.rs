@@ -28,6 +28,8 @@ pub struct AppStateInner {
     pub started: Instant,
     /// Bounds concurrent SCPI tunnels.
     pub tunnels: Arc<tokio::sync::Semaphore>,
+    /// When true, `PUT /file` is refused (403).
+    pub read_only: bool,
     /// Absolute path of the running executable (for in-place `/upgrade`).
     pub exe_path: PathBuf,
     /// SHA-256 (lowercase hex) of the running executable, computed at startup.
@@ -70,6 +72,7 @@ impl AppState {
             scpi_timeout_ms: config.scpi_timeout_ms,
             started: Instant::now(),
             tunnels: Arc::new(tokio::sync::Semaphore::new(config.max_tunnels.max(1))),
+            read_only: config.read_only,
             exe_path,
             exe_sha256,
             restart_args,

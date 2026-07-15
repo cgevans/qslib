@@ -1,14 +1,18 @@
-//! `GET`/`HEAD /file/<path…>` — bulk file transfer straight off disk.
+//! `GET`/`HEAD /file/<path…>` — bulk file transfer straight off disk, and
+//! `PUT /file/<path…>` — write a file straight to disk.
 //!
 //! Paths are resolved under the configured root and canonicalized; anything
 //! that escapes the root (via `..`, an absolute component, or a symlink) is
 //! rejected with 403. Single-range requests are supported for resume and
-//! parallel chunked downloads.
+//! parallel chunked downloads. `PUT` writes atomically (temp file + rename),
+//! creating parent directories under the root; it is refused with 403 when the
+//! server is started `--read-only`.
 
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use axum::body::Body;
+use axum::body::{Body, Bytes};
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -57,6 +61,50 @@ pub async fn resolve_under_root(root: &Path, rel: &str) -> Result<PathBuf, Serve
         return Err(ServerError::forbidden("path escapes the file root via symlink"));
     }
     Ok(canonical)
+}
+
+/// Resolve `rel` to a write target `(parent_dir, file_name)` under `root`,
+/// creating the parent directories. Rejects traversal (`..`, absolute, prefix)
+/// components up front, and rejects a parent that resolves (via a symlink)
+/// outside `root`.
+///
+/// Unlike [`resolve_under_root`] the target file need not exist. The final path
+/// component is returned separately as the name to write; the atomic rename in
+/// [`put_file`] replaces any existing file or symlink at that name, so a symlink
+/// occupying the name cannot redirect the write outside the (canonical) parent.
+async fn resolve_write_target(root: &Path, rel: &str) -> Result<(PathBuf, OsString), ServerError> {
+    let mut safe = PathBuf::new();
+    for comp in Path::new(rel).components() {
+        match comp {
+            Component::Normal(c) => safe.push(c),
+            Component::CurDir => {}
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return Err(ServerError::forbidden(
+                    "path escapes the file root (`..`, absolute, or prefix component)",
+                ));
+            }
+        }
+    }
+
+    let file_name = safe
+        .file_name()
+        .map(|s| s.to_os_string())
+        .ok_or_else(|| ServerError::bad_request("no file name in path"))?;
+    let parent_rel = safe.parent().map(Path::to_path_buf).unwrap_or_default();
+    let parent_abs = root.join(&parent_rel);
+
+    tokio::fs::create_dir_all(&parent_abs)
+        .await
+        .map_err(|e| ServerError::internal(format!("failed to create parent directory: {e}")))?;
+    let canonical_parent = tokio::fs::canonicalize(&parent_abs)
+        .await
+        .map_err(|e| ServerError::internal(format!("failed to resolve parent directory: {e}")))?;
+    if !canonical_parent.starts_with(root) {
+        return Err(ServerError::forbidden(
+            "path escapes the file root via symlink",
+        ));
+    }
+    Ok((canonical_parent, file_name))
 }
 
 /// A parsed, validated single byte range.
@@ -164,8 +212,9 @@ pub async fn serve_file(
     // component could still escape the root. A race-free fix needs
     // openat2(RESOLVE_BENEATH), which the instrument kernel (3.0.35) lacks. The
     // deployment threat model (isolated link-local cable, no untrusted local
-    // users, read-only remote surface) makes this acceptable; revisit if the
-    // qslib-server is ever exposed to a host with untrusted local accounts.
+    // users; the write surface, when enabled, is reachable only by the same
+    // trusted clients) makes this acceptable; revisit if the qslib-server is
+    // ever exposed to a host with untrusted local accounts.
     let size = meta.len();
     let modified = meta.modified().ok();
 
@@ -235,6 +284,53 @@ async fn open(path: &Path) -> Result<File, ServerError> {
     File::open(path)
         .await
         .map_err(|e| ServerError::internal(format!("failed to open file: {e}")))
+}
+
+/// `PUT /file/<path…>` — write the request body to disk under the file root.
+///
+/// The body replaces the target file atomically: it is written to a temp file
+/// in the same directory and then renamed into place, so a reader never sees a
+/// partial file and a failed transfer leaves the previous contents intact.
+/// Parent directories are created as needed. Refused with 403 when the server
+/// is `--read-only`.
+pub async fn put_file(
+    State(state): State<AppState>,
+    AxumPath(rel): AxumPath<String>,
+    body: Bytes,
+) -> Result<Response, ServerError> {
+    if state.read_only {
+        return Err(ServerError::forbidden(
+            "server is read-only; file uploads are disabled",
+        ));
+    }
+
+    let (parent, file_name) = resolve_write_target(&state.file_root, &rel).await?;
+    let target = parent.join(&file_name);
+    let tmp = parent.join(format!(
+        ".{}.upload.{}",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    let size = body.len();
+    if let Err(e) = tokio::fs::write(&tmp, &body).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(ServerError::internal(format!(
+            "failed to write uploaded file: {e}"
+        )));
+    }
+    if let Err(e) = tokio::fs::rename(&tmp, &target).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(ServerError::internal(format!(
+            "failed to install uploaded file: {e}"
+        )));
+    }
+
+    Ok((
+        StatusCode::CREATED,
+        Json(serde_json::json!({ "path": rel, "size": size })),
+    )
+        .into_response())
 }
 
 /// One file in a `/list` response: path relative to the listed directory
@@ -450,6 +546,49 @@ mod tests {
         let (_dir, root) = tmp_root().await;
         let e = resolve_under_root(&root, "nope.bin").await.unwrap_err();
         assert_eq!(e.status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn write_target_creates_parents_and_splits_name() {
+        let (_dir, root) = tmp_root().await;
+        let (parent, name) = resolve_write_target(&root, "a/b/c.xml").await.unwrap();
+        assert_eq!(parent, root.join("a/b"));
+        assert_eq!(name, std::ffi::OsStr::new("c.xml"));
+        assert!(parent.is_dir());
+    }
+
+    #[tokio::test]
+    async fn write_target_top_level_name() {
+        let (_dir, root) = tmp_root().await;
+        let (parent, name) = resolve_write_target(&root, "c.xml").await.unwrap();
+        assert_eq!(parent, root);
+        assert_eq!(name, std::ffi::OsStr::new("c.xml"));
+    }
+
+    #[tokio::test]
+    async fn write_target_rejects_traversal_and_absolute() {
+        let (_dir, root) = tmp_root().await;
+        assert_eq!(
+            resolve_write_target(&root, "../x").await.unwrap_err().status,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            resolve_write_target(&root, "a/../../x").await.unwrap_err().status,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            resolve_write_target(&root, "/etc/passwd").await.unwrap_err().status,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn write_target_no_filename_is_bad_request() {
+        let (_dir, root) = tmp_root().await;
+        assert_eq!(
+            resolve_write_target(&root, ".").await.unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
     }
 
     #[cfg(unix)]

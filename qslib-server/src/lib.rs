@@ -1,10 +1,11 @@
 //! qslib-server: on-instrument HTTP transport/command service.
 //!
 //! Binds one port on the private link and serves, over plain HTTP: bulk file
-//! transfer off disk (`/file`), a one-shot SCPI command (`/scpi`), a streaming
-//! SCPI tunnel, and `/health`. It is a client of the localhost plaintext SCPI
-//! server and a reader of on-disk experiment files; it never modifies the
-//! InstrumentServer.
+//! transfer off disk (`/file` GET, and PUT to write unless `--read-only`), a
+//! one-shot SCPI command (`/scpi`), a streaming SCPI tunnel, and `/health`. It
+//! is a client of the localhost plaintext SCPI server and reads and writes
+//! on-disk experiment files; it never drives the InstrumentServer's hardware
+//! control directly.
 
 pub mod auth;
 pub mod config;
@@ -40,7 +41,12 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/file/{*path}",
-            get(file::serve_file).head(file::serve_file),
+            get(file::serve_file)
+                .head(file::serve_file)
+                .put(file::put_file)
+                // An uploaded experiment file (or `.eds`) can be several MB —
+                // well over axum's 2 MB default. GET/HEAD carry no body.
+                .layer(DefaultBodyLimit::max(128 * 1024 * 1024)),
         )
         .route("/list/{*path}", get(file::list_dir))
         // The uploaded binary is several MB — well over axum's 2 MB default.

@@ -6,10 +6,8 @@ transfer, one-shot SCPI commands, and a streaming SCPI tunnel. It is a client of
 the existing localhost plaintext SCPI server (`127.0.0.1:7000`) and a reader of
 the on-disk experiment files; it does **not** modify the InstrumentServer.
 
-Rationale and measurements are in `../llm-research/data-transfer-performance.md`
-and the design in `../llm-plans/instrument-agent.md`. Bulk transfer through
-qslib-server avoids the base64+TLS overhead of `FILE:READ` over SCPI (~4.7 MB/s)
-and approaches disk/gigabit speed.
+Bulk transfer through qslib-server avoids the base64+TLS overhead of `FILE:READ`
+over SCPI (~4.7 MB/s) and approaches disk/gigabit speed.
 
 ## HTTP API
 

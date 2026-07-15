@@ -109,6 +109,7 @@ fn test_config(scpi: SocketAddr, root: PathBuf, token: Option<String>) -> Config
         log: None,
         scpi_timeout_ms: 5000,
         max_tunnels: 16,
+        read_only: false,
     }
 }
 
@@ -161,6 +162,85 @@ async fn file_full_download() {
     assert!(resp.headers().contains_key("etag"));
     let body = resp.bytes().await.unwrap();
     assert_eq!(body.as_ref(), content.as_slice());
+}
+
+#[tokio::test]
+async fn put_file_round_trips() {
+    let (addr, dir) = setup(None).await;
+    let content = b"<PlateSetup/>".repeat(500);
+
+    let resp = client()
+        .put(format!("http://{addr}/file/exp/apldbio/sds/plate_setup.xml"))
+        .body(content.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+
+    // The bytes landed on disk under the root, parent dirs created.
+    let on_disk = tokio::fs::read(dir.path().join("exp/apldbio/sds/plate_setup.xml"))
+        .await
+        .unwrap();
+    assert_eq!(on_disk, content);
+
+    // And are served back byte-identically over GET.
+    let got = client()
+        .get(format!("http://{addr}/file/exp/apldbio/sds/plate_setup.xml"))
+        .send()
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    assert_eq!(got.as_ref(), content.as_slice());
+}
+
+#[tokio::test]
+async fn put_file_overwrites_atomically() {
+    let (addr, dir) = setup(None).await;
+    tokio::fs::write(dir.path().join("f.bin"), b"old").await.unwrap();
+    let resp = client()
+        .put(format!("http://{addr}/file/f.bin"))
+        .body(b"new-and-longer".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 201);
+    assert_eq!(
+        tokio::fs::read(dir.path().join("f.bin")).await.unwrap(),
+        b"new-and-longer"
+    );
+}
+
+#[tokio::test]
+async fn put_file_traversal_forbidden() {
+    let (addr, dir) = setup(None).await;
+    // Fully percent-encoded `../../escape.bin` (slashes too) so the client sends
+    // one opaque segment and cannot normalize the `..` away; axum decodes it and
+    // our handler must reject the traversal rather than write outside the root.
+    let url = format!("http://{addr}/file/%2e%2e%2f%2e%2e%2fescape.bin");
+    let resp = client().put(url).body(b"x".to_vec()).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    assert!(!dir.path().parent().unwrap().join("escape.bin").exists());
+}
+
+#[tokio::test]
+async fn put_file_read_only_forbidden() {
+    let scpi = spawn_fake_scpi().await;
+    let dir = tempfile::tempdir().unwrap();
+    let mut cfg = test_config(scpi, dir.path().to_path_buf(), None);
+    cfg.read_only = true;
+    let state = AppState::new(&cfg, cfg.resolve_token().unwrap()).unwrap();
+    let addr = spawn_server(state).await;
+
+    let resp = client()
+        .put(format!("http://{addr}/file/f.bin"))
+        .body(b"x".to_vec())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 403);
+    assert!(!dir.path().join("f.bin").exists());
 }
 
 #[tokio::test]

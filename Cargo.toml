@@ -38,8 +38,8 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 qslib-core = { path = "qslib-core", default-features = false, features = ["tls"] }
 dashmap = "6.1"
-# HTTP client for the on-instrument qslib-server (agent_client). Plain HTTP only
-# (the agent has no TLS), so no TLS backend is pulled in.
+# HTTP client for the on-instrument qslib-server (server_client). Plain HTTP only
+# (qslib-server has no TLS), so no TLS backend is pulled in.
 reqwest = { version = "0.12", default-features = false }
 enum_dispatch = "0.3.13"
 futures = "0.3.31"

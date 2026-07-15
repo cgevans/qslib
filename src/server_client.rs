@@ -19,10 +19,10 @@ use serde::Deserialize;
 use tokio::sync::OnceCell;
 
 /// qslib-server's default HTTP port.
-pub const DEFAULT_AGENT_PORT: u16 = 7500;
+pub const DEFAULT_SERVER_PORT: u16 = 7500;
 
-/// Fast-fail connect timeout. The agent path is on the data-collection hot path,
-/// so a machine that is reachable for SCPI but has the agent port filtered
+/// Fast-fail connect timeout. The server path is on the data-collection hot path,
+/// so a machine that is reachable for SCPI but has the server port filtered
 /// (SYNs dropped) must fail quickly and fall back to SCPI rather than block on
 /// the OS default TCP connect timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
@@ -33,7 +33,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// An error contacting, or returned by, qslib-server.
 #[derive(Debug, thiserror::Error)]
-pub enum AgentError {
+pub enum ServerError {
     /// The server could not be reached (connection refused, reset, timeout).
     #[error("cannot reach qslib-server at {url}: {source}")]
     Unreachable {
@@ -94,7 +94,7 @@ struct ListResponse {
 
 /// A client for a running `qslib-server`.
 #[derive(Debug, Clone)]
-pub struct AgentClient {
+pub struct ServerClient {
     base_url: String,
     token: Option<String>,
     client: reqwest::Client,
@@ -105,10 +105,10 @@ pub struct AgentClient {
     file_root: Arc<OnceCell<Option<String>>>,
 }
 
-impl AgentClient {
+impl ServerClient {
     /// Create a client for the qslib-server reachable at `host:port`.
     ///
-    /// `token` is sent as a bearer token when present; our fleet runs the agent
+    /// `token` is sent as a bearer token when present; our fleet runs the server
     /// tokenless behind the VPN, so it is usually `None`.
     pub fn new(host: &str, port: u16, token: Option<String>) -> Self {
         let client = reqwest::Client::builder()
@@ -136,13 +136,13 @@ impl AgentClient {
         }
     }
 
-    fn url(&self, prefix: &str, rel: &str) -> Result<reqwest::Url, AgentError> {
+    fn url(&self, prefix: &str, rel: &str) -> Result<reqwest::Url, ServerError> {
         let mut url = reqwest::Url::parse(&self.base_url)
-            .map_err(|e| AgentError::Decode(format!("bad base url: {e}")))?;
+            .map_err(|e| ServerError::Decode(format!("bad base url: {e}")))?;
         {
             let mut seg = url
                 .path_segments_mut()
-                .map_err(|_| AgentError::Decode("base url cannot be a base".into()))?;
+                .map_err(|_| ServerError::Decode("base url cannot be a base".into()))?;
             // Rebuild the path from scratch so a base like `http://host:7500`
             // (whose normalized path is `/`) does not leave an empty leading
             // segment that would produce `/file//<rel>`.
@@ -158,16 +158,16 @@ impl AgentClient {
     }
 
     /// Fetch and return `/health`.
-    pub async fn health(&self) -> Result<Health, AgentError> {
+    pub async fn health(&self) -> Result<Health, ServerError> {
         let url = reqwest::Url::parse(&format!("{}/health", self.base_url))
-            .map_err(|e| AgentError::Decode(format!("bad base url: {e}")))?;
+            .map_err(|e| ServerError::Decode(format!("bad base url: {e}")))?;
         let resp = self.send(self.get(url)).await?;
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| AgentError::Decode(format!("reading /health body: {e}")))?;
+            .map_err(|e| ServerError::Decode(format!("reading /health body: {e}")))?;
         serde_json::from_slice(&bytes)
-            .map_err(|e| AgentError::Decode(format!("qslib-server /health returned a non-JSON body: {e}")))
+            .map_err(|e| ServerError::Decode(format!("qslib-server /health returned a non-JSON body: {e}")))
     }
 
     /// Return true if qslib-server answers `/health` with the SCPI target up.
@@ -191,33 +191,57 @@ impl AgentClient {
     }
 
     /// Fetch a file addressed relative to the server's `--file-root`.
-    pub async fn get_file(&self, rel: &str) -> Result<Vec<u8>, AgentError> {
+    pub async fn get_file(&self, rel: &str) -> Result<Vec<u8>, ServerError> {
         let url = self.url("file", rel)?;
         let resp = self.send(self.get(url)).await?;
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| AgentError::Decode(format!("reading /file body: {e}")))?;
+            .map_err(|e| ServerError::Decode(format!("reading /file body: {e}")))?;
         Ok(bytes.to_vec())
     }
 
     /// Fetch a file by its absolute on-instrument path, translating it to a
-    /// path under the server's `file_root`. Returns [`AgentError::NotUnderRoot`]
+    /// path under the server's `file_root`. Returns [`ServerError::NotUnderRoot`]
     /// when the path is outside the served root (so callers fall back to SCPI).
-    pub async fn get_abs_file(&self, abspath: &str) -> Result<Vec<u8>, AgentError> {
+    pub async fn get_abs_file(&self, abspath: &str) -> Result<Vec<u8>, ServerError> {
         let root = self.file_root().await;
-        let rel = rel_to_root(root.as_deref(), abspath).ok_or_else(|| AgentError::NotUnderRoot {
+        let rel = rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
             abspath: abspath.to_string(),
             root: root.clone(),
         })?;
         self.get_file(&rel).await
     }
 
+    /// Write `body` to the file addressed relative to the server's
+    /// `--file-root` (`PUT /file`), replacing it atomically on the instrument.
+    pub async fn put_file(&self, rel: &str, body: Vec<u8>) -> Result<(), ServerError> {
+        let url = self.url("file", rel)?;
+        let mut req = self.client.put(url).body(body);
+        if let Some(t) = &self.token {
+            req = req.bearer_auth(t);
+        }
+        self.send(req).await?;
+        Ok(())
+    }
+
+    /// Write a file by its absolute on-instrument path, translating it to a path
+    /// under the server's `file_root`. Returns [`ServerError::NotUnderRoot`] when
+    /// the path is outside the served root (so callers fall back to SCPI).
+    pub async fn put_abs_file(&self, abspath: &str, body: Vec<u8>) -> Result<(), ServerError> {
+        let root = self.file_root().await;
+        let rel = rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
+            abspath: abspath.to_string(),
+            root: root.clone(),
+        })?;
+        self.put_file(&rel, body).await
+    }
+
     /// Return the recursive file manifest of the directory at `abspath`
     /// (`GET /list`). Entries' `path` fields are relative to `abspath`.
-    pub async fn list_dir(&self, abspath: &str) -> Result<Vec<ListEntry>, AgentError> {
+    pub async fn list_dir(&self, abspath: &str) -> Result<Vec<ListEntry>, ServerError> {
         let root = self.file_root().await;
-        let rel = rel_to_root(root.as_deref(), abspath).ok_or_else(|| AgentError::NotUnderRoot {
+        let rel = rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
             abspath: abspath.to_string(),
             root: root.clone(),
         })?;
@@ -226,17 +250,17 @@ impl AgentClient {
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| AgentError::Decode(format!("reading /list body: {e}")))?;
+            .map_err(|e| ServerError::Decode(format!("reading /list body: {e}")))?;
         let parsed: ListResponse = serde_json::from_slice(&bytes)
-            .map_err(|e| AgentError::Decode(format!("qslib-server /list returned a non-JSON body: {e}")))?;
+            .map_err(|e| ServerError::Decode(format!("qslib-server /list returned a non-JSON body: {e}")))?;
         Ok(parsed.files)
     }
 
-    /// Send a request, mapping transport failures to [`AgentError::Unreachable`]
-    /// and non-success statuses to [`AgentError::Http`] (with the server's
+    /// Send a request, mapping transport failures to [`ServerError::Unreachable`]
+    /// and non-success statuses to [`ServerError::Http`] (with the server's
     /// JSON `error`/`detail` body when present).
-    async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, AgentError> {
-        let resp = req.send().await.map_err(|e| AgentError::Unreachable {
+    async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, ServerError> {
+        let resp = req.send().await.map_err(|e| ServerError::Unreachable {
             url: self.base_url.clone(),
             source: e,
         })?;
@@ -246,7 +270,7 @@ impl AgentClient {
         }
         let body = resp.bytes().await.unwrap_or_default();
         let (message, detail) = parse_error_body(&body, status.canonical_reason().unwrap_or("error"));
-        Err(AgentError::Http {
+        Err(ServerError::Http {
             status: status.as_u16(),
             message,
             detail,
@@ -350,7 +374,7 @@ mod tests {
 
     #[test]
     fn file_url_has_no_double_slash() {
-        let c = AgentClient::new("host", 7500, None);
+        let c = ServerClient::new("host", 7500, None);
         // Absolute-style rel (leading slash) and plain rel both produce a single
         // slash after the `file` segment.
         assert_eq!(
@@ -369,7 +393,7 @@ mod tests {
 
     #[test]
     fn file_url_percent_encodes_segments() {
-        let c = AgentClient::new("host", 7500, None);
+        let c = ServerClient::new("host", 7500, None);
         assert_eq!(
             c.url("file", "a dir/b#c.xml").unwrap().as_str(),
             "http://host:7500/file/a%20dir/b%23c.xml"

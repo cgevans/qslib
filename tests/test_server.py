@@ -119,6 +119,22 @@ def test_get_abs_file(server):
         client.get_abs_file("/etc/passwd")
 
 
+def test_put_file_round_trips(server):
+    """put_file writes under the root (creating parents); get_file reads it back."""
+    client, root = server
+    data = b"<PlateSetup/>" * 4000
+    client.put_file("run/apldbio/sds/plate_setup.xml", data)
+    assert (root / "run" / "apldbio" / "sds" / "plate_setup.xml").read_bytes() == data
+    assert client.get_file("run/apldbio/sds/plate_setup.xml") == data
+
+
+def test_put_abs_file_outside_root_raises(server):
+    """put_abs_file for a path outside the root raises (caller falls back to SCPI)."""
+    client, _root = server
+    with pytest.raises(ServerError):
+        client.put_abs_file("/etc/cron.d/x", b"nope")
+
+
 def _make_run_tree(root: Path) -> Path:
     """A synthetic run directory covering the edge cases that distinguish the
     ZIPREAD walk from a plain listing: nested dirs, a dotfile, a symlink to a
@@ -421,6 +437,139 @@ def test_read_file_falls_back_to_scpi_on_server_error(monkeypatch):
 
     monkeypatch.setattr(type(m), "run_command_to_bytes", fake_scpi)
     assert m.read_file("f.bin") == b"scpi-data"
+
+
+def _machine_with_fake_write_server(monkeypatch, *, put_abs_file):
+    """A non-connecting Machine whose ``server`` is a stub with the given
+    ``put_abs_file(abspath, data)`` callable."""
+    from qslib.machine import Machine
+
+    class FakeServer:
+        def put_abs_file(self, abspath, data):
+            return put_abs_file(abspath, data)
+
+    m = Machine("127.0.0.1", automatic=False, server_port=7500)
+    monkeypatch.setattr(type(m), "server", property(lambda self: FakeServer()))
+    return m
+
+
+def test_write_file_prefers_server(monkeypatch):
+    """When connected to qslib-server, write_file resolves the default FILE
+    context to an absolute path and uploads over HTTP, not SCPI."""
+    seen = {}
+
+    def grab(abspath, data):
+        seen["abspath"] = abspath
+        seen["data"] = data
+
+    m = _machine_with_fake_write_server(monkeypatch, put_abs_file=grab)
+    m._prefer_server_files = True
+
+    def boom(self, command):
+        raise AssertionError("SCPI must not be used when qslib-server is preferred")
+
+    monkeypatch.setattr(type(m), "run_command_bytes", boom)
+    m.write_file("experiments/run/f.xml", b"payload")
+    assert seen["abspath"] == "/data/vendor/IS/experiments/run/f.xml"
+    assert seen["data"] == b"payload"
+
+
+def test_write_file_scpi_variable_path_uses_scpi(monkeypatch):
+    """A path with an unresolved SCPI variable (``${LogFolder}``) cannot be
+    turned into an absolute path, so it must go over SCPI FILE:WRITE."""
+
+    def boom(abspath, data):
+        raise AssertionError("qslib-server must not be used for a ${...} path")
+
+    m = _machine_with_fake_write_server(monkeypatch, put_abs_file=boom)
+    m._prefer_server_files = True
+
+    seen = {}
+
+    def fake_scpi(self, command):
+        seen["command"] = command
+        return b"OK"
+
+    monkeypatch.setattr(type(m), "run_command_bytes", fake_scpi)
+    m.write_file("${LogFolder}/tcprotocol.xml", b"<x/>")
+    assert seen["command"].startswith(b"FILE:WRITE ${LogFolder}/tcprotocol.xml")
+
+
+def test_write_file_falls_back_to_scpi_on_server_error(monkeypatch):
+    """A qslib-server error falls back to SCPI FILE:WRITE when fallback=True."""
+
+    def raising(abspath, data):
+        raise ServerError("boom", status=500)
+
+    m = _machine_with_fake_write_server(monkeypatch, put_abs_file=raising)
+    m._prefer_server_files = True
+
+    seen = {}
+
+    def fake_scpi(self, command):
+        seen["command"] = command
+        return b"OK"
+
+    monkeypatch.setattr(type(m), "run_command_bytes", fake_scpi)
+    m.write_file("f.bin", b"data")
+    assert seen["command"].startswith(b"FILE:WRITE f.bin")
+
+
+def _zip_of(members: dict[str, bytes]) -> bytes:
+    import io as _io
+    import zipfile as _zip
+
+    buf = _io.BytesIO()
+    with _zip.ZipFile(buf, "w") as z:
+        for name, data in members.items():
+            z.writestr(name, data)
+    return buf.getvalue()
+
+
+def test_upload_zip_as_files_maps_members_and_skips_dirs(monkeypatch):
+    """upload_zip_as_files writes each file member to its absolute path under the
+    resolved context, skipping directory entries, and uses no SCPI."""
+    puts = {}
+    m = _machine_with_fake_write_server(monkeypatch, put_abs_file=lambda a, d: puts.__setitem__(a, d))
+    m._prefer_server_files = True
+
+    def boom(self, command):
+        raise AssertionError("SCPI must not be used when the upload succeeds")
+
+    monkeypatch.setattr(type(m), "run_command_bytes", boom)
+
+    zipbytes = _zip_of(
+        {
+            "apldbio/sds/": b"",  # directory entry -> skipped
+            "apldbio/sds/experiment.xml": b"<exp/>",
+            "apldbio/sds/plate_setup.xml": b"<plate/>",
+            "Manifest.mf": b"manifest",
+        }
+    )
+    assert m.upload_zip_as_files("experiments:run1", zipbytes) is True
+    assert puts == {
+        "/data/vendor/IS/experiments/run1/apldbio/sds/experiment.xml": b"<exp/>",
+        "/data/vendor/IS/experiments/run1/apldbio/sds/plate_setup.xml": b"<plate/>",
+        "/data/vendor/IS/experiments/run1/Manifest.mf": b"manifest",
+    }
+
+
+def test_upload_zip_as_files_not_preferred_returns_false(monkeypatch):
+    """Without qslib-server preferred, upload_zip_as_files declines (-> SCPI)."""
+    m = _machine_with_fake_write_server(monkeypatch, put_abs_file=lambda a, d: None)
+    m._prefer_server_files = False
+    assert m.upload_zip_as_files("experiments:run1", _zip_of({"a.xml": b"x"})) is False
+
+
+def test_upload_zip_as_files_falls_back_on_error(monkeypatch):
+    """A failed member upload returns False so the caller uses EXP:ZIPWRITE."""
+
+    def raising(abspath, data):
+        raise ServerError("boom", status=403)
+
+    m = _machine_with_fake_write_server(monkeypatch, put_abs_file=raising)
+    m._prefer_server_files = True
+    assert m.upload_zip_as_files("experiments:run1", _zip_of({"a.xml": b"x"})) is False
 
 
 def test_read_file_uses_scpi_when_not_connected_via_server(monkeypatch):

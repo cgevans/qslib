@@ -29,14 +29,15 @@ Configuration is provided via a TOML file (default: `config.toml`). See `example
 [[machines]]
 name = "qpcr1"
 host = "1.2.3.4"
-# agent_port = 7500  # qslib-server port; 0 to disable
+# server_port = 7500  # qslib-server port; 0 to disable
 ```
 
 When a machine runs the on-instrument `qslib-server`, filter data and plate
 setup are pulled over its HTTP file transfer instead of SCPI `EXP:READ?`, which
 avoids the base64 encoding the InstrumentServer performs and reduces load on it
 during a run. This is on by default (port 7500) and falls back to SCPI when the
-server is unreachable; set `agent_port = 0` to disable it.
+server is unreachable; set `server_port = 0` to disable it. (The old
+`agent_port` key is still accepted as an alias.)
 
 ### InfluxDB Configuration (Optional)
 

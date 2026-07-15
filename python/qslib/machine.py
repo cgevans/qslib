@@ -988,13 +988,76 @@ class Machine:
             raise ServerError(f"binary transfer md5 mismatch (expected {local_md5}): {raw!r}")
 
     @_ensure_connection(AccessLevel.Controller)
-    def write_file(self, path: str, data: str | bytes) -> None:
+    def write_file(self, path: str, data: str | bytes, *, fast: bool = True, fallback: bool = True) -> None:
+        """Write ``data`` to ``path`` on the machine.
+
+        When connected to ``qslib-server`` (see :meth:`connect`/:meth:`ensure_server`)
+        and ``fast`` is true, the file is uploaded over plain HTTP straight to
+        disk, avoiding the base64+TLS overhead of ``FILE:WRITE`` over SCPI (which
+        can time out on larger files). This applies only when ``path`` resolves
+        to an absolute path under qslib-server's ``--file-root``; a path with an
+        unresolved SCPI variable (``${...}``), an unknown context, or one outside
+        the served root uses SCPI. On any qslib-server error when ``fallback`` is
+        true, the write falls back to SCPI.
+        """
         if isinstance(data, str):
             data = data.encode()
+
+        abspath = _scpi_locator_abspath(path) if "${" not in path else None
+        server = self.server if (fast and self._prefer_server_files and abspath is not None) else None
+        if server is not None:
+            assert abspath is not None
+            try:
+                server.put_abs_file(abspath, data)
+                return
+            except ServerError:
+                log.warning("qslib-server file write failed for %r; falling back to SCPI", path, exc_info=True)
+                if not fallback:
+                    raise
 
         self.run_command_bytes(
             b"FILE:WRITE " + path.encode() + b" <quote.base64>\n" + base64.encodebytes(data) + b"\n</quote.base64>"
         )
+
+    def upload_zip_as_files(self, context_path: str, zipbytes: bytes, *, fast: bool = True) -> bool:
+        """Unpack ``zipbytes`` onto the machine by uploading each member over
+        qslib-server's HTTP ``PUT``, rooted at ``context_path``.
+
+        This reproduces the InstrumentServer's ``EXP:ZIPWRITE`` (a plain unpack
+        to disk -- create directories, write each file, no other side effects)
+        without the base64+TLS cost of pushing the whole archive over SCPI.
+        ``context_path`` is a SCPI locator for the destination directory (e.g.
+        ``"experiments:<run>"``); each zip member is written at ``<resolved
+        context_path>/<member>``.
+
+        Returns ``True`` if every member was uploaded over HTTP; ``False`` if
+        qslib-server is not available/preferred, the context cannot be resolved,
+        or a transfer failed -- so the caller falls back to SCPI ``EXP:ZIPWRITE``.
+        A partial upload is harmless: the SCPI fallback rewrites every file.
+        """
+        if not (fast and self._prefer_server_files):
+            return False
+        server = self.server
+        if server is None:
+            return False
+        base = _scpi_locator_abspath(context_path)
+        if base is None:
+            return False
+        try:
+            with zipfile.ZipFile(io.BytesIO(zipbytes)) as zf:
+                for info in zf.infolist():
+                    if info.is_dir():
+                        continue
+                    parts = [p for p in info.filename.split("/") if p and p not in (".", "..")]
+                    if not parts:
+                        continue
+                    server.put_abs_file(posixpath.join(base, *parts), zf.read(info))
+        except (ServerError, OSError, zipfile.BadZipFile):
+            log.warning(
+                "qslib-server folder upload to %r failed; falling back to SCPI", context_path, exc_info=True
+            )
+            return False
+        return True
 
     @overload
     def list_runs_in_storage(self, glob: str = "*", *, verbose: Literal[True]) -> list[FileListInfo]: ...

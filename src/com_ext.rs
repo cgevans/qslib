@@ -10,7 +10,7 @@
 use anyhow::Context;
 use bstr::ByteSlice;
 
-use crate::agent_client::AgentClient;
+use crate::server_client::ServerClient;
 use crate::com::{CommandError, FilterDataFilename, QSConnection};
 use crate::data::{FilterDataCollection, PlateData};
 use crate::parser::{Command, ErrorResponse};
@@ -26,10 +26,10 @@ pub const INSTRUMENT_EXPERIMENTS_ROOT: &str = "/data/vendor/IS/experiments";
 ///
 /// Bring this trait into scope to call the methods on a connection value.
 ///
-/// The `_via` variants take an optional [`AgentClient`]: when present, the
+/// The `_via` variants take an optional [`ServerClient`]: when present, the
 /// underlying experiment file is fetched over qslib-server's `/file` (raw off
 /// disk, no base64+TLS overhead on the instrument), falling back to SCPI on any
-/// agent error. The plain methods are the SCPI-only path (`agent = None`).
+/// server error. The plain methods are the SCPI-only path (`server = None`).
 #[allow(async_fn_in_trait)]
 pub trait QSConnectionExt {
     /// Fetch and parse the plate setup for a run (or the current run).
@@ -39,10 +39,10 @@ pub trait QSConnectionExt {
     ) -> Result<PlateSetup, CommandError<ErrorResponse>>;
 
     /// Like [`get_plate_setup`](Self::get_plate_setup), preferring qslib-server
-    /// when `agent` is provided.
+    /// when `server` is provided.
     async fn get_plate_setup_via(
         &self,
-        agent: Option<&AgentClient>,
+        server: Option<&ServerClient>,
         run: Option<String>,
     ) -> Result<PlateSetup, CommandError<ErrorResponse>>;
 
@@ -57,31 +57,31 @@ pub trait QSConnectionExt {
     ) -> Result<PlateData, CommandError<ErrorResponse>>;
 
     /// Like [`get_filterdata_one`](Self::get_filterdata_one), preferring
-    /// qslib-server when `agent` is provided.
+    /// qslib-server when `server` is provided.
     async fn get_filterdata_one_via(
         &self,
-        agent: Option<&AgentClient>,
+        server: Option<&ServerClient>,
         fref: FilterDataFilename,
         run: Option<String>,
     ) -> Result<PlateData, CommandError<ErrorResponse>>;
 }
 
 /// Fetch an experiment file under a run's `apldbio/sds/` directory, preferring
-/// qslib-server's `/file` when `agent` is set and falling back to SCPI.
+/// qslib-server's `/file` when `server` is set and falling back to SCPI.
 ///
 /// `sds_subpath` is relative to `apldbio/sds/` (e.g. `"plate_setup.xml"` or
-/// `"filter/<name>"`). `scpi_var_path` is the SCPI-side path used when there is
-/// no agent or the agent fetch fails (using the server's `${LogFolder}` /
-/// `${FilterFolder}` variables for the current run).
+/// `"filter/<name>"`). `scpi_var_path` is the SCPI-side path used when
+/// qslib-server is absent or its fetch fails (using the InstrumentServer's
+/// `${LogFolder}` / `${FilterFolder}` variables for the current run).
 async fn fetch_sds_file(
     con: &QSConnection,
-    agent: Option<&AgentClient>,
+    server: Option<&ServerClient>,
     run: &Option<String>,
     sds_subpath: &str,
     scpi_var_path: &str,
 ) -> Result<Vec<u8>, CommandError<ErrorResponse>> {
-    if let Some(agent) = agent {
-        // The agent serves absolute paths, so resolve the run title (the
+    if let Some(server) = server {
+        // qslib-server serves by absolute path, so resolve the run title (the
         // experiment folder name) for the current run.
         let runtitle = match run {
             Some(r) => Some(r.clone()),
@@ -89,7 +89,7 @@ async fn fetch_sds_file(
         };
         if let Some(rt) = runtitle {
             let abspath = format!("{INSTRUMENT_EXPERIMENTS_ROOT}/{rt}/apldbio/sds/{sds_subpath}");
-            match agent.get_abs_file(&abspath).await {
+            match server.get_abs_file(&abspath).await {
                 Ok(bytes) => return Ok(bytes),
                 Err(e) => {
                     log::debug!("qslib-server fetch of {abspath} failed ({e}); falling back to SCPI");
@@ -114,12 +114,12 @@ impl QSConnectionExt for QSConnection {
 
     async fn get_plate_setup_via(
         &self,
-        agent: Option<&AgentClient>,
+        server: Option<&ServerClient>,
         run: Option<String>,
     ) -> Result<PlateSetup, CommandError<ErrorResponse>> {
         let x = fetch_sds_file(
             self,
-            agent,
+            server,
             &run,
             "plate_setup.xml",
             "${LogFolder}/plate_setup.xml",
@@ -155,13 +155,13 @@ impl QSConnectionExt for QSConnection {
 
     async fn get_filterdata_one_via(
         &self,
-        agent: Option<&AgentClient>,
+        server: Option<&ServerClient>,
         fref: FilterDataFilename,
         run: Option<String>,
     ) -> Result<PlateData, CommandError<ErrorResponse>> {
         let x = fetch_sds_file(
             self,
-            agent,
+            server,
             &run,
             &format!("filter/{fref}"),
             &format!("${{FilterFolder}}/{fref}"),

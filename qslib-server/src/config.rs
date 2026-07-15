@@ -9,10 +9,10 @@ use qslib_core::commands::AccessLevel;
 /// On-instrument HTTP transport/command service for QuantStudio machines.
 ///
 /// Serves, over plain HTTP on a single private-interface port: bulk file
-/// transfer straight off disk (`/file`), a one-shot SCPI command call
-/// (`/scpi`), and a streaming SCPI tunnel. It is a client of the existing
-/// localhost plaintext SCPI server and a reader of on-disk experiment files;
-/// it does not modify the InstrumentServer.
+/// transfer straight off disk (`/file` GET, and PUT to write unless
+/// `--read-only`), a one-shot SCPI command call (`/scpi`), and a streaming SCPI
+/// tunnel. It is a client of the existing localhost plaintext SCPI server and
+/// reads and writes on-disk experiment files.
 #[derive(Debug, Clone, Parser)]
 #[command(name = "qslib-server", version, about)]
 pub struct Config {
@@ -75,6 +75,11 @@ pub struct Config {
     /// SCPI connections abandoned/idle tunnels can pin open.
     #[arg(long, default_value_t = 16)]
     pub max_tunnels: usize,
+
+    /// Refuse `PUT /file` (file uploads), leaving only the read surface
+    /// (`/file` GET, `/list`) plus `/scpi` and `/upgrade`.
+    #[arg(long)]
+    pub read_only: bool,
 }
 
 fn parse_access_level(s: &str) -> Result<AccessLevel, String> {
