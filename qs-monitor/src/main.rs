@@ -11,8 +11,9 @@ use influxdb2::Client;
 use influxdb2::models::DataPoint;
 use log::{debug, error, info, warn};
 use qslib::com_ext::QSConnectionExt;
+use qslib::data::FilterDataCollection;
 use qslib::parser::OkResponse;
-use qslib::server_client::{DEFAULT_SERVER_PORT, ServerClient};
+use qslib::server_client::{InstrumentStatus, ServerClient};
 use qslib::{
     com::FilterDataFilename,
     com::QSConnection,
@@ -66,26 +67,20 @@ struct GlobalConfig {
 pub(crate) struct MachineConfig {
     pub(crate) name: String,
     pub(crate) host: String,
-    /// Port of the on-instrument qslib-server, used to pull filter data and
-    /// plate setup over HTTP instead of SCPI. Defaults to
-    /// [`DEFAULT_SERVER_PORT`]; set to 0 to disable and use SCPI only.
-    #[serde(default = "default_server_port", alias = "agent_port")]
-    pub(crate) server_port: u16,
+    /// Port of the optional qslib-server semantic API. When absent, qs-monitor
+    /// uses its permanent direct-SCPI subscription mode.
+    #[serde(default, alias = "agent_port")]
+    pub(crate) server_port: Option<u16>,
     /// Bearer token for qslib-server. Required unless it was started with
     /// `--no-auth`.
     pub(crate) server_token: Option<String>,
 }
 
-fn default_server_port() -> u16 {
-    DEFAULT_SERVER_PORT
-}
-
-/// Build a qslib-server client for a machine, or `None` if disabled
-/// (`server_port = 0`).
+/// Build a qslib-server client only when server mode was explicitly selected.
 fn build_server_client(config: &MachineConfig) -> Option<Arc<ServerClient>> {
     match config.server_port {
-        0 => None,
-        port => Some(Arc::new(ServerClient::new(
+        None | Some(0) => None,
+        Some(port) => Some(Arc::new(ServerClient::new(
             &config.host,
             port,
             config.server_token.clone(),
@@ -294,6 +289,42 @@ async fn refresh_state(
     points
 }
 
+fn state_snapshot_points(
+    state: &MachineState,
+    machine_name: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Vec<DataPoint> {
+    let mut points = Vec::new();
+    let Some(ts) = timestamp.timestamp_nanos_opt() else {
+        warn!("Timestamp out of range while building state snapshot");
+        return points;
+    };
+    let mut run_state = DataPoint::builder("run_state").tag("machine", machine_name);
+    run_state = run_state.field("name", state.run_name.clone().unwrap_or_default());
+    if let Some(stage) = state.stage {
+        run_state = run_state.field("stage", stage);
+    }
+    if let Some(cycle) = state.cycle {
+        run_state = run_state.field("cycle", cycle);
+    }
+    if let Some(step) = state.step {
+        run_state = run_state.field("step", step);
+    }
+    match run_state.timestamp(ts).build() {
+        Ok(point) => points.push(point),
+        Err(error) => warn!("Error building run_state point: {error}"),
+    }
+    if let Some(plate) = &state.plate_setup {
+        for line in plate.to_lineprotocol(ts, state.run_name.as_deref(), None) {
+            match parse_line_protocol_to_datapoint(&line, machine_name) {
+                Ok(point) => points.push(point),
+                Err(error) => warn!("Error parsing plate setup line protocol: {error}"),
+            }
+        }
+    }
+    points
+}
+
 async fn write_points_to_influx(
     mut rx: mpsc::Receiver<(String, DataPoint)>,
     client: Client,
@@ -428,6 +459,21 @@ async fn main() -> Result<()> {
             let mut backoff_secs = 1u64;
             const MAX_BACKOFF_SECS: u64 = 300;
             loop {
+                if let Some(server) = build_server_client(&machine_config) {
+                    match log_server_machine(server, &machine_config, tx_clone.clone()).await {
+                        Ok(()) => warn!(
+                            "Server event stream for {} ended; reconnecting",
+                            machine_config.name
+                        ),
+                        Err(error) => error!(
+                            "Server mode for {} failed: {}; retrying in {} seconds",
+                            machine_config.name, error, backoff_secs
+                        ),
+                    }
+                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                    backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
+                    continue;
+                }
                 match QSConnection::connect_with_timeout(
                     &machine_config.host,
                     7443,
@@ -595,6 +641,154 @@ async fn log_machine(
     Ok(id)
 }
 
+/// qslib-server mode owns no normal SCPI connection. Status snapshots and the
+/// server's resumable event stream feed the same conversion functions used by
+/// direct subscriptions, keeping the Influx schema identical.
+async fn log_server_machine(
+    server: Arc<ServerClient>,
+    config: &MachineConfig,
+    tx: mpsc::Sender<(String, DataPoint)>,
+) -> Result<()> {
+    let capabilities = server.capabilities().await?;
+    if !capabilities.sse || !capabilities.supports("instrument") {
+        anyhow::bail!("qslib-server does not provide instrument status and SSE");
+    }
+
+    let status = server.instrument_status().await?;
+    let mut state = MachineState::new(status.zone_count);
+    let initial = refresh_state_server(&server, &status, &mut state, &config.name).await;
+    for point in initial {
+        tx.send((config.name.clone(), point)).await?;
+    }
+
+    info!("Server logging task started for {}", config.name);
+    let mut events = server.event_stream(None).await;
+    loop {
+        let event = events.next().await?;
+        if matches!(event.event.as_str(), "reset" | "connection") {
+            if let Ok(status) = server.instrument_status().await {
+                for point in refresh_state_server(&server, &status, &mut state, &config.name).await
+                {
+                    tx.send((config.name.clone(), point)).await?;
+                }
+            }
+            continue;
+        }
+        if event.event == "operation" {
+            continue;
+        }
+
+        let payload = event.data.get("data").unwrap_or(&event.data);
+        let message = match payload.get("message").and_then(|value| value.as_str()) {
+            Some(message) => message.to_string(),
+            None => continue,
+        };
+        let instrument_timestamp = payload
+            .get("instrument_timestamp")
+            .and_then(|value| value.as_f64());
+        let timestamp = instrument_timestamp
+            .and_then(|seconds| {
+                let whole = seconds.trunc() as i64;
+                let nanos = ((seconds.fract().max(0.0)) * 1e9) as u32;
+                chrono::DateTime::from_timestamp(whole, nanos)
+            })
+            .unwrap_or_else(chrono::Utc::now);
+        let topic = match event.event.as_str() {
+            "temperature" => "Temperature",
+            "time" => "Time",
+            "run" => "Run",
+            "ledstatus" => "LEDStatus",
+            _ => continue,
+        };
+        let message = LogMessage {
+            topic: topic.to_string(),
+            timestamp: instrument_timestamp,
+            message,
+        };
+
+        let points = match topic {
+            "Temperature" => temperature_to_lineprotocol(&message, &config.name, timestamp, &state),
+            "Time" => time_to_lineprotocol(&message, &config.name, timestamp),
+            "LEDStatus" => ledstatus_to_lineprotocol(&message, &config.name, timestamp),
+            "Run" => {
+                // Keep the snapshot-derived run title and targets current; the
+                // Run event itself contains the fine-grained action.
+                if let Ok(status) = server.instrument_status().await {
+                    update_state_from_server_status(&mut state, &status);
+                }
+                run_to_lineprotocol(
+                    &message,
+                    &config.name,
+                    timestamp,
+                    None,
+                    &mut state,
+                    Some(&server),
+                )
+                .await
+            }
+            _ => unreachable!(),
+        };
+        match points {
+            Ok(points) => {
+                for point in points {
+                    tx.send((config.name.clone(), point)).await?;
+                }
+            }
+            Err(error) => error!(
+                "Error converting server event for {}: {}",
+                config.name, error
+            ),
+        }
+    }
+}
+
+fn update_state_from_server_status(state: &mut MachineState, status: &InstrumentStatus) {
+    state.run_name = (status.run.name != "-").then(|| status.run.name.clone());
+    state.stage = (status.run.stage >= 0).then_some(status.run.stage);
+    state.cycle = (status.run.cycle >= 0).then_some(status.run.cycle);
+    state.step = (status.run.step >= 0).then_some(status.run.step);
+    state.zone_targets = (1..=status.zone_count)
+        .map(|zone| {
+            status
+                .target_temperatures_c
+                .get(&format!("Zone{zone}"))
+                .copied()
+                .unwrap_or_default()
+        })
+        .collect();
+}
+
+async fn refresh_state_server(
+    server: &ServerClient,
+    status: &InstrumentStatus,
+    state: &mut MachineState,
+    machine_name: &str,
+) -> Vec<DataPoint> {
+    update_state_from_server_status(state, status);
+    if let Some(run) = state.run_name.clone() {
+        if state.plate_setup_run.as_deref() != Some(run.as_str()) {
+            let path = format!("/data/vendor/IS/experiments/{run}/apldbio/sds/plate_setup.xml");
+            match server.get_abs_file(&path).await {
+                Ok(bytes) => match std::str::from_utf8(&bytes)
+                    .ok()
+                    .and_then(|xml| PlateSetup::from_xml(xml).ok())
+                {
+                    Some(plate) => {
+                        state.plate_setup = Some(plate);
+                        state.plate_setup_run = Some(run);
+                    }
+                    None => warn!("Could not parse plate setup returned by qslib-server"),
+                },
+                Err(error) => warn!("Could not fetch plate setup through qslib-server: {error}"),
+            }
+        }
+    } else {
+        state.plate_setup = None;
+        state.plate_setup_run = None;
+    }
+    state_snapshot_points(state, machine_name, chrono::Utc::now())
+}
+
 async fn influx_log_loop(
     log_sub: &mut StreamMap<String, BroadcastStream<LogMessage>>,
     tx: mpsc::Sender<(String, DataPoint)>,
@@ -748,7 +942,7 @@ async fn run_to_lineprotocol(
             .get_current_run_name()
             .await
             .map_err(|e| anyhow::anyhow!("Error getting current run name: {}", e))?,
-        None => None,
+        None => state.run_name.clone(),
     };
     if let Some(run_name) = run_name {
         point = point.field("run_name", run_name);
@@ -904,6 +1098,22 @@ async fn run_to_lineprotocol(
                     Err(e) => {
                         error!("Error collecting data: {}", e);
                     }
+                }
+            } else if let Some(server) = server {
+                match docollect_server(
+                    stage,
+                    cycle,
+                    step,
+                    run_point,
+                    server,
+                    timestamp,
+                    machine_name,
+                    state,
+                )
+                .await
+                {
+                    Ok(collected_points) => points.extend(collected_points),
+                    Err(error) => error!("Error collecting data through qslib-server: {error}"),
                 }
             }
         }
@@ -1292,6 +1502,77 @@ async fn docollect(
         }
     }
 
+    Ok(points)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn docollect_server(
+    stage: i64,
+    cycle: i64,
+    step: i64,
+    point: i64,
+    server: &ServerClient,
+    timestamp: chrono::DateTime<chrono::Utc>,
+    machine_name: &str,
+    state: &MachineState,
+) -> Result<Vec<DataPoint>> {
+    let run = state
+        .run_name
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("collected event has no current run title"))?;
+    let filter_root = format!("{run}/apldbio/sds/filter");
+    let entries = server.list_context_dir("experiments", &filter_root).await?;
+    let sample_array = state
+        .plate_setup
+        .as_ref()
+        .map(|plate| plate.well_samples_as_array());
+    let mut points = Vec::new();
+
+    for entry in entries {
+        let Some(filename) = entry.path.rsplit('/').next() else {
+            continue;
+        };
+        let Ok(reference) = FilterDataFilename::from_string(filename) else {
+            continue;
+        };
+        if reference.stage as i64 != stage
+            || reference.cycle as i64 != cycle
+            || reference.step as i64 != step
+            || reference.point as i64 != point
+        {
+            continue;
+        }
+        let path = format!("{filter_root}/{}", entry.path);
+        let bytes = server.get_file("experiments", &path).await?;
+        let collection: FilterDataCollection =
+            quick_xml::de::from_str(&String::from_utf8_lossy(&bytes))?;
+        let mut plate_data = collection
+            .plate_point_data
+            .into_iter()
+            .next()
+            .and_then(|point| point.plate_data.into_iter().next())
+            .ok_or_else(|| anyhow::anyhow!("filter data contains no PlateData"))?;
+        plate_data.timestamp = Some(
+            timestamp.timestamp() as f64 + f64::from(timestamp.timestamp_subsec_nanos()) / 1e9,
+        );
+        for line in plate_data.to_lineprotocol(
+            Some(run),
+            sample_array.as_deref(),
+            Some(&state.zone_targets),
+            None,
+        )? {
+            points.push(parse_line_protocol_to_datapoint(&line, machine_name)?);
+        }
+    }
+
+    if let Some(plate) = &state.plate_setup {
+        let ts = timestamp
+            .timestamp_nanos_opt()
+            .ok_or_else(|| anyhow::anyhow!("Timestamp out of range"))?;
+        for line in plate.to_lineprotocol(ts, Some(run), None) {
+            points.push(parse_line_protocol_to_datapoint(&line, machine_name)?);
+        }
+    }
     Ok(points)
 }
 

@@ -598,6 +598,31 @@ impl ResponseReceiver {
         }
     }
 
+    async fn receive_terminal_within(
+        &mut self,
+        deadline: Duration,
+    ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
+        match timeout(deadline, async {
+            loop {
+                match self.recv().await {
+                    Some(MessageResponse::Ok { message, .. })
+                    | Some(MessageResponse::Warning { message, .. }) => return Ok(Ok(message)),
+                    Some(MessageResponse::CommandError { error, .. }) => return Ok(Err(error)),
+                    Some(MessageResponse::Next { .. }) => continue,
+                    Some(MessageResponse::Message(message)) => {
+                        return Err(ReceiveOkResponseError::UnexpectedMessage(message))
+                    }
+                    None => return Err(ReceiveOkResponseError::ConnectionClosed),
+                }
+            }
+        })
+        .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(ReceiveOkResponseError::Timeout),
+        }
+    }
+
     /// Get the OK or error response from the machine, ignoring NEXT messages.
     /// Uses connection's default timeouts: initial_timeout for first response, next_to_ok_timeout after NEXT.
     pub async fn get_response(
@@ -621,33 +646,7 @@ impl ResponseReceiver {
             MessageResponse::Ok { ident: _, message }
             | MessageResponse::Warning { ident: _, message } => Ok(Ok(message)),
             MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
-            MessageResponse::Next { .. } => {
-                // Received NEXT, now wait for OK/Error with next_to_ok_timeout
-                loop {
-                    match timeout(next_to_ok, self.recv()).await {
-                        Ok(Some(msg)) => {
-                            match msg {
-                                MessageResponse::Ok { ident: _, message }
-                                | MessageResponse::Warning { ident: _, message } => {
-                                    return Ok(Ok(message));
-                                }
-                                MessageResponse::CommandError { ident: _, error } => {
-                                    return Ok(Err(error));
-                                }
-                                MessageResponse::Next { .. } => {
-                                    // Another NEXT, continue waiting with same timeout
-                                    continue;
-                                }
-                                MessageResponse::Message(message) => {
-                                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
-                                }
-                            }
-                        }
-                        Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
-                        Err(_) => return Err(ReceiveOkResponseError::Timeout),
-                    }
-                }
-            }
+            MessageResponse::Next { .. } => self.receive_terminal_within(next_to_ok).await,
             MessageResponse::Message(message) => {
                 Err(ReceiveOkResponseError::UnexpectedMessage(message))
             }
@@ -660,26 +659,7 @@ impl ResponseReceiver {
         &mut self,
         timeout_duration: Duration,
     ) -> Result<Result<OkResponse, ErrorResponse>, ReceiveOkResponseError> {
-        loop {
-            match timeout(timeout_duration, self.recv()).await {
-                Ok(Some(msg)) => {
-                    match msg {
-                        MessageResponse::Ok { ident: _, message }
-                        | MessageResponse::Warning { ident: _, message } => return Ok(Ok(message)),
-                        MessageResponse::CommandError { ident: _, error } => return Ok(Err(error)),
-                        MessageResponse::Next { .. } => {
-                            // Continue waiting with same timeout
-                            continue;
-                        }
-                        MessageResponse::Message(message) => {
-                            return Err(ReceiveOkResponseError::UnexpectedMessage(message))
-                        }
-                    }
-                }
-                Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
-                Err(_) => return Err(ReceiveOkResponseError::Timeout),
-            }
-        }
+        self.receive_terminal_within(timeout_duration).await
     }
 
     /// Get the OK or error response with custom timeouts for initial wait and post-NEXT wait.
@@ -699,33 +679,7 @@ impl ResponseReceiver {
             MessageResponse::Ok { ident: _, message }
             | MessageResponse::Warning { ident: _, message } => Ok(Ok(message)),
             MessageResponse::CommandError { ident: _, error } => Ok(Err(error)),
-            MessageResponse::Next { .. } => {
-                // Received NEXT, now wait for OK/Error with next_to_ok timeout
-                loop {
-                    match timeout(next_to_ok, self.recv()).await {
-                        Ok(Some(msg)) => {
-                            match msg {
-                                MessageResponse::Ok { ident: _, message }
-                                | MessageResponse::Warning { ident: _, message } => {
-                                    return Ok(Ok(message));
-                                }
-                                MessageResponse::CommandError { ident: _, error } => {
-                                    return Ok(Err(error));
-                                }
-                                MessageResponse::Next { .. } => {
-                                    // Another NEXT, continue waiting with same timeout
-                                    continue;
-                                }
-                                MessageResponse::Message(message) => {
-                                    return Err(ReceiveOkResponseError::UnexpectedMessage(message));
-                                }
-                            }
-                        }
-                        Ok(None) => return Err(ReceiveOkResponseError::ConnectionClosed),
-                        Err(_) => return Err(ReceiveOkResponseError::Timeout),
-                    }
-                }
-            }
+            MessageResponse::Next { .. } => self.receive_terminal_within(next_to_ok).await,
             MessageResponse::Message(message) => {
                 Err(ReceiveOkResponseError::UnexpectedMessage(message))
             }
@@ -1334,6 +1288,29 @@ impl QSConnection {
         if let Ok(mut rx) = self.send_command_bytes(b"QUIT".as_bstr()).await {
             // Try to get the response, but don't wait long
             let _ = timeout(Duration::from_secs(2), rx.recv()).await;
+        }
+    }
+
+    /// Deterministically terminate this connection and its receive task.
+    ///
+    /// Unlike [`disconnect`](Self::disconnect), this consumes the connection,
+    /// closes the command channel, and waits for the socket-owning task to
+    /// finish.  A peer which does not honour `QUIT` cannot keep shutdown
+    /// waiting indefinitely: after two seconds the task is aborted, which
+    /// drops both socket halves and wakes every outstanding response receiver.
+    pub async fn close(self) {
+        self.disconnect().await;
+        let QSConnection {
+            task,
+            commandchannel,
+            ..
+        } = self;
+        drop(commandchannel);
+
+        let mut task = task;
+        if timeout(Duration::from_secs(2), &mut task).await.is_err() {
+            task.abort();
+            let _ = task.await;
         }
     }
 

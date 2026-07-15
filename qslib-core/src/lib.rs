@@ -16,3 +16,4 @@ pub mod com;
 pub mod commands;
 pub mod message_receiver;
 pub mod parser;
+pub mod protocol;

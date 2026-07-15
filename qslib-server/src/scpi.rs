@@ -42,35 +42,41 @@ pub async fn run_oneshot(
     }
 
     let conn = connect(state).await?;
+    let result = async {
+        // Elevate as needed. A SCPI command error here means the level was refused.
+        ensure_access(&conn, &access, state.scpi_password.as_deref())
+            .await
+            .map_err(|e| map_access_error(&access, e))?;
 
-    // Elevate as needed. A SCPI command error here means the level was refused.
-    ensure_access(&conn, &access, state.scpi_password.as_deref())
-        .await
-        .map_err(|e| map_access_error(&access, e))?;
+        let mut recv = conn
+            .send_command_bytes(command.as_bytes())
+            .await
+            .map_err(|e| ServerError::unavailable(format!("failed to send SCPI command: {e}")))?;
 
-    let mut recv = conn
-        .send_command_bytes(command.as_bytes())
-        .await
-        .map_err(|e| ServerError::unavailable(format!("failed to send SCPI command: {e}")))?;
+        let out = match recv
+            .get_response_with_timeout(Duration::from_millis(timeout_ms))
+            .await
+        {
+            Ok(Ok(ok)) => OneShot::Ok(ok),
+            Ok(Err(err)) => OneShot::ScpiError(err),
+            Err(ReceiveOkResponseError::Timeout) => {
+                return Err(ServerError::timeout("timed out waiting for SCPI response"))
+            }
+            Err(ReceiveOkResponseError::ConnectionClosed) => {
+                return Err(ServerError::unavailable(
+                    "SCPI connection closed before response",
+                ))
+            }
+            Err(e) => return Err(ServerError::internal(format!("SCPI response error: {e}"))),
+        };
+        Ok((access, out))
+    }
+    .await;
 
-    let out = match recv
-        .get_response_with_timeout(Duration::from_millis(timeout_ms))
-        .await
-    {
-        Ok(Ok(ok)) => OneShot::Ok(ok),
-        Ok(Err(err)) => OneShot::ScpiError(err),
-        Err(ReceiveOkResponseError::Timeout) => {
-            return Err(ServerError::timeout("timed out waiting for SCPI response"))
-        }
-        Err(ReceiveOkResponseError::ConnectionClosed) => {
-            return Err(ServerError::unavailable("SCPI connection closed before response"))
-        }
-        Err(e) => return Err(ServerError::internal(format!("SCPI response error: {e}"))),
-    };
-
-    // Drop the connection: the receive loop exits and the socket closes.
-    drop(conn);
-    Ok((access, out))
+    // Every path consumes the isolated connection so QUIT, socket shutdown,
+    // and its receive task complete deterministically.
+    conn.close().await;
+    result
 }
 
 /// Establish the loopback plaintext SCPI connection, with a bounded timeout.

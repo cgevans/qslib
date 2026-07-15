@@ -1,70 +1,47 @@
-//! Rust client for the on-instrument `qslib-server` HTTP service.
-//!
-//! `qslib-server` (the `qslib-server` crate) runs on the instrument and serves
-//! bulk file transfer (`/file`), a recursive directory manifest (`/list`), and
-//! `/health` over plain HTTP on the instrument's private link. Pulling a file
-//! this way avoids the base64 encoding the InstrumentServer performs for
-//! `FILE:READ?`/`EXP:READ?` over SCPI, which is the slow, load-bearing path on
-//! the instrument's CPU.
-//!
-//! This mirrors the Python [`qslib.server.ServerClient`], and is the client
-//! consumers on the qslib side (the [`crate::com_ext`] domain methods,
-//! qs-monitor) use. The client lives in `qslib` rather than `qslib-core` so the
-//! core protocol layer shared with `qslib-server` itself carries no HTTP client.
+//! Typed client for qslib-server's optional `/api/v1` semantic API.
 
+use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Deserialize;
+use futures::StreamExt;
+use serde::{Deserialize, Serialize};
 use tokio::sync::OnceCell;
 
-/// qslib-server's default HTTP port.
 pub const DEFAULT_SERVER_PORT: u16 = 7500;
-
-/// Fast-fail connect timeout. The server path is on the data-collection hot path,
-/// so a machine that is reachable for SCPI but has the server port filtered
-/// (SYNs dropped) must fail quickly and fall back to SCPI rather than block on
-/// the OS default TCP connect timeout.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
-
-/// Overall per-request timeout. Generous enough not to truncate a normal
-/// transfer, while still bounding a stuck read.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const NEGATIVE_CACHE: Duration = Duration::from_secs(30);
+type EventByteStream =
+    Pin<Box<dyn futures::Stream<Item = Result<bytes::Bytes, reqwest::Error>> + Send>>;
 
-/// Back off after a failed `/health` probe. Without a negative-cache window,
-/// qs-monitor retries the three-second connect timeout once per filter file.
-const FILE_ROOT_RETRY_DELAY: Duration = Duration::from_secs(30);
-
-/// An error contacting, or returned by, qslib-server.
 #[derive(Debug, thiserror::Error)]
 pub enum ServerError {
-    /// The server could not be reached (connection refused, reset, timeout).
     #[error("cannot reach qslib-server at {url}: {source}")]
     Unreachable {
         url: String,
+        submitted: bool,
         #[source]
         source: reqwest::Error,
     },
-    /// The server returned a non-success HTTP status.
     #[error("qslib-server returned HTTP {status}: {message}")]
     Http {
         status: u16,
+        code: Option<String>,
         message: String,
-        detail: Option<String>,
+        retryable: bool,
+        outcome: Option<String>,
+        request_id: Option<String>,
     },
-    /// The response body could not be read or parsed as expected.
     #[error("qslib-server response error: {0}")]
     Decode(String),
-    /// An absolute path is not under the server's file root, so it cannot be
-    /// served over `/file` (the caller should fall back to SCPI).
-    #[error("{abspath} is not under qslib-server file root {root:?}")]
-    NotUnderRoot {
-        abspath: String,
-        root: Option<String>,
-    },
+    #[error("{abspath} does not map to a named qslib-server file context")]
+    NotUnderRoot { abspath: String },
+    #[error("server mutation outcome is unknown; query {state_query}")]
+    OutcomeUnknown { state_query: String },
 }
 
-/// The `/health` document.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Health {
     #[serde(default)]
@@ -72,22 +49,156 @@ pub struct Health {
     #[serde(default)]
     pub version: String,
     #[serde(default)]
+    pub executable_sha256: String,
+    #[serde(default)]
     pub uptime_s: u64,
     #[serde(default)]
-    pub scpi_ok: bool,
-    /// The server's canonicalized `--file-root`, if the build reports it.
+    pub ready: bool,
     #[serde(default)]
-    pub file_root: Option<String>,
+    pub generation: u64,
     #[serde(default)]
-    pub exe_sha256: String,
+    pub reconnect_count: u64,
+    #[serde(default)]
+    pub queue_depth: usize,
 }
 
-/// One entry in a `/list` manifest: path relative to the listed directory
-/// (forward-slash separated), and the file's size in bytes.
+#[derive(Debug, Clone, Deserialize)]
+pub struct Capabilities {
+    pub api_version: String,
+    #[serde(default)]
+    pub resources: Vec<String>,
+    #[serde(default)]
+    pub file_contexts: Vec<String>,
+    pub max_access: String,
+    pub sse: bool,
+    pub raw_scpi: bool,
+    pub scpi_tunnel: bool,
+    pub file_writes: bool,
+    pub controls: bool,
+}
+
+impl Capabilities {
+    pub fn supports(&self, resource: &str) -> bool {
+        self.resources.iter().any(|candidate| candidate == resource)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct IndicatorStatus {
+    pub color: Option<String>,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct BlockStatus {
+    pub enabled: bool,
+    pub target_c: f64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RunStatusDto {
+    pub name: String,
+    pub stage: i64,
+    pub stage_name: String,
+    pub num_stages: i64,
+    pub cycle: i64,
+    pub num_cycles: i64,
+    pub step: i64,
+    pub point: i64,
+    pub state: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct InstrumentStatus {
+    pub observed_at: String,
+    pub power_enabled: bool,
+    pub block: BlockStatus,
+    pub zone_count: usize,
+    pub drawer: String,
+    pub cover: String,
+    pub lamp_status: String,
+    pub sample_temperatures_c: Vec<f64>,
+    pub block_temperatures_c: Vec<f64>,
+    pub cover_temperature_c: f64,
+    pub target_temperatures_c: HashMap<String, f64>,
+    pub target_controlled: HashMap<String, bool>,
+    pub led_temperature_c: f64,
+    pub indicator: IndicatorStatus,
+    pub run: RunStatusDto,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct OperationRecord {
+    pub id: String,
+    pub kind: String,
+    pub state: String,
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
+    #[serde(default)]
+    pub error: Option<serde_json::Value>,
+    pub outcome: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerEvent {
+    pub id: Option<u64>,
+    pub event: String,
+    pub data: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListEntry {
     pub path: String,
     pub size: u64,
+    #[serde(default)]
+    pub modified_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExperimentsResource {
+    #[serde(default)]
+    pub experiments: Vec<String>,
+    #[serde(default)]
+    pub staged: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ExperimentResource {
+    pub name: String,
+    pub working: bool,
+    pub package_etag: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct StagedPackage {
+    pub name: String,
+    pub etag: String,
+    pub compressed_size: usize,
+    pub expanded_size: u64,
+    pub entries: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RunsResource {
+    pub location: String,
+    #[serde(default)]
+    pub runs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RunResource {
+    pub name: String,
+    pub working: bool,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StartRunRequest {
+    pub experiment: String,
+    pub package_etag: String,
+    pub overwrite: String,
+    pub require_exclusive: bool,
+    pub require_drawer_check: bool,
 }
 
 #[derive(Deserialize)]
@@ -96,39 +207,28 @@ struct ListResponse {
     files: Vec<ListEntry>,
 }
 
-/// A client for a running `qslib-server`.
 #[derive(Debug, Clone)]
 pub struct ServerClient {
     base_url: String,
     token: Option<String>,
     client: reqwest::Client,
-    /// Cached `file_root` from `/health`. Cached whenever `/health` answers
-    /// (even when the field is absent, i.e. `None`), so an old server without
-    /// the field is not re-probed on every fetch. A transport failure is not
-    /// cached, so a transient outage does not permanently disable the path.
-    file_root: Arc<OnceCell<Option<String>>>,
-    /// Earliest time to retry `/health` after a transport/auth/decode failure.
-    /// Shared by clones so one failed hot-path request suppresses the rest.
-    file_root_retry_at: Arc<Mutex<Option<Instant>>>,
+    capabilities: Arc<OnceCell<Capabilities>>,
+    retry_at: Arc<Mutex<Option<Instant>>>,
 }
 
 impl ServerClient {
-    /// Create a client for the qslib-server reachable at `host:port`.
-    ///
-    /// `token` is sent as a bearer token when present; our fleet runs the server
-    /// tokenless behind the VPN, so it is usually `None`.
     pub fn new(host: &str, port: u16, token: Option<String>) -> Self {
         let client = reqwest::Client::builder()
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
-            .expect("building reqwest client with default settings");
+            .expect("building qslib-server HTTP client");
         Self {
             base_url: format!("http://{host}:{port}"),
             token,
             client,
-            file_root: Arc::new(OnceCell::new()),
-            file_root_retry_at: Arc::new(Mutex::new(None)),
+            capabilities: Arc::new(OnceCell::new()),
+            retry_at: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -136,252 +236,672 @@ impl ServerClient {
         &self.base_url
     }
 
-    fn get(&self, url: reqwest::Url) -> reqwest::RequestBuilder {
-        let req = self.client.get(url);
-        match &self.token {
-            Some(t) => req.bearer_auth(t),
-            None => req,
-        }
-    }
-
-    fn url(&self, prefix: &str, rel: &str) -> Result<reqwest::Url, ServerError> {
-        let mut url = reqwest::Url::parse(&self.base_url)
-            .map_err(|e| ServerError::Decode(format!("bad base url: {e}")))?;
-        {
-            let mut seg = url
-                .path_segments_mut()
-                .map_err(|_| ServerError::Decode("base url cannot be a base".into()))?;
-            // Rebuild the path from scratch so a base like `http://host:7500`
-            // (whose normalized path is `/`) does not leave an empty leading
-            // segment that would produce `/file//<rel>`.
-            seg.clear();
-            seg.push(prefix);
-            for part in rel.split('/') {
-                if !part.is_empty() {
-                    seg.push(part);
-                }
-            }
-        }
-        Ok(url)
-    }
-
-    /// Fetch and return `/health`.
     pub async fn health(&self) -> Result<Health, ServerError> {
-        let url = reqwest::Url::parse(&format!("{}/health", self.base_url))
-            .map_err(|e| ServerError::Decode(format!("bad base url: {e}")))?;
-        let resp = self.send(self.get(url)).await?;
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| ServerError::Decode(format!("reading /health body: {e}")))?;
-        serde_json::from_slice(&bytes).map_err(|e| {
-            ServerError::Decode(format!(
-                "qslib-server /health returned a non-JSON body: {e}"
-            ))
-        })
+        self.get_json("/health").await
     }
 
-    /// Return true if qslib-server answers `/health` with the SCPI target up.
     pub async fn available(&self) -> bool {
-        matches!(self.health().await, Ok(h) if h.scpi_ok)
+        matches!(self.health().await, Ok(health) if health.ready)
     }
 
-    /// The server's `file_root` (cached after the first successful probe), or
-    /// `None` if the server is unreachable or predates the field.
-    pub async fn file_root(&self) -> Option<String> {
-        if let Some(v) = self.file_root.get() {
-            return v.clone();
+    /// Query capabilities once, with a 30-second negative cache. Constructing
+    /// a client does not probe the server.
+    pub async fn capabilities(&self) -> Result<Capabilities, ServerError> {
+        if let Some(capabilities) = self.capabilities.get() {
+            return Ok(capabilities.clone());
         }
-        if self.file_root_probe_suppressed() {
-            return None;
+        if self.probe_suppressed() {
+            return Err(ServerError::Decode(
+                "qslib-server capability probe is negatively cached".to_string(),
+            ));
         }
-        match self.health().await {
-            Ok(h) => {
+        match self.get_json::<Capabilities>("/api/v1/capabilities").await {
+            Ok(capabilities) if capabilities.api_version == "v1" => {
                 *self
-                    .file_root_retry_at
+                    .retry_at
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
-                let _ = self.file_root.set(h.file_root.clone());
-                h.file_root
+                    .unwrap_or_else(|value| value.into_inner()) = None;
+                let _ = self.capabilities.set(capabilities.clone());
+                Ok(capabilities)
             }
-            Err(_) => {
+            Ok(capabilities) => {
                 *self
-                    .file_root_retry_at
+                    .retry_at
                     .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner()) =
-                    Some(Instant::now() + FILE_ROOT_RETRY_DELAY);
-                None
+                    .unwrap_or_else(|value| value.into_inner()) =
+                    Some(Instant::now() + NEGATIVE_CACHE);
+                Err(ServerError::Decode(format!(
+                    "qslib-server API {} is not compatible with v1",
+                    capabilities.api_version
+                )))
+            }
+            Err(error) => {
+                *self
+                    .retry_at
+                    .lock()
+                    .unwrap_or_else(|value| value.into_inner()) =
+                    Some(Instant::now() + NEGATIVE_CACHE);
+                Err(error)
             }
         }
     }
 
-    fn file_root_probe_suppressed(&self) -> bool {
-        self.file_root_retry_at
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .is_some_and(|retry_at| Instant::now() < retry_at)
+    pub async fn instrument_status(&self) -> Result<InstrumentStatus, ServerError> {
+        self.get_json("/api/v1/instrument/status").await
     }
 
-    /// Fetch a file addressed relative to the server's `--file-root`.
-    pub async fn get_file(&self, rel: &str) -> Result<Vec<u8>, ServerError> {
-        let url = self.url("file", rel)?;
-        let resp = self.send(self.get(url)).await?;
-        let bytes = resp
+    pub async fn current_run(&self) -> Result<RunStatusDto, ServerError> {
+        self.get_json("/api/v1/runs/current").await
+    }
+
+    pub async fn set_power(&self, enabled: bool) -> Result<(), ServerError> {
+        self.put_json(
+            "/api/v1/instrument/power",
+            &serde_json::json!({"enabled": enabled}),
+            "/api/v1/instrument/status",
+        )
+        .await
+    }
+
+    pub async fn set_block(&self, enabled: bool, target_c: Option<f64>) -> Result<(), ServerError> {
+        self.put_json(
+            "/api/v1/instrument/block",
+            &serde_json::json!({"enabled": enabled, "target_c": target_c}),
+            "/api/v1/instrument/status",
+        )
+        .await
+    }
+
+    pub async fn set_indicator(&self, color: &str, mode: &str) -> Result<(), ServerError> {
+        self.put_json(
+            "/api/v1/instrument/indicator",
+            &serde_json::json!({"color": color, "mode": mode}),
+            "/api/v1/instrument/status",
+        )
+        .await
+    }
+
+    pub async fn set_drawer(
+        &self,
+        position: &str,
+        lower_cover: bool,
+        verify: bool,
+    ) -> Result<(), ServerError> {
+        self.put_json(
+            "/api/v1/instrument/drawer",
+            &serde_json::json!({
+                "position": position,
+                "lower_cover": lower_cover,
+                "verify": verify,
+            }),
+            "/api/v1/instrument/status",
+        )
+        .await
+    }
+
+    pub async fn set_cover(&self, position: &str, verify: bool) -> Result<(), ServerError> {
+        self.put_json(
+            "/api/v1/instrument/cover",
+            &serde_json::json!({"position": position, "verify": verify}),
+            "/api/v1/instrument/status",
+        )
+        .await
+    }
+
+    pub async fn list_experiments(&self) -> Result<ExperimentsResource, ServerError> {
+        self.get_json("/api/v1/experiments").await
+    }
+
+    pub async fn experiment(&self, name: &str) -> Result<ExperimentResource, ServerError> {
+        self.get_json(&format!("/api/v1/experiments/{}", encode_segment(name)))
+            .await
+    }
+
+    pub async fn stage_package(
+        &self,
+        name: &str,
+        package: Vec<u8>,
+    ) -> Result<StagedPackage, ServerError> {
+        let path = format!("/api/v1/experiments/{}/package", encode_segment(name));
+        let request = self
+            .authorize(self.client.put(self.url(&path)?))
+            .header(reqwest::header::CONTENT_TYPE, "application/zip")
+            .body(package);
+        self.send_json(request, true, &path).await
+    }
+
+    pub async fn package(&self, name: &str) -> Result<Vec<u8>, ServerError> {
+        let path = format!("/api/v1/experiments/{}/package", encode_segment(name));
+        let response = self
+            .send(self.authorize(self.client.get(self.url(&path)?)), false)
+            .await?;
+        response
             .bytes()
             .await
-            .map_err(|e| ServerError::Decode(format!("reading /file body: {e}")))?;
-        Ok(bytes.to_vec())
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| ServerError::Decode(format!("reading experiment package: {error}")))
     }
 
-    /// Fetch a file by its absolute on-instrument path, translating it to a
-    /// path under the server's `file_root`. Returns [`ServerError::NotUnderRoot`]
-    /// when the path is outside the served root (so callers fall back to SCPI).
-    pub async fn get_abs_file(&self, abspath: &str) -> Result<Vec<u8>, ServerError> {
-        let root = self.file_root().await;
-        let rel =
-            rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
-                abspath: abspath.to_string(),
-                root: root.clone(),
-            })?;
-        self.get_file(&rel).await
-    }
-
-    /// Write `body` to the file addressed relative to the server's
-    /// `--file-root` (`PUT /file`), replacing it atomically on the instrument.
-    pub async fn put_file(&self, rel: &str, body: Vec<u8>) -> Result<(), ServerError> {
-        let url = self.url("file", rel)?;
-        let mut req = self.client.put(url).body(body);
-        if let Some(t) = &self.token {
-            req = req.bearer_auth(t);
-        }
-        self.send(req).await?;
+    pub async fn delete_experiment(&self, name: &str) -> Result<(), ServerError> {
+        let path = format!("/api/v1/experiments/{}", encode_segment(name));
+        let request = self.authorize(self.client.delete(self.url(&path)?));
+        self.send_mutation(request, &path).await?;
         Ok(())
     }
 
-    /// Write a file by its absolute on-instrument path, translating it to a path
-    /// under the server's `file_root`. Returns [`ServerError::NotUnderRoot`] when
-    /// the path is outside the served root (so callers fall back to SCPI).
-    pub async fn put_abs_file(&self, abspath: &str, body: Vec<u8>) -> Result<(), ServerError> {
-        let root = self.file_root().await;
-        let rel =
-            rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
-                abspath: abspath.to_string(),
-                root: root.clone(),
-            })?;
-        self.put_file(&rel, body).await
+    pub async fn list_runs(&self, location: &str) -> Result<RunsResource, ServerError> {
+        let mut url = self.url("/api/v1/runs")?;
+        url.query_pairs_mut().append_pair("location", location);
+        let request = self.authorize(self.client.get(url));
+        self.send_json(request, false, "/api/v1/runs").await
     }
 
-    /// Return the recursive file manifest of the directory at `abspath`
-    /// (`GET /list`). Entries' `path` fields are relative to `abspath`.
-    pub async fn list_dir(&self, abspath: &str) -> Result<Vec<ListEntry>, ServerError> {
-        let root = self.file_root().await;
-        let rel =
-            rel_to_root(root.as_deref(), abspath).ok_or_else(|| ServerError::NotUnderRoot {
-                abspath: abspath.to_string(),
-                root: root.clone(),
-            })?;
-        let url = self.url("list", &rel)?;
-        let resp = self.send(self.get(url)).await?;
-        let bytes = resp
+    pub async fn run(&self, name: &str) -> Result<RunResource, ServerError> {
+        self.get_json(&format!("/api/v1/runs/{}", encode_segment(name)))
+            .await
+    }
+
+    pub async fn start_run(
+        &self,
+        input: &StartRunRequest,
+        idempotency_key: &str,
+    ) -> Result<OperationRecord, ServerError> {
+        let request = self
+            .authorize(self.client.post(self.url("/api/v1/runs")?))
+            .header("Idempotency-Key", idempotency_key)
+            .json(input);
+        self.send_json(request, true, "/api/v1/runs/current").await
+    }
+
+    pub async fn protocol_xml(&self, name: &str) -> Result<Vec<u8>, ServerError> {
+        let path = format!("/api/v1/runs/{}/protocol", encode_segment(name));
+        let response = self
+            .send(self.authorize(self.client.get(self.url(&path)?)), false)
+            .await?;
+        response
             .bytes()
             .await
-            .map_err(|e| ServerError::Decode(format!("reading /list body: {e}")))?;
-        let parsed: ListResponse = serde_json::from_slice(&bytes).map_err(|e| {
-            ServerError::Decode(format!("qslib-server /list returned a non-JSON body: {e}"))
-        })?;
-        Ok(parsed.files)
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| ServerError::Decode(format!("reading protocol XML: {error}")))
     }
 
-    /// Send a request, mapping transport failures to [`ServerError::Unreachable`]
-    /// and non-success statuses to [`ServerError::Http`] (with the server's
-    /// JSON `error`/`detail` body when present).
-    async fn send(&self, req: reqwest::RequestBuilder) -> Result<reqwest::Response, ServerError> {
-        let resp = req.send().await.map_err(|e| ServerError::Unreachable {
-            url: self.base_url.clone(),
-            source: e,
-        })?;
-        let status = resp.status();
-        if status.is_success() {
-            return Ok(resp);
+    pub async fn replace_protocol(
+        &self,
+        name: &str,
+        xml: Vec<u8>,
+        mode: &str,
+        force: bool,
+    ) -> Result<(), ServerError> {
+        let mut url = self.url(&format!("/api/v1/runs/{}/protocol", encode_segment(name)))?;
+        url.query_pairs_mut()
+            .append_pair("mode", mode)
+            .append_pair("force", if force { "true" } else { "false" });
+        let path = format!("/api/v1/runs/{}/protocol", encode_segment(name));
+        let request = self
+            .authorize(self.client.put(url))
+            .header(reqwest::header::CONTENT_TYPE, "application/xml")
+            .body(xml);
+        self.send_mutation(request, &path).await?;
+        Ok(())
+    }
+
+    pub async fn eds(&self, name: &str) -> Result<Vec<u8>, ServerError> {
+        let path = format!("/api/v1/runs/{}/eds", encode_segment(name));
+        let response = self
+            .send(self.authorize(self.client.get(self.url(&path)?)), false)
+            .await?;
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| ServerError::Decode(format!("reading EDS: {error}")))
+    }
+
+    pub async fn generate_access_key(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<OperationRecord, ServerError> {
+        let request = self
+            .authorize(
+                self.client
+                    .post(self.url("/api/v1/instrument/access-keys")?),
+            )
+            .header("Idempotency-Key", idempotency_key);
+        self.send_json(request, true, "/api/v1/instrument/status")
+            .await
+    }
+
+    pub async fn restart_instrument(
+        &self,
+        idempotency_key: &str,
+    ) -> Result<OperationRecord, ServerError> {
+        let request = self
+            .authorize(
+                self.client
+                    .post(self.url("/api/v1/instrument/actions/restart")?),
+            )
+            .header("Idempotency-Key", idempotency_key);
+        self.send_json(request, true, "/health").await
+    }
+
+    /// Administrator-only isolated raw SCPI. This never uses the managed
+    /// semantic connection and exists only when the server advertises it.
+    pub async fn raw_scpi(&self, command: &str) -> Result<String, ServerError> {
+        let request = self
+            .authorize(self.client.post(self.url("/api/v1/scpi")?))
+            .json(&serde_json::json!({"command": command, "encoding": "text"}));
+        let response = self
+            .send_mutation(request, "/api/v1/instrument/status")
+            .await?;
+        response
+            .text()
+            .await
+            .map_err(|error| ServerError::Decode(format!("reading raw SCPI response: {error}")))
+    }
+
+    pub async fn run_action(
+        &self,
+        name: &str,
+        action: &str,
+        idempotency_key: &str,
+    ) -> Result<OperationRecord, ServerError> {
+        let path = format!(
+            "/api/v1/runs/{}/actions/{}",
+            encode_segment(name),
+            encode_segment(action)
+        );
+        let request = self
+            .authorize(self.client.post(self.url(&path)?))
+            .header("Idempotency-Key", idempotency_key);
+        self.send_json(
+            request,
+            true,
+            &format!("/api/v1/runs/{}", encode_segment(name)),
+        )
+        .await
+    }
+
+    pub async fn operation(&self, id: &str) -> Result<OperationRecord, ServerError> {
+        self.get_json(&format!("/api/v1/operations/{}", encode_segment(id)))
+            .await
+    }
+
+    pub async fn wait_operation(
+        &self,
+        id: &str,
+        timeout: Duration,
+    ) -> Result<OperationRecord, ServerError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let operation = self.operation(id).await?;
+            if matches!(operation.state.as_str(), "succeeded" | "failed" | "unknown") {
+                return Ok(operation);
+            }
+            if Instant::now() >= deadline {
+                return Err(ServerError::OutcomeUnknown {
+                    state_query: format!("/api/v1/operations/{id}"),
+                });
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        let body = resp.bytes().await.unwrap_or_default();
-        let (message, detail) =
-            parse_error_body(&body, status.canonical_reason().unwrap_or("error"));
-        Err(ServerError::Http {
-            status: status.as_u16(),
-            message,
-            detail,
+    }
+
+    pub async fn get_file(&self, context: &str, path: &str) -> Result<Vec<u8>, ServerError> {
+        let url = self.resource_url("files", context, path)?;
+        let response = self
+            .send(self.authorize(self.client.get(url)), false)
+            .await?;
+        response
+            .bytes()
+            .await
+            .map(|bytes| bytes.to_vec())
+            .map_err(|error| ServerError::Decode(format!("reading file response: {error}")))
+    }
+
+    pub async fn put_file(
+        &self,
+        context: &str,
+        path: &str,
+        body: Vec<u8>,
+    ) -> Result<(), ServerError> {
+        let url = self.resource_url("files", context, path)?;
+        let request = self
+            .authorize(self.client.put(url))
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(body);
+        self.send_mutation(
+            request,
+            &format!("/api/v1/files/{context}/{}", encode_path(path)),
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn list_context_dir(
+        &self,
+        context: &str,
+        path: &str,
+    ) -> Result<Vec<ListEntry>, ServerError> {
+        let url = if path.is_empty() {
+            self.url(&format!("/api/v1/directories/{}", encode_segment(context)))?
+        } else {
+            self.resource_url("directories", context, path)?
+        };
+        let response = self
+            .send(self.authorize(self.client.get(url)), false)
+            .await?;
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| ServerError::Decode(format!("reading directory response: {error}")))?;
+        serde_json::from_slice::<ListResponse>(&bytes)
+            .map(|response| response.files)
+            .map_err(|error| ServerError::Decode(format!("decoding directory response: {error}")))
+    }
+
+    /// Compatibility helper for QSLib's direct file API. Resolution is local
+    /// and never depends on a tunnel or a successful health probe.
+    pub async fn get_abs_file(&self, absolute: &str) -> Result<Vec<u8>, ServerError> {
+        let (context, relative) =
+            absolute_context(absolute).ok_or_else(|| ServerError::NotUnderRoot {
+                abspath: absolute.into(),
+            })?;
+        self.get_file(context, &relative).await
+    }
+
+    pub async fn put_abs_file(&self, absolute: &str, body: Vec<u8>) -> Result<(), ServerError> {
+        let (context, relative) =
+            absolute_context(absolute).ok_or_else(|| ServerError::NotUnderRoot {
+                abspath: absolute.into(),
+            })?;
+        self.put_file(context, &relative, body).await
+    }
+
+    pub async fn list_dir(&self, absolute: &str) -> Result<Vec<ListEntry>, ServerError> {
+        let (context, relative) =
+            absolute_context(absolute).ok_or_else(|| ServerError::NotUnderRoot {
+                abspath: absolute.into(),
+            })?;
+        self.list_context_dir(context, &relative).await
+    }
+
+    pub async fn event_stream(&self, last_event_id: Option<u64>) -> ServerEventStream {
+        ServerEventStream {
+            client: self.clone(),
+            last_event_id,
+            stream: None,
+            bytes: Vec::new(),
+        }
+    }
+
+    async fn get_json<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T, ServerError> {
+        let request = self.authorize(self.client.get(self.url(path)?));
+        self.send_json(request, false, path).await
+    }
+
+    async fn put_json<T: Serialize + ?Sized>(
+        &self,
+        path: &str,
+        value: &T,
+        state_query: &str,
+    ) -> Result<(), ServerError> {
+        let request = self.authorize(self.client.put(self.url(path)?)).json(value);
+        self.send_mutation(request, state_query).await?;
+        Ok(())
+    }
+
+    async fn send_json<T: for<'de> Deserialize<'de>>(
+        &self,
+        request: reqwest::RequestBuilder,
+        mutation: bool,
+        state_query: &str,
+    ) -> Result<T, ServerError> {
+        let response = if mutation {
+            self.send_mutation(request, state_query).await?
+        } else {
+            self.send(request, false).await?
+        };
+        let bytes = response.bytes().await.map_err(|error| {
+            if mutation {
+                ServerError::OutcomeUnknown {
+                    state_query: state_query.to_string(),
+                }
+            } else {
+                ServerError::Decode(format!("reading JSON response: {error}"))
+            }
+        })?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            if mutation {
+                ServerError::OutcomeUnknown {
+                    state_query: state_query.to_string(),
+                }
+            } else {
+                ServerError::Decode(format!("decoding JSON response: {error}"))
+            }
         })
     }
-}
 
-/// Make `abspath` relative to `root`, or `None` if it is not under `root`
-/// (mirrors the Python `ServerClient._rel_to_root`). `root` is `None` when the
-/// server did not report a `file_root`.
-fn rel_to_root(root: Option<&str>, abspath: &str) -> Option<String> {
-    let root = root?.trim_end_matches('/');
-    let ap = posix_normpath(abspath);
-    if root.is_empty() {
-        // file_root is "/": everything is under it.
-        return Some(ap.trim_start_matches('/').to_string());
-    }
-    if ap == root {
-        return Some(String::new());
-    }
-    let prefix = format!("{root}/");
-    ap.strip_prefix(&prefix).map(|s| s.to_string())
-}
-
-/// A small `posixpath.normpath` for absolute instrument paths: collapse `.`,
-/// resolve `..`, and squeeze repeated slashes. Only the absolute case is used.
-fn posix_normpath(path: &str) -> String {
-    let absolute = path.starts_with('/');
-    let mut out: Vec<&str> = Vec::new();
-    for part in path.split('/') {
-        match part {
-            "" | "." => {}
-            ".." => {
-                if matches!(out.last(), Some(&last) if last != "..") {
-                    out.pop();
-                } else if !absolute {
-                    out.push("..");
-                }
-            }
-            other => out.push(other),
+    async fn send_mutation(
+        &self,
+        request: reqwest::RequestBuilder,
+        state_query: &str,
+    ) -> Result<reqwest::Response, ServerError> {
+        match self.send(request, true).await {
+            Err(ServerError::Unreachable {
+                submitted: true, ..
+            }) => Err(ServerError::OutcomeUnknown {
+                state_query: state_query.to_string(),
+            }),
+            result => result,
         }
     }
-    let joined = out.join("/");
-    if absolute {
-        format!("/{joined}")
-    } else if joined.is_empty() {
-        ".".to_string()
-    } else {
-        joined
+
+    async fn send(
+        &self,
+        request: reqwest::RequestBuilder,
+        mutation: bool,
+    ) -> Result<reqwest::Response, ServerError> {
+        let response = request
+            .send()
+            .await
+            .map_err(|source| ServerError::Unreachable {
+                url: self.base_url.clone(),
+                submitted: mutation && !source.is_connect(),
+                source,
+            })?;
+        let status = response.status();
+        if status.is_success() {
+            return Ok(response);
+        }
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let body = response.bytes().await.unwrap_or_default();
+        let parsed = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
+        let detail = parsed.get("error").cloned().unwrap_or_default();
+        Err(ServerError::Http {
+            status: status.as_u16(),
+            code: detail.get("code").and_then(ValueExt::string),
+            message: detail
+                .get("message")
+                .and_then(|value| value.as_str())
+                .unwrap_or_else(|| status.canonical_reason().unwrap_or("server error"))
+                .to_string(),
+            retryable: detail
+                .get("retryable")
+                .and_then(|value| value.as_bool())
+                .unwrap_or(false),
+            outcome: detail.get("outcome").and_then(ValueExt::string),
+            request_id: parsed
+                .get("request_id")
+                .and_then(ValueExt::string)
+                .or(request_id),
+        })
+    }
+
+    fn authorize(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        match &self.token {
+            Some(token) => request.bearer_auth(token),
+            None => request,
+        }
+    }
+
+    fn url(&self, path: &str) -> Result<reqwest::Url, ServerError> {
+        reqwest::Url::parse(&format!("{}{}", self.base_url, path))
+            .map_err(|error| ServerError::Decode(format!("invalid server URL: {error}")))
+    }
+
+    fn resource_url(
+        &self,
+        resource: &str,
+        context: &str,
+        path: &str,
+    ) -> Result<reqwest::Url, ServerError> {
+        self.url(&format!(
+            "/api/v1/{}/{}/{}",
+            resource,
+            encode_segment(context),
+            encode_path(path)
+        ))
+    }
+
+    fn probe_suppressed(&self) -> bool {
+        self.retry_at
+            .lock()
+            .unwrap_or_else(|value| value.into_inner())
+            .is_some_and(|retry_at| Instant::now() < retry_at)
     }
 }
 
-fn parse_error_body(body: &[u8], default: &str) -> (String, Option<String>) {
-    if let Ok(v) = serde_json::from_slice::<serde_json::Value>(body) {
-        let message = v
-            .get("error")
-            .and_then(|e| e.as_str())
-            .unwrap_or(default)
-            .to_string();
-        let detail = v
-            .get("detail")
-            .and_then(|d| d.as_str())
-            .map(|s| s.to_string());
-        return (message, detail);
+pub struct ServerEventStream {
+    client: ServerClient,
+    last_event_id: Option<u64>,
+    stream: Option<EventByteStream>,
+    bytes: Vec<u8>,
+}
+
+impl ServerEventStream {
+    pub async fn next(&mut self) -> Result<ServerEvent, ServerError> {
+        loop {
+            if let Some(event) = take_sse_event(&mut self.bytes)? {
+                self.last_event_id = event.id.or(self.last_event_id);
+                return Ok(event);
+            }
+            if self.stream.is_none() {
+                let mut request = self
+                    .client
+                    .authorize(self.client.client.get(self.client.url("/api/v1/events")?));
+                if let Some(id) = self.last_event_id {
+                    request = request.header("Last-Event-ID", id.to_string());
+                }
+                let response = self.client.send(request, false).await?;
+                self.stream = Some(Box::pin(response.bytes_stream()));
+            }
+            let stream = self.stream.as_mut().expect("stream initialized");
+            match stream.next().await {
+                Some(Ok(chunk)) => {
+                    self.bytes.extend_from_slice(&chunk);
+                }
+                Some(Err(_)) | None => {
+                    self.stream = None;
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                }
+            }
+        }
     }
-    let text = String::from_utf8_lossy(body).trim().to_string();
-    (
-        if text.is_empty() {
-            default.to_string()
+}
+
+fn take_sse_event(buffer: &mut Vec<u8>) -> Result<Option<ServerEvent>, ServerError> {
+    let Some(end) = buffer.windows(2).position(|window| window == b"\n\n") else {
+        return Ok(None);
+    };
+    let block = String::from_utf8(buffer.drain(..end + 2).collect())
+        .map_err(|error| ServerError::Decode(format!("SSE stream is not UTF-8: {error}")))?;
+    if block
+        .lines()
+        .all(|line| line.starts_with(':') || line.is_empty())
+    {
+        return Ok(None);
+    }
+    let mut id = None;
+    let mut event = "message".to_string();
+    let mut data = String::new();
+    for line in block.lines() {
+        if let Some(value) = line.strip_prefix("id:") {
+            id = value.trim().parse().ok();
+        } else if let Some(value) = line.strip_prefix("event:") {
+            event = value.trim().to_string();
+        } else if let Some(value) = line.strip_prefix("data:") {
+            if !data.is_empty() {
+                data.push('\n');
+            }
+            data.push_str(value.trim_start());
+        }
+    }
+    let data = serde_json::from_str(&data)
+        .map_err(|error| ServerError::Decode(format!("invalid SSE JSON: {error}")))?;
+    Ok(Some(ServerEvent { id, event, data }))
+}
+
+fn absolute_context(path: &str) -> Option<(&'static str, String)> {
+    let roots = [
+        ("/sdcard/private_run_complete", "private_run_complete"),
+        ("/sdcard/public_run_complete", "public_run_complete"),
+        ("/data/vendor/IS/calibrations", "calibrations"),
+        ("/data/vendor/IS/experiments", "experiments"),
+        ("/data/vendor/IS/templates", "templates"),
+        ("/data/vendor/IS/runs", "runs"),
+        ("/data/vendor/IS/logs", "logs"),
+        ("/data/vendor/IS", "default"),
+    ];
+    roots.iter().find_map(|(root, context)| {
+        if path == *root {
+            Some((*context, String::new()))
         } else {
-            text
-        },
-        None,
-    )
+            path.strip_prefix(&format!("{root}/"))
+                .map(|relative| (*context, relative.to_string()))
+        }
+    })
+}
+
+fn encode_segment(value: &str) -> String {
+    url_encode(value, false)
+}
+
+fn encode_path(value: &str) -> String {
+    value
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| url_encode(segment, false))
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+fn url_encode(value: &str, preserve_slash: bool) -> String {
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric()
+            || b"-._~".contains(&byte)
+            || (preserve_slash && byte == b'/')
+        {
+            output.push(byte as char);
+        } else {
+            output.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    output
+}
+
+trait ValueExt {
+    fn string(&self) -> Option<String>;
+}
+
+impl ValueExt for serde_json::Value {
+    fn string(&self) -> Option<String> {
+        self.as_str().map(str::to_string)
+    }
 }
 
 #[cfg(test)]
@@ -389,86 +909,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn rel_under_root() {
+    fn absolute_paths_map_to_named_contexts() {
         assert_eq!(
-            rel_to_root(
-                Some("/data/vendor/IS"),
-                "/data/vendor/IS/experiments/run/x.xml"
-            ),
-            Some("experiments/run/x.xml".to_string())
-        );
-    }
-
-    #[test]
-    fn rel_equal_root() {
-        assert_eq!(
-            rel_to_root(Some("/data/vendor/IS"), "/data/vendor/IS"),
-            Some(String::new())
-        );
-    }
-
-    #[test]
-    fn rel_outside_root() {
-        assert_eq!(rel_to_root(Some("/data/vendor/IS"), "/sdcard/other"), None);
-    }
-
-    #[test]
-    fn rel_root_is_slash() {
-        assert_eq!(
-            rel_to_root(Some("/"), "/data/vendor/IS/x"),
-            Some("data/vendor/IS/x".to_string())
-        );
-    }
-
-    #[test]
-    fn rel_no_root_reported() {
-        assert_eq!(rel_to_root(None, "/data/vendor/IS/x"), None);
-    }
-
-    #[test]
-    fn file_url_has_no_double_slash() {
-        let c = ServerClient::new("host", 7500, None);
-        // Absolute-style rel (leading slash) and plain rel both produce a single
-        // slash after the `file` segment.
-        assert_eq!(
-            c.url("file", "/experiments/run/x.xml").unwrap().as_str(),
-            "http://host:7500/file/experiments/run/x.xml"
+            absolute_context("/data/vendor/IS/experiments/run/a.xml"),
+            Some(("experiments", "run/a.xml".to_string()))
         );
         assert_eq!(
-            c.url("file", "experiments/run/x.xml").unwrap().as_str(),
-            "http://host:7500/file/experiments/run/x.xml"
+            absolute_context("/sdcard/public_run_complete/a.eds"),
+            Some(("public_run_complete", "a.eds".to_string()))
         );
-        assert_eq!(
-            c.url("list", "experiments/run").unwrap().as_str(),
-            "http://host:7500/list/experiments/run"
-        );
+        assert!(absolute_context("/etc/passwd").is_none());
     }
 
     #[test]
-    fn file_url_percent_encodes_segments() {
-        let c = ServerClient::new("host", 7500, None);
-        assert_eq!(
-            c.url("file", "a dir/b#c.xml").unwrap().as_str(),
-            "http://host:7500/file/a%20dir/b%23c.xml"
-        );
-    }
-
-    #[test]
-    fn empty_relative_path_targets_static_root_route() {
-        let c = ServerClient::new("host", 7500, None);
-        assert_eq!(c.url("list", "").unwrap().as_str(), "http://host:7500/list");
-    }
-
-    #[test]
-    fn failed_file_root_probe_is_temporarily_suppressed() {
-        let c = ServerClient::new("host", 7500, None);
-        *c.file_root_retry_at.lock().unwrap() = Some(Instant::now() + Duration::from_secs(1));
-        assert!(c.file_root_probe_suppressed());
-    }
-
-    #[test]
-    fn normpath_collapses() {
-        assert_eq!(posix_normpath("/data//vendor/./IS/"), "/data/vendor/IS");
-        assert_eq!(posix_normpath("/data/vendor/../IS"), "/data/IS");
+    fn parses_sse_event() {
+        let mut bytes = b"id: 4\nevent: run\ndata: {\"state\":\"running\"}\n\n".to_vec();
+        let event = take_sse_event(&mut bytes).unwrap().unwrap();
+        assert_eq!(event.id, Some(4));
+        assert_eq!(event.event, "run");
     }
 }

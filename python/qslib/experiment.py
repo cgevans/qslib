@@ -21,6 +21,7 @@ from dataclasses import InitVar, dataclass, field
 from datetime import datetime, timezone
 from glob import glob
 from pathlib import Path
+from contextlib import nullcontext
 from typing import (
     IO,
     TYPE_CHECKING,
@@ -56,6 +57,7 @@ from .data import (
     _parse_multicomponent_data_v2,
 )
 from .machine import Machine
+from .server import ServerError, ServerUnavailable
 from .processors import NormRaw
 from .protocol import Protocol, Stage, Step
 from .version import __version__
@@ -656,6 +658,40 @@ table, th, td {{
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         log.info("Attempting to start %s on %s.", self.runtitle_safe, machine.host)
 
+        server = machine._semantic_server("experiments", mutation=True)
+        if server is not None:
+            capabilities = server.capabilities()
+            if capabilities.get("file_writes", False) and "runs" in capabilities.get("resources", []):
+                if self.runstate != "INIT":
+                    raise AlreadyStartedError(self.runtitle_safe, self.runstate)
+                previous_start = self.runstarttime
+                previous_state = self.runstate
+                self.runstarttime = datetime.now()
+                self.runstate = "RUNNING"
+                self._update_files()
+                package_stream = io.BytesIO()
+                self.save_file(package_stream)
+                try:
+                    package_etag = server.stage_package(self.runtitle_safe, package_stream.getvalue())
+                    operation = server.start_run(
+                        self.runtitle_safe,
+                        package_etag,
+                        overwrite=overwrite,
+                        require_exclusive=require_exclusive,
+                        require_drawer_check=require_drawer_check,
+                    )
+                    completed = server.wait_operation(operation, timeout=130.0)
+                    if completed.get("state") != "succeeded":
+                        raise ServerError(f"server run-start operation failed: {completed.get('error')}")
+                    log.info("Run %s started on %s through qslib-server.", self.runtitle_safe, machine.host)
+                    return
+                except ServerUnavailable:
+                    # No mutation request was submitted. Restore local state so
+                    # the permanent direct implementation can proceed normally.
+                    self.runstarttime = previous_start
+                    self.runstate = previous_state
+                    self._update_files()
+
         with machine.ensured_connection():
             # Ensure machine isn't running:
             if (x := machine.run_status()).state.upper() != "IDLE":
@@ -723,7 +759,12 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
-        with machine.ensured_connection(AccessLevel.Controller):
+        context = (
+            nullcontext(machine)
+            if machine._semantic_server("runs", mutation=True) is not None
+            else machine.ensured_connection(AccessLevel.Controller)
+        )
+        with context:
             self._ensure_running(machine)
             machine.pause_current_run()
 
@@ -739,7 +780,12 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
-        with machine.ensured_connection(AccessLevel.Controller):
+        context = (
+            nullcontext(machine)
+            if machine._semantic_server("runs", mutation=True) is not None
+            else machine.ensured_connection(AccessLevel.Controller)
+        )
+        with context:
             self._ensure_running(machine)
             machine.resume_current_run()
 
@@ -755,7 +801,12 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
-        with machine.ensured_connection(AccessLevel.Controller):
+        context = (
+            nullcontext(machine)
+            if machine._semantic_server("runs", mutation=True) is not None
+            else machine.ensured_connection(AccessLevel.Controller)
+        )
+        with context:
             self._ensure_running(machine)
             machine.stop_current_run()
 
@@ -771,7 +822,12 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        with machine.ensured_connection(AccessLevel.Controller):
+        context = (
+            nullcontext(machine)
+            if machine._semantic_server("runs", mutation=True) is not None
+            else machine.ensured_connection(AccessLevel.Controller)
+        )
+        with context:
             self._ensure_running(machine)
             machine.abort_current_run()
 
@@ -787,7 +843,12 @@ table, th, td {{
             the experiment is not currently running
         """
         machine = self._ensure_machine(machine)
-        with machine.ensured_connection(AccessLevel.Observer):
+        context = (
+            nullcontext(machine)
+            if machine._semantic_server("runs") is not None
+            else machine.ensured_connection(AccessLevel.Observer)
+        )
+        with context:
             return self._ensure_running(machine)
 
     @classmethod
@@ -798,17 +859,16 @@ table, th, td {{
 
         machine = exp._ensure_machine(machine)
 
-        with machine.ensured_connection():
-            crt: str | None = machine.current_run_name
+        crt: str | None = machine.current_run_name
 
-            if not crt:
-                raise ValueError("Nothing is currently running.")
+        if not crt:
+            raise ValueError("Nothing is currently running.")
 
-            exp.name = crt
+        exp.name = crt
 
-            exp.sync_from_machine(machine, log_method="copy", include_tiffs=include_tiffs)
+        exp.sync_from_machine(machine, log_method="copy", include_tiffs=include_tiffs)
 
-            exp._update_from_files()
+        exp._update_from_files()
 
         return exp
 
@@ -825,7 +885,14 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         self._clear_cache()
 
-        with machine.ensured_connection(AccessLevel.Observer):
+        # In semantic mode leave the client-side SCPI socket unopened. In
+        # direct mode retain the historical single-session synchronization.
+        context = (
+            nullcontext(machine)
+            if machine._semantic_server("files") is not None
+            else machine.ensured_connection(AccessLevel.Observer)
+        )
+        with context:
             # Get a list of all the files in the experiment folder
             machine_files = machine.list_files(f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True)
 
@@ -911,6 +978,25 @@ table, th, td {{
         """
         self._clear_cache()
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
+        server = machine._semantic_server("runs", mutation=True)
+        if server is not None:
+            self._ensure_running(machine)
+            proto = machine.get_running_protocol()
+            runstatus = machine.run_status()
+            proto.stages[-1].repeat = runstatus.cycle
+            proto.stages += new_stages
+            self.protocol = proto
+            self._update_tcprotocol_xml()
+            try:
+                server.put_protocol(
+                    self.runtitle_safe,
+                    self._sdspath("tcprotocol.xml").read_bytes(),
+                    mode="from_now",
+                    force=True,
+                )
+                return
+            except ServerUnavailable:
+                pass
         with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
 
@@ -963,6 +1049,29 @@ table, th, td {{
         """
         self._clear_cache()
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
+        server = machine._semantic_server("runs", mutation=True)
+        if server is not None:
+            if not force:
+                self._ensure_running(machine)
+            runstatus = machine.run_status()
+            machine_proto = machine.get_running_protocol()
+            if not force:
+                machine_proto.check_compatible(new_protocol, runstatus)
+            new_protocol.name = machine_proto.name
+            new_protocol.volume = machine_proto.volume
+            new_protocol.runmode = machine_proto.runmode
+            self.protocol = new_protocol
+            self._update_tcprotocol_xml()
+            try:
+                server.put_protocol(
+                    self.runtitle_safe,
+                    self._sdspath("tcprotocol.xml").read_bytes(),
+                    mode="replace",
+                    force=force,
+                )
+                return
+            except ServerUnavailable:
+                pass
         with machine.ensured_connection(AccessLevel.Controller):
             if not force:
                 self._ensure_running(machine)
@@ -1314,7 +1423,9 @@ table, th, td {{
 
         machine = exp._ensure_machine(machine)
 
-        with machine.ensured_connection():
+        semantic = machine._semantic_server("runs") is not None and machine._semantic_server("files") is not None
+        context = nullcontext(machine) if semantic else machine.ensured_connection()
+        with context:
             crt = machine.current_run_name
 
             if not crt:
@@ -1356,7 +1467,12 @@ table, th, td {{
 
         machine = exp._ensure_machine(machine)
 
-        with machine.ensured_connection():
+        context = (
+            nullcontext(machine)
+            if machine._semantic_server("files") is not None
+            else machine.ensured_connection()
+        )
+        with context:
             if move:
                 raise NotImplementedError
 
@@ -1412,7 +1528,12 @@ table, th, td {{
 
         machine = exp._ensure_machine(machine)
 
-        with machine.ensured_connection():
+        context = (
+            nullcontext(machine)
+            if machine._semantic_server("files") is not None
+            else machine.ensured_connection()
+        )
+        with context:
             o = None
             for possible_name in [
                 _safe_exp_name(name) + ".eds",
@@ -1460,7 +1581,9 @@ table, th, td {{
 
         safename = _safe_exp_name(name)
 
-        with machine.ensured_connection():
+        semantic = machine._semantic_server("runs") is not None and machine._semantic_server("files") is not None
+        context = nullcontext(machine) if semantic else machine.ensured_connection()
+        with context:
             if machine.current_run_name in [safename, name]:
                 exp = cls.from_running(machine)
                 return exp

@@ -29,16 +29,20 @@ Configuration is provided via a TOML file (default: `config.toml`). See `example
 [[machines]]
 name = "qpcr1"
 host = "1.2.3.4"
-# server_port = 7500  # qslib-server port; 0 to disable
+# server_port = 7500  # opt in to qslib-server status/SSE mode
 # server_token = "..."  # required unless qslib-server uses --no-auth
 ```
 
-When a machine runs the on-instrument `qslib-server`, filter data and plate
-setup are pulled over its HTTP file transfer instead of SCPI `EXP:READ?`, which
-avoids the base64 encoding the InstrumentServer performs and reduces load on it
-during a run. This is on by default (port 7500) and falls back to SCPI when the
-server is unreachable; set `server_port = 0` to disable it. (The old
-`agent_port` key is still accepted as an alias.)
+Direct SCPI subscription mode is the default: omit `server_port` to retain the
+normal status queries, subscriptions, and reconnect behavior. Setting
+`server_port` explicitly selects qslib-server mode, which uses the semantic
+status resource, resumable SSE events, and named file resources without opening
+a normal client-side SCPI connection. The old `agent_port` key is accepted as
+an alias.
+
+The server is optional. It must be configured with an Observer-or-higher token;
+file collection also requires its named read contexts. Direct mode remains the
+recommended baseline when no service layer is needed.
 
 ### InfluxDB Configuration (Optional)
 

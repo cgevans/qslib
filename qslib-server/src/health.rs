@@ -1,48 +1,39 @@
-//! `GET /health` — liveness plus a live probe of the SCPI server.
-
-use std::time::Duration;
+//! Stable process and managed-actor health resource.
 
 use axum::extract::State;
 use axum::Json;
 use serde::Serialize;
-use tokio::net::TcpStream;
 
+use crate::dto::AccessDto;
 use crate::state::AppState;
 
 #[derive(Serialize)]
 pub struct Health {
     name: &'static str,
     version: &'static str,
+    executable_sha256: String,
     uptime_s: u64,
-    scpi_ok: bool,
-    /// Canonicalized `--file-root`. Clients use it to decide whether an
-    /// absolute filesystem path is reachable over `/file` (and how to make it
-    /// root-relative) before falling back to SCPI.
-    file_root: String,
-    /// SHA-256 (hex) of the running executable. A client confirms an `/upgrade`
-    /// took effect by polling until this equals the hash it uploaded.
-    exe_sha256: String,
+    ready: bool,
+    generation: u64,
+    current_access: Option<AccessDto>,
+    last_successful_command: Option<chrono::DateTime<chrono::Utc>>,
+    reconnect_count: u64,
+    queue_depth: usize,
 }
 
-/// Probe the SCPI target with a short-timeout TCP connect.
-async fn probe_scpi(state: &AppState) -> bool {
-    matches!(
-        tokio::time::timeout(
-            Duration::from_secs(2),
-            TcpStream::connect(state.scpi_target)
-        )
-        .await,
-        Ok(Ok(_))
-    )
-}
-
+/// This reads actor state only. It must never create a probe SCPI connection.
 pub async fn health(State(state): State<AppState>) -> Json<Health> {
+    let actor = state.service.health();
     Json(Health {
         name: "qslib-server",
         version: env!("CARGO_PKG_VERSION"),
+        executable_sha256: state.exe_sha256.clone(),
         uptime_s: state.started.elapsed().as_secs(),
-        scpi_ok: probe_scpi(&state).await,
-        file_root: state.file_root.to_string_lossy().into_owned(),
-        exe_sha256: state.exe_sha256.clone(),
+        ready: actor.ready,
+        generation: actor.generation,
+        current_access: actor.current_access,
+        last_successful_command: actor.last_successful_command,
+        reconnect_count: actor.reconnect_count,
+        queue_depth: state.service.queue_depth(),
     })
 }

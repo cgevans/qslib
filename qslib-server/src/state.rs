@@ -1,105 +1,139 @@
-//! Shared application state.
+//! Shared immutable application state and named filesystem contexts.
 
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Instant;
 
-use qslib_core::commands::AccessLevel;
-
+use crate::auth::AuthPolicy;
 use crate::config::Config;
+use crate::error::ServerError;
+use crate::events::EventHub;
+use crate::operation::OperationStore;
+use crate::service::{InstrumentService, ServiceConfig};
 
-/// Immutable, shared qslib-server state, cheaply cloneable via `Arc`.
 #[derive(Clone)]
 pub struct AppState(pub Arc<AppStateInner>);
 
 pub struct AppStateInner {
-    /// Localhost plaintext SCPI endpoint.
-    pub scpi_target: SocketAddr,
-    /// Canonicalized root for `/file` resolution.
-    pub file_root: PathBuf,
-    pub default_access: AccessLevel,
-    pub max_access: AccessLevel,
-    /// Bearer token; `None` means authentication is disabled.
-    pub token: Option<String>,
-    /// Password for password-gated SCPI access levels.
+    pub auth: AuthPolicy,
+    pub max_access: qslib_core::commands::AccessLevel,
+    pub scpi_target: std::net::SocketAddr,
     pub scpi_password: Option<String>,
-    pub scpi_timeout_ms: u64,
-    pub started: Instant,
-    /// Bounds concurrent SCPI tunnels.
+    pub contexts: BTreeMap<String, PathBuf>,
+    pub allow_file_writes: bool,
+    pub allow_controls: bool,
+    pub enable_raw_scpi: bool,
+    pub enable_scpi_tunnel: bool,
     pub tunnels: Arc<tokio::sync::Semaphore>,
-    /// When true, `PUT /file` is refused (403).
-    pub read_only: bool,
-    /// Set while a non-dry-run upgrade owns the executable/backup/watchdog
-    /// lifecycle. It intentionally remains set after a successful swap: the
-    /// current process is about to exit, and accepting another upgrade during
-    /// the watchdog handoff would race the shared executable and `.bak` paths.
+    pub service: InstrumentService,
+    pub events: EventHub,
+    pub operations: OperationStore,
+    pub started: Instant,
     pub upgrade_in_progress: AtomicBool,
-    /// Absolute path of the running executable (for in-place `/upgrade`).
     pub exe_path: PathBuf,
-    /// SHA-256 (lowercase hex) of the running executable, computed at startup.
-    /// Reported by `/health` so a client can confirm which build is live.
     pub exe_sha256: String,
-    /// The argv (excluding argv[0]) this process was launched with, replayed
-    /// verbatim when `/upgrade` restarts into the new binary.
     pub restart_args: Vec<String>,
 }
 
 impl AppState {
-    /// Build the shared state from a parsed [`Config`] and its resolved token.
-    /// The file root is canonicalized so path-safety checks compare against the
-    /// real directory.
-    pub fn new(config: &Config, token: Option<String>) -> anyhow::Result<Self> {
-        let file_root = std::fs::canonicalize(&config.file_root).map_err(|e| {
+    pub fn new(config: &Config, auth: AuthPolicy) -> anyhow::Result<Self> {
+        let default_root = std::fs::canonicalize(&config.file_root).map_err(|error| {
             anyhow::anyhow!(
-                "failed to canonicalize --file-root {:?}: {e}",
+                "failed to canonicalize --file-root {:?}: {error}",
                 config.file_root
             )
         })?;
+        let contexts = build_contexts(&default_root);
+        let events = EventHub::new();
+        let operations = OperationStore::new(events.clone());
+        let service = InstrumentService::spawn(
+            ServiceConfig {
+                target: config.scpi_target,
+                password: config.scpi_password.clone(),
+                max_access: config.max_access.clone(),
+                queue_capacity: config.queue_capacity,
+            },
+            events.clone(),
+        );
 
-        // Resolve the running executable and hash it so /upgrade can verify and
-        // /health can report the live build. A failure here is non-fatal for
-        // serving files/SCPI; /upgrade will just be unavailable.
         let exe_path = std::env::current_exe().unwrap_or_default();
-        let exe_sha256 = match std::fs::read(&exe_path) {
-            Ok(bytes) => sha256_hex(&bytes),
-            Err(_) => String::new(),
-        };
-        let restart_args: Vec<String> = std::env::args().skip(1).collect();
+        let exe_sha256 = std::fs::read(&exe_path)
+            .map(|bytes| sha256_hex(&bytes))
+            .unwrap_or_default();
 
-        Ok(AppState(Arc::new(AppStateInner {
-            scpi_target: config.scpi_target,
-            file_root,
-            default_access: config.default_access.clone(),
+        Ok(Self(Arc::new(AppStateInner {
+            auth,
             max_access: config.max_access.clone(),
-            token,
+            scpi_target: config.scpi_target,
             scpi_password: config.scpi_password.clone(),
-            scpi_timeout_ms: config.scpi_timeout_ms,
-            started: Instant::now(),
+            contexts,
+            allow_file_writes: config.allow_file_writes,
+            allow_controls: config.allow_controls,
+            enable_raw_scpi: config.enable_raw_scpi,
+            enable_scpi_tunnel: config.enable_scpi_tunnel,
             tunnels: Arc::new(tokio::sync::Semaphore::new(config.max_tunnels.max(1))),
-            read_only: config.read_only,
+            service,
+            events,
+            operations,
+            started: Instant::now(),
             upgrade_in_progress: AtomicBool::new(false),
             exe_path,
             exe_sha256,
-            restart_args,
+            restart_args: std::env::args().skip(1).collect(),
         })))
+    }
+
+    pub fn context_root(&self, context: &str) -> Result<&Path, ServerError> {
+        self.contexts
+            .get(&context.to_ascii_lowercase())
+            .map(PathBuf::as_path)
+            .ok_or_else(|| ServerError::not_found(format!("unknown file context {context:?}")))
     }
 }
 
-/// Lowercase-hex SHA-256 of `bytes`.
+fn build_contexts(default_root: &Path) -> BTreeMap<String, PathBuf> {
+    let mut contexts = BTreeMap::new();
+    contexts.insert("default".to_string(), default_root.to_path_buf());
+    for name in ["experiments", "runs", "logs", "templates", "calibrations"] {
+        contexts.insert(name.to_string(), context_path(default_root.join(name)));
+    }
+
+    // Production InstrumentServer places completion contexts on /sdcard. For
+    // alternate/test roots, keep every named context beneath that root unless
+    // those production directories actually exist.
+    let production_layout = default_root == Path::new("/data/vendor/IS");
+    for name in ["public_run_complete", "private_run_complete"] {
+        let path = if production_layout {
+            PathBuf::from("/sdcard").join(name)
+        } else {
+            default_root.join(name)
+        };
+        contexts.insert(name.to_string(), context_path(path));
+    }
+    contexts
+}
+
+fn context_path(path: PathBuf) -> PathBuf {
+    std::fs::canonicalize(&path).unwrap_or(path)
+}
+
+/// Lowercase hexadecimal SHA-256 of `bytes`.
 pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let digest = Sha256::digest(bytes);
-    let mut s = String::with_capacity(64);
-    for b in digest {
-        s.push_str(&format!("{b:02x}"));
+    let mut output = String::with_capacity(64);
+    for byte in digest {
+        use std::fmt::Write;
+        let _ = write!(output, "{byte:02x}");
     }
-    s
+    output
 }
 
 impl std::ops::Deref for AppState {
     type Target = AppStateInner;
+
     fn deref(&self) -> &Self::Target {
         &self.0
     }

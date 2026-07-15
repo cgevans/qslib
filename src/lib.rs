@@ -5,7 +5,6 @@
 // `crate::parser`, etc. paths continue to resolve unchanged.
 pub use qslib_core::{com, commands, message_receiver, parser};
 
-pub mod server_client;
 pub mod calibration;
 pub mod com_ext;
 pub mod data;
@@ -15,6 +14,7 @@ pub mod message_log;
 pub mod plate_setup;
 pub mod protocol;
 pub mod quant;
+pub mod server_client;
 pub mod tiff;
 
 #[cfg(test)]

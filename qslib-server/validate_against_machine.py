@@ -8,7 +8,8 @@ This checks the HTTP paths whose correctness depends on the instrument's actual
 on-disk layout, comparing against ground truth read straight off the device with
 ``find``/``md5sum`` over SCPI ``SYST:EXEC``:
 
-  A. Directory download  -- Machine.download_dir (HTTP /list + raw /file) must
+  A. Directory download  -- Machine.download_dir (named directory/file
+                            resources) must
                             reproduce every file under a run directory,
                             md5-identical to the on-disk files (dotfiles
                             included, matching the ZIPREAD walk).
@@ -60,29 +61,43 @@ def main() -> int:
     exp_root = "/data/vendor/IS/experiments"
 
     results: list[tuple[str, bool, str]] = []
-    # Control over direct SSL so it is independent of qslib-server on 7500.
-    m = Machine(host, port=port, ssl=True, password=password, server_port=None, tls_server_name="localhost")
-    with m.ensured_connection():
-        m.set_access_level(AccessLevel.Controller)
+    # Keep independent clients so an open direct session cannot intentionally
+    # override semantic dispatch on the server-configured Machine.
+    direct = Machine(
+        host,
+        port=port,
+        ssl=True,
+        password=password,
+        server_port=None,
+        tls_server_name="localhost",
+    )
+    semantic = Machine(
+        host,
+        port=port,
+        ssl=True,
+        password=password,
+        server_port=server_port,
+        server_token=server_token,
+        tls_server_name="localhost",
+    )
+
+    binary = os.environ.get("QSLIB_SERVER_BINARY")
+    if binary:
+        semantic.ensure_server(binary=binary, listen=os.environ["QSLIB_SERVER_LISTEN"])
+
+    server = semantic.server
+    assert server is not None
+    health = server.health()
+    capabilities = server.capabilities()
+    print(f"[health] {health}")
+    print(f"[capabilities] {capabilities}")
+    assert capabilities.get("api_version") == "v1"
+
+    with direct.ensured_connection():
+        direct.set_access_level(AccessLevel.Controller)
 
         def ex(c: str) -> str:
-            return _unwrap(m.run_command(f'SYST:EXEC -verbose "{c}"'))
-
-        binary = os.environ.get("QSLIB_SERVER_BINARY")
-        if binary:
-            m.server_port = server_port
-            m._server = None
-            m.server_token = server_token
-            m.ensure_server(binary=binary, listen=os.environ["QSLIB_SERVER_LISTEN"], file_root="/")
-        else:
-            m.server_port = server_port
-            m._server = None
-            m.server_token = server_token
-            m._prefer_server_files = True
-
-        health = m.server.health()
-        print(f"[health] {health}")
-        assert health.get("file_root"), "server /health has no file_root (old build?)"
+            return _unwrap(direct.run_command(f'SYST:EXEC -verbose "{c}"'))
 
         def fs_md5(absdir: str) -> dict[str, str]:
             out = ex(f"cd {absdir} && find . -type f -exec md5sum {{}} \\;")
@@ -105,7 +120,7 @@ def main() -> int:
         for run in run_list:
             truth = fs_md5(f"{exp_root}/{run}")
             with tempfile.TemporaryDirectory() as td:
-                used = m.download_dir(run, td, leaf="EXP")
+                used = semantic.download_dir(run, td, leaf="EXP")
                 got = {
                     f.relative_to(td).as_posix(): hashlib.md5(f.read_bytes()).hexdigest()
                     for f in Path(td).rglob("*")
@@ -123,9 +138,11 @@ def main() -> int:
         # /sdcard public_run_complete absolute-path serving (synthetic file).
         prc = "/sdcard/public_run_complete/qslib_validate.bin"
         ex(f"mkdir -p /sdcard/public_run_complete && head -c 300000 /dev/urandom > {prc} && echo ok")
-        disk = re.match(r"([0-9a-f]{32})", ex(f"md5sum {prc}")).group(1)
-        http = m.read_file("qslib_validate.bin", context="public_run_complete", fast=True)
-        scpi = m.read_file("qslib_validate.bin", context="public_run_complete", fast=False)
+        disk_match = re.match(r"([0-9a-f]{32})", ex(f"md5sum {prc}"))
+        assert disk_match is not None
+        disk = disk_match.group(1)
+        http = semantic.read_file("qslib_validate.bin", context="public_run_complete", fast=True)
+        scpi = direct.read_file("qslib_validate.bin", context="public_run_complete", fast=False)
         ex(f"rm -f {prc}")
         results.append(
             (
@@ -139,7 +156,7 @@ def main() -> int:
             from qslib.experiment import Experiment
 
             try:
-                e = Experiment.from_uncollected(m, run_list[0])
+                e = Experiment.from_uncollected(semantic, run_list[0])
                 n = sum(1 for p in Path(e._dir_base).rglob("*") if p.is_file())
                 results.append((f"from_uncollected {run_list[0]}", n > 0, f"loaded {n} files, name={e.name!r}"))
             except Exception as exc:

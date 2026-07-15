@@ -50,19 +50,7 @@ def test_machine_server_settings_asdict():
     assert m.asdict(password=True)["server_token"] == "secret"
 
 
-# --- connect() precedence: secure direct vs qslib-server tunnel ---
-
-
-def test_prefers_direct_connection_signals():
-    # No secure channel requested -> the qslib-server tunnel may be preferred.
-    assert Machine("h")._prefers_direct_connection() is False
-    assert Machine("h", ssl=False)._prefers_direct_connection() is False
-    # Explicit ssl=True or a client certificate -> secure direct path.
-    assert Machine("h", ssl=True)._prefers_direct_connection() is True
-    assert Machine("h", client_certificate_path="/c.pem")._prefers_direct_connection() is True
-    assert Machine("h", client_key_path="/k.pem")._prefers_direct_connection() is True
-    assert Machine("h", server_ca_file="/ca.pem")._prefers_direct_connection() is True
-    assert Machine("h", tls_server_name="instrument.example")._prefers_direct_connection() is True
+# --- connect() always means a manually owned direct SCPI session ---
 
 
 class _FakeConn:
@@ -80,38 +68,29 @@ def _stub_post_connect(monkeypatch, m):
     monkeypatch.setattr(m, "get_access_level", lambda: (AccessLevel.Observer,))
 
 
-def test_connect_skips_tunnel_when_secure(monkeypatch):
-    """An explicit secure config (ssl=True / client cert) must not be silently
-    replaced by the plaintext qslib-server tunnel."""
+def test_connect_is_direct_when_secure(monkeypatch):
     m = Machine("h", ssl=True, client_certificate_path="/c.pem")
     direct = _FakeConn()
 
-    def boom():
-        raise AssertionError("must not probe the qslib-server tunnel for a secure config")
-
-    monkeypatch.setattr(m, "_try_server_connection", boom)
     monkeypatch.setattr(m, "_direct_connection", lambda: direct)
     _stub_post_connect(monkeypatch, m)
     m.connect()
     assert m._connection is direct
 
 
-def test_connect_prefers_tunnel_when_not_secure(monkeypatch):
-    """Without a secure config, connect() prefers the qslib-server tunnel."""
+def test_connect_is_direct_even_when_server_is_configured(monkeypatch):
+    """A configured semantic API never replaces explicit/manual connect()."""
     m = Machine("h", server_port=7500)
-    tunnel, direct = _FakeConn(), _FakeConn()
-    monkeypatch.setattr(m, "_try_server_connection", lambda: tunnel)
+    direct = _FakeConn()
     monkeypatch.setattr(m, "_direct_connection", lambda: direct)
     _stub_post_connect(monkeypatch, m)
     m.connect()
-    assert m._connection is tunnel
+    assert m._connection is direct
 
 
-def test_connect_falls_back_to_direct_when_tunnel_absent(monkeypatch):
-    """Without a secure config and no tunnel, connect() uses the direct path."""
+def test_connect_does_not_probe_optional_server(monkeypatch):
     m = Machine("h", server_port=7500)
     direct = _FakeConn()
-    monkeypatch.setattr(m, "_try_server_connection", lambda: None)
     monkeypatch.setattr(m, "_direct_connection", lambda: direct)
     _stub_post_connect(monkeypatch, m)
     m.connect()
@@ -124,10 +103,6 @@ def test_connect_does_not_probe_server_by_default(monkeypatch):
     m = Machine("h")
     direct = _FakeConn()
 
-    def boom():
-        raise AssertionError("must not probe qslib-server without an explicit server_port")
-
-    monkeypatch.setattr(m, "_try_server_connection", boom)
     monkeypatch.setattr(m, "_direct_connection", lambda: direct)
     _stub_post_connect(monkeypatch, m)
     m.connect()

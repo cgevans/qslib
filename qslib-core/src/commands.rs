@@ -435,6 +435,48 @@ impl CommandBuilder for AccessLevelQuery {
     const COMMAND: &'static [u8] = b"ACC?";
 }
 
+/// The full stateful SCPI access tuple returned by `ACC?`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccessState {
+    pub level: AccessLevel,
+    pub exclusive: bool,
+    pub stealth: bool,
+}
+
+impl TryFrom<OkResponse> for AccessState {
+    type Error = OkParseError;
+
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        let level = AccessLevel::try_from(value.clone())?;
+        let bool_option = |name: &str| -> Result<bool, OkParseError> {
+            match value.options.get(name) {
+                Some(v) => v.clone().try_into_bool().map_err(|e| {
+                    OkParseError::UnexpectedValues(
+                        value.clone(),
+                        format!("invalid {name} access flag: {e}"),
+                    )
+                }),
+                None => Ok(false),
+            }
+        };
+        Ok(Self {
+            level,
+            exclusive: bool_option("exclusive")?,
+            stealth: bool_option("stealth")?,
+        })
+    }
+}
+
+/// Query the complete access tuple rather than only its level.
+#[derive(Debug, Clone)]
+pub struct AccessStateQuery;
+
+impl CommandBuilder for AccessStateQuery {
+    type Response = AccessState;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"ACC?";
+}
+
 /// Query the server for a 6-digit random authentication key.
 ///
 /// Requires Controller or higher access. The key is valid for 10 minutes
@@ -1064,14 +1106,14 @@ impl From<RunProgressQuery> for Command {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DrawerStatus {
     Closed,
     Open,
     Unknown,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CoverPosition {
     Up,
     Down,
@@ -1616,6 +1658,203 @@ impl CommandBuilder for StopRun {
     }
 }
 
+/// Block temperature-control state.
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockStatus {
+    pub enabled: bool,
+    pub target_c: f64,
+}
+
+impl TryFrom<OkResponse> for BlockStatus {
+    type Error = OkParseError;
+
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        if value.args.len() < 2 {
+            return Err(OkParseError::UnexpectedValues(
+                value,
+                "BLOCK? requires enabled and target temperature".to_string(),
+            ));
+        }
+        let enabled = value.args[0].clone().try_into_bool().map_err(|e| {
+            OkParseError::UnexpectedValues(value.clone(), format!("invalid block state: {e}"))
+        })?;
+        let target_c = value.args[1].clone().try_into_f64().map_err(|e| {
+            OkParseError::UnexpectedValues(value.clone(), format!("invalid block target: {e}"))
+        })?;
+        Ok(Self { enabled, target_c })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockQuery;
+
+impl CommandBuilder for BlockQuery {
+    type Response = BlockStatus;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"BLOCK?";
+}
+
+#[derive(Debug, Clone)]
+pub struct BlockSet {
+    pub enabled: bool,
+    pub target_c: Option<f64>,
+}
+
+impl CommandBuilder for BlockSet {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"BLOCK";
+
+    fn args(&self) -> Option<Vec<Value>> {
+        let mut args = vec![Value::String(
+            if self.enabled { "ON" } else { "OFF" }.to_string(),
+        )];
+        if let Some(target) = self.target_c {
+            args.push(Value::Float(target));
+        }
+        Some(args)
+    }
+}
+
+macro_rules! unit_command {
+    ($name:ident, $command:literal) => {
+        #[derive(Debug, Clone)]
+        pub struct $name;
+
+        impl CommandBuilder for $name {
+            type Response = ();
+            type Error = ErrorResponse;
+            const COMMAND: &'static [u8] = $command;
+        }
+    };
+}
+
+unit_command!(DrawerOpen, b"OPEN");
+unit_command!(DrawerClose, b"CLOSE");
+unit_command!(CoverDown, b"COVerDOWN");
+unit_command!(PauseRun, b"PAUSe");
+unit_command!(ResumeRun, b"RESume");
+
+#[derive(Debug, Clone)]
+pub struct ExperimentNew {
+    pub name: String,
+    pub template: String,
+}
+
+impl CommandBuilder for ExperimentNew {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"EXP:NEW";
+
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![self.name.clone().into(), self.template.clone().into()])
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RunStart {
+    pub sample_volume: f64,
+    pub run_mode: String,
+    pub protocol: String,
+    pub experiment: String,
+}
+
+/// Dispatch the InstrumentServer's asynchronous EDS compilation workflow.
+///
+/// This command has a block expression which cannot be represented by the
+/// normal argument serializer, so the builder owns the complete rendering.
+#[derive(Debug, Clone)]
+pub struct ExperimentCompile {
+    pub name: String,
+}
+
+impl CommandBuilder for ExperimentCompile {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"EXP:RUN";
+
+    fn write_command(&self, bytes: &mut impl Write) -> Result<(), QSConnectionError> {
+        bytes.write_all(b"EXP:RUN -asynchronous <block> zip ")?;
+        Value::QuotedString(format!("{}.eds", self.name)).write_bytes(bytes)?;
+        bytes.write_all(b" ")?;
+        Value::QuotedString(self.name.clone()).write_bytes(bytes)?;
+        bytes.write_all(b" </block>")?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileMove {
+    pub source: String,
+    pub destination: String,
+}
+
+impl CommandBuilder for FileMove {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"FILE:MOVE";
+
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![
+            Value::QuotedString(self.source.clone()),
+            Value::QuotedString(self.destination.clone()),
+        ])
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExperimentCollected {
+    pub name: String,
+}
+
+impl CommandBuilder for ExperimentCollected {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"EXP:ATTR=";
+
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![
+            Value::QuotedString(self.name.clone()),
+            Value::String("collected".to_string()),
+            Value::Bool(true),
+        ])
+    }
+}
+
+impl CommandBuilder for RunStart {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"RP";
+
+    fn options(&self) -> Option<ArgMap> {
+        let mut options = ArgMap::new();
+        options.insert("samplevolume", Value::Float(self.sample_volume));
+        options.insert("runmode", self.run_mode.clone());
+        Some(options)
+    }
+
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![
+            self.protocol.clone().into(),
+            self.experiment.clone().into(),
+        ])
+    }
+}
+
+/// Administrator operation used by qslib-server's restart resource.
+#[derive(Debug, Clone)]
+pub struct RestartSystem;
+
+impl CommandBuilder for RestartSystem {
+    type Response = ();
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"SYST:EXEC";
+
+    fn args(&self) -> Option<Vec<Value>> {
+        Some(vec![Value::String("killall zygote".to_string())])
+    }
+}
+
 impl TryFrom<OkResponse> for Vec<f64> {
     type Error = OkParseError;
     fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
@@ -1715,6 +1954,23 @@ impl RunStatus {
             state: tokens[7].clone(),
         })
     }
+}
+
+impl TryFrom<OkResponse> for RunStatus {
+    type Error = OkParseError;
+
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        Self::parse(&value.to_bytes())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RunStatusQuery;
+
+impl CommandBuilder for RunStatusQuery {
+    type Response = RunStatus;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = RunStatus::COMMAND;
 }
 
 impl std::fmt::Display for RunStatus {
@@ -1836,6 +2092,23 @@ impl MachineStatus {
             led_temperature: tokens[8].parse().unwrap_or(0.0),
         })
     }
+}
+
+impl TryFrom<OkResponse> for MachineStatus {
+    type Error = OkParseError;
+
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        Self::parse(&value.to_bytes())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MachineStatusQuery;
+
+impl CommandBuilder for MachineStatusQuery {
+    type Response = MachineStatus;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = MachineStatus::COMMAND;
 }
 
 impl std::fmt::Display for MachineStatus {
@@ -2871,6 +3144,36 @@ mod tests {
     #[test]
     fn test_run_status_command() {
         assert!(RunStatus::COMMAND.starts_with(b"RET "));
+    }
+
+    #[test]
+    fn experiment_compile_renders_a_typed_block_command() {
+        assert_eq!(
+            ExperimentCompile {
+                name: "Run name".to_string(),
+            }
+            .to_bytes(),
+            br#"EXP:RUN -asynchronous <block> zip "Run name.eds" "Run name" </block>"#
+        );
+    }
+
+    #[test]
+    fn file_move_and_collected_commands_quote_run_names() {
+        assert_eq!(
+            FileMove {
+                source: "experiments:Run name.eds".to_string(),
+                destination: "public_run_complete:Run name.eds".to_string(),
+            }
+            .to_bytes(),
+            br#"FILE:MOVE "experiments:Run name.eds" "public_run_complete:Run name.eds""#
+        );
+        assert_eq!(
+            ExperimentCollected {
+                name: "Run name".to_string(),
+            }
+            .to_bytes(),
+            br#"EXP:ATTR= "Run name" collected true"#
+        );
     }
 
     // ---- MachineStatus tests ----

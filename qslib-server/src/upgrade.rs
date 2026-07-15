@@ -1,4 +1,4 @@
-//! `POST /upgrade` — replace the running binary in place, then restart into it.
+//! `POST /api/v1/server/upgrade` — replace the running binary and restart.
 //!
 //! Robustness is layered so a bad upload can never leave the instrument without
 //! a server:
@@ -16,7 +16,7 @@
 //!      it. The watchdog survives this process and the triggering HTTP
 //!      connection closing.
 //!
-//! The client confirms success by polling `/health` until `exe_sha256` equals
+//! The client confirms success by polling `/health` until `executable_sha256` equals
 //! the hash it uploaded (a persistent old hash means the watchdog rolled back).
 //!
 //! `?dry_run=1` runs steps 1–3 and reports the result without swapping or
@@ -29,12 +29,13 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use axum::body::Bytes;
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
+use crate::auth::{require_role, Principal, Role};
 use crate::error::ServerError;
 use crate::state::{sha256_hex, AppState};
 
@@ -93,10 +94,12 @@ impl Drop for UpgradeClaim<'_> {
 
 pub async fn upgrade(
     State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
     Query(params): Query<UpgradeParams>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
+    require_role(Extension(principal), Role::Administrator)?;
     let dry_run = params.is_dry_run();
     let exe = state.exe_path.clone();
     if exe.as_os_str().is_empty() {

@@ -10,16 +10,16 @@
 use anyhow::Context;
 use bstr::ByteSlice;
 
-use crate::server_client::ServerClient;
 use crate::com::{CommandError, FilterDataFilename, QSConnection};
 use crate::data::{FilterDataCollection, PlateData};
 use crate::parser::{Command, ErrorResponse};
 use crate::plate_setup::PlateSetup;
 use crate::protocol::Protocol;
+use crate::server_client::ServerClient;
 
 /// Absolute on-instrument root of the experiments tree (the `experiments` SCPI
-/// file context; see the Python `_SCPI_CONTEXT_ROOTS`). Used to turn a
-/// run-relative experiment path into the absolute path qslib-server serves.
+/// file context; see the Python `_SCPI_CONTEXT_ROOTS`). The server client maps
+/// this legacy absolute spelling to the corresponding named HTTP context.
 pub const INSTRUMENT_EXPERIMENTS_ROOT: &str = "/data/vendor/IS/experiments";
 
 /// Domain-object convenience methods on a core SCPI [`QSConnection`].
@@ -27,9 +27,10 @@ pub const INSTRUMENT_EXPERIMENTS_ROOT: &str = "/data/vendor/IS/experiments";
 /// Bring this trait into scope to call the methods on a connection value.
 ///
 /// The `_via` variants take an optional [`ServerClient`]: when present, the
-/// underlying experiment file is fetched over qslib-server's `/file` (raw off
-/// disk, no base64+TLS overhead on the instrument), falling back to SCPI on any
-/// server error. The plain methods are the SCPI-only path (`server = None`).
+/// underlying experiment file is fetched from qslib-server's named file
+/// resource (raw off disk, no base64+TLS overhead on the instrument), falling
+/// back to SCPI on a read error. The plain methods are the SCPI-only path
+/// (`server = None`).
 #[allow(async_fn_in_trait)]
 pub trait QSConnectionExt {
     /// Fetch and parse the plate setup for a run (or the current run).
@@ -67,7 +68,8 @@ pub trait QSConnectionExt {
 }
 
 /// Fetch an experiment file under a run's `apldbio/sds/` directory, preferring
-/// qslib-server's `/file` when `server` is set and falling back to SCPI.
+/// qslib-server's named file resource when `server` is set and falling back to
+/// SCPI.
 ///
 /// `sds_subpath` is relative to `apldbio/sds/` (e.g. `"plate_setup.xml"` or
 /// `"filter/<name>"`). `scpi_var_path` is the SCPI-side path used when
@@ -92,7 +94,9 @@ async fn fetch_sds_file(
             match server.get_abs_file(&abspath).await {
                 Ok(bytes) => return Ok(bytes),
                 Err(e) => {
-                    log::debug!("qslib-server fetch of {abspath} failed ({e}); falling back to SCPI");
+                    log::debug!(
+                        "qslib-server fetch of {abspath} failed ({e}); falling back to SCPI"
+                    );
                 }
             }
         }
@@ -177,7 +181,9 @@ impl QSConnectionExt for QSConnection {
             .plate_point_data
             .into_iter()
             .next()
-            .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No PlatePointData found")))?;
+            .ok_or_else(|| {
+                CommandError::InternalError(anyhow::anyhow!("No PlatePointData found"))
+            })?;
         let plate_data = plate_point_data
             .plate_data
             .into_iter()

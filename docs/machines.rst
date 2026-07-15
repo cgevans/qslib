@@ -22,6 +22,19 @@ Connections to a machine are handled through the :class:`Machine` class, or a :a
 Connections, Access Levels, and Passwords
 -----------------------------------------
 
+Direct SCPI is the default and permanent transport. A :class:`Machine` created
+without ``server_port`` performs no HTTP probes; automatic methods connect to
+InstrumentServer directly, and manual connection/access contexts preserve one
+SCPI session and its exact access semantics.
+
+An installation may optionally run ``qslib-server`` and opt in with
+``Machine(..., server_port=7500, server_token=...)``. Automatic bounded
+operations then prefer its versioned semantic HTTP API and named file
+resources. Explicit :meth:`Machine.connect`, raw commands, manual access
+contexts, and user subscriptions remain direct SCPI. If the service is absent,
+read operations safely fall back to direct SCPI; mutations whose HTTP outcome
+is uncertain are never repeated automatically.
+
 By default, as of 0.5.0, Machine automatically handles connections, disconnections, and, when possible (eg, for commands
 within qslib, rather than an arbitrary :func:`Machine.run_command`), access levels.
 

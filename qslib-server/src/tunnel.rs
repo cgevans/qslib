@@ -3,22 +3,28 @@
 //!
 //! qslib then speaks its normal plaintext SCPI (including async pub/sub) over
 //! the tunnel, with the instrument doing no TLS. Accessible either as
-//! `CONNECT /scpi` or as `GET /scpi` with an `Upgrade` header.
+//! Administrator-only `/api/v1/scpi/tunnel` passthrough connections.
 
-use axum::extract::{Request, State};
+use axum::extract::{Extension, Request, State};
 use axum::http::{header, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
+use crate::auth::{require_role, Principal, Role};
 use crate::error::ServerError;
 use crate::state::AppState;
 
 pub async fn tunnel(
     State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
     mut req: Request,
 ) -> Result<Response, ServerError> {
+    require_role(Extension(principal), Role::Administrator)?;
+    if !state.enable_scpi_tunnel {
+        return Err(ServerError::not_found("SCPI tunnel is disabled"));
+    }
     let is_connect = req.method() == Method::CONNECT;
 
     // For a GET upgrade, require the Upgrade request header so we do not hijack
@@ -32,7 +38,7 @@ pub async fn tunnel(
             .unwrap_or(false);
         if !wants_upgrade {
             return Err(ServerError::bad_request(
-                "GET /scpi requires `Upgrade: qslib-scpi`; use POST /scpi for one-shot commands",
+                "GET tunnel requires `Upgrade: qslib-scpi`",
             ));
         }
     }

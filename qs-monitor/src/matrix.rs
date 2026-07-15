@@ -22,6 +22,7 @@ use matrix_sdk::{
     },
 };
 use qslib::com_ext::QSConnectionExt;
+use qslib::server_client::ServerClient;
 use qslib::{
     com::{CommandError, QSConnection, SendCommandError},
     commands::{
@@ -64,6 +65,127 @@ struct FullSession {
     /// again.
     #[serde(skip_serializing_if = "Option::is_none")]
     sync_token: Option<String>,
+}
+
+fn configured_server(all_machines: &[MachineConfig], name: &str) -> Option<ServerClient> {
+    let machine = all_machines.iter().find(|machine| machine.name == name)?;
+    let port = machine.server_port.filter(|port| *port != 0)?;
+    Some(ServerClient::new(
+        &machine.host,
+        port,
+        machine.server_token.clone(),
+    ))
+}
+
+async fn server_status_html(server: &ServerClient) -> Result<String, String> {
+    let status = server
+        .instrument_status()
+        .await
+        .map_err(|error| error.to_string())?;
+    let run = if status.run.state.eq_ignore_ascii_case("idle") || status.run.name == "-" {
+        "idle".to_string()
+    } else {
+        format!(
+            "running {} (stage {}, cycle {}, step {})",
+            status.run.name, status.run.stage_name, status.run.cycle, status.run.step
+        )
+    };
+    Ok(format!(
+        "power {}, cover {} at {:.1}°C, {}.",
+        if status.power_enabled { "on" } else { "off" },
+        status.cover,
+        status.cover_temperature_c,
+        run
+    ))
+}
+
+fn idempotency_key(action: &str, machine: &str) -> String {
+    format!(
+        "qs-monitor-{action}-{machine}-{}",
+        chrono::Utc::now().timestamp_nanos_opt().unwrap_or_default()
+    )
+}
+
+async fn server_run_action(
+    server: &ServerClient,
+    machine: &str,
+    action: &str,
+) -> Result<(), String> {
+    let run = server
+        .current_run()
+        .await
+        .map_err(|error| error.to_string())?;
+    if run.name == "-" || run.state.eq_ignore_ascii_case("idle") {
+        return Err("there is no current run".to_string());
+    }
+    let operation = server
+        .run_action(&run.name, action, &idempotency_key(action, machine))
+        .await
+        .map_err(|error| error.to_string())?;
+    let operation = server
+        .wait_operation(&operation.id, Duration::from_secs(35))
+        .await
+        .map_err(|error| error.to_string())?;
+    if operation.state != "succeeded" {
+        return Err(format!("operation ended in state {}", operation.state));
+    }
+    Ok(())
+}
+
+fn format_protocol(protocol: &qslib::protocol::Protocol) -> String {
+    let mut output = format!(
+        "<b>Protocol: {}</b><br>Volume: {} µL<br>Run Mode: {}<br>",
+        protocol.name, protocol.volume, protocol.runmode
+    );
+    if !protocol.filters.is_empty() {
+        output.push_str(&format!(
+            "Default Filters: {}<br>",
+            protocol.filters.join(", ")
+        ));
+    }
+    output.push_str("<br><b>Stages:</b><br>");
+    for (index, stage) in protocol.stages.iter().enumerate() {
+        output.push_str(&format!(
+            "Stage {}: {} (repeat: {})<br>",
+            index + 1,
+            stage
+                .label
+                .clone()
+                .unwrap_or_else(|| format!("Stage {}", index + 1)),
+            stage.repeat
+        ));
+        for (step_index, stage_step) in stage.steps.iter().enumerate() {
+            match stage_step {
+                qslib::protocol::StageStep::Standard(step) => {
+                    let temperature = if step.temperature.len() == 6
+                        && step
+                            .temperature
+                            .iter()
+                            .all(|value| *value == step.temperature[0])
+                    {
+                        format!("{}°C", step.temperature[0])
+                    } else {
+                        format!("{:?}°C", step.temperature)
+                    };
+                    output.push_str(&format!(
+                        "  Step {}: {}s at {}{}<br>",
+                        step_index + 1,
+                        step.time,
+                        temperature,
+                        if step.collect == Some(true) {
+                            " (collect)"
+                        } else {
+                            ""
+                        }
+                    ));
+                }
+                qslib::protocol::StageStep::Custom(_) => {
+                    output.push_str(&format!("  Step {}: (custom SCPI)<br>", step_index + 1))
+                }
+            }
+        }
+    }
+    output
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -263,9 +385,23 @@ async fn handle_message(
                         }
                     }
                     None => {
-                        error!("Machine {} not found", m);
-                        send_matrix_message(&room, &format!("Machine {} not found", m), true)
-                            .await?;
+                        if let Some(server) = configured_server(all_machines, m) {
+                            match server_status_html(&server).await {
+                                Ok(status) => send_matrix_message(&room, &status, false).await?,
+                                Err(error) => {
+                                    send_matrix_message(
+                                        &room,
+                                        &format!("error getting status: {error}"),
+                                        true,
+                                    )
+                                    .await?
+                                }
+                            }
+                        } else {
+                            error!("Machine {} not found", m);
+                            send_matrix_message(&room, &format!("Machine {} not found", m), true)
+                                .await?;
+                        }
                     }
                 },
                 None => {
@@ -341,8 +477,19 @@ async fn handle_message(
                                 }
                             }
                             None => {
-                                statuses
-                                    .push_str("<span style='color: orange;'>not connected.</span>");
+                                if let Some(server) = configured_server(all_machines, &machine_name)
+                                {
+                                    match server_status_html(&server).await {
+                                        Ok(status) => statuses.push_str(&status),
+                                        Err(error) => statuses.push_str(&format!(
+                                            "<span style='color: red;'>error getting status: {error}.</span>"
+                                        )),
+                                    }
+                                } else {
+                                    statuses.push_str(
+                                        "<span style='color: orange;'>not connected.</span>",
+                                    );
+                                }
                             }
                         }
                         statuses.push_str("</li>");
@@ -380,7 +527,34 @@ async fn handle_message(
                     }
                     conn.set_access_level(AccessLevel::Observer).await?;
                 }
-                None => error!("Machine {} not found", machine),
+                None => {
+                    if let Some(server) = configured_server(all_machines, machine) {
+                        match server.capabilities().await {
+                            Ok(capabilities) if capabilities.raw_scpi => {
+                                match server.raw_scpi(&commandstring).await {
+                                    Ok(response) => {
+                                        send_matrix_message(&room, &response, false).await?
+                                    }
+                                    Err(error) => {
+                                        send_matrix_message(&room, &format!("Error: {error}"), true)
+                                            .await?
+                                    }
+                                }
+                            }
+                            Ok(_) => send_matrix_message(
+                                &room,
+                                "Arbitrary commands require administrator raw SCPI to be enabled",
+                                true,
+                            )
+                            .await?,
+                            Err(error) => {
+                                send_matrix_message(&room, &format!("Error: {error}"), true).await?
+                            }
+                        }
+                    } else {
+                        error!("Machine {} not found", machine);
+                    }
+                }
             }
 
             Ok(())
@@ -412,7 +586,26 @@ async fn handle_message(
                     }
                     send_matrix_message(&room, "Drawer closed and cover lowered", false).await?;
                 }
-                None => error!("Machine {} not found", machine),
+                None => {
+                    if let Some(server) = configured_server(all_machines, machine) {
+                        match server.set_drawer("closed", true, true).await {
+                            Ok(()) => {
+                                send_matrix_message(&room, "Drawer closed and cover lowered", false)
+                                    .await?
+                            }
+                            Err(error) => {
+                                send_matrix_message(
+                                    &room,
+                                    &format!("Error closing drawer: {error}"),
+                                    true,
+                                )
+                                .await?
+                            }
+                        }
+                    } else {
+                        error!("Machine {} not found", machine);
+                    }
+                }
             }
             Ok(())
         }
@@ -434,7 +627,23 @@ async fn handle_message(
                     }
                     send_matrix_message(&room, "Drawer opened", false).await?;
                 }
-                None => error!("Machine {} not found", machine),
+                None => {
+                    if let Some(server) = configured_server(all_machines, machine) {
+                        match server.set_drawer("open", false, true).await {
+                            Ok(()) => send_matrix_message(&room, "Drawer opened", false).await?,
+                            Err(error) => {
+                                send_matrix_message(
+                                    &room,
+                                    &format!("Error opening drawer: {error}"),
+                                    true,
+                                )
+                                .await?
+                            }
+                        }
+                    } else {
+                        error!("Machine {} not found", machine);
+                    }
+                }
             }
             Ok(())
         }
@@ -461,9 +670,23 @@ async fn handle_message(
                     }
                 }
                 None => {
-                    error!("Machine {} not found", machine);
-                    send_matrix_message(&room, &format!("Machine {} not found", machine), true)
-                        .await?;
+                    if let Some(server) = configured_server(all_machines, machine) {
+                        match server_run_action(&server, machine, "abort").await {
+                            Ok(()) => send_matrix_message(&room, "Run aborted", false).await?,
+                            Err(error) => {
+                                send_matrix_message(
+                                    &room,
+                                    &format!("Error aborting run: {error}"),
+                                    true,
+                                )
+                                .await?
+                            }
+                        }
+                    } else {
+                        error!("Machine {} not found", machine);
+                        send_matrix_message(&room, &format!("Machine {} not found", machine), true)
+                            .await?;
+                    }
                 }
             }
             Ok(())
@@ -491,9 +714,23 @@ async fn handle_message(
                     }
                 }
                 None => {
-                    error!("Machine {} not found", machine);
-                    send_matrix_message(&room, &format!("Machine {} not found", machine), true)
-                        .await?;
+                    if let Some(server) = configured_server(all_machines, machine) {
+                        match server_run_action(&server, machine, "stop").await {
+                            Ok(()) => send_matrix_message(&room, "Run stopped", false).await?,
+                            Err(error) => {
+                                send_matrix_message(
+                                    &room,
+                                    &format!("Error stopping run: {error}"),
+                                    true,
+                                )
+                                .await?
+                            }
+                        }
+                    } else {
+                        error!("Machine {} not found", machine);
+                        send_matrix_message(&room, &format!("Machine {} not found", machine), true)
+                            .await?;
+                    }
                 }
             }
             Ok(())
@@ -580,9 +817,73 @@ async fn handle_message(
                     }
                 }
                 None => {
-                    error!("Machine {} not found", machine);
-                    send_matrix_message(&room, &format!("Machine {} not found", machine), true)
-                        .await?;
+                    if let Some(server) = configured_server(all_machines, machine) {
+                        match action {
+                            None => match server.instrument_status().await {
+                                Ok(status) => {
+                                    send_matrix_message(
+                                        &room,
+                                        &format!(
+                                            "Power status for {}: {}",
+                                            machine,
+                                            if status.power_enabled { "on" } else { "off" }
+                                        ),
+                                        false,
+                                    )
+                                    .await?
+                                }
+                                Err(error) => {
+                                    send_matrix_message(
+                                        &room,
+                                        &format!("Error getting power status: {error}"),
+                                        true,
+                                    )
+                                    .await?
+                                }
+                            },
+                            Some("on") | Some("off") if settings.allow_control => {
+                                let enabled = action == Some("on");
+                                match server.set_power(enabled).await {
+                                    Ok(()) => {
+                                        send_matrix_message(
+                                            &room,
+                                            &format!(
+                                                "Power turned {} for {}",
+                                                action.unwrap(),
+                                                machine
+                                            ),
+                                            false,
+                                        )
+                                        .await?
+                                    }
+                                    Err(error) => {
+                                        send_matrix_message(
+                                            &room,
+                                            &format!("Error changing power: {error}"),
+                                            true,
+                                        )
+                                        .await?
+                                    }
+                                }
+                            }
+                            Some("on") | Some("off") => {
+                                send_matrix_message(&room, "Control commands are not allowed", true)
+                                    .await?
+                            }
+                            Some(invalid) => {
+                                send_matrix_message(
+                                    &room,
+                                    &format!("Invalid power action: {invalid}. Use 'on' or 'off'"),
+                                    true,
+                                )
+                                .await?
+                            }
+                        }
+                    } else {
+                        error!("Machine {} not found", machine);
+                        send_matrix_message(&room, &format!("Machine {} not found", machine), true)
+                            .await?;
+                    }
                 }
             }
             Ok(())
@@ -601,60 +902,7 @@ async fn handle_message(
                     let (conn, _) = x.value();
                     match conn.get_running_protocol().await {
                         Ok(protocol) => {
-                            let mut output = format!(
-                                "<b>Protocol: {}</b><br>\
-                                Volume: {} µL<br>\
-                                Run Mode: {}<br>",
-                                protocol.name, protocol.volume, protocol.runmode
-                            );
-                            if !protocol.filters.is_empty() {
-                                output.push_str(&format!(
-                                    "Default Filters: {}<br>",
-                                    protocol.filters.join(", ")
-                                ));
-                            }
-                            output.push_str("<br><b>Stages:</b><br>");
-                            for (i, stage) in protocol.stages.iter().enumerate() {
-                                output.push_str(&format!(
-                                    "Stage {}: {} (repeat: {})<br>",
-                                    i + 1,
-                                    stage.label.as_ref().unwrap_or(&format!("Stage {}", i + 1)),
-                                    stage.repeat
-                                ));
-                                for (j, stage_step) in stage.steps.iter().enumerate() {
-                                    match stage_step {
-                                        qslib::protocol::StageStep::Standard(step) => {
-                                            let temp_str = if step.temperature.len() == 6
-                                                && step
-                                                    .temperature
-                                                    .iter()
-                                                    .all(|&t| t == step.temperature[0])
-                                            {
-                                                format!("{}°C", step.temperature[0])
-                                            } else {
-                                                format!("{:?}°C", step.temperature)
-                                            };
-                                            output.push_str(&format!(
-                                                "  Step {}: {}s at {}",
-                                                j + 1,
-                                                step.time,
-                                                temp_str
-                                            ));
-                                            if step.collect == Some(true) {
-                                                output.push_str(" (collect)");
-                                            }
-                                            output.push_str("<br>");
-                                        }
-                                        qslib::protocol::StageStep::Custom(_) => {
-                                            output.push_str(&format!(
-                                                "  Step {}: (custom SCPI)<br>",
-                                                j + 1
-                                            ));
-                                        }
-                                    }
-                                }
-                            }
-                            send_matrix_message(&room, &output, false).await?;
+                            send_matrix_message(&room, &format_protocol(&protocol), false).await?;
                         }
                         Err(e) => {
                             error!("Error getting protocol: {}", e);
@@ -668,9 +916,48 @@ async fn handle_message(
                     }
                 }
                 None => {
-                    error!("Machine {} not found", machine);
-                    send_matrix_message(&room, &format!("Machine {} not found.", machine), true)
+                    if let Some(server) = configured_server(all_machines, machine) {
+                        let result = async {
+                            let run = server
+                                .current_run()
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            if run.name == "-" || run.state.eq_ignore_ascii_case("idle") {
+                                return Err("there is no current run".to_string());
+                            }
+                            let xml = server
+                                .protocol_xml(&run.name)
+                                .await
+                                .map_err(|error| error.to_string())?;
+                            let xml =
+                                std::str::from_utf8(&xml).map_err(|error| error.to_string())?;
+                            qslib::protocol::Protocol::from_xml_str(xml)
+                                .map_err(|error| error.to_string())
+                        }
+                        .await;
+                        match result {
+                            Ok(protocol) => {
+                                send_matrix_message(&room, &format_protocol(&protocol), false)
+                                    .await?
+                            }
+                            Err(error) => {
+                                send_matrix_message(
+                                    &room,
+                                    &format!("Error getting protocol: {error}"),
+                                    true,
+                                )
+                                .await?
+                            }
+                        }
+                    } else {
+                        error!("Machine {} not found", machine);
+                        send_matrix_message(
+                            &room,
+                            &format!("Machine {} not found.", machine),
+                            true,
+                        )
                         .await?;
+                    }
                 }
             }
             Ok(())
@@ -1054,8 +1341,11 @@ pub async fn setup_matrix(
 
     let qs_connections_for_tasks = qs_connections.clone();
 
-    for x in qs_connections.iter() {
-        let name = x.value().1.name.clone();
+    for machine in all_machines
+        .iter()
+        .filter(|machine| machine.server_port.is_none() || machine.server_port == Some(0))
+    {
+        let name = machine.name.clone();
         let tx = tx.clone();
         let qs_connections_clone = qs_connections_for_tasks.clone();
         let task_name = name.clone();
@@ -1115,6 +1405,48 @@ pub async fn setup_matrix(
                             last_conn_id = None;
                             break;
                         }
+                    }
+                }
+            }
+        });
+    }
+
+    for machine in all_machines
+        .iter()
+        .filter(|machine| machine.server_port.is_some_and(|port| port != 0))
+    {
+        let task_name = machine.name.clone();
+        let server = configured_server(&all_machines, &task_name)
+            .expect("filtered qslib-server machine has a client");
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let mut events = server.event_stream(None).await;
+            loop {
+                match events.next().await {
+                    Ok(event) if event.event == "run" => {
+                        let payload = event.data.get("data").unwrap_or(&event.data);
+                        let Some(message) = payload.get("message").and_then(|value| value.as_str())
+                        else {
+                            continue;
+                        };
+                        let message = LogMessage {
+                            topic: "Run".to_string(),
+                            timestamp: payload
+                                .get("instrument_timestamp")
+                                .and_then(|value| value.as_f64()),
+                            message: message.to_string(),
+                        };
+                        if tx.send((task_name.clone(), message)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(error) => {
+                        warn!(
+                            "qslib-server event stream for {} failed: {}",
+                            task_name, error
+                        );
+                        tokio::time::sleep(Duration::from_secs(1)).await;
                     }
                 }
             }

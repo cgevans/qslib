@@ -7,12 +7,14 @@ from __future__ import annotations
 import base64
 import gzip
 import hashlib
+import fnmatch
 import logging
 import random
 import re
 import shlex
 import time
 import zipfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -23,7 +25,7 @@ from typing import TypedDict
 from ._qslib import QSConnection, CommandError
 import io
 from http.client import HTTPException
-from .server import ServerClient, ServerError
+from .server import ServerClient, ServerError, ServerOutcomeUnknown, ServerUnavailable
 from .data import FilterSet
 
 if TYPE_CHECKING:
@@ -102,6 +104,14 @@ def _scpi_locator_abspath(locator: str) -> str | None:
     return posixpath.join(base, *parts) if parts else base
 
 
+def _join_scpi_path(prefix: str, relative: str) -> str:
+    if not prefix:
+        return relative
+    if prefix.endswith(":"):
+        return prefix + relative
+    return posixpath.join(prefix, relative)
+
+
 class FileListInfo(TypedDict, total=False):
     """Information about a file when verbose=True"""
 
@@ -172,10 +182,16 @@ if TYPE_CHECKING:  # pragma: no cover
     from .experiment import Experiment
 
 
+_NO_SEMANTIC_RESULT = object()
+
+
 def _ensure_connection(level: AccessLevel = AccessLevel.Observer) -> Any:
     def wrap(func):
         @wraps(func)
         def wrapped(m: Machine, *args: Any, **kwargs: Any) -> Any:
+            semantic = m._semantic_dispatch(func.__name__, args, kwargs)
+            if semantic is not _NO_SEMANTIC_RESULT:
+                return semantic
             if m.automatic:
                 with m.ensured_connection(level):
                     return func(m, *args, **kwargs)
@@ -255,7 +271,6 @@ class Machine:
     server_port: int | None = None
     server_token: str | None = None
     _server: ServerClient | None = None
-    _prefer_server_files: bool = False
 
     def asdict(self, password: bool = False) -> dict[str, str | int | None]:
         d: dict[str, str | int | None] = {"host": self.host}
@@ -339,25 +354,15 @@ class Machine:
         self.server_token = server_token
         self.server_connect_timeout = server_connect_timeout
         self._server = None
-        self._prefer_server_files = False
 
     def connect(self) -> None:
         """Open the connection manually.
 
-        When ``server_port`` is set and no secure direct channel
-        was requested, this first tries to connect through a ``qslib-server``
-        SCPI tunnel on that port, falling back to a direct SSL/TCP SCPI
-        connection if qslib-server is not reachable. An explicit secure direct
-        channel — ``ssl=True`` or any TLS certificate/verification option — is
-        honored directly and never replaced by the plaintext tunnel. The
-        qslib-server tunnel is opt-in; pass its port (normally ``7500``) as
-        ``server_port`` to enable it.
+        Manual connections are always direct SCPI. ``server_port`` opts
+        automatic high-level methods into the semantic HTTP API; it does not
+        silently turn a manually owned session into an administrator tunnel.
         """
-        conn = None
-        if self.server_port is not None and not self._prefers_direct_connection():
-            conn = self._try_server_connection()
-        if conn is None:
-            conn = self._direct_connection()
+        conn = self._direct_connection()
         self.connection = conn
 
         if self.password is not None:
@@ -376,53 +381,8 @@ class Machine:
                 raise
         self._current_access_level = self.get_access_level()[0]
 
-    def _prefers_direct_connection(self) -> bool:
-        """Whether the caller explicitly asked for a secure direct SCPI channel
-        (``ssl=True`` or any TLS certificate/verification option). That request
-        is honored directly rather than being silently replaced by the
-        plaintext qslib-server tunnel."""
-        return self.ssl is True or any(
-            value is not None
-            for value in (
-                self.client_certificate_path,
-                self.client_key_path,
-                self.server_ca_file,
-                self.tls_server_name,
-            )
-        )
-
-    def _try_server_connection(self) -> QSConnection | None:
-        """Try to connect through the qslib-server SCPI tunnel.
-
-        Returns the connection, or ``None`` if qslib-server is not configured
-        (``server_port is None``) or not reachable within
-        ``server_connect_timeout``.
-        """
-        if self.server_port is None:
-            return None
-        try:
-            conn = QSConnection(
-                host=self.host,
-                port=self.server_port,
-                connection_type="Server",
-                server_token=self.server_token,
-                timeout=self.server_connect_timeout,
-            )
-            log.debug("connected to %s via qslib-server tunnel (port %s)", self.host, self.server_port)
-            self._prefer_server_files = True
-            return conn
-        except Exception as e:
-            log.debug(
-                "qslib-server tunnel on %s:%s unavailable (%s); using direct SCPI",
-                self.host,
-                self.server_port,
-                e,
-            )
-            return None
-
     def _direct_connection(self) -> QSConnection:
         """Open a direct SSL/TCP SCPI connection (the non-qslib-server path)."""
-        self._prefer_server_files = False
         if self.ssl is True:
             connection_type = "SSL"
         elif self.ssl is False:
@@ -597,9 +557,9 @@ class Machine:
     def download_dir(self, remote_dir: str, dest_dir: str | Path, *, leaf: str = "FILE", fast: bool = True) -> bool:
         """Download a directory tree from the machine into ``dest_dir`` over HTTP.
 
-        When connected to ``qslib-server`` (see :meth:`connect`/:meth:`ensure_server`)
-        and ``fast`` is true, the directory is enumerated via qslib-server's
-        ``/list`` and each file is fetched raw (no ``ZIPREAD`` base64+deflate),
+        When ``qslib-server`` is explicitly configured and ``fast`` is true,
+        the directory is enumerated via its named directory resource and each
+        file is fetched raw (no ``ZIPREAD`` base64+deflate),
         preserving the tree under ``dest_dir`` — the same on-disk layout that
         extracting :meth:`read_dir_as_zip` produces.
 
@@ -719,20 +679,18 @@ class Machine:
         fast: bool = True,
         fallback: bool = True,
     ) -> bytes:
-        """Read a file, preferring qslib-server's HTTP transfer when connected.
+        """Read a file, preferring qslib-server's HTTP transfer when configured.
 
-        When the machine is connected to ``qslib-server`` (see :meth:`connect`
-        and :meth:`ensure_server`) and ``fast`` is true, the file is fetched
+        When the machine has an explicitly configured ``qslib-server`` and
+        ``fast`` is true, the file is fetched
         over plain HTTP straight off disk, avoiding the base64+TLS overhead of
         ``FILE:READ`` over SCPI. Otherwise, or on any qslib-server error when
         ``fallback`` is true, it is read over SCPI.
 
-        The HTTP path resolves ``(context, path)`` to an absolute on-instrument
-        path (via the InstrumentServer ``locations.ini`` context map) and fetches
-        it from qslib-server if it falls under qslib-server's ``--file-root``.
-        This covers the default ``FILE`` context and known contexts such as
-        ``public_run_complete`` (completed ``.eds`` files). An unknown context, a
-        non-``FILE`` leaf, or a path outside the served root falls back to SCPI.
+        The HTTP path resolves ``(context, path)`` to one of qslib-server's
+        advertised named contexts. This covers the default ``FILE`` context and
+        known contexts such as ``public_run_complete`` (completed ``.eds``
+        files). An unknown context or a non-``FILE`` leaf falls back to SCPI.
 
         Parameters
         ----------
@@ -796,16 +754,321 @@ class Machine:
         if self.server_port is None:
             return None
         if self._server is None:
-            self._server = ServerClient(self.host, port=self.server_port, token=self.server_token)
+            self._server = ServerClient(
+                self.host,
+                port=self.server_port,
+                token=self.server_token,
+                timeout=float(self.server_connect_timeout),
+            )
         return self._server
+
+    def _semantic_server(self, resource: str, *, mutation: bool = False) -> ServerClient | None:
+        """Select the semantic backend without opening a SCPI connection.
+
+        A manually owned/direct connection always wins. Capability failures are
+        negatively cached by :class:`ServerClient`, so an absent optional
+        server adds no repeated latency to direct workflows.
+        """
+        if self.server_port is None or not self.automatic or self.connected:
+            return None
+        server = self.server
+        assert server is not None
+        try:
+            capabilities = server.capabilities()
+        except ServerError:
+            return None
+        if resource not in capabilities.get("resources", []):
+            return None
+        if mutation:
+            if resource == "files" and not capabilities.get("file_writes", False):
+                return None
+            if resource != "files" and not capabilities.get("controls", False):
+                return None
+        return server
+
+    @staticmethod
+    def _run_status_from_server(value: dict[str, Any]) -> RunStatus:
+        fields = [
+            str(value.get("name", "-")),
+            str(value.get("stage_name", value.get("stage", -1))),
+            str(value.get("num_stages", -1)),
+            str(value.get("cycle", -1)),
+            str(value.get("num_cycles", -1)),
+            str(value.get("step", -1)),
+            str(value.get("point", -1)),
+            str(value.get("state", "unknown")).upper(),
+        ]
+        return RunStatus.from_bytes(shlex.join(fields).encode())
+
+    @staticmethod
+    def _machine_status_from_server(value: dict[str, Any]) -> MachineStatus:
+        target_temperatures = " ".join(
+            f"-{key}={temperature}" for key, temperature in value.get("target_temperatures_c", {}).items()
+        )
+        target_controlled = " ".join(
+            f"-{key}={'True' if controlled else 'False'}"
+            for key, controlled in value.get("target_controlled", {}).items()
+        )
+        fields = [
+            str(value.get("drawer", "unknown")).title(),
+            str(value.get("cover", "unknown")).title(),
+            str(value.get("lamp_status", "unknown")),
+            " ".join(str(number) for number in value.get("sample_temperatures_c", [])),
+            " ".join(str(number) for number in value.get("block_temperatures_c", [])),
+            str(value.get("cover_temperature_c", 0.0)),
+            target_temperatures,
+            target_controlled,
+            str(value.get("led_temperature_c", 0.0)),
+        ]
+        return MachineStatus.from_bytes(shlex.join(fields).encode())
+
+    def _semantic_dispatch(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+        """Dispatch bounded high-level calls before the connection decorator.
+
+        Returning ``_NO_SEMANTIC_RESULT`` means the permanent direct-SCPI
+        implementation should run unchanged.
+        """
+        read_methods = {
+            "run_status",
+            "machine_status",
+            "get_zone_count",
+            "status_led",
+            "block",
+            "read_file",
+            "_get_log_from_byte",
+        }
+        mutations = {
+            "drawer_open",
+            "drawer_close",
+            "cover_lower",
+            "set_status_led",
+            "status_led_off",
+            "abort_current_run",
+            "stop_current_run",
+            "pause_current_run",
+            "resume_current_run",
+            "compile_eds",
+            "write_file",
+        }
+        if name not in read_methods | mutations | {"download_dir", "list_files"}:
+            return _NO_SEMANTIC_RESULT
+
+        is_mutation = name in mutations or (name in {"block", "status_led"} and bool(args))
+        if name in {"read_file", "write_file", "download_dir", "list_files", "_get_log_from_byte"}:
+            fast = bool(kwargs.get("fast", True))
+            if not fast:
+                return _NO_SEMANTIC_RESULT
+            server = self._semantic_server("files", mutation=name == "write_file")
+        elif name in {
+            "run_status",
+            "pause_current_run",
+            "resume_current_run",
+            "stop_current_run",
+            "abort_current_run",
+            "compile_eds",
+        }:
+            server = self._semantic_server("runs", mutation=is_mutation)
+        else:
+            server = self._semantic_server("instrument", mutation=is_mutation)
+        if server is None:
+            return _NO_SEMANTIC_RESULT
+
+        try:
+            if name == "run_status":
+                return self._run_status_from_server(server.current_run())
+            if name == "machine_status":
+                return self._machine_status_from_server(server.instrument_status())
+            if name == "get_zone_count":
+                return int(server.instrument_status()["zone_count"])
+            if name == "drawer_open":
+                server.set_drawer("open", lower_cover=False, verify=True)
+                return None
+            if name == "drawer_close":
+                lower_cover = bool(args[0]) if args else bool(kwargs.get("lower_cover", True))
+                check = bool(args[1]) if len(args) > 1 else bool(kwargs.get("check", True))
+                server.set_drawer("closed", lower_cover=lower_cover, verify=check)
+                return None
+            if name == "cover_lower":
+                check = bool(args[0]) if args else bool(kwargs.get("check", True))
+                ensure_drawer = bool(args[1]) if len(args) > 1 else bool(kwargs.get("ensure_drawer", True))
+                if ensure_drawer:
+                    server.set_drawer("closed", lower_cover=True, verify=check)
+                else:
+                    server.set_cover("down", verify=check)
+                return None
+            if name == "set_status_led":
+                color = args[0] if args else kwargs["color"]
+                mode = args[1] if len(args) > 1 else kwargs.get("mode", "on")
+                color_name = str(getattr(color, "value", color)).split(".")[-1]
+                mode_name = str(getattr(mode, "value", mode)).split(".")[-1]
+                server.set_indicator(color_name, mode_name)
+                return None
+            if name == "status_led_off":
+                current = server.instrument_status().get("indicator", {})
+                server.set_indicator(str(current.get("color") or "white"), "off")
+                return None
+            if name == "status_led":
+                if args:
+                    value = args[0]
+                    if isinstance(value, tuple):
+                        color, mode = value
+                    else:
+                        color, mode = value, "on"
+                    color_name = str(getattr(color, "value", color)).split(".")[-1]
+                    mode_name = str(getattr(mode, "value", mode)).split(".")[-1]
+                    server.set_indicator(color_name, mode_name)
+                    return None
+                indicator = server.instrument_status()["indicator"]
+                return StatusLedState.from_bytes(
+                    f"{indicator.get('color') or '-'} {indicator.get('mode', 'off')}".encode()
+                )
+            if name == "block":
+                if not args:
+                    block = server.instrument_status()["block"]
+                    return bool(block["enabled"]), float(block["target_c"])
+                value = args[0]
+                if value is None or value is False:
+                    server.set_block(False)
+                elif value is True:
+                    server.set_block(True)
+                elif isinstance(value, tuple):
+                    server.set_block(bool(value[0]), float(value[1]))
+                else:
+                    server.set_block(True, float(value))
+                return None
+            if name in {"pause_current_run", "resume_current_run", "stop_current_run", "abort_current_run"}:
+                action = name.removesuffix("_current_run")
+                current = server.current_run().get("name", "")
+                operation = server.run_action(str(current), action)
+                completed = server.wait_operation(operation)
+                if completed.get("state") != "succeeded":
+                    raise ServerError(f"server {action} operation failed: {completed.get('error')}")
+                return None
+            if name == "compile_eds":
+                operation = server.run_action(str(args[0]), "compile")
+                completed = server.wait_operation(operation, timeout=610.0)
+                if completed.get("state") != "succeeded":
+                    raise ServerError(f"server compile operation failed: {completed.get('error')}")
+                return None
+            if name == "read_file":
+                path = str(args[0])
+                context = args[1] if len(args) > 1 else kwargs.get("context")
+                leaf = args[2] if len(args) > 2 else kwargs.get("leaf", "FILE")
+                if leaf != "FILE" or "${" in path:
+                    return _NO_SEMANTIC_RESULT
+                locator = (f"{context}:" if context else "") + path
+                absolute = _scpi_locator_abspath(locator)
+                if absolute is None:
+                    return _NO_SEMANTIC_RESULT
+                data = server.get_abs_file(absolute)
+                assert data is not None
+                return data
+            if name == "_get_log_from_byte":
+                run_name = args[0].decode() if isinstance(args[0], bytes) else str(args[0])
+                offset = int(args[1])
+                absolute = f"/data/vendor/IS/experiments/{run_name}/apldbio/sds/messages.log"
+                data = server.get_abs_file(absolute, range_start=offset)
+                assert data is not None
+                return data
+            if name == "write_file":
+                path, data = str(args[0]), args[1]
+                if "${" in path:
+                    return _NO_SEMANTIC_RESULT
+                absolute = _scpi_locator_abspath(path)
+                if absolute is None:
+                    return _NO_SEMANTIC_RESULT
+                server.put_abs_file(absolute, data.encode() if isinstance(data, str) else data)
+                return None
+            if name == "download_dir":
+                remote_dir, destination = str(args[0]), args[1]
+                leaf = str(kwargs.get("leaf", "FILE"))
+                context = _SCPI_LEAF_DEFAULT_CONTEXT.get(leaf, leaf)
+                absolute = _scpi_locator_abspath((f"{context}:" if context else "") + remote_dir)
+                if absolute is None:
+                    return _NO_SEMANTIC_RESULT
+                server.download_dir(absolute, destination)
+                return True
+            if name == "list_files":
+                path = str(args[0])
+                leaf = str(kwargs.get("leaf", "FILE"))
+                verbose = bool(kwargs.get("verbose", False))
+                recursive = bool(kwargs.get("recursive", False))
+                if leaf.upper() not in {"FILE", "EXP"}:
+                    return _NO_SEMANTIC_RESULT
+                if leaf.upper() == "EXP" and ":" not in path:
+                    names = [str(item) for item in server.list_experiments().get("experiments", [])]
+                    pattern = path.rstrip("/") or "*"
+                    names = [item for item in names if fnmatch.fnmatch(item, pattern)]
+                    if not verbose:
+                        return [f"{item}/" for item in names]
+                    epoch = datetime.fromtimestamp(0, tz=timezone.utc)
+                    return [
+                        FileListInfo(
+                            path=f"{item}/",
+                            type="folder",
+                            size=0,
+                            mtime=epoch,
+                            atime=epoch,
+                            ctime=epoch,
+                        )
+                        for item in names
+                    ]
+                context = _SCPI_LEAF_DEFAULT_CONTEXT.get(leaf, leaf)
+                absolute = _scpi_locator_abspath((f"{context}:" if context else "") + path)
+                if absolute is None:
+                    return _NO_SEMANTIC_RESULT
+                pattern = None
+                list_absolute = absolute
+                relative_name = posixpath.basename(absolute)
+                if any(character in relative_name for character in "*?["):
+                    pattern = relative_name
+                    list_absolute = posixpath.dirname(absolute)
+                entries = server.list_dir(list_absolute)
+                if pattern is not None:
+                    entries = [item for item in entries if fnmatch.fnmatch(posixpath.basename(str(item["path"])), pattern)]
+                    prefix = path[: len(path) - len(posixpath.basename(path))].rstrip("/")
+                else:
+                    prefix = path.rstrip("/")
+                if not recursive:
+                    entries = [item for item in entries if "/" not in str(item["path"])]
+                if not verbose:
+                    return [_join_scpi_path(prefix, str(item["path"])) for item in entries]
+                result: list[FileListInfo] = []
+                for item in entries:
+                    modified = item.get("modified_at")
+                    when = (
+                        datetime.fromisoformat(str(modified).replace("Z", "+00:00"))
+                        if modified
+                        else datetime.fromtimestamp(0, tz=timezone.utc)
+                    )
+                    result.append(
+                        FileListInfo(
+                            path=_join_scpi_path(prefix, str(item["path"])),
+                            type="file",
+                            size=int(item["size"]),
+                            mtime=when,
+                            atime=when,
+                            ctime=when,
+                        )
+                    )
+                return result
+        except ServerUnavailable:
+            return _NO_SEMANTIC_RESULT
+        except ServerOutcomeUnknown:
+            raise
+        except (ServerError, OSError, HTTPException):
+            if is_mutation:
+                raise
+            log.debug("semantic server read failed for %s; using direct SCPI", name, exc_info=True)
+            return _NO_SEMANTIC_RESULT
+        return _NO_SEMANTIC_RESULT
 
     def _fast_server(self, fast: bool) -> ServerClient | None:
         """The qslib-server client to use for a fast-path file transfer, or
-        ``None`` when the fast path is disabled (``fast`` false), not preferred
-        (not connected through the tunnel), or unavailable (no ``server_port``)."""
-        if not (fast and self._prefer_server_files):
+        ``None`` when the fast path is disabled or unavailable."""
+        if not fast:
             return None
-        return self.server
+        return self._semantic_server("files")
 
     def ensure_server(
         self,
@@ -813,7 +1076,7 @@ class Machine:
         *,
         listen: str,
         remote_path: str = "/data/qslib-server",
-        file_root: str = "/",
+        file_root: str = "/data/vendor/IS",
         extra_args: tuple[str, ...] = (),
         timeout: float = 5.0,
     ) -> ServerClient:
@@ -827,7 +1090,7 @@ class Machine:
         background via ``SYST:EXEC`` (root), then polled until ready.
 
         On success, subsequent :meth:`read_file` calls prefer qslib-server's
-        HTTP transfer.
+        semantic HTTP transfer.
 
         Parameters
         ----------
@@ -841,10 +1104,8 @@ class Machine:
         remote_path
             Persistent path to install the binary to on the instrument.
         file_root
-            ``--file-root`` for qslib-server (default ``"/"``, so it can serve
-            completed ``.eds`` files under ``/sdcard`` as well as experiment
-            data under ``/data/vendor/IS``). qslib-server binds the private eth0
-            IP only, so this is exposed solely on the trusted local cable.
+            Base of qslib-server's named InstrumentServer contexts. Completed
+            run contexts are resolved separately under ``/sdcard``.
         extra_args
             Additional qslib-server CLI arguments.
 
@@ -861,7 +1122,6 @@ class Machine:
 
         try:
             client.health()
-            self._prefer_server_files = True
             return client
         except ServerError:
             pass
@@ -894,13 +1154,37 @@ class Machine:
             _safe("extra_arg", a)
 
         data = Path(binary).read_bytes() if isinstance(binary, str) else binary
-        args = [remote_path, "--listen", listen, "--file-root", file_root]
-        args += ["--token", self.server_token] if self.server_token else ["--no-auth"]
+        auth_path = remote_path + ".auth.toml"
+        _safe("auth_path", auth_path)
+        args = [
+            remote_path,
+            "--listen",
+            listen,
+            "--file-root",
+            file_root,
+            "--allow-file-writes",
+            "--allow-controls",
+        ]
+        if self.server_token:
+            token_hash = hashlib.sha256(self.server_token.encode()).hexdigest()
+            auth_toml = (
+                "[[tokens]]\n"
+                'name = "qslib-bootstrap"\n'
+                f'sha256 = "{token_hash}"\n'
+                'role = "administrator"\n'
+            ).encode()
+            args += ["--auth-config", auth_path]
+        else:
+            auth_toml = None
+            args += ["--no-auth", "--unauthenticated-role", "administrator"]
         args += list(extra_args)
         cmdline = " ".join(shlex.quote(a) for a in args)
 
         # SYST:EXEC needs Controller; hold it for the whole deploy + launch.
         with self.ensured_connection(AccessLevel.Controller):
+            if auth_toml is not None:
+                self._deploy_binary(auth_path, auth_toml)
+                self.run_command(f'SYST:EXEC "chmod 600 {shlex.quote(auth_path)}"')
             self._deploy_binary(remote_path, data)
             self.run_command(f'SYST:EXEC "chmod 755 {shlex.quote(remote_path)}"')
             # nohup so qslib-server survives the SYST:EXEC shell exiting.
@@ -910,7 +1194,6 @@ class Machine:
         while time.monotonic() < deadline:
             try:
                 client.health()
-                self._prefer_server_files = True
                 return client
             except (ServerError, OSError, HTTPException):
                 time.sleep(0.1)
@@ -927,13 +1210,13 @@ class Machine:
 
         Unlike :meth:`ensure_server` (which deploys over SCPI and only helps when
         nothing is running), this replaces an *already running* qslib-server
-        through its own ``/upgrade`` endpoint: the binary is uploaded raw (fast,
+        through its versioned upgrade endpoint: the binary is uploaded raw (fast,
         no base64+SCPI), verified by SHA-256 and a ``--version`` run on the
         instrument, installed atomically, and the server restarts into it —
         rolling back to the previous binary if the new one fails to start.
 
         Success is confirmed by polling ``/health`` until the running
-        ``exe_sha256`` equals the uploaded binary's hash; a persistent old hash
+        ``executable_sha256`` equals the uploaded binary's hash; a persistent old hash
         means the instrument rolled back, and this raises. Returns the
         :class:`~qslib.server.ServerClient` on success.
 
@@ -949,12 +1232,15 @@ class Machine:
         new_sha = hashlib.sha256(data).hexdigest()
 
         current = client.health()  # also confirms it is running
-        if current.get("exe_sha256") == new_sha:
+        if current.get("executable_sha256") == new_sha:
             log.info("qslib-server already running the requested build (%s)", new_sha[:12])
-            self._prefer_server_files = True
             return client
 
-        log.info("upgrading qslib-server %s -> %s", current.get("exe_sha256", "?")[:12], new_sha[:12])
+        log.info(
+            "upgrading qslib-server %s -> %s",
+            current.get("executable_sha256", "?")[:12],
+            new_sha[:12],
+        )
         client.upgrade(data)  # server verifies, installs, and restarts into the new binary
 
         deadline = time.monotonic() + timeout
@@ -962,9 +1248,8 @@ class Machine:
         while time.monotonic() < deadline:
             try:
                 h = client.health()
-                last = h.get("exe_sha256")
+                last = h.get("executable_sha256")
                 if last == new_sha:
-                    self._prefer_server_files = True
                     log.info("qslib-server upgrade confirmed (%s)", new_sha[:12])
                     return client
             except ServerError:
@@ -1029,14 +1314,14 @@ class Machine:
     def write_file(self, path: str, data: str | bytes, *, fast: bool = True, fallback: bool = True) -> None:
         """Write ``data`` to ``path`` on the machine.
 
-        When connected to ``qslib-server`` (see :meth:`connect`/:meth:`ensure_server`)
-        and ``fast`` is true, the file is uploaded over plain HTTP straight to
+        When ``qslib-server`` is explicitly configured and ``fast`` is true,
+        the file is uploaded over plain HTTP straight to
         disk, avoiding the base64+TLS overhead of ``FILE:WRITE`` over SCPI (which
         can time out on larger files). This applies only when ``path`` resolves
         to an absolute path under qslib-server's ``--file-root``; a path with an
         unresolved SCPI variable (``${...}``), an unknown context, or one outside
-        the served root uses SCPI. On any qslib-server error when ``fallback`` is
-        true, the write falls back to SCPI.
+        the served root uses SCPI. Once an HTTP write is submitted, an uncertain
+        result is surfaced and is never repeated over SCPI.
         """
         if isinstance(data, str):
             data = data.encode()
@@ -1048,6 +1333,8 @@ class Machine:
             try:
                 server.put_abs_file(abspath, data)
                 return
+            except ServerOutcomeUnknown:
+                raise
             except (ServerError, OSError, HTTPException):
                 log.warning("qslib-server file write failed for %r; falling back to SCPI", path, exc_info=True)
                 if not fallback:
@@ -1068,12 +1355,12 @@ class Machine:
         ``"experiments:<run>"``); each zip member is written at ``<resolved
         context_path>/<member>``.
 
-        Returns ``True`` if every member was uploaded over HTTP; ``False`` if
-        qslib-server is not available/preferred, the context cannot be resolved,
-        or a transfer failed -- so the caller falls back to SCPI ``EXP:ZIPWRITE``.
-        A partial upload is harmless: the SCPI fallback rewrites every file.
+        Returns ``True`` if every member was uploaded over HTTP; ``False`` only
+        when the server was not selected or the context cannot be resolved.
+        Transfer failures are surfaced because a preceding PUT may have
+        committed and the mutation must not be repeated over SCPI.
         """
-        server = self._fast_server(fast)
+        server = self._semantic_server("files", mutation=True) if fast else None
         if server is None:
             return False
         base = _scpi_locator_abspath(context_path)
@@ -1088,9 +1375,12 @@ class Machine:
                     if not parts:
                         continue
                     server.put_abs_file(posixpath.join(base, *parts), zf.read(info))
-        except (ServerError, OSError, HTTPException, zipfile.BadZipFile):
-            log.warning("qslib-server folder upload to %r failed; falling back to SCPI", context_path, exc_info=True)
-            return False
+        except zipfile.BadZipFile:
+            raise ValueError("invalid experiment ZIP package")
+        except (ServerError, OSError, HTTPException):
+            # A per-file PUT may have committed. Repeating the entire mutation
+            # over SCPI could overwrite an accepted server-side write.
+            raise
         return True
 
     @overload
@@ -1102,7 +1392,6 @@ class Machine:
     @overload
     def list_runs_in_storage(self, glob: str = "*", *, verbose: bool = False) -> list[str] | list[FileListInfo]: ...
 
-    @_ensure_connection(AccessLevel.Observer)
     def list_runs_in_storage(self, glob: str = "*", *, verbose: bool = False) -> list[str] | list[FileListInfo]:
         """List runs in machine storage.
 
@@ -1117,22 +1406,22 @@ class Machine:
             glob = f"{glob}eds"
         try:
             filelist = self.list_files(f"public_run_complete:{glob}", verbose=verbose)
-        except CommandError as e:
+        except CommandError as error:
             from .scpi_commands import NoMatch
 
-            se = specialize_command_error(e)
+            se = specialize_command_error(error)
             if isinstance(se, NoMatch):
                 return []
-            raise se from e
+            raise se from error
         if not verbose:
-            return [re.sub("^public_run_complete:", "", s)[:-4] for s in filelist]
+            paths = cast(list[str], filelist)
+            return [re.sub("^public_run_complete:", "", path)[:-4] for path in paths]
         else:
-            a = filelist
-            for e in a:
-                e["path"] = re.sub("^public_run_complete:", "", e["path"])[:-4]
-            return a
+            entries = cast(list[FileListInfo], filelist)
+            for entry in entries:
+                entry["path"] = re.sub("^public_run_complete:", "", entry["path"])[:-4]
+            return entries
 
-    @_ensure_connection(AccessLevel.Observer)
     def load_run_from_storage(self, path: str) -> "Experiment":  # type: ignore
         from .experiment import Experiment
 
@@ -1140,7 +1429,6 @@ class Machine:
         """
         return Experiment.from_machine_storage(self, path)
 
-    @_ensure_connection(AccessLevel.Guest)
     def save_run_from_storage(self, machine_path: str, download_path: str | IO[bytes], overwrite: bool = False) -> None:
         """Download a file from run storage on the machine.
 
@@ -1220,12 +1508,21 @@ class Machine:
         out = self.run_command_bytes(MachineStatus.command())
         return MachineStatus.from_bytes(out)
 
-    @_ensure_connection(AccessLevel.Observer)
     def get_running_protocol(self) -> Protocol:
-        p = _unwrap_tags(self.run_command("PROT? ${Protocol}"))
-        pn, svs, rm = self.run_command("RET ${Protocol} ${SampleVolume} ${RunMode}").split()
-        p = f"PROT -volume={svs} -runmode={rm} {pn} " + p
-        return Protocol.from_scpi_string(p)
+        server = self._semantic_server("runs")
+        if server is not None:
+            try:
+                run = server.current_run()
+                name = str(run.get("name", "-"))
+                if name != "-":
+                    return Protocol.from_xml(ET.fromstring(server.get_protocol(name)))
+            except (ServerError, OSError, HTTPException, ET.ParseError):
+                log.debug("semantic protocol query failed; using direct SCPI", exc_info=True)
+        with self.ensured_connection(AccessLevel.Observer):
+            p = _unwrap_tags(self.run_command("PROT? ${Protocol}"))
+            pn, svs, rm = self.run_command("RET ${Protocol} ${SampleVolume} ${RunMode}").split()
+            p = f"PROT -volume={svs} -runmode={rm} {pn} " + p
+            return Protocol.from_scpi_string(p)
 
     def set_access_level(
         self,
@@ -1275,7 +1572,18 @@ class Machine:
         Returns:
             A 6-digit string (e.g., "042371").
         """
-        return self.run_command("RAND?")
+        server = self._semantic_server("instrument", mutation=True)
+        if server is not None:
+            try:
+                operation = server.generate_access_key()
+                completed = server.wait_operation(operation)
+                if completed.get("state") != "succeeded":
+                    raise ServerError(f"access-key operation failed: {completed.get('error')}")
+                return str(completed.get("result", {}).get("key", ""))
+            except ServerUnavailable:
+                pass
+        with self.ensured_connection(AccessLevel.Controller):
+            return self.run_command("RAND?")
 
     def get_zone_count(self) -> int:
         """Query the number of temperature control zones from the server.
@@ -1283,7 +1591,14 @@ class Machine:
         Returns:
             The number of zones (typically 6 for current QuantStudio instruments).
         """
-        return int(self.run_command("TBC:ControlZones?"))
+        server = self._semantic_server("instrument")
+        if server is not None:
+            try:
+                return int(server.instrument_status()["zone_count"])
+            except (ServerError, OSError, HTTPException):
+                log.debug("semantic zone-count query failed; using direct SCPI", exc_info=True)
+        with self.ensured_connection(AccessLevel.Observer):
+            return int(self.run_command("TBC:ControlZones?"))
 
     @property
     @_ensure_connection(AccessLevel.Guest)
@@ -1412,6 +1727,12 @@ class Machine:
     @property
     def status(self) -> RunStatus:
         """Return the current status of the run."""
+        server = self._semantic_server("runs")
+        if server is not None:
+            try:
+                return self._run_status_from_server(server.current_run())
+            except ServerError:
+                log.debug("semantic run status failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             out = self.run_command_bytes(RunStatus.command())
             return RunStatus.from_bytes(out)
@@ -1419,6 +1740,12 @@ class Machine:
     @property
     def drawer_position(self) -> DrawerPosition:
         """Return the drawer position from the DRAW? command."""
+        server = self._semantic_server("instrument")
+        if server is not None:
+            try:
+                return cast(DrawerPosition, str(server.instrument_status()["drawer"]).title())
+            except ServerError:
+                log.debug("semantic drawer status failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             d = self.run_command("DRAW?")
             if d not in ["Open", "Closed", "Unknown"]:
@@ -1429,6 +1756,12 @@ class Machine:
     def cover_position(self) -> CoverPosition:
         """Return the cover position from the ENG? command. Note that
         this does not always seem to work."""
+        server = self._semantic_server("instrument")
+        if server is not None:
+            try:
+                return cast(CoverPosition, str(server.instrument_status()["cover"]).title())
+            except ServerError:
+                log.debug("semantic cover status failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             f = self.run_command("ENG?")
             if f not in ["Up", "Down", "Unknown", ""]:
@@ -1499,6 +1832,12 @@ class Machine:
         the lamp, temperature control, etc.  It will do so even if there is
         currently a run.
         """
+        server = self._semantic_server("instrument")
+        if server is not None:
+            try:
+                return bool(server.instrument_status()["power_enabled"])
+            except ServerError:
+                log.debug("semantic power query failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             s = self.run_command("POW?").lower()
             if s in ("on", "true"):
@@ -1510,6 +1849,13 @@ class Machine:
 
     @power.setter
     def power(self, value: Literal["on", "off", True, False]) -> None:
+        server = self._semantic_server("instrument", mutation=True)
+        if server is not None:
+            try:
+                server.set_power(value is True or (isinstance(value, str) and value.lower() == "on"))
+                return
+            except ServerUnavailable:
+                pass
         with self.ensured_connection(AccessLevel.Controller):
             if value is True:
                 value = "on"
@@ -1520,6 +1866,15 @@ class Machine:
     @property
     def current_run_name(self) -> str | None:
         """Name of current run, or None if no run is active."""
+        server = self._semantic_server("runs")
+        if server is not None:
+            try:
+                status = server.current_run()
+                if str(status.get("state", "")).lower() == "idle" or status.get("name") == "-":
+                    return None
+                return str(status["name"])
+            except ServerError:
+                log.debug("semantic current-run query failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             out = self.run_command("RUNTitle?")
             if out == "-":
@@ -1527,10 +1882,20 @@ class Machine:
             else:
                 return re.sub(r"(<([\w.]+)>)?([^<]+)(</[\w.]+>)?", r"\3", out)
 
-    @_ensure_connection(AccessLevel.Controller)
     def restart_system(self) -> None:
         """Restart the system (both the InstrumentServer and android interface) by killing the zygote process."""
-        self.run_command(SCPICommand("SYST:EXEC", "killall zygote"))
+        server = self._semantic_server("instrument", mutation=True)
+        if server is not None:
+            try:
+                operation = server.restart_instrument()
+                # The HTTP server may disappear after acknowledgement. The durable
+                # operation resource is still the only safe result to inspect.
+                server.wait_operation(operation)
+                return
+            except ServerUnavailable:
+                pass
+        with self.ensured_connection(AccessLevel.Controller):
+            self.run_command(SCPICommand("SYST:EXEC", "killall zygote"))
 
     @contextmanager
     def at_access(
@@ -1545,7 +1910,13 @@ class Machine:
         try:
             yield self
         finally:
-            self.set_access_level(fac, fex, fst)
+            try:
+                self.set_access_level(fac, fex, fst)
+            except BaseException:
+                # A context must never hand a potentially elevated connection
+                # back to its caller when exact tuple restoration failed.
+                self.disconnect()
+                raise
             log.debug(f"Dropped access level {access_level}, returning to {fac} exclusive={fex} stealth={fst}.")
 
     @contextmanager
@@ -1555,7 +1926,11 @@ class Machine:
             old_access = self._current_access_level
             if not was_connected:
                 self.connect()
-                self.set_access_level(max(old_access, access_level))
+                try:
+                    self.set_access_level(max(old_access, access_level))
+                except BaseException:
+                    self.disconnect()
+                    raise
             elif old_access < access_level:
                 self.set_access_level(access_level)
             try:
@@ -1564,7 +1939,11 @@ class Machine:
                 if not was_connected:
                     self.disconnect()
                 elif old_access < access_level:
-                    self.set_access_level(old_access)
+                    try:
+                        self.set_access_level(old_access)
+                    except BaseException:
+                        self.disconnect()
+                        raise
         else:
             yield self
 

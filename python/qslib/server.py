@@ -1,405 +1,635 @@
 # SPDX-FileCopyrightText: 2024 - 2026 Constantine Evans <qslib@mb.costi.net>
-#
 # SPDX-License-Identifier: EUPL-1.2
 
-"""Client for the on-instrument ``qslib-server`` HTTP service.
-
-``qslib-server`` (see the ``qslib-server`` crate) runs on the instrument and
-serves bulk file transfer, one-shot SCPI commands, and a SCPI tunnel over plain
-HTTP on the instrument's private link. This module is a small, dependency-free
-(stdlib ``urllib``) client for it.
-
-qslib-server is an optional acceleration layer: bulk transfer through it avoids
-the base64+TLS overhead of ``FILE:READ`` over SCPI. Everything degrades to the
-normal SCPI path (:meth:`qslib.machine.Machine.read_file`) when qslib-server is
-not running.
-"""
+"""Typed client for qslib-server's optional ``/api/v1`` semantic API."""
 
 from __future__ import annotations
 
 import hashlib
 import json
 import os
-import posixpath
+import socket
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
 from http.client import HTTPException
 from pathlib import Path
-from typing import IO, Any, BinaryIO
+from typing import IO, Any, BinaryIO, Iterator
+from uuid import uuid4
 
-__all__ = ["ServerClient", "ServerError"]
+__all__ = ["ServerClient", "ServerError", "ServerOutcomeUnknown", "ServerUnavailable"]
 
 
 class ServerError(RuntimeError):
-    """An error returned by, or while contacting, qslib-server."""
+    """A structured server, response, or transport error."""
 
-    def __init__(self, message: str, status: int | None = None, detail: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        status: int | None = None,
+        *,
+        code: str | None = None,
+        retryable: bool = False,
+        outcome: str | None = None,
+        request_id: str | None = None,
+    ):
         super().__init__(message)
         self.status = status
-        self.detail = detail
+        self.code = code
+        self.retryable = retryable
+        self.outcome = outcome
+        self.request_id = request_id
+
+
+class ServerOutcomeUnknown(ServerError):
+    """A mutation may have reached the server and must not be repeated."""
+
+    def __init__(self, message: str, state_query: str):
+        super().__init__(message, retryable=False, outcome="unknown")
+        self.state_query = state_query
+
+
+class ServerUnavailable(ServerError):
+    """The HTTP request could not be submitted, so direct fallback is safe."""
+
+
+_ABSOLUTE_CONTEXTS: tuple[tuple[str, str], ...] = (
+    ("/sdcard/private_run_complete", "private_run_complete"),
+    ("/sdcard/public_run_complete", "public_run_complete"),
+    ("/data/vendor/IS/calibrations", "calibrations"),
+    ("/data/vendor/IS/experiments", "experiments"),
+    ("/data/vendor/IS/templates", "templates"),
+    ("/data/vendor/IS/runs", "runs"),
+    ("/data/vendor/IS/logs", "logs"),
+    ("/data/vendor/IS", "default"),
+)
 
 
 @dataclass
 class ServerClient:
-    """A client for a running ``qslib-server``.
-
-    Parameters
-    ----------
-    host
-        Host or IP of qslib-server (typically reached through the Windows-box
-        forward / VPN, or directly on the private link).
-    port
-        qslib-server port (default 7500).
-    token
-        Bearer token, if qslib-server requires one.
-    timeout
-        Default request timeout in seconds.
-    """
-
     host: str
     port: int = 7500
     token: str | None = None
     timeout: float = 30.0
-    _file_root: str | None = field(default=None, init=False, repr=False, compare=False)
-    _file_root_fetched: bool = field(default=False, init=False, repr=False, compare=False)
+    _capabilities: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _retry_at: float = field(default=0.0, init=False, repr=False)
 
     @property
     def base_url(self) -> str:
         return f"http://{self.host}:{self.port}"
 
-    @property
-    def file_root(self) -> str | None:
-        """qslib-server's canonicalized ``--file-root``, from ``/health`` (cached).
-
-        ``None`` if qslib-server is unreachable or predates the ``file_root``
-        field in ``/health``.
-        """
-        if not self._file_root_fetched:
-            try:
-                self._file_root = self.health().get("file_root")
-            except ServerError:
-                # A transient outage must not permanently disable the fast path.
-                # Leave the result uncached so a later call retries, matching the
-                # Rust client which never caches a transport failure.
-                return None
-            self._file_root_fetched = True
-        return self._file_root
-
-    def _rel_to_root(self, abspath: str) -> str | None:
-        """Return ``abspath`` made relative to :attr:`file_root`, or ``None`` if
-        it is not under the root (so the caller falls back to SCPI)."""
-        root = self.file_root
-        if root is None:
-            return None
-        root = root.rstrip("/")
-        ap = posixpath.normpath(abspath)
-        if root == "":  # file_root is "/"
-            return ap.lstrip("/")
-        if ap == root:
-            return ""
-        if ap.startswith(root + "/"):
-            return ap[len(root) + 1 :]
-        return None
-
     def _headers(self, extra: dict[str, str] | None = None) -> dict[str, str]:
-        headers: dict[str, str] = {}
+        headers = {"Accept": "application/json"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         if extra:
             headers.update(extra)
         return headers
 
-    def _open(self, req: urllib.request.Request, timeout: float | None = None) -> Any:
+    def _request(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        data: bytes | None = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+        mutation: bool = False,
+        state_query: str | None = None,
+    ) -> Any:
+        request = urllib.request.Request(
+            f"{self.base_url}{path}",
+            data=data,
+            headers=self._headers(headers),
+            method=method,
+        )
         try:
-            return urllib.request.urlopen(req, timeout=timeout or self.timeout)  # noqa: S310 (http to private link)
-        except urllib.error.HTTPError as e:
+            return urllib.request.urlopen(request, timeout=timeout or self.timeout)  # noqa: S310
+        except urllib.error.HTTPError as error:
             body = b""
             try:
-                body = e.read()
+                body = error.read()
             except Exception:
                 pass
-            message, detail = _parse_error_body(body, default=str(e))
-            raise ServerError(message, status=e.code, detail=detail) from e
-        except urllib.error.URLError as e:
-            raise ServerError(f"cannot reach qslib-server at {self.base_url}: {e.reason}") from e
-        except OSError as e:
-            # Connection reset/refused/timeout mid-request (e.g. the server was
-            # killed, or a forwarder RSTs when nothing is listening) arrives as a
-            # raw OSError rather than a URLError. Treat it as "unavailable" so
-            # health()/available()/ensure_server degrade gracefully.
-            raise ServerError(f"cannot reach qslib-server at {self.base_url}: {e}") from e
+            parsed = _parse_error(body, str(error))
+            raise ServerError(
+                parsed["message"],
+                status=error.code,
+                code=parsed.get("code"),
+                retryable=bool(parsed.get("retryable", False)),
+                outcome=parsed.get("outcome"),
+                request_id=parsed.get("request_id"),
+            ) from error
+        except (urllib.error.URLError, OSError, HTTPException) as error:
+            if mutation:
+                reason = error.reason if isinstance(error, urllib.error.URLError) else error
+                if isinstance(reason, (ConnectionRefusedError, socket.gaierror)):
+                    raise ServerUnavailable(
+                        f"cannot connect to qslib-server at {self.base_url}: {error}",
+                        retryable=True,
+                        outcome="not_started",
+                    ) from error
+                raise ServerOutcomeUnknown(
+                    f"qslib-server mutation transport failed: {error}",
+                    state_query or "/api/v1/instrument/status",
+                ) from error
+            raise ServerError(f"cannot reach qslib-server at {self.base_url}: {error}") from error
 
-    # -- endpoints ---------------------------------------------------------
+    def _json(
+        self,
+        path: str,
+        *,
+        method: str = "GET",
+        value: Any = None,
+        headers: dict[str, str] | None = None,
+        timeout: float | None = None,
+        mutation: bool = False,
+        state_query: str | None = None,
+    ) -> dict[str, Any]:
+        data = None if value is None else json.dumps(value, separators=(",", ":")).encode()
+        request_headers = {"Content-Type": "application/json"} if data is not None else {}
+        if headers:
+            request_headers.update(headers)
+        with self._request(
+            path,
+            method=method,
+            data=data,
+            headers=request_headers,
+            timeout=timeout,
+            mutation=mutation,
+            state_query=state_query,
+        ) as response:
+            body = response.read()
+        if not body:
+            return {}
+        try:
+            result = json.loads(body)
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ServerError(f"qslib-server returned invalid JSON for {path}") from error
+        if not isinstance(result, dict):
+            raise ServerError(f"qslib-server returned a non-object JSON response for {path}")
+        return result
 
     def health(self) -> dict[str, Any]:
-        """Return qslib-server's ``/health`` document."""
-        req = urllib.request.Request(f"{self.base_url}/health", headers=self._headers(), method="GET")
-        with self._open(req) as resp:
-            raw = resp.read()
-        try:
-            return json.loads(raw.decode())
-        except (ValueError, UnicodeDecodeError) as e:
-            # Not qslib-server (or a proxy error page): surface as ServerError so
-            # available()/ensure_server degrade gracefully rather than raising.
-            raise ServerError("qslib-server /health returned a non-JSON body") from e
+        return self._json("/health")
 
     def available(self) -> bool:
-        """Return True if qslib-server responds to ``/health`` (and SCPI is up)."""
         try:
-            h = self.health()
+            return bool(self.health().get("ready"))
         except ServerError:
             return False
-        return bool(h.get("scpi_ok", False))
+
+    def capabilities(self) -> dict[str, Any]:
+        """Return and cache v1 capabilities; failures are cached for 30 seconds."""
+        if self._capabilities is not None:
+            return self._capabilities
+        if time.monotonic() < self._retry_at:
+            raise ServerError("qslib-server capability probe is negatively cached")
+        try:
+            capabilities = self._json("/api/v1/capabilities")
+        except ServerError:
+            self._retry_at = time.monotonic() + 30.0
+            raise
+        if capabilities.get("api_version") != "v1":
+            self._retry_at = time.monotonic() + 30.0
+            raise ServerError("qslib-server does not advertise compatible API v1")
+        self._capabilities = capabilities
+        self._retry_at = 0.0
+        return capabilities
+
+    def supports(self, resource: str) -> bool:
+        return resource in self.capabilities().get("resources", [])
+
+    def instrument_status(self) -> dict[str, Any]:
+        return self._json("/api/v1/instrument/status")
+
+    def current_run(self) -> dict[str, Any]:
+        return self._json("/api/v1/runs/current")
+
+    def set_power(self, enabled: bool) -> None:
+        self._json(
+            "/api/v1/instrument/power",
+            method="PUT",
+            value={"enabled": enabled},
+            mutation=True,
+            state_query="/api/v1/instrument/status",
+        )
+
+    def set_block(self, enabled: bool, target_c: float | None = None) -> None:
+        self._json(
+            "/api/v1/instrument/block",
+            method="PUT",
+            value={"enabled": enabled, "target_c": target_c},
+            mutation=True,
+            state_query="/api/v1/instrument/status",
+        )
+
+    def set_indicator(self, color: str, mode: str = "on") -> None:
+        self._json(
+            "/api/v1/instrument/indicator",
+            method="PUT",
+            value={"color": color.lower(), "mode": mode.lower()},
+            mutation=True,
+            state_query="/api/v1/instrument/status",
+        )
+
+    def set_drawer(self, position: str, *, lower_cover: bool = True, verify: bool = True) -> None:
+        self._json(
+            "/api/v1/instrument/drawer",
+            method="PUT",
+            value={"position": position.lower(), "lower_cover": lower_cover, "verify": verify},
+            mutation=True,
+            state_query="/api/v1/instrument/status",
+        )
+
+    def set_cover(self, position: str = "down", *, verify: bool = True) -> None:
+        self._json(
+            "/api/v1/instrument/cover",
+            method="PUT",
+            value={"position": position.lower(), "verify": verify},
+            mutation=True,
+            state_query="/api/v1/instrument/status",
+        )
+
+    def list_experiments(self) -> dict[str, Any]:
+        return self._json("/api/v1/experiments")
+
+    def experiment(self, name: str) -> dict[str, Any]:
+        return self._json(f"/api/v1/experiments/{_quote(name)}")
+
+    def get_package(self, name: str) -> tuple[bytes, str | None]:
+        with self._request(
+            f"/api/v1/experiments/{_quote(name)}/package",
+            headers={"Accept": "application/zip"},
+        ) as response:
+            return response.read(), response.headers.get("ETag")
+
+    def delete_experiment(self, name: str) -> None:
+        with self._request(
+            f"/api/v1/experiments/{_quote(name)}",
+            method="DELETE",
+            mutation=True,
+            state_query=f"/api/v1/experiments/{_quote(name)}",
+        ) as response:
+            response.read()
+
+    def list_runs(self, location: str = "working") -> list[str]:
+        query = urllib.parse.urlencode({"location": location})
+        return [str(name) for name in self._json(f"/api/v1/runs?{query}").get("runs", [])]
+
+    def run(self, name: str) -> dict[str, Any]:
+        return self._json(f"/api/v1/runs/{_quote(name)}")
+
+    def get_eds(self, name: str) -> bytes:
+        with self._request(
+            f"/api/v1/runs/{_quote(name)}/eds",
+            headers={"Accept": "application/zip"},
+        ) as response:
+            return response.read()
+
+    def stage_package(self, name: str, package: bytes) -> str:
+        path = f"/api/v1/experiments/{_quote(name)}/package"
+        with self._request(
+            path,
+            method="PUT",
+            data=package,
+            headers={"Content-Type": "application/zip"},
+            timeout=130.0,
+            mutation=True,
+            state_query=f"/api/v1/experiments/{_quote(name)}",
+        ) as response:
+            response.read()
+            etag = response.headers.get("ETag")
+        if not etag:
+            raise ServerError("qslib-server package response omitted ETag")
+        return etag
+
+    def start_run(
+        self,
+        experiment: str,
+        package_etag: str,
+        *,
+        overwrite: bool | str = False,
+        require_exclusive: bool = False,
+        require_drawer_check: bool = True,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._json(
+            "/api/v1/runs",
+            method="POST",
+            value={
+                "experiment": experiment,
+                "package_etag": package_etag,
+                "overwrite": str(overwrite).lower(),
+                "require_exclusive": require_exclusive,
+                "require_drawer_check": require_drawer_check,
+            },
+            headers={"Idempotency-Key": idempotency_key or str(uuid4())},
+            timeout=130.0,
+            mutation=True,
+            state_query="/api/v1/runs/current",
+        )
+
+    def run_action(
+        self,
+        name: str,
+        action: str,
+        *,
+        idempotency_key: str | None = None,
+    ) -> dict[str, Any]:
+        return self._json(
+            f"/api/v1/runs/{_quote(name)}/actions/{_quote(action)}",
+            method="POST",
+            headers={"Idempotency-Key": idempotency_key or str(uuid4())},
+            mutation=True,
+            state_query=f"/api/v1/runs/{_quote(name)}",
+        )
+
+    def get_protocol(self, name: str) -> bytes:
+        with self._request(
+            f"/api/v1/runs/{_quote(name)}/protocol",
+            headers={"Accept": "application/xml"},
+        ) as response:
+            return response.read()
+
+    def put_protocol(
+        self,
+        name: str,
+        xml: bytes,
+        *,
+        mode: str = "replace",
+        force: bool = False,
+    ) -> dict[str, Any]:
+        query = urllib.parse.urlencode({"mode": mode, "force": str(force).lower()})
+        with self._request(
+            f"/api/v1/runs/{_quote(name)}/protocol?{query}",
+            method="PUT",
+            data=xml,
+            headers={"Content-Type": "application/xml"},
+            mutation=True,
+            state_query=f"/api/v1/runs/{_quote(name)}/protocol",
+        ) as response:
+            body = response.read()
+        return json.loads(body) if body else {}
+
+    def generate_access_key(self, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._json(
+            "/api/v1/instrument/access-keys",
+            method="POST",
+            headers={"Idempotency-Key": idempotency_key or str(uuid4())},
+            mutation=True,
+            state_query="/api/v1/instrument/status",
+        )
+
+    def restart_instrument(self, *, idempotency_key: str | None = None) -> dict[str, Any]:
+        return self._json(
+            "/api/v1/instrument/actions/restart",
+            method="POST",
+            headers={"Idempotency-Key": idempotency_key or str(uuid4())},
+            mutation=True,
+            state_query="/health",
+        )
+
+    def operation(self, operation_id: str) -> dict[str, Any]:
+        return self._json(f"/api/v1/operations/{_quote(operation_id)}")
+
+    def wait_operation(self, operation: str | dict[str, Any], timeout: float = 120.0) -> dict[str, Any]:
+        operation_id = operation if isinstance(operation, str) else str(operation["id"])
+        deadline = time.monotonic() + timeout
+        while True:
+            current = self.operation(operation_id)
+            if current.get("state") in {"succeeded", "failed", "unknown"}:
+                return current
+            if time.monotonic() >= deadline:
+                raise ServerOutcomeUnknown(
+                    f"timed out waiting for operation {operation_id}",
+                    f"/api/v1/operations/{operation_id}",
+                )
+            time.sleep(0.25)
+
+    def events(self, last_event_id: int | None = None) -> Iterator[dict[str, Any]]:
+        """Yield SSE events, reconnecting with ``Last-Event-ID`` after loss."""
+        while True:
+            headers = {"Accept": "text/event-stream"}
+            if last_event_id is not None:
+                headers["Last-Event-ID"] = str(last_event_id)
+            try:
+                with self._request("/api/v1/events", headers=headers, timeout=30.0) as response:
+                    block: list[str] = []
+                    while raw := response.readline():
+                        line = raw.decode("utf-8").rstrip("\r\n")
+                        if line:
+                            block.append(line)
+                            continue
+                        event = _parse_sse(block)
+                        block.clear()
+                        if event is None:
+                            continue
+                        if event.get("id") is not None:
+                            last_event_id = int(event["id"])
+                        yield event
+            except (ServerError, OSError, HTTPException, UnicodeDecodeError):
+                time.sleep(0.25)
 
     def get_file(
         self,
         path: str,
         dest: str | Path | BinaryIO | None = None,
         chunk_size: int = 1 << 20,
+        *,
+        context: str = "default",
+        range_start: int | None = None,
     ) -> bytes | None:
-        """Fetch a file under qslib-server's file root.
-
-        Parameters
-        ----------
-        path
-            Path relative to qslib-server's configured ``--file-root``.
-        dest
-            If given, stream the file to this path or open binary file object
-            and return ``None``. If ``None``, return the file contents as bytes.
-        chunk_size
-            Streaming chunk size in bytes.
-        """
-        quoted = urllib.parse.quote(path.lstrip("/"))
-        req = urllib.request.Request(f"{self.base_url}/file/{quoted}", headers=self._headers(), method="GET")
+        headers = {"Accept": "application/octet-stream"}
+        if range_start is not None:
+            headers["Range"] = f"bytes={range_start}-"
+        route = f"/api/v1/files/{_quote(context)}/{_quote_path(path)}"
         temp_path: Path | None = None
         try:
-            with self._open(req) as resp:
-                if dest is None:
-                    data = resp.read()
-                    _validate_response_size(resp, len(data))
-                    return data
-                if isinstance(dest, (str, Path)):
-                    final_path = Path(dest)
-                    with tempfile.NamedTemporaryFile(
-                        mode="wb",
-                        dir=final_path.parent,
-                        prefix=f".{final_path.name}.download.",
-                        delete=False,
-                    ) as f:
-                        temp_path = Path(f.name)
-                        _copy_response(resp, f, chunk_size)
-                    os.replace(temp_path, final_path)
-                    temp_path = None
-                else:
-                    out: IO[bytes] = dest
-                    _copy_response(resp, out, chunk_size)
-                return None
-        except ServerError:
+            try:
+                with self._request(route, headers=headers) as response:
+                    if dest is None:
+                        data = response.read()
+                        _validate_response_size(response, len(data))
+                        return data
+                    if isinstance(dest, (str, Path)):
+                        final_path = Path(dest)
+                        with tempfile.NamedTemporaryFile(
+                            mode="wb",
+                            dir=final_path.parent,
+                            prefix=f".{final_path.name}.download.",
+                            delete=False,
+                        ) as output:
+                            temp_path = Path(output.name)
+                            _copy_response(response, output, chunk_size)
+                        os.replace(temp_path, final_path)
+                        temp_path = None
+                    else:
+                        _copy_response(response, dest, chunk_size)
+                    return None
+            finally:
+                if temp_path is not None:
+                    temp_path.unlink(missing_ok=True)
+        except ServerError as error:
+            if error.status == 404:
+                raise FileNotFoundError(path) from error
             raise
-        except (OSError, HTTPException) as e:
-            raise ServerError(f"qslib-server file transfer failed for {path!r}: {e}") from e
-        finally:
-            if temp_path is not None:
-                temp_path.unlink(missing_ok=True)
+
+    def put_file(self, path: str, data: bytes, *, context: str = "default", etag: str | None = None) -> None:
+        headers = {"Content-Type": "application/octet-stream"}
+        if etag is not None:
+            headers["If-Match"] = etag
+        self._request(
+            f"/api/v1/files/{_quote(context)}/{_quote_path(path)}",
+            method="PUT",
+            data=data,
+            headers=headers,
+            mutation=True,
+            state_query=f"/api/v1/files/{_quote(context)}/{_quote_path(path)}",
+        ).close()
 
     def get_abs_file(
         self,
         abspath: str,
         dest: str | Path | BinaryIO | None = None,
         chunk_size: int = 1 << 20,
+        *,
+        range_start: int | None = None,
     ) -> bytes | None:
-        """Fetch a file by its absolute on-instrument path.
-
-        The path is made relative to qslib-server's :attr:`file_root` and served
-        via :meth:`get_file`. Raises :class:`ServerError` if the path is not
-        under the root (so callers fall back to SCPI).
-        """
-        rel = self._rel_to_root(abspath)
-        if rel is None:
-            raise ServerError(f"{abspath!r} is not under qslib-server file root {self.file_root!r}")
-        return self.get_file(rel, dest=dest, chunk_size=chunk_size)
-
-    def put_file(self, path: str, data: bytes) -> None:
-        """Write ``data`` to a file under qslib-server's file root (``PUT /file``).
-
-        The file is written atomically on the instrument (temp file + rename),
-        creating parent directories as needed. Raises :class:`ServerError` if the
-        server is read-only (403) or the path is unsafe.
-        """
-        quoted = urllib.parse.quote(path.lstrip("/"))
-        req = urllib.request.Request(
-            f"{self.base_url}/file/{quoted}",
-            data=data,
-            headers=self._headers({"Content-Type": "application/octet-stream"}),
-            method="PUT",
-        )
-        try:
-            with self._open(req) as resp:
-                resp.read()
-        except ServerError:
-            raise
-        except (OSError, HTTPException) as e:
-            raise ServerError(f"qslib-server file upload failed for {path!r}: {e}") from e
+        context, relative = _absolute_context(abspath)
+        return self.get_file(relative, dest, chunk_size, context=context, range_start=range_start)
 
     def put_abs_file(self, abspath: str, data: bytes) -> None:
-        """Write a file by its absolute on-instrument path.
+        context, relative = _absolute_context(abspath)
+        self.put_file(relative, data, context=context)
 
-        The path is made relative to qslib-server's :attr:`file_root` and written
-        via :meth:`put_file`. Raises :class:`ServerError` if the path is not
-        under the root (so callers fall back to SCPI).
-        """
-        rel = self._rel_to_root(abspath)
-        if rel is None:
-            raise ServerError(f"{abspath!r} is not under qslib-server file root {self.file_root!r}")
-        self.put_file(rel, data)
+    def list_context_dir(self, context: str, path: str = "") -> list[dict[str, Any]]:
+        suffix = f"/{_quote_path(path)}" if path else ""
+        try:
+            return self._json(f"/api/v1/directories/{_quote(context)}{suffix}").get("files", [])
+        except ServerError as error:
+            if error.status == 404:
+                raise FileNotFoundError(path) from error
+            raise
 
     def list_dir(self, abspath: str) -> list[dict[str, Any]]:
-        """Return the recursive file manifest of a directory (``GET /list``).
-
-        Each entry is ``{"path": <relative>, "size": <bytes>}``, where ``path``
-        is relative to ``abspath`` (forward-slash separated). The manifest
-        matches the InstrumentServer ``EXP:ZIPREAD?`` file set (dotfiles
-        included, symlinked directories not descended). Raises
-        :class:`ServerError` (status 404) if the directory does not exist, or if
-        ``abspath`` is not under qslib-server's :attr:`file_root`.
-        """
-        rel = self._rel_to_root(abspath)
-        if rel is None:
-            raise ServerError(f"{abspath!r} is not under qslib-server file root {self.file_root!r}")
-        quoted = urllib.parse.quote(rel.lstrip("/"))
-        req = urllib.request.Request(f"{self.base_url}/list/{quoted}", headers=self._headers(), method="GET")
-        with self._open(req) as resp:
-            raw = resp.read()
-        try:
-            return json.loads(raw.decode()).get("files", [])
-        except (ValueError, UnicodeDecodeError) as e:
-            raise ServerError("qslib-server /list returned a non-JSON body") from e
+        context, relative = _absolute_context(abspath)
+        return self.list_context_dir(context, relative)
 
     def download_dir(self, abspath: str, dest_dir: str | Path, chunk_size: int = 1 << 20) -> int:
-        """Download a directory tree rooted at ``abspath`` into ``dest_dir``.
-
-        Enumerates the directory via :meth:`list_dir` and fetches each file raw
-        (no compression), preserving the relative structure under ``dest_dir``.
-        Returns the number of files written.
-
-        Raises :class:`FileNotFoundError` if the directory itself does not exist
-        (a 404 on the listing), and :class:`ServerError` (or a transport error
-        such as :class:`OSError`) on any other failure, so callers can tell a
-        genuinely missing directory from a transfer failure and fall back to
-        SCPI accordingly. A per-file 404 (a file removed between the listing and
-        its fetch) surfaces as :class:`ServerError`, not ``FileNotFoundError``.
-        """
-        dest = Path(dest_dir)
-        try:
-            manifest = self.list_dir(abspath)
-        except ServerError as e:
-            if e.status == 404:
-                raise FileNotFoundError(abspath) from e
-            raise
-        n = 0
+        context, root = _absolute_context(abspath)
+        destination = Path(dest_dir)
+        manifest = self.list_context_dir(context, root)
         for entry in manifest:
-            rel = entry["path"]
-            if rel.startswith("/") or ".." in rel.split("/"):
-                raise ServerError(f"unsafe path in /list manifest: {rel!r}")
-            expected_size = entry.get("size")
-            if not isinstance(expected_size, int) or expected_size < 0:
-                raise ServerError(f"invalid size in /list manifest for {rel!r}: {expected_size!r}")
-            out = dest.joinpath(*rel.split("/"))
-            out.parent.mkdir(parents=True, exist_ok=True)
-            self.get_abs_file(posixpath.join(abspath, rel), dest=out, chunk_size=chunk_size)
-            actual_size = out.stat().st_size
-            if actual_size != expected_size:
-                out.unlink(missing_ok=True)
-                raise ServerError(
-                    f"qslib-server file changed or was truncated during download: "
-                    f"{rel!r} has {actual_size} bytes, expected {expected_size}"
-                )
-            n += 1
-        return n
+            relative = str(entry["path"])
+            if relative.startswith("/") or ".." in relative.split("/"):
+                raise ServerError(f"unsafe directory path {relative!r}")
+            output = destination.joinpath(*relative.split("/"))
+            output.parent.mkdir(parents=True, exist_ok=True)
+            remote = "/".join(part for part in (root, relative) if part)
+            self.get_file(remote, output, chunk_size, context=context)
+            if output.stat().st_size != int(entry["size"]):
+                output.unlink(missing_ok=True)
+                raise ServerError(f"truncated qslib-server directory download for {relative!r}")
+        return len(manifest)
 
-    def scpi(
-        self,
-        command: str,
-        access: str | None = None,
-        timeout_ms: int | None = None,
-        encoding: str = "text",
-    ) -> str | bytes:
-        """Run a single SCPI command through qslib-server and return its response.
-
-        With ``encoding="bytes"`` the raw response bytes are returned; otherwise
-        the response text after ``OK`` is returned as a string.
-        """
-        params: dict[str, str] = {"encoding": encoding}
+    def scpi(self, command: str, access: str | None = None, timeout_ms: int | None = None) -> str:
+        value: dict[str, Any] = {"command": command, "encoding": "text"}
         if access is not None:
-            params["access"] = access
+            value["access"] = access
         if timeout_ms is not None:
-            params["timeout_ms"] = str(timeout_ms)
-        query = urllib.parse.urlencode(params)
-        url = f"{self.base_url}/scpi?{query}"
-        req = urllib.request.Request(
-            url,
-            data=command.encode(),
-            headers=self._headers({"Content-Type": "text/plain"}),
+            value["timeout_ms"] = timeout_ms
+        with self._request(
+            "/api/v1/scpi",
             method="POST",
-        )
-        with self._open(req, timeout=(timeout_ms / 1000.0 + 5.0) if timeout_ms is not None else None) as resp:
-            data = resp.read()
-        return data if encoding == "bytes" else data.decode()
+            data=json.dumps(value).encode(),
+            headers={"Content-Type": "application/json"},
+            timeout=(timeout_ms or 30_000) / 1000 + 5,
+            mutation=True,
+            state_query="/api/v1/instrument/status",
+        ) as response:
+            return response.read().decode()
 
     def upgrade(self, binary: bytes, *, dry_run: bool = False, timeout: float = 120.0) -> dict[str, Any]:
-        """Upload a new qslib-server binary via ``POST /upgrade``.
-
-        The server verifies the SHA-256 (sent in ``x-qslib-sha256``) and that the
-        binary runs (``--version``); unless ``dry_run`` it then installs it
-        atomically and restarts into it, rolling back to the previous binary if
-        the new one fails to start. Returns the server's JSON response. With
-        ``dry_run`` the binary is only verified, not installed.
-
-        The connection typically drops as the server restarts; confirm the new
-        build is live by polling :meth:`health` for the uploaded ``exe_sha256``
-        (see :meth:`qslib.machine.Machine.upgrade_server`).
-        """
         sha = hashlib.sha256(binary).hexdigest()
-        url = f"{self.base_url}/upgrade" + ("?dry_run=1" if dry_run else "")
-        req = urllib.request.Request(
-            url,
-            data=binary,
-            headers=self._headers({"Content-Type": "application/octet-stream", "x-qslib-sha256": sha}),
+        path = "/api/v1/server/upgrade" + ("?dry_run=1" if dry_run else "")
+        with self._request(
+            path,
             method="POST",
-        )
-        with self._open(req, timeout=timeout) as resp:
-            return json.loads(resp.read().decode())
+            data=binary,
+            headers={"Content-Type": "application/octet-stream", "x-qslib-sha256": sha},
+            timeout=timeout,
+            mutation=True,
+            state_query="/health",
+        ) as response:
+            return json.loads(response.read())
 
 
-def _parse_error_body(body: bytes, default: str) -> tuple[str, str | None]:
+def _parse_error(body: bytes, default: str) -> dict[str, Any]:
     try:
-        parsed = json.loads(body.decode())
-        return parsed.get("error", default), parsed.get("detail")
+        parsed = json.loads(body)
+        detail = parsed.get("error", {})
+        if isinstance(detail, str):
+            return {"message": detail, "request_id": parsed.get("request_id")}
+        if isinstance(detail, dict):
+            return {"message": detail.get("message", default), "request_id": parsed.get("request_id"), **detail}
     except Exception:
-        text = body.decode(errors="replace").strip()
-        return (text or default), None
+        pass
+    return {"message": body.decode(errors="replace").strip() or default}
 
 
-def _validate_response_size(resp: Any, actual: int) -> None:
-    """Reject a short HTTP body even when ``HTTPResponse.read(amt)`` silently
-    returns EOF before satisfying ``Content-Length``."""
-    raw = resp.headers.get("Content-Length")
+def _absolute_context(path: str) -> tuple[str, str]:
+    normalized = "/" + "/".join(part for part in path.split("/") if part not in {"", ".", ".."})
+    for root, context in _ABSOLUTE_CONTEXTS:
+        if normalized == root:
+            return context, ""
+        if normalized.startswith(root + "/"):
+            return context, normalized[len(root) + 1 :]
+    raise ServerError(f"{path!r} does not map to a named qslib-server file context")
+
+
+def _quote(value: str) -> str:
+    return urllib.parse.quote(value, safe="")
+
+
+def _quote_path(value: str) -> str:
+    return "/".join(_quote(part) for part in value.split("/") if part)
+
+
+def _parse_sse(lines: list[str]) -> dict[str, Any] | None:
+    if not lines or all(line.startswith(":") for line in lines):
+        return None
+    event: dict[str, Any] = {"event": "message"}
+    data: list[str] = []
+    for line in lines:
+        if line.startswith("id:"):
+            event["id"] = line[3:].strip()
+        elif line.startswith("event:"):
+            event["event"] = line[6:].strip()
+        elif line.startswith("data:"):
+            data.append(line[5:].lstrip())
+    event["data"] = json.loads("\n".join(data)) if data else None
+    return event
+
+
+def _validate_response_size(response: Any, actual: int) -> None:
+    raw = response.headers.get("Content-Length")
     if raw is None:
         return
     try:
         expected = int(raw)
-    except (TypeError, ValueError) as e:
-        raise ServerError(f"invalid qslib-server Content-Length: {raw!r}") from e
+    except (TypeError, ValueError) as error:
+        raise ServerError(f"invalid qslib-server Content-Length: {raw!r}") from error
     if actual != expected:
         raise ServerError(f"short qslib-server response: received {actual} bytes, expected {expected}")
 
 
-def _copy_response(resp: Any, out: IO[bytes], chunk_size: int) -> None:
+def _copy_response(response: Any, output: IO[bytes], chunk_size: int) -> None:
     total = 0
-    while chunk := resp.read(chunk_size):
-        out.write(chunk)
+    while chunk := response.read(chunk_size):
+        output.write(chunk)
         total += len(chunk)
-    _validate_response_size(resp, total)
+    _validate_response_size(response, total)

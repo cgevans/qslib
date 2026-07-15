@@ -251,6 +251,14 @@ async fn setup_mock_server(
                                             }
                                             socket.write_all(format!("OK {} done\n", id).as_bytes()).await.unwrap();
                                         }
+                                    } else if cmd_part.starts_with("NEXTDRIP") {
+                                        if let Some(ref id) = ident {
+                                            for _ in 0..20 {
+                                                socket.write_all(format!("NEXT {}\n", id).as_bytes()).await.unwrap();
+                                                tokio::time::sleep(Duration::from_millis(20)).await;
+                                            }
+                                            socket.write_all(format!("OK {} too-late\n", id).as_bytes()).await.unwrap();
+                                        }
                                     } else if cmd_part.starts_with("SILENCE") {
                                         // Never respond — for timeout tests
                                     } else if cmd_part.starts_with("WARNTEST") {
@@ -1495,6 +1503,22 @@ async fn test_response_next_flood_preserves_terminal_response() {
     tokio::time::sleep(Duration::from_millis(100)).await;
     let result = response.get_response().await.unwrap().unwrap();
     assert_eq!(result.args, vec![Value::String("done".into())]);
+
+    _server.abort();
+}
+
+#[tokio::test]
+async fn test_repeated_next_does_not_extend_post_next_deadline() {
+    let (addr, _server) = setup_mock_server(None, true).await;
+    let connection = QSConnection::connect("127.0.0.1", addr.port(), ConnectionType::TCP)
+        .await
+        .unwrap();
+
+    let mut response = connection.send_command_bytes(b"NEXTDRIP").await.unwrap();
+    let result = response
+        .get_response_with_next_and_ok_timeout(Duration::from_secs(1), Duration::from_millis(100))
+        .await;
+    assert!(matches!(result, Err(ReceiveOkResponseError::Timeout)));
 
     _server.abort();
 }

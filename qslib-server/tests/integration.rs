@@ -1,90 +1,112 @@
-//! End-to-end tests: a real router (and a fake SCPI server) over loopback HTTP.
+//! Contract tests for the unreleased v1 API and its single managed SCPI actor.
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use qslib_core::commands::AccessLevel;
+use qslib_server::auth::{AuthPolicy, Role};
 use qslib_server::config::Config;
 use qslib_server::state::AppState;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-/// Spawn the qslib-server router on an ephemeral loopback port; return its address.
-async fn spawn_server(state: AppState) -> SocketAddr {
+async fn spawn_http(state: AppState) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let app = qslib_server::build_router(state);
+    let address = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
+        axum::serve(listener, qslib_server::build_router(state))
+            .await
+            .unwrap();
     });
-    addr
+    address
 }
 
-/// Minimal fake plaintext SCPI server: sends the ready greeting, then answers
-/// each `<ident> <command>` line with `OK <ident> ...`.
-async fn spawn_fake_scpi() -> SocketAddr {
+async fn spawn_fake_scpi() -> (SocketAddr, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
+    let address = listener.local_addr().unwrap();
+    let connections = Arc::new(AtomicUsize::new(0));
+    let accepted = connections.clone();
+    let commands = Arc::new(Mutex::new(Vec::new()));
+    let recorded = commands.clone();
     tokio::spawn(async move {
         loop {
-            let (mut socket, _) = match listener.accept().await {
-                Ok(x) => x,
-                Err(_) => break,
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
             };
+            accepted.fetch_add(1, Ordering::SeqCst);
+            let recorded = recorded.clone();
             tokio::spawn(async move {
-                socket
-                    .write_all(
-                        b"READy -session=1 -product=Test -version=1.0.0 -build=1 -capabilities=Index\n",
-                    )
+                if socket
+                    .write_all(b"READy -session=1 -product=Test -version=1.0 -build=1 -capabilities=Index\n")
                     .await
-                    .unwrap();
-                let mut buf = [0u8; 1024];
-                let mut line = String::new();
+                    .is_err()
+                {
+                    return;
+                }
+                let mut pending = String::new();
+                let mut access_level = "Observer".to_string();
+                let mut exclusive = false;
+                let mut buffer = [0_u8; 4096];
                 loop {
-                    let n = match socket.read(&mut buf).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(n) => n,
+                    let count = match socket.read(&mut buffer).await {
+                        Ok(0) | Err(_) => return,
+                        Ok(count) => count,
                     };
-                    line.push_str(&String::from_utf8_lossy(&buf[..n]));
-                    while let Some(pos) = line.find('\n') {
-                        let l = line[..pos].trim().to_string();
-                        line = line[pos + 1..].to_string();
-                        let first = l.split_whitespace().next().unwrap_or("");
-                        let (ident, cmd) = if first.parse::<u32>().is_ok() {
-                            (
-                                Some(first.to_string()),
-                                l.split_once(' ')
-                                    .map(|x| x.1.to_string())
-                                    .unwrap_or_default(),
-                            )
+                    pending.push_str(&String::from_utf8_lossy(&buffer[..count]));
+                    while let Some(end) = pending.find('\n') {
+                        let line = pending[..end].trim().to_string();
+                        pending = pending[end + 1..].to_string();
+                        let mut parts = line.splitn(2, ' ');
+                        let first = parts.next().unwrap_or_default();
+                        let (identifier, command) = if first.parse::<u32>().is_ok() {
+                            (Some(first), parts.next().unwrap_or_default())
                         } else {
-                            (None, l.clone())
+                            (None, line.as_str())
                         };
-                        let ok = |body: &str| match &ident {
+                        recorded.lock().unwrap().push(command.to_string());
+                        let body = if command == "ACC?" {
+                            format!(
+                                "-stealth=False -exclusive={} {}",
+                                if exclusive { "True" } else { "False" },
+                                access_level
+                            )
+                        } else if command.starts_with("TBC:ControlZones?") {
+                            "6".to_string()
+                        } else if command.starts_with("POW?") {
+                            "ON".to_string()
+                        } else if command.starts_with("BLOCK?") {
+                            "ON 60".to_string()
+                        } else if command.starts_with("LED:STATus?") {
+                            "green on".to_string()
+                        } else if command.starts_with("RET ${RunTitle") {
+                            "- -1 -1 -1 -1 -1 -1 Idle".to_string()
+                        } else if command.starts_with("RET $(DRAWER?)") {
+                            "Closed Down off \"25 25 25 25 25 25\" \"25 25 25 25 25 25\" 30 \"-Zone1=25 -Zone2=25 -Zone3=25 -Zone4=25 -Zone5=25 -Zone6=25\" \"-Zone1=False -Zone2=False -Zone3=False -Zone4=False -Zone5=False -Zone6=False\" 31".to_string()
+                        } else {
+                            if command.starts_with("ACC ") {
+                                access_level = command
+                                    .split_whitespace()
+                                    .last()
+                                    .unwrap_or("Observer")
+                                    .to_string();
+                                exclusive =
+                                    command.to_ascii_lowercase().contains("-exclusive=true");
+                            }
+                            String::new()
+                        };
+                        let response = match identifier {
+                            Some(id) if body.is_empty() => format!("OK {id}\n"),
                             Some(id) => format!("OK {id} {body}\n"),
+                            None if body.is_empty() => "OK\n".to_string(),
                             None => format!("OK {body}\n"),
                         };
-                        let ok_empty = || match &ident {
-                            Some(id) => format!("OK {id}\n"),
-                            None => "OK\n".to_string(),
-                        };
-                        if cmd.starts_with("QUIT") {
-                            let _ = socket.write_all(ok_empty().as_bytes()).await;
+                        if socket.write_all(response.as_bytes()).await.is_err() {
                             return;
                         }
-                        let resp = if cmd.starts_with("ACC") {
-                            ok_empty()
-                        } else if cmd.starts_with("SYST:VERS?") {
-                            ok("-version=1.0.0")
-                        } else if cmd.starts_with("BADCMD") {
-                            match &ident {
-                                Some(id) => format!("ERRor {id} [NoMatch] --> unknown command\n"),
-                                None => "ERRor [NoMatch] --> unknown command\n".to_string(),
-                            }
-                        } else {
-                            ok("done")
-                        };
-                        if socket.write_all(resp.as_bytes()).await.is_err() {
+                        if command.starts_with("QUIT") {
                             return;
                         }
                     }
@@ -92,493 +114,260 @@ async fn spawn_fake_scpi() -> SocketAddr {
             });
         }
     });
-    addr
+    (address, connections, commands)
 }
 
-fn test_config(scpi: SocketAddr, root: PathBuf, token: Option<String>) -> Config {
-    let no_auth = token.is_none();
+fn test_config(scpi_target: SocketAddr, file_root: PathBuf) -> Config {
     Config {
         listen: "127.0.0.1:0".parse().unwrap(),
-        scpi_target: scpi,
-        file_root: root,
-        default_access: AccessLevel::Observer,
-        max_access: AccessLevel::Controller,
-        token,
-        token_file: None,
-        no_auth,
+        scpi_target,
+        file_root,
+        auth_config: None,
+        no_auth: true,
+        unauthenticated_role: Role::Administrator,
+        max_access: AccessLevel::Administrator,
         scpi_password: None,
-        pool_size: 0,
+        queue_capacity: 64,
+        allow_file_writes: true,
+        allow_controls: true,
+        enable_raw_scpi: false,
+        enable_scpi_tunnel: false,
+        max_tunnels: 4,
         log: None,
-        scpi_timeout_ms: 5000,
-        max_tunnels: 16,
-        read_only: false,
     }
 }
 
-async fn setup(token: Option<&str>) -> (SocketAddr, tempfile::TempDir) {
-    let scpi = spawn_fake_scpi().await;
-    let dir = tempfile::tempdir().unwrap();
-    let cfg = test_config(scpi, dir.path().to_path_buf(), token.map(|s| s.to_string()));
-    let state = AppState::new(&cfg, cfg.resolve_token().unwrap()).unwrap();
-    let addr = spawn_server(state).await;
-    (addr, dir)
+async fn setup(
+    role: Role,
+) -> (
+    SocketAddr,
+    tempfile::TempDir,
+    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<String>>>,
+) {
+    let (scpi, connections, commands) = spawn_fake_scpi().await;
+    let root = tempfile::tempdir().unwrap();
+    for context in [
+        "experiments",
+        "runs",
+        "logs",
+        "templates",
+        "calibrations",
+        "public_run_complete",
+        "private_run_complete",
+    ] {
+        std::fs::create_dir_all(root.path().join(context)).unwrap();
+    }
+    let config = test_config(scpi, root.path().to_path_buf());
+    let state = AppState::new(&config, AuthPolicy::unauthenticated(role)).unwrap();
+    let address = spawn_http(state).await;
+    (address, root, connections, commands)
 }
 
-fn client() -> reqwest::Client {
-    reqwest::Client::builder().build().unwrap()
+async fn wait_ready(address: SocketAddr) -> serde_json::Value {
+    let client = reqwest::Client::new();
+    for _ in 0..100 {
+        let health: serde_json::Value = client
+            .get(format!("http://{address}/health"))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if health["ready"] == true {
+            return health;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("managed actor did not become ready")
 }
 
 #[tokio::test]
-async fn health_reports_scpi_ok() {
-    let (addr, _dir) = setup(None).await;
-    let resp = client()
-        .get(format!("http://{addr}/health"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    assert_eq!(body["name"], "qslib-server");
-    assert_eq!(body["scpi_ok"], true);
+async fn health_uses_the_single_managed_connection() {
+    let (address, _root, connections, _commands) = setup(Role::Observer).await;
+    let health = wait_ready(address).await;
+    assert_eq!(health["name"], "qslib-server");
+    assert_eq!(health["current_access"]["level"], "observer");
+    for _ in 0..5 {
+        reqwest::get(format!("http://{address}/health"))
+            .await
+            .unwrap();
+    }
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]
-async fn file_full_download() {
-    let (addr, dir) = setup(None).await;
-    let content = b"0123456789abcdef".repeat(1000);
-    tokio::fs::write(dir.path().join("data.bin"), &content)
-        .await
-        .unwrap();
-
-    let resp = client()
-        .get(format!("http://{addr}/file/data.bin"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.headers()["accept-ranges"], "bytes");
-    assert_eq!(resp.headers()["content-type"], "application/octet-stream");
-    assert!(resp.headers().contains_key("etag"));
-    let body = resp.bytes().await.unwrap();
-    assert_eq!(body.as_ref(), content.as_slice());
-}
-
-#[tokio::test]
-async fn put_file_round_trips() {
-    let (addr, dir) = setup(None).await;
-    let content = b"<PlateSetup/>".repeat(500);
-
-    let resp = client()
-        .put(format!(
-            "http://{addr}/file/exp/apldbio/sds/plate_setup.xml"
-        ))
-        .body(content.clone())
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 201);
-
-    // The bytes landed on disk under the root, parent dirs created.
-    let on_disk = tokio::fs::read(dir.path().join("exp/apldbio/sds/plate_setup.xml"))
-        .await
-        .unwrap();
-    assert_eq!(on_disk, content);
-
-    // And are served back byte-identically over GET.
-    let got = client()
-        .get(format!(
-            "http://{addr}/file/exp/apldbio/sds/plate_setup.xml"
-        ))
+async fn capabilities_and_status_follow_the_v1_contract() {
+    let (address, _root, _connections, _commands) = setup(Role::Observer).await;
+    wait_ready(address).await;
+    let client = reqwest::Client::new();
+    let capabilities: serde_json::Value = client
+        .get(format!("http://{address}/api/v1/capabilities"))
         .send()
         .await
         .unwrap()
-        .bytes()
+        .json()
         .await
         .unwrap();
-    assert_eq!(got.as_ref(), content.as_slice());
-}
+    assert_eq!(capabilities["api_version"], "v1");
+    assert_eq!(capabilities["sse"], true);
+    assert_eq!(capabilities["raw_scpi"], false);
 
-#[tokio::test]
-async fn put_file_overwrites_atomically() {
-    let (addr, dir) = setup(None).await;
-    tokio::fs::write(dir.path().join("f.bin"), b"old")
-        .await
-        .unwrap();
-    let resp = client()
-        .put(format!("http://{addr}/file/f.bin"))
-        .body(b"new-and-longer".to_vec())
+    let response = client
+        .get(format!("http://{address}/api/v1/instrument/status"))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 201);
-    assert_eq!(
-        tokio::fs::read(dir.path().join("f.bin")).await.unwrap(),
-        b"new-and-longer"
-    );
+    assert_eq!(response.status(), 200);
+    assert!(response.headers().contains_key("x-request-id"));
+    let status: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(status["zone_count"], 6);
+    assert_eq!(status["run"]["state"], "idle");
 }
 
 #[tokio::test]
-async fn put_file_traversal_forbidden() {
-    let (addr, dir) = setup(None).await;
-    // Fully percent-encoded `../../escape.bin` (slashes too) so the client sends
-    // one opaque segment and cannot normalize the `..` away; axum decodes it and
-    // our handler must reject the traversal rather than write outside the root.
-    let url = format!("http://{addr}/file/%2e%2e%2f%2e%2e%2fescape.bin");
-    let resp = client().put(url).body(b"x".to_vec()).send().await.unwrap();
-    assert_eq!(resp.status(), 403);
-    assert!(!dir.path().parent().unwrap().join("escape.bin").exists());
-}
-
-#[tokio::test]
-async fn put_file_read_only_forbidden() {
-    let scpi = spawn_fake_scpi().await;
-    let dir = tempfile::tempdir().unwrap();
-    let mut cfg = test_config(scpi, dir.path().to_path_buf(), None);
-    cfg.read_only = true;
-    let state = AppState::new(&cfg, cfg.resolve_token().unwrap()).unwrap();
-    let addr = spawn_server(state).await;
-
-    let resp = client()
-        .put(format!("http://{addr}/file/f.bin"))
-        .body(b"x".to_vec())
+async fn controller_transaction_restores_observer_on_the_managed_connection() {
+    let (address, _root, connections, commands) = setup(Role::Controller).await;
+    wait_ready(address).await;
+    let response = reqwest::Client::new()
+        .put(format!("http://{address}/api/v1/instrument/power"))
+        .json(&serde_json::json!({"enabled": true}))
         .send()
         .await
         .unwrap();
-    assert_eq!(resp.status(), 403);
-    assert!(!dir.path().join("f.bin").exists());
-}
+    assert_eq!(response.status(), 204);
 
-#[tokio::test]
-async fn list_dir_enumerates_recursively() {
-    let (addr, dir) = setup(None).await;
-    let root = dir.path();
-    tokio::fs::create_dir_all(root.join("run/apldbio/sds"))
+    let health: serde_json::Value = reqwest::get(format!("http://{address}/health"))
         .await
-        .unwrap();
-    tokio::fs::write(root.join("run/top.txt"), b"top")
-        .await
-        .unwrap();
-    tokio::fs::write(root.join("run/apldbio/sds/a.xml"), b"aaaa")
-        .await
-        .unwrap();
-    tokio::fs::write(root.join("run/apldbio/sds/.hidden"), b"hh")
-        .await
-        .unwrap();
-
-    let resp = client()
-        .get(format!("http://{addr}/list/run"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    let body: serde_json::Value = resp.json().await.unwrap();
-    let mut got: Vec<(String, u64)> = body["files"]
-        .as_array()
         .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(health["current_access"]["level"], "observer");
+    assert_eq!(connections.load(Ordering::SeqCst), 1);
+
+    let commands = commands.lock().unwrap();
+    let controller = commands
         .iter()
-        .map(|e| {
-            (
-                e["path"].as_str().unwrap().to_string(),
-                e["size"].as_u64().unwrap(),
-            )
-        })
-        .collect();
-    got.sort();
+        .position(|command| command.ends_with(" Controller"))
+        .expect("Controller elevation was not submitted");
+    let power = commands
+        .iter()
+        .position(|command| command == "POW ON")
+        .expect("power command was not submitted");
+    let observer = commands
+        .iter()
+        .enumerate()
+        .skip(power + 1)
+        .find(|(_, command)| command.ends_with(" Observer"))
+        .map(|(index, _)| index)
+        .expect("Observer restoration was not submitted");
+    assert!(controller < power && power < observer);
+}
+
+#[tokio::test]
+async fn contextual_files_support_ranges_etags_head_and_atomic_put() {
+    let (address, root, _connections, _commands) = setup(Role::Controller).await;
+    let content = b"0123456789abcdef";
+    std::fs::write(root.path().join("logs/data.bin"), content).unwrap();
+    let client = reqwest::Client::new();
+    let url = format!("http://{address}/api/v1/files/logs/data.bin");
+
+    let response = client
+        .get(&url)
+        .header("Range", "bytes=4-9")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 206);
+    assert!(response.headers().contains_key("etag"));
+    assert_eq!(&response.bytes().await.unwrap()[..], b"456789");
+
+    let response = client.head(&url).send().await.unwrap();
+    assert_eq!(response.status(), 200);
     assert_eq!(
-        got,
-        vec![
-            ("apldbio/sds/.hidden".to_string(), 2),
-            ("apldbio/sds/a.xml".to_string(), 4),
-            ("top.txt".to_string(), 3),
-        ]
+        response.headers()["content-length"].to_str().unwrap(),
+        content.len().to_string()
+    );
+
+    let replacement = b"replacement";
+    let response = client
+        .put(&url)
+        .body(replacement.as_slice())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 201);
+    assert_eq!(
+        std::fs::read(root.path().join("logs/data.bin")).unwrap(),
+        replacement
     );
 }
 
 #[tokio::test]
-async fn list_root_enumerates_the_file_root() {
-    let (addr, dir) = setup(None).await;
-    tokio::fs::write(dir.path().join("root.txt"), b"root")
+async fn role_and_feature_boundaries_are_enforced() {
+    let (address, _root, _connections, _commands) = setup(Role::Observer).await;
+    let client = reqwest::Client::new();
+    let put = client
+        .put(format!("http://{address}/api/v1/files/logs/nope"))
+        .body("data")
+        .send()
         .await
         .unwrap();
+    assert_eq!(put.status(), 403);
+    let header_request_id = put.headers()["x-request-id"].to_str().unwrap().to_string();
+    let body: serde_json::Value = put.json().await.unwrap();
+    assert_eq!(body["error"]["outcome"], "not_started");
+    assert!(body["request_id"].is_string());
+    assert_eq!(body["request_id"], header_request_id);
 
-    for suffix in ["/list", "/list/"] {
-        let resp = client()
-            .get(format!("http://{addr}{suffix}"))
-            .send()
+    let raw = client
+        .post(format!("http://{address}/api/v1/scpi"))
+        .body("{}")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(raw.status(), 404);
+}
+
+#[tokio::test]
+async fn old_unversioned_routes_are_not_compatibility_aliases() {
+    let (address, _root, _connections, _commands) = setup(Role::Administrator).await;
+    for route in ["/file/test", "/list", "/scpi", "/upgrade"] {
+        let response = reqwest::get(format!("http://{address}{route}"))
             .await
             .unwrap();
-        assert_eq!(resp.status(), 200);
-        let body: serde_json::Value = resp.json().await.unwrap();
-        assert_eq!(body["files"][0]["path"], "root.txt");
-        assert_eq!(body["files"][0]["size"], 4);
+        assert_eq!(response.status(), 404, "route {route}");
     }
 }
 
 #[tokio::test]
-async fn list_dir_missing_is_404() {
-    let (addr, _dir) = setup(None).await;
-    let resp = client()
-        .get(format!("http://{addr}/list/nope"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 404);
-}
+async fn router_errors_use_the_structured_contract() {
+    let (address, _root, _connections, _commands) = setup(Role::Observer).await;
+    let client = reqwest::Client::new();
 
-#[tokio::test]
-async fn upgrade_dry_run_verifies_a_real_binary() {
-    let (addr, _dir) = setup(None).await;
-    let bin = std::fs::read(env!("CARGO_BIN_EXE_qslib-server")).unwrap();
-    let sha = qslib_server::state::sha256_hex(&bin);
-
-    let resp = client()
-        .post(format!("http://{addr}/upgrade?dry_run=1"))
-        .header("x-qslib-sha256", &sha)
-        .body(bin)
-        .send()
-        .await
-        .unwrap();
-    let status = resp.status();
-    let text = resp.text().await.unwrap();
-    assert_eq!(status, 200, "body: {text}");
-    let j: serde_json::Value = serde_json::from_str(&text).unwrap();
-    assert_eq!(j["status"], "verified");
-    assert_eq!(j["dry_run"], true);
-    assert_eq!(j["sha256"], sha);
-}
-
-#[tokio::test]
-async fn upgrade_rejects_sha_mismatch() {
-    let (addr, _dir) = setup(None).await;
-    let bin = std::fs::read(env!("CARGO_BIN_EXE_qslib-server")).unwrap();
-    let resp = client()
-        .post(format!("http://{addr}/upgrade?dry_run=1"))
-        .header("x-qslib-sha256", "0".repeat(64))
-        .body(bin)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400);
-}
-
-#[tokio::test]
-async fn upgrade_requires_sha_header() {
-    let (addr, _dir) = setup(None).await;
-    let resp = client()
-        .post(format!("http://{addr}/upgrade?dry_run=1"))
-        .body(vec![0x7f, b'E', b'L', b'F', 1, 2, 3])
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400);
-}
-
-#[tokio::test]
-async fn upgrade_rejects_non_elf() {
-    let (addr, _dir) = setup(None).await;
-    let junk = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
-    let sha = qslib_server::state::sha256_hex(&junk);
-    let resp = client()
-        .post(format!("http://{addr}/upgrade?dry_run=1"))
-        .header("x-qslib-sha256", &sha)
-        .body(junk)
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400);
-}
-
-#[tokio::test]
-async fn file_range_request() {
-    let (addr, dir) = setup(None).await;
-    let content: Vec<u8> = (0u8..=255).collect();
-    tokio::fs::write(dir.path().join("bytes.bin"), &content)
-        .await
-        .unwrap();
-
-    let resp = client()
-        .get(format!("http://{addr}/file/bytes.bin"))
-        .header("Range", "bytes=10-19")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 206);
-    assert_eq!(resp.headers()["content-range"], "bytes 10-19/256");
-    assert_eq!(resp.headers()["content-length"], "10");
-    let body = resp.bytes().await.unwrap();
-    assert_eq!(body.as_ref(), &content[10..=19]);
-}
-
-#[tokio::test]
-async fn file_range_unsatisfiable() {
-    let (addr, dir) = setup(None).await;
-    tokio::fs::write(dir.path().join("small.bin"), b"tiny")
-        .await
-        .unwrap();
-    let resp = client()
-        .get(format!("http://{addr}/file/small.bin"))
-        .header("Range", "bytes=100-200")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 416);
-    assert_eq!(resp.headers()["content-range"], "bytes */4");
-}
-
-#[tokio::test]
-async fn file_head_has_length_no_body() {
-    let (addr, dir) = setup(None).await;
-    tokio::fs::write(dir.path().join("h.bin"), b"abcde")
-        .await
-        .unwrap();
-    let resp = client()
-        .head(format!("http://{addr}/file/h.bin"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.headers()["content-length"], "5");
-    let body = resp.bytes().await.unwrap();
-    assert!(body.is_empty());
-}
-
-#[tokio::test]
-async fn file_not_found() {
-    let (addr, _dir) = setup(None).await;
-    let resp = client()
-        .get(format!("http://{addr}/file/nope.bin"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 404);
-}
-
-#[tokio::test]
-async fn file_traversal_encoded_forbidden() {
-    let (addr, _dir) = setup(None).await;
-    // Percent-encoded `../../etc/passwd`; axum decodes before our handler sees it.
-    let url = format!("http://{addr}/file/%2e%2e%2f%2e%2e%2fetc%2fpasswd");
-    let resp = client().get(url).send().await.unwrap();
-    assert!(
-        resp.status() == 403 || resp.status() == 404,
-        "expected 403/404, got {}",
-        resp.status()
-    );
-    assert_ne!(resp.status(), 200);
-}
-
-#[tokio::test]
-async fn auth_enforced() {
-    let (addr, dir) = setup(Some("s3cr3t")).await;
-    tokio::fs::write(dir.path().join("a.bin"), b"x")
-        .await
-        .unwrap();
-
-    // No token -> 401
-    let resp = client()
-        .get(format!("http://{addr}/file/a.bin"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401);
-
-    // Wrong token -> 401
-    let resp = client()
-        .get(format!("http://{addr}/file/a.bin"))
-        .bearer_auth("nope")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 401);
-
-    // Correct token -> 200
-    let resp = client()
-        .get(format!("http://{addr}/file/a.bin"))
-        .bearer_auth("s3cr3t")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-}
-
-#[tokio::test]
-async fn scpi_oneshot_ok() {
-    let (addr, _dir) = setup(None).await;
-    let resp = client()
-        .post(format!("http://{addr}/scpi"))
-        .body("SYST:VERS?")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 200);
-    assert_eq!(resp.headers()["x-scpi-status"], "OK");
-    assert_eq!(resp.headers()["x-scpi-access"], "Observer");
-    let body = resp.text().await.unwrap();
-    assert!(body.contains("1.0.0"), "unexpected body: {body:?}");
-}
-
-#[tokio::test]
-async fn scpi_oneshot_command_error() {
-    let (addr, _dir) = setup(None).await;
-    let resp = client()
-        .post(format!("http://{addr}/scpi"))
-        .body("BADCMD foo")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 400);
-    assert!(resp.headers().contains_key("x-scpi-error"));
-}
-
-#[tokio::test]
-async fn scpi_rejects_newline_injection() {
-    let (addr, _dir) = setup(None).await;
-    for body in ["SYST:VERS?\nACC Controller", "RUNTitle?\r\nPOW OFF"] {
-        let resp = client()
-            .post(format!("http://{addr}/scpi"))
-            .body(body)
+    for (method, route, status, code) in [
+        (reqwest::Method::GET, "/missing", 404, "not_found"),
+        (
+            reqwest::Method::POST,
+            "/api/v1/instrument/status",
+            405,
+            "method_not_allowed",
+        ),
+    ] {
+        let response = client
+            .request(method, format!("http://{address}{route}"))
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status(), 400, "body {body:?} should be rejected");
+        assert_eq!(response.status(), status);
+        let request_id = response.headers()["x-request-id"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], code);
+        assert_eq!(body["request_id"], request_id);
     }
-}
-
-#[tokio::test]
-async fn scpi_tunnel_connects_and_runs() {
-    use std::time::Duration;
-    let (addr, _dir) = setup(None).await;
-    // Connect a real QSConnection through the qslib-server SCPI tunnel.
-    let conn = qslib_core::com::QSConnection::connect_server_tunnel(
-        &addr.ip().to_string(),
-        addr.port(),
-        None,
-    )
-    .await
-    .expect("tunnel connect");
-    let mut recv = conn
-        .send_command_bytes(&b"SYST:VERS?"[..])
-        .await
-        .expect("send command");
-    let resp = recv
-        .get_response_with_timeout(Duration::from_secs(5))
-        .await
-        .expect("no timeout")
-        .expect("ok response");
-    assert!(
-        resp.to_string().contains("1.0.0"),
-        "unexpected tunnel response: {resp}"
-    );
-}
-
-#[tokio::test]
-async fn scpi_access_cap_enforced() {
-    let (addr, _dir) = setup(None).await;
-    let resp = client()
-        .post(format!("http://{addr}/scpi?access=Full"))
-        .body("SYST:VERS?")
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), 403);
 }

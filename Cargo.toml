@@ -40,7 +40,7 @@ qslib-core = { path = "qslib-core", default-features = false, features = ["tls"]
 dashmap = "6.1"
 # HTTP client for the on-instrument qslib-server (server_client). Plain HTTP only
 # (qslib-server has no TLS), so no TLS backend is pulled in.
-reqwest = { version = "0.12", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream"] }
 enum_dispatch = "0.3.13"
 futures = "0.3.31"
 indexmap = "2.7"
@@ -63,6 +63,7 @@ lazy_static = "1.5.0"
 data-encoding = "2.7.0"
 anyhow = "1.0.95"
 bstr = "1.11.3"
+bytes = "1"
 tracing = "0.1.41"
 polars = { version = "^0.52", features = ["lazy", "diagonal_concat", "timezones"] }
 pyo3-polars = { version = "^0.25", optional = true }

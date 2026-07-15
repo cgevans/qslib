@@ -1,100 +1,156 @@
-//! qslib-server error type mapped to HTTP responses with JSON bodies.
+//! Structured API errors and HTTP status mapping.
 
-use axum::http::StatusCode;
+use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
+use uuid::Uuid;
 
-/// An error that becomes an HTTP response. The `detail` is optional extra
-/// context; the `header` field, when set, is emitted as an `X-SCPI-Error`
-/// header so scripting clients can distinguish SCPI command errors.
 #[derive(Debug)]
 pub struct ServerError {
     pub status: StatusCode,
-    pub error: String,
-    pub detail: Option<String>,
+    pub code: &'static str,
+    pub message: String,
+    pub retryable: bool,
+    pub outcome: &'static str,
     pub scpi_error: bool,
+    pub request_id: String,
 }
 
 #[derive(Serialize)]
 struct ErrorBody {
-    error: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
+    error: ErrorDetail,
+    request_id: String,
+}
+
+#[derive(Serialize)]
+struct ErrorDetail {
+    code: &'static str,
+    message: String,
+    retryable: bool,
+    outcome: &'static str,
 }
 
 impl ServerError {
-    pub fn new(status: StatusCode, error: impl Into<String>) -> Self {
+    pub fn new(status: StatusCode, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
-            error: error.into(),
-            detail: None,
+            code,
+            message: message.into(),
+            retryable: false,
+            outcome: "not_started",
             scpi_error: false,
+            request_id: Uuid::new_v4().to_string(),
         }
     }
 
-    pub fn not_found(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::NOT_FOUND, msg)
+    pub fn retryable(mut self, retryable: bool) -> Self {
+        self.retryable = retryable;
+        self
     }
 
-    pub fn forbidden(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::FORBIDDEN, msg)
+    pub fn outcome(mut self, outcome: &'static str) -> Self {
+        self.outcome = outcome;
+        self
     }
 
-    pub fn bad_request(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::BAD_REQUEST, msg)
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::NOT_FOUND, "not_found", message)
     }
 
-    pub fn conflict(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::CONFLICT, msg)
+    pub fn forbidden(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::FORBIDDEN, "forbidden", message)
     }
 
-    pub fn unauthorized(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, msg)
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::BAD_REQUEST, "invalid_input", message)
     }
 
-    pub fn timeout(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::GATEWAY_TIMEOUT, msg)
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::CONFLICT, "conflict", message)
     }
 
-    pub fn unavailable(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::SERVICE_UNAVAILABLE, msg)
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::UNAUTHORIZED, "unauthorized", message)
     }
 
-    pub fn internal(msg: impl Into<String>) -> Self {
-        Self::new(StatusCode::INTERNAL_SERVER_ERROR, msg)
+    pub fn timeout(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::GATEWAY_TIMEOUT, "deadline_exceeded", message)
+            .retryable(true)
+            .outcome("unknown")
     }
 
-    /// A SCPI command error (client/command error): HTTP 400 with an
-    /// `X-SCPI-Error` marker header.
-    pub fn scpi(msg: impl Into<String>) -> Self {
-        Self {
-            status: StatusCode::BAD_REQUEST,
-            error: msg.into(),
-            detail: None,
-            scpi_error: true,
-        }
+    pub fn unavailable(message: impl Into<String>) -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "upstream_unavailable",
+            message,
+        )
+        .retryable(true)
+    }
+
+    pub fn queue_full() -> Self {
+        Self::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "queue_full",
+            "semantic operation queue is full",
+        )
+        .retryable(true)
+    }
+
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", message)
+    }
+
+    pub fn instrument_rejection(message: impl Into<String>) -> Self {
+        let mut error = Self::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "instrument_rejected",
+            message,
+        );
+        error.scpi_error = true;
+        error
+    }
+
+    /// Isolated raw-SCPI command rejection. Kept separate from semantic
+    /// instrument rejections so clients cannot mistake the endpoint contract.
+    pub fn scpi(message: impl Into<String>) -> Self {
+        let mut error = Self::new(StatusCode::UNPROCESSABLE_ENTITY, "scpi_error", message);
+        error.scpi_error = true;
+        error
     }
 }
 
 impl IntoResponse for ServerError {
     fn into_response(self) -> Response {
-        let mut resp = (
+        let scpi_message = self.message.clone();
+        let retry_after = self.code == "queue_full";
+        let mut response = (
             self.status,
             Json(ErrorBody {
-                error: self.error.clone(),
-                detail: self.detail,
+                error: ErrorDetail {
+                    code: self.code,
+                    message: self.message,
+                    retryable: self.retryable,
+                    outcome: self.outcome,
+                },
+                request_id: self.request_id.clone(),
             }),
         )
             .into_response();
-        if self.scpi_error {
-            if let Ok(val) = self.error.parse::<axum::http::HeaderValue>() {
-                resp.headers_mut().insert("X-SCPI-Error", val);
-            } else {
-                resp.headers_mut()
-                    .insert("X-SCPI-Error", axum::http::HeaderValue::from_static("1"));
-            }
+        if let Ok(value) = HeaderValue::from_str(&self.request_id) {
+            response.headers_mut().insert("x-request-id", value);
         }
-        resp
+        if retry_after {
+            response
+                .headers_mut()
+                .insert("retry-after", HeaderValue::from_static("1"));
+        }
+        if self.scpi_error {
+            let value = HeaderValue::from_str(&scpi_message)
+                .unwrap_or_else(|_| HeaderValue::from_static("instrument error"));
+            response.headers_mut().insert("x-scpi-error", value);
+        }
+        response
     }
 }

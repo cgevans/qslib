@@ -1,17 +1,18 @@
-//! `POST /scpi` — run a single SCPI command at a chosen access level.
+//! Administrator-only isolated `POST /api/v1/scpi` one-shot requests.
 //!
 //! The command may be sent as the raw request body (default) or as a JSON
 //! object `{"command", "access", "timeout_ms", "encoding"}`. Query parameters
 //! `access`, `timeout_ms`, and `encoding` are accepted as alternatives.
 
 use axum::body::Bytes;
-use axum::extract::{Query, State};
+use axum::extract::{Extension, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use qslib_core::commands::AccessLevel;
 
+use crate::auth::{require_role, Principal, Role};
 use crate::error::ServerError;
 use crate::scpi::{run_oneshot, OneShot};
 use crate::state::AppState;
@@ -49,10 +50,15 @@ fn is_json(headers: &HeaderMap) -> bool {
 
 pub async fn post_scpi(
     State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
     Query(query): Query<ScpiQuery>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
+    require_role(Extension(principal), Role::Administrator)?;
+    if !state.enable_raw_scpi {
+        return Err(ServerError::not_found("raw SCPI is disabled"));
+    }
     let (command, access_str, timeout_ms, encoding) = if is_json(&headers) {
         let parsed: ScpiJsonBody = serde_json::from_slice(&body)
             .map_err(|e| ServerError::bad_request(format!("invalid JSON body: {e}")))?;
@@ -81,15 +87,15 @@ pub async fn post_scpi(
     // must use the streaming tunnel.
     if command.contains(['\n', '\r']) {
         return Err(ServerError::bad_request(
-            "SCPI command must be a single line (no CR/LF); use the /scpi tunnel for multi-command or multiline sessions",
+            "SCPI command must be a single line (no CR/LF); use the SCPI tunnel for multi-command or multiline sessions",
         ));
     }
 
     let access = match access_str {
         Some(s) => parse_access(&s)?,
-        None => state.default_access.clone(),
+        None => AccessLevel::Observer,
     };
-    let timeout_ms = timeout_ms.unwrap_or(state.scpi_timeout_ms);
+    let timeout_ms = timeout_ms.unwrap_or(30_000).min(600_000);
     let want_bytes = matches!(encoding.as_deref(), Some("bytes"));
 
     let (eff_access, result) = run_oneshot(&state, &command, access, timeout_ms).await?;
@@ -104,8 +110,9 @@ pub async fn post_scpi(
             }
             if want_bytes {
                 let mut buf = Vec::new();
-                ok.write_bytes(&mut buf)
-                    .map_err(|e| ServerError::internal(format!("failed to encode response: {e}")))?;
+                ok.write_bytes(&mut buf).map_err(|e| {
+                    ServerError::internal(format!("failed to encode response: {e}"))
+                })?;
                 resp_headers.insert(
                     header::CONTENT_TYPE,
                     HeaderValue::from_static("application/octet-stream"),

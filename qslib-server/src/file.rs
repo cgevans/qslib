@@ -1,12 +1,11 @@
-//! `GET`/`HEAD /file/<path…>` — bulk file transfer straight off disk, and
-//! `PUT /file/<path…>` — write a file straight to disk.
+//! Named-context file and directory resources under `/api/v1`.
 //!
 //! Paths are resolved under the configured root and canonicalized; anything
 //! that escapes the root (via `..`, an absolute component, or a symlink) is
 //! rejected with 403. Single-range requests are supported for resume and
 //! parallel chunked downloads. `PUT` writes atomically (temp file + rename),
 //! creating parent directories under the root; it is refused with 403 when the
-//! server is started `--read-only`.
+//! server policy enables file writes.
 
 use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
@@ -14,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::body::{Body, Bytes};
-use axum::extract::{Path as AxumPath, State};
+use axum::extract::{Extension, Path as AxumPath, State};
 use axum::http::{header, HeaderMap, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -22,6 +21,7 @@ use serde::Serialize;
 use tokio::fs::File;
 use tokio_util::io::ReaderStream;
 
+use crate::auth::{require_role, Principal, Role};
 use crate::error::ServerError;
 use crate::state::AppState;
 
@@ -233,10 +233,11 @@ fn etag(size: u64, modified: Option<SystemTime>) -> String {
 pub async fn serve_file(
     State(state): State<AppState>,
     method: Method,
-    AxumPath(rel): AxumPath<String>,
+    AxumPath((context, rel)): AxumPath<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response, ServerError> {
-    let path = resolve_under_root(&state.file_root, &rel).await?;
+    let root = state.context_root(&context)?;
+    let path = resolve_under_root(root, &rel).await?;
 
     let meta = tokio::fs::metadata(&path)
         .await
@@ -327,26 +328,48 @@ async fn open(path: &Path) -> Result<File, ServerError> {
         .map_err(|e| ServerError::internal(format!("failed to open file: {e}")))
 }
 
-/// `PUT /file/<path…>` — write the request body to disk under the file root.
+/// Write the request body atomically beneath a named context root.
 ///
 /// The body replaces the target file atomically: it is written to a temp file
 /// in the same directory and then renamed into place, so a reader never sees a
 /// partial file and a failed transfer leaves the previous contents intact.
 /// Parent directories are created as needed. Refused with 403 when the server
-/// is `--read-only`.
+/// does not enable file writes.
 pub async fn put_file(
     State(state): State<AppState>,
-    AxumPath(rel): AxumPath<String>,
+    Extension(principal): Extension<Principal>,
+    AxumPath((context, rel)): AxumPath<(String, String)>,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<Response, ServerError> {
-    if state.read_only {
+    require_role(Extension(principal), Role::Controller)?;
+    if !state.allow_file_writes {
         return Err(ServerError::forbidden(
-            "server is read-only; file uploads are disabled",
+            "file writes are disabled by server policy",
         ));
     }
 
-    let (parent, file_name) = resolve_write_target(&state.file_root, &rel).await?;
+    let root = state.context_root(&context)?.to_path_buf();
+    tokio::fs::create_dir_all(&root)
+        .await
+        .map_err(|e| ServerError::internal(format!("failed to create context root: {e}")))?;
+    let (parent, file_name) = resolve_write_target(&root, &rel).await?;
     let target = parent.join(&file_name);
+
+    if let Some(expected) = headers
+        .get(header::IF_MATCH)
+        .and_then(|value| value.to_str().ok())
+    {
+        let current = match tokio::fs::metadata(&target).await {
+            Ok(metadata) if metadata.is_file() => etag(metadata.len(), metadata.modified().ok()),
+            _ => return Err(ServerError::conflict("If-Match target does not exist")),
+        };
+        if expected != "*" && expected != current {
+            return Err(ServerError::conflict(format!(
+                "ETag mismatch: current value is {current}"
+            )));
+        }
+    }
     // Uniquify the temp name per upload: the pid alone collides when two
     // concurrent PUTs to the same target run in one server process, so they
     // would share a temp file and clobber each other. A process-wide counter
@@ -373,19 +396,25 @@ pub async fn put_file(
         )));
     }
 
+    let metadata = tokio::fs::metadata(&target)
+        .await
+        .map_err(|e| ServerError::internal(format!("failed to inspect uploaded file: {e}")))?;
+    let new_etag = etag(metadata.len(), metadata.modified().ok());
     Ok((
         StatusCode::CREATED,
-        Json(serde_json::json!({ "path": rel, "size": size })),
+        [(header::ETAG, new_etag)],
+        Json(serde_json::json!({ "context": context, "path": rel, "size": size })),
     )
         .into_response())
 }
 
-/// One file in a `/list` response: path relative to the listed directory
+/// One file in a directory response: path relative to the listed directory.
 /// (forward-slash separated), and its size in bytes.
 #[derive(Serialize)]
 pub struct ListEntry {
     pub path: String,
     pub size: u64,
+    pub modified_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Serialize)]
@@ -393,29 +422,33 @@ pub struct ListResponse {
     pub files: Vec<ListEntry>,
 }
 
-/// `GET /list/<dir…>` — recursively enumerate the regular files under a
+/// Recursively enumerate the regular files under a named-context directory.
 /// directory, off disk, returning a JSON manifest.
 ///
 /// This mirrors the InstrumentServer `EXP:ZIPREAD?` file set (Python
 /// `os.walk(followlinks=False)` + zip of the `filelist`) so a client can pull a
 /// run directory as raw files instead of a base64+deflate zip: real
-/// subdirectories are descended; regular files and symlinks-to-files are
-/// listed (including dotfiles); symlinks-to-directories and broken symlinks are
-/// skipped. Paths are relative to the requested directory.
+/// subdirectories are descended; regular files and contained symlinks-to-files
+/// are listed (including dotfiles); escaping/broken symlinks and symlinks to
+/// directories are skipped. Paths are relative to the requested directory.
 pub async fn list_dir(
     State(state): State<AppState>,
-    AxumPath(rel): AxumPath<String>,
+    AxumPath((context, rel)): AxumPath<(String, String)>,
 ) -> Result<Response, ServerError> {
-    list_dir_at(state, &rel).await
+    let root = state.context_root(&context)?;
+    list_dir_at(root, &rel).await
 }
 
-/// `GET /list` or `/list/` — enumerate the configured file root itself.
-pub async fn list_root(State(state): State<AppState>) -> Result<Response, ServerError> {
-    list_dir_at(state, "").await
+pub async fn list_context_root(
+    State(state): State<AppState>,
+    AxumPath(context): AxumPath<String>,
+) -> Result<Response, ServerError> {
+    let root = state.context_root(&context)?;
+    list_dir_at(root, "").await
 }
 
-async fn list_dir_at(state: AppState, rel: &str) -> Result<Response, ServerError> {
-    let root = resolve_under_root(&state.file_root, &rel).await?;
+async fn list_dir_at(context_root: &Path, rel: &str) -> Result<Response, ServerError> {
+    let root = resolve_under_root(context_root, rel).await?;
     let meta = tokio::fs::metadata(&root)
         .await
         .map_err(|_| ServerError::not_found("directory not found"))?;
@@ -456,10 +489,23 @@ async fn list_dir_at(state: AppState, rel: &str) -> Result<Response, ServerError
                 // it); a symlink-to-file or regular file is listed by target size;
                 // a broken symlink is skipped.
                 match tokio::fs::metadata(entry.path()).await {
-                    Ok(m) if m.is_file() => files.push(ListEntry {
-                        path: rel_path,
-                        size: m.len(),
-                    }),
+                    Ok(m) if m.is_file() => {
+                        if ft.is_symlink()
+                            && !tokio::fs::canonicalize(entry.path())
+                                .await
+                                .is_ok_and(|target| target.starts_with(context_root))
+                        {
+                            continue;
+                        }
+                        files.push(ListEntry {
+                            path: rel_path,
+                            size: m.len(),
+                            modified_at: m
+                                .modified()
+                                .ok()
+                                .map(chrono::DateTime::<chrono::Utc>::from),
+                        });
+                    }
                     _ => {}
                 }
             }

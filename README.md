@@ -69,6 +69,13 @@ It requires at least version 3.10 of Python. While it uses async code at
 its core for communication, it can be used conveniently in Jupyter or
 IPython.
 
+Direct SCPI is the standard and fully supported transport. Creating a
+``Machine`` without ``server_port`` connects directly and performs no HTTP
+discovery. ``qslib-server`` is an optional, explicitly configured semantic API
+and connection manager; when enabled, automatic high-level operations prefer
+its typed HTTP/SSE resources while manual connection and raw-command workflows
+remain direct SCPI.
+
 To use the library for communication with machines, you'll need a
 machine access password with Observer (for reading data and statuses)
 and/or Controller (for running experiments and controlling the machine)
