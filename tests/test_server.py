@@ -49,6 +49,8 @@ class _ScpiHandler(socketserver.StreamRequestHandler):
                 body = "green on"
             elif command.startswith("RET ${RunTitle"):
                 body = "- -1 -1 -1 -1 -1 -1 Idle"
+            elif command.startswith("REMainingTime?"):
+                body = "-"
             elif command.startswith("RET $(DRAWER?)"):
                 body = (
                     'Closed Down off "25 25 25 25 25 25" "25 25 25 25 25 25" 30 '
@@ -134,6 +136,7 @@ def test_health_capabilities_and_status(server):
     status = client.instrument_status()
     assert status["zone_count"] == 6
     assert status["run"]["state"] == "idle"
+    assert status["run"]["remaining_time_s"] is None
 
 
 def test_named_file_resources_and_range(server, tmp_path: Path):

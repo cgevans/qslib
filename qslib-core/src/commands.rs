@@ -1983,6 +1983,49 @@ impl std::fmt::Display for RunStatus {
     }
 }
 
+/// Estimated time remaining for the current run, in seconds.
+///
+/// Instruments return `-` when no estimate is available (for example while
+/// idle), so the typed value deliberately preserves that distinction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemainingTime(pub Option<i64>);
+
+#[derive(Debug, Clone)]
+pub struct RemainingTimeQuery;
+
+impl CommandBuilder for RemainingTimeQuery {
+    type Response = RemainingTime;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"REMainingTime?";
+}
+
+impl TryFrom<OkResponse> for RemainingTime {
+    type Error = OkParseError;
+
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        match value.args.first() {
+            Some(Value::Int(seconds)) => Ok(Self(Some(*seconds))),
+            Some(Value::String(text) | Value::QuotedString(text)) if text.trim() == "-" => {
+                Ok(Self(None))
+            }
+            Some(Value::String(text) | Value::QuotedString(text)) => text
+                .trim()
+                .parse::<i64>()
+                .map(|seconds| Self(Some(seconds)))
+                .map_err(|error| {
+                    OkParseError::UnexpectedValues(
+                        value,
+                        format!("remaining time should be integer seconds or '-': {error}"),
+                    )
+                }),
+            _ => Err(OkParseError::UnexpectedValues(
+                value,
+                "remaining time should be integer seconds or '-'".to_string(),
+            )),
+        }
+    }
+}
+
 #[cfg(feature = "python")]
 #[pymethods]
 impl RunStatus {
@@ -3144,6 +3187,32 @@ mod tests {
     #[test]
     fn test_run_status_command() {
         assert!(RunStatus::COMMAND.starts_with(b"RET "));
+    }
+
+    #[test]
+    fn remaining_time_parses_seconds_and_unavailable() {
+        let seconds = RemainingTime::try_from(OkResponse {
+            args: vec![Value::Int(3723)],
+            options: ArgMap::new(),
+        })
+        .unwrap();
+        assert_eq!(seconds, RemainingTime(Some(3723)));
+
+        let unavailable = RemainingTime::try_from(OkResponse {
+            args: vec![Value::String("-".to_string())],
+            options: ArgMap::new(),
+        })
+        .unwrap();
+        assert_eq!(unavailable, RemainingTime(None));
+    }
+
+    #[test]
+    fn remaining_time_rejects_malformed_values() {
+        let response = OkResponse {
+            args: vec![Value::String("soon".to_string())],
+            options: ArgMap::new(),
+        };
+        assert!(RemainingTime::try_from(response).is_err());
     }
 
     #[test]

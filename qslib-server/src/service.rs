@@ -11,9 +11,9 @@ use qslib_core::commands::{
     CommandBuilder, ControlZonesQuery, CoverDown, CoverPosition, CoverPositionQuery, DrawerClose,
     DrawerOpen, DrawerStatus, DrawerStatusQuery, ExperimentCollected, ExperimentCompile,
     ExperimentNew, FileMove, MachineStatusQuery, OkParseError, PauseRun, PowerQuery, PowerSet,
-    RandomKeyQuery, ReceiveNextResponseError, ReceiveOkResponseError, RestartSystem, ResumeRun,
-    RunStart, RunStatusQuery, StatusLedColor, StatusLedMode, StatusLedQuery, StatusLedSet, StopRun,
-    Subscribe,
+    RandomKeyQuery, ReceiveNextResponseError, ReceiveOkResponseError, RemainingTimeQuery,
+    RestartSystem, ResumeRun, RunStart, RunStatusQuery, StatusLedColor, StatusLedMode,
+    StatusLedQuery, StatusLedSet, StopRun, Subscribe,
 };
 use qslib_core::parser::{ErrorResponse, OkResponse};
 use serde::Serialize;
@@ -515,7 +515,10 @@ async fn execute_operation(
                 }
                 InstrumentOperation::RunStatus => {
                     let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
-                    Ok(InstrumentResult::RunStatus(status.into()))
+                    let remaining = fetch_remaining_time(connection).await?;
+                    Ok(InstrumentResult::RunStatus(RunStatusDto::from_parts(
+                        status, remaining,
+                    )))
                 }
                 InstrumentOperation::SetPower(enabled) => {
                     run_command(
@@ -1067,9 +1070,34 @@ async fn fetch_status(connection: &QSConnection) -> Result<InstrumentStatusDto, 
     let zones = run_command(connection, ControlZonesQuery, QUERY_DEADLINE).await?;
     let indicator = run_command(connection, StatusLedQuery, QUERY_DEADLINE).await?;
     let run = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
+    let remaining_time = fetch_remaining_time(connection).await?;
     Ok(InstrumentStatusDto::from_parts(
-        machine, power, block, zones, indicator, run,
+        machine,
+        power,
+        block,
+        zones,
+        indicator,
+        run,
+        remaining_time,
     ))
+}
+
+/// Remaining-time support is useful but not universal across instrument
+/// software versions. A structured SCPI rejection therefore means "estimate
+/// unavailable"; transport or malformed-response failures still evict the
+/// managed connection as they do for every other status query.
+async fn fetch_remaining_time(connection: &QSConnection) -> Result<Option<i64>, ExecutionFailure> {
+    match run_command(connection, RemainingTimeQuery, QUERY_DEADLINE).await {
+        Ok(remaining) => Ok(remaining.0),
+        Err(failure) if !failure.reconnect => {
+            debug!(
+                error = %failure.error.message,
+                "instrument does not provide a remaining-time estimate"
+            );
+            Ok(None)
+        }
+        Err(failure) => Err(failure),
+    }
 }
 
 async fn set_and_verify_access(

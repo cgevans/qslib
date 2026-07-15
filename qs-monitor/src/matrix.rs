@@ -85,10 +85,14 @@ async fn server_status_html(server: &ServerClient) -> Result<String, String> {
     let run = if status.run.state.eq_ignore_ascii_case("idle") || status.run.name == "-" {
         "idle".to_string()
     } else {
-        format!(
+        let mut run = format!(
             "running {} (stage {}, cycle {}, step {})",
             status.run.name, status.run.stage_name, status.run.cycle, status.run.step
-        )
+        );
+        if let Some(seconds) = status.run.remaining_time_s {
+            run.push_str(&format!(", ~{} remaining", format_duration_secs(seconds)));
+        }
+        run
     };
     Ok(format!(
         "power {}, cover {} at {:.1}°C, {}.",
@@ -132,62 +136,6 @@ async fn server_run_action(
     Ok(())
 }
 
-fn format_protocol(protocol: &qslib::protocol::Protocol) -> String {
-    let mut output = format!(
-        "<b>Protocol: {}</b><br>Volume: {} µL<br>Run Mode: {}<br>",
-        protocol.name, protocol.volume, protocol.runmode
-    );
-    if !protocol.filters.is_empty() {
-        output.push_str(&format!(
-            "Default Filters: {}<br>",
-            protocol.filters.join(", ")
-        ));
-    }
-    output.push_str("<br><b>Stages:</b><br>");
-    for (index, stage) in protocol.stages.iter().enumerate() {
-        output.push_str(&format!(
-            "Stage {}: {} (repeat: {})<br>",
-            index + 1,
-            stage
-                .label
-                .clone()
-                .unwrap_or_else(|| format!("Stage {}", index + 1)),
-            stage.repeat
-        ));
-        for (step_index, stage_step) in stage.steps.iter().enumerate() {
-            match stage_step {
-                qslib::protocol::StageStep::Standard(step) => {
-                    let temperature = if step.temperature.len() == 6
-                        && step
-                            .temperature
-                            .iter()
-                            .all(|value| *value == step.temperature[0])
-                    {
-                        format!("{}°C", step.temperature[0])
-                    } else {
-                        format!("{:?}°C", step.temperature)
-                    };
-                    output.push_str(&format!(
-                        "  Step {}: {}s at {}{}<br>",
-                        step_index + 1,
-                        step.time,
-                        temperature,
-                        if step.collect == Some(true) {
-                            " (collect)"
-                        } else {
-                            ""
-                        }
-                    ));
-                }
-                qslib::protocol::StageStep::Custom(_) => {
-                    output.push_str(&format!("  Step {}: (custom SCPI)<br>", step_index + 1))
-                }
-            }
-        }
-    }
-    output
-}
-
 #[derive(Debug, Deserialize, Clone)]
 pub struct MatrixSettings {
     pub password: String,
@@ -228,7 +176,8 @@ fn get_command_help(command: &str) -> String {
             <b>Information shown:</b><br>\
             • Power status (on/off)<br>\
             • Cover heat status and temperature<br>\
-            • Current run progress (if running) or idle status".to_string()
+            • Current run progress (if running) or idle status<br>\
+            • Estimated time remaining (if running)".to_string()
         }
         "command" => {
             "<b>!command &lt;machine&gt; &lt;command&gt;</b><br>\
@@ -291,7 +240,12 @@ fn get_command_help(command: &str) -> String {
             <b>Example:</b><br>\
             <code>!protocol qs1</code><br>\
             <br>\
-            Displays the protocol name, volume, run mode, and stage structure.".to_string()
+            Displays the protocol in the same human-readable form as qslib's Python \
+            interface: name, sample volume, run mode, default filters, and each stage's \
+            steps with temperatures, durations, cycling, increments, and collection settings.<br>\
+            <br>\
+            If a run is in progress, the current stage and step are highlighted and the \
+            current cycle is shown next to the stage.".to_string()
         }
         "power" => {
             "<b>!power &lt;machine&gt; [on|off]</b><br>\
@@ -380,7 +334,18 @@ async fn handle_message(
                             }
                         };
                         match v {
-                            Ok(v) => send_matrix_message(&room, &v.to_html(), false).await?,
+                            Ok(v) => {
+                                let mut html = v.to_html();
+                                if let PossibleRunProgress::Running(_) = &v.runprogress
+                                    && let Ok(Some(secs)) = conn.get_run_remaining_time().await
+                                {
+                                    html.push_str(&format!(
+                                        "<p>Estimated time remaining: {}</p>",
+                                        format_duration_secs(secs)
+                                    ));
+                                }
+                                send_matrix_message(&room, &html, false).await?
+                            }
                             Err(e) => error!("Error getting status: {}", e),
                         }
                     }
@@ -445,10 +410,22 @@ async fn handle_message(
                                 match v {
                                     Ok(v) => {
                                         let runmsg = match v.runprogress {
-                                            PossibleRunProgress::Running(p) => format!(
-                                                "running {} (stage {}, cycle {}, step {}).",
-                                                p.run_title, p.stage, p.cycle, p.step
-                                            ),
+                                            PossibleRunProgress::Running(p) => {
+                                                let mut s = format!(
+                                                    "running {} (stage {}, cycle {}, step {})",
+                                                    p.run_title, p.stage, p.cycle, p.step
+                                                );
+                                                if let Ok(Some(secs)) =
+                                                    conn.get_run_remaining_time().await
+                                                {
+                                                    s.push_str(&format!(
+                                                        ", ~{} remaining",
+                                                        format_duration_secs(secs)
+                                                    ));
+                                                }
+                                                s.push('.');
+                                                s
+                                            }
                                             PossibleRunProgress::NotRunning(_) => {
                                                 "idle.".to_string()
                                             }
@@ -902,7 +879,9 @@ async fn handle_message(
                     let (conn, _) = x.value();
                     match conn.get_running_protocol().await {
                         Ok(protocol) => {
-                            send_matrix_message(&room, &format_protocol(&protocol), false).await?;
+                            let (cs, ct, cc) = current_run_position(conn).await;
+                            let (plain, html) = render_protocol(&protocol, cs, ct, cc);
+                            send_matrix_message_with_plain(&room, &plain, &html, false).await?;
                         }
                         Err(e) => {
                             error!("Error getting protocol: {}", e);
@@ -931,14 +910,20 @@ async fn handle_message(
                                 .map_err(|error| error.to_string())?;
                             let xml =
                                 std::str::from_utf8(&xml).map_err(|error| error.to_string())?;
-                            qslib::protocol::Protocol::from_xml_str(xml)
-                                .map_err(|error| error.to_string())
+                            let protocol = qslib::protocol::Protocol::from_xml_str(xml)
+                                .map_err(|error| error.to_string())?;
+                            Ok((
+                                protocol,
+                                (run.stage > 0).then_some(run.stage),
+                                (run.step > 0).then_some(run.step),
+                                (run.cycle > 0).then_some(run.cycle),
+                            ))
                         }
                         .await;
                         match result {
-                            Ok(protocol) => {
-                                send_matrix_message(&room, &format_protocol(&protocol), false)
-                                    .await?
+                            Ok((protocol, stage, step, cycle)) => {
+                                let (plain, html) = render_protocol(&protocol, stage, step, cycle);
+                                send_matrix_message_with_plain(&room, &plain, &html, false).await?
                             }
                             Err(error) => {
                                 send_matrix_message(
@@ -1120,6 +1105,175 @@ async fn send_matrix_message(
     important: bool,
 ) -> Result<(), matrix_sdk::Error> {
     let mut content = RoomMessageEventContent::text_html(message, message);
+    if important {
+        content.mentions = Some(Mentions::with_room_mention());
+    }
+    room.send(content).await?;
+    Ok(())
+}
+
+/// Format a duration in seconds as a compact human string (e.g. `1h23m`,
+/// `45m`, `30s`). Negative values are clamped to zero.
+fn format_duration_secs(seconds: i64) -> String {
+    let seconds = seconds.max(0);
+    let h = seconds / 3600;
+    let m = (seconds % 3600) / 60;
+    let s = seconds % 60;
+    if h > 0 {
+        if m > 0 {
+            format!("{}h{}m", h, m)
+        } else {
+            format!("{}h", h)
+        }
+    } else if m > 0 {
+        if s > 0 {
+            format!("{}m{}s", m, s)
+        } else {
+            format!("{}m", m)
+        }
+    } else {
+        format!("{}s", s)
+    }
+}
+
+/// Escape a string for inclusion in Matrix HTML message bodies.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Render a running protocol into (plain_text, html) bodies for Matrix.
+///
+/// `current_stage`/`current_step`/`current_cycle` are the machine's 1-based
+/// position (from run status); when given, the current stage and step are
+/// highlighted and the current cycle is noted on the stage. Pass `None` for an
+/// idle machine.
+///
+/// The plain body is qslib's flat line rendering (the same human-readable form
+/// as the Python interface), with a `⟵` marker on the current stage/step. The
+/// HTML body is a proper nested list, with the current stage/step in bold.
+fn render_protocol(
+    protocol: &qslib::protocol::Protocol,
+    current_stage: Option<i64>,
+    current_step: Option<i64>,
+    current_cycle: Option<i64>,
+) -> (String, String) {
+    let mut plain = String::new();
+    for (i, line) in protocol
+        .info_lines(current_stage, current_step, current_cycle)
+        .iter()
+        .enumerate()
+    {
+        if i > 0 {
+            plain.push('\n');
+        }
+        plain.push_str(&line.text);
+        if line.current {
+            plain.push_str("  ⟵ current");
+        }
+    }
+
+    let html = protocol_view_html(&protocol.view(current_stage, current_step, current_cycle));
+    (plain, html)
+}
+
+/// Escape `text` and wrap it in `<b>…</b>` when `current`.
+fn html_span(text: &str, current: bool) -> String {
+    let escaped = html_escape(text);
+    if current {
+        format!("<b>{}</b>", escaped)
+    } else {
+        escaped
+    }
+}
+
+/// Render a [`qslib::protocol::ProtocolView`] as a nested HTML list for Matrix.
+///
+/// Stages are an ordered list; a stage with a single step collapses onto its
+/// line, otherwise its steps are a nested ordered list. The current stage and
+/// step are shown in bold.
+fn protocol_view_html(view: &qslib::protocol::ProtocolView) -> String {
+    let mut html = String::new();
+
+    html.push_str("<p><b>Run Protocol ");
+    html.push_str(&html_escape(&view.name));
+    html.push_str("</b>");
+    if !view.details.is_empty() {
+        html.push_str(" — ");
+        html.push_str(&html_escape(&view.details.join(", ")));
+    }
+    html.push_str("</p>");
+
+    if let Some(df) = &view.default_filters {
+        html.push_str("<p><i>Default filters: ");
+        html.push_str(&html_escape(df));
+        html.push_str("</i></p>");
+    }
+
+    html.push_str("<ol>");
+    for stage in &view.stages {
+        html.push_str("<li>");
+
+        let mut head = stage.summary.clone();
+        if let Some(cycle) = &stage.cycle {
+            head.push_str(" — ");
+            head.push_str(cycle);
+        }
+        html.push_str(&html_span(&head, stage.current));
+
+        if stage.steps.len() == 1 {
+            // Collapse a single step onto the stage line.
+            html.push_str(": ");
+            html.push_str(&html_span(&stage.steps[0].text, stage.steps[0].current));
+        } else if !stage.steps.is_empty() {
+            html.push_str("<ol>");
+            for step in &stage.steps {
+                html.push_str("<li>");
+                html.push_str(&html_span(&step.text, step.current));
+                html.push_str("</li>");
+            }
+            html.push_str("</ol>");
+        }
+
+        html.push_str("</li>");
+    }
+    html.push_str("</ol>");
+
+    html
+}
+
+/// Query the machine's current run position as 1-based `(stage, step, cycle)`.
+///
+/// Returns `(None, None, None)` when the machine is idle or on any error, so
+/// protocol rendering degrades gracefully to an unmarked listing.
+async fn current_run_position(conn: &Arc<QSConnection>) -> (Option<i64>, Option<i64>, Option<i64>) {
+    let mut query = match QuickStatusQuery.send(conn).await {
+        Ok(q) => q,
+        Err(_) => return (None, None, None),
+    };
+    match query.receive_response().await {
+        Ok(Ok(status)) => match status.runprogress {
+            PossibleRunProgress::Running(rp) => (
+                rp.stage.parse().ok(),
+                rp.step.parse().ok(),
+                rp.cycle.parse().ok(),
+            ),
+            PossibleRunProgress::NotRunning(_) => (None, None, None),
+        },
+        _ => (None, None, None),
+    }
+}
+
+/// Send a message with distinct plain-text and HTML bodies. Used when the HTML
+/// body carries markup (e.g. a `<pre>` block) that would be noise as plain text.
+async fn send_matrix_message_with_plain(
+    room: &Room,
+    plain: &str,
+    html: &str,
+    important: bool,
+) -> Result<(), matrix_sdk::Error> {
+    let mut content = RoomMessageEventContent::text_html(plain, html);
     if important {
         content.mentions = Some(Mentions::with_room_mention());
     }
@@ -1496,5 +1650,81 @@ async fn handle_run_message(name: String, msg: LogMessage, room: &Room) {
             Ok(_) => (),
             Err(e) => error!("Error sending message: {}", e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use qslib::parser::Command;
+    use qslib::protocol::Protocol;
+
+    #[test]
+    fn test_html_escape() {
+        assert_eq!(html_escape("a & b <c> \"d\""), "a &amp; b &lt;c&gt; \"d\"");
+        assert_eq!(html_escape("plain text"), "plain text");
+    }
+
+    #[test]
+    fn test_format_duration_secs() {
+        assert_eq!(format_duration_secs(0), "0s");
+        assert_eq!(format_duration_secs(-5), "0s");
+        assert_eq!(format_duration_secs(45), "45s");
+        assert_eq!(format_duration_secs(60), "1m");
+        assert_eq!(format_duration_secs(90), "1m30s");
+        assert_eq!(format_duration_secs(3600), "1h");
+        assert_eq!(format_duration_secs(3600 + 23 * 60), "1h23m");
+        assert_eq!(format_duration_secs(2 * 3600 + 5), "2h");
+    }
+
+    const MULTI_STAGE: &str = "PROT -volume=25 -runmode=standard qpcr <multiline.protocol>\n\tSTAGE 1 _HOLD <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 120\n\t\t</multiline.step>\n\t</multiline.stage>\n\tSTAGE -repeat=40 2 _CYCLE <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 95\n\t\t\tHOLD 15\n\t\t</multiline.step>\n\t\tSTEP 2 <multiline.step>\n\t\t\tRAMP 60\n\t\t\tHACFILT x1-m4\n\t\t\tHOLDANDCOLLECT 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";
+
+    #[test]
+    fn test_render_protocol_plain_matches_display() {
+        let protocol_string = "PROTOCOL -volume=50.0 -runmode=standard test_protocol <multiline.protocol>\n\tSTAGE 1 _HOLD_1 <multiline.stage>\n\t\tSTEP 1 <multiline.step>\n\t\t\tRAMP 60.0 60.0 60.0 60.0 60.0 60.0\n\t\t\tHOLD 60\n\t\t</multiline.step>\n\t</multiline.stage>\n</multiline.protocol>";
+        let cmd = Command::try_from(protocol_string).expect("parse command");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
+
+        let (plain, html) = render_protocol(&protocol, None, None, None);
+
+        // The plain fallback is exactly qslib's Display output (Python-style).
+        assert_eq!(plain, protocol.to_string());
+
+        // The HTML is a proper nested list, not a <pre> block.
+        assert!(!html.contains("<pre>"));
+        assert!(html.contains("<ol>"));
+        assert!(html.contains("<li>"));
+        assert!(html.contains("<b>Run Protocol test_protocol</b>"));
+    }
+
+    #[test]
+    fn test_render_protocol_highlights_current() {
+        let cmd = Command::try_from(MULTI_STAGE).expect("parse command");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
+
+        // Current position: stage 2, step 2, cycle 12.
+        let (plain, html) = render_protocol(&protocol, Some(2), Some(2), Some(12));
+
+        // Cycle note on the current stage, in both bodies.
+        assert!(plain.contains("cycle 12/40"));
+        assert!(html.contains("<b>Stage with 40 cycles (total duration 50m) — cycle 12/40</b>"));
+
+        // Current step: marked in plain text, bold in HTML.
+        assert!(plain.contains("60.00°C for 60s/cycle (collects x1-m4)  ⟵ current"));
+        assert!(html.contains("<b>60.00°C for 60s/cycle (collects x1-m4)</b>"));
+
+        // Non-current step/stage is not marked.
+        assert!(!plain.contains("15s/cycle  ⟵"));
+        assert!(!html.contains("<b>95.00°C for 15s/cycle</b>"));
+    }
+
+    #[test]
+    fn test_render_protocol_idle_no_marks() {
+        let cmd = Command::try_from(MULTI_STAGE).expect("parse command");
+        let protocol = Protocol::from_scpicommand(&cmd).expect("parse protocol");
+        let (plain, html) = render_protocol(&protocol, None, None, None);
+        assert!(!plain.contains("⟵"));
+        // Only the title is bold; no stage or step is highlighted.
+        assert_eq!(html.matches("<b>").count(), 1);
     }
 }

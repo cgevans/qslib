@@ -1409,6 +1409,16 @@ impl QSConnection {
         }
     }
 
+    /// Query the estimated remaining run time in seconds.
+    ///
+    /// Uses the machine's `REMainingTime?` (`max(0, RunEstimate - RunTime)`).
+    /// Returns `Ok(None)` when no estimate is available (e.g. not running, or
+    /// the machine returns `"-"`).
+    pub async fn get_run_remaining_time(&self) -> Result<Option<i64>, CommandError<ErrorResponse>> {
+        let mut response = commands::RemainingTimeQuery.send(self).await?;
+        Ok(response.receive_response().await??.0)
+    }
+
     pub async fn get_running_protocol_string(&self) -> Result<String, CommandError<ErrorResponse>> {
         // Check if there's an active run
         let run_name = self.get_current_run_name().await?;

@@ -66,10 +66,11 @@ pub struct RunStatusDto {
     pub step: i64,
     pub point: i64,
     pub state: String,
+    pub remaining_time_s: Option<i64>,
 }
 
-impl From<RunStatus> for RunStatusDto {
-    fn from(value: RunStatus) -> Self {
+impl RunStatusDto {
+    pub fn from_parts(value: RunStatus, remaining_time_s: Option<i64>) -> Self {
         Self {
             name: value.name,
             stage: value.stage,
@@ -80,7 +81,14 @@ impl From<RunStatus> for RunStatusDto {
             step: value.step,
             point: value.point,
             state: value.state.to_ascii_lowercase(),
+            remaining_time_s,
         }
+    }
+}
+
+impl From<RunStatus> for RunStatusDto {
+    fn from(value: RunStatus) -> Self {
+        Self::from_parts(value, None)
     }
 }
 
@@ -111,6 +119,7 @@ impl InstrumentStatusDto {
         zone_count: usize,
         indicator: StatusLedState,
         run: RunStatus,
+        remaining_time_s: Option<i64>,
     ) -> Self {
         Self {
             observed_at: Utc::now(),
@@ -127,7 +136,7 @@ impl InstrumentStatusDto {
             target_controlled: machine.target_controlled,
             led_temperature_c: machine.led_temperature,
             indicator: indicator.into(),
-            run: run.into(),
+            run: RunStatusDto::from_parts(run, remaining_time_s),
         }
     }
 }

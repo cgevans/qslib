@@ -106,6 +106,8 @@ pub struct RunStatusDto {
     pub step: i64,
     pub point: i64,
     pub state: String,
+    #[serde(default)]
+    pub remaining_time_s: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -927,5 +929,27 @@ mod tests {
         let event = take_sse_event(&mut bytes).unwrap().unwrap();
         assert_eq!(event.id, Some(4));
         assert_eq!(event.event, "run");
+    }
+
+    #[test]
+    fn run_status_remaining_time_is_additive() {
+        let base = serde_json::json!({
+            "name": "test",
+            "stage": 1,
+            "stage_name": "1",
+            "num_stages": 2,
+            "cycle": 3,
+            "num_cycles": 40,
+            "step": 2,
+            "point": 0,
+            "state": "running"
+        });
+        let without: RunStatusDto = serde_json::from_value(base.clone()).unwrap();
+        assert_eq!(without.remaining_time_s, None);
+
+        let mut with = base;
+        with["remaining_time_s"] = serde_json::json!(3723);
+        let with: RunStatusDto = serde_json::from_value(with).unwrap();
+        assert_eq!(with.remaining_time_s, Some(3723));
     }
 }
