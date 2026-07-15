@@ -1973,6 +1973,96 @@ impl CommandBuilder for RunStatusQuery {
     const COMMAND: &'static [u8] = RunStatus::COMMAND;
 }
 
+/// Name and execution settings associated with the protocol currently held by
+/// the instrument.  The protocol body itself is queried separately because it
+/// is returned as a multiline quoted value.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RunningProtocolMetadata {
+    pub name: String,
+    pub sample_volume: f64,
+    pub run_mode: String,
+}
+
+impl TryFrom<OkResponse> for RunningProtocolMetadata {
+    type Error = OkParseError;
+
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        if value.args.len() != 3 || !value.options.is_empty() {
+            return Err(OkParseError::UnexpectedValues(
+                value,
+                "running protocol metadata should contain name, sample volume, and run mode"
+                    .to_string(),
+            ));
+        }
+        let name = value.args[0].to_string();
+        let sample_volume = value.args[1].to_string().parse::<f64>().map_err(|error| {
+            OkParseError::UnexpectedValues(
+                value.clone(),
+                format!("sample volume should be numeric: {error}"),
+            )
+        })?;
+        let run_mode = value.args[2].to_string();
+        Ok(Self {
+            name,
+            sample_volume,
+            run_mode,
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RunningProtocolMetadataQuery;
+
+impl CommandBuilder for RunningProtocolMetadataQuery {
+    type Response = RunningProtocolMetadata;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"RET ${Protocol} ${SampleVolume} ${RunMode}";
+}
+
+/// The exact multiline body returned by ``PROT? ${Protocol}``.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunningProtocolBody(pub String);
+
+impl TryFrom<OkResponse> for RunningProtocolBody {
+    type Error = OkParseError;
+
+    fn try_from(value: OkResponse) -> Result<Self, Self::Error> {
+        if value.args.len() != 1 || !value.options.is_empty() {
+            return Err(OkParseError::UnexpectedValues(
+                value,
+                "running protocol body should be one quoted value".to_string(),
+            ));
+        }
+        let body = match value.args[0].clone() {
+            Value::XmlString { value: body, .. } => {
+                String::from_utf8(body.to_vec()).map_err(|error| {
+                    OkParseError::UnexpectedValues(
+                        value.clone(),
+                        format!("running protocol body is not UTF-8: {error}"),
+                    )
+                })?
+            }
+            Value::String(body) | Value::QuotedString(body) => body,
+            _ => {
+                return Err(OkParseError::UnexpectedValues(
+                    value,
+                    "running protocol body should be textual".to_string(),
+                ))
+            }
+        };
+        Ok(Self(body))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RunningProtocolBodyQuery;
+
+impl CommandBuilder for RunningProtocolBodyQuery {
+    type Response = RunningProtocolBody;
+    type Error = ErrorResponse;
+    const COMMAND: &'static [u8] = b"PROT? ${Protocol}";
+}
+
 impl std::fmt::Display for RunStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(

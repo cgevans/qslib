@@ -3,6 +3,8 @@
 
 """Unit tests for Machine class — pure logic, no network required."""
 
+from contextlib import nullcontext
+
 import pytest
 
 from qslib import (
@@ -48,6 +50,23 @@ def test_machine_server_settings_asdict():
     assert m.asdict()["server_port"] == 7500
     assert "server_token" not in m.asdict()
     assert m.asdict(password=True)["server_token"] == "secret"
+
+
+def test_get_running_protocol_idle_direct_connection(monkeypatch):
+    machine = Machine("instrument")
+    commands: list[str] = []
+    monkeypatch.setattr(machine, "ensured_connection", lambda *_args, **_kwargs: nullcontext(machine))
+
+    def run_command(command):
+        commands.append(command)
+        return ""
+
+    monkeypatch.setattr(machine, "run_command", run_command)
+
+    with pytest.raises(ValueError, match="Nothing is currently running"):
+        machine.get_running_protocol()
+
+    assert commands == ["RET ${Protocol} ${SampleVolume} ${RunMode}"]
 
 
 # --- connect() always means a manually owned direct SCPI session ---

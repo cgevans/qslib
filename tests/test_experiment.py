@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 from pathlib import Path
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -11,6 +12,69 @@ from qslib.experiment import DataNotAvailableError
 
 def test_create():
     Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
+
+
+def _named_protocol(name: str) -> Protocol:
+    return Protocol([Stage([Step(30, 25)])], name=name)
+
+
+def test_protocol_source_priority_never_parses_display_xml_when_exact_source_exists(caplog):
+    exp = Experiment(_create_xml=False)
+    exp._protocol_from_log = _named_protocol("from_log")
+    exp._protocol_from_qslib = _named_protocol("from_qslib_file")
+    exp._tcprotocol_xml = """<TCProtocol>
+        <ProtocolName>display_approximation</ProtocolName>
+        <CollectionProfile><CollectionCondition>
+            <FilterSet Emission="mm4" Excitation="xquant"/>
+        </CollectionCondition></CollectionProfile>
+    </TCProtocol>"""
+
+    exp._resolve_protocol()
+
+    assert exp.protocol.name == "from_log"
+    assert exp._protocol_from_xml is None
+    assert "tcprotocol.xml" not in caplog.text
+
+    exp._protocol_from_machine = _named_protocol("from_live_scpi")
+    exp._resolve_protocol()
+    assert exp.protocol.name == "from_live_scpi"
+
+
+def test_display_xml_is_used_only_as_final_protocol_fallback():
+    display_protocol = _named_protocol("display_fallback")
+    display_xml = ET.tostring(display_protocol.to_xml()[0].getroot(), encoding="unicode")
+    exp = Experiment(_create_xml=False)
+    exp._tcprotocol_xml = display_xml
+
+    exp._resolve_protocol()
+
+    assert exp.protocol.name == "display_fallback"
+    assert exp._protocol_from_xml is not None
+
+
+def test_qsl_protocol_file_prevents_malformed_display_xml_parse(capsys):
+    exact_protocol = _named_protocol("lossless_qsl_file")
+    _display, qsl_xml = exact_protocol.to_xml()
+    exp = Experiment(_create_xml=False)
+    exp.root_dir.mkdir(parents=True)
+    (exp.root_dir / "qsl-tcprotocol.xml").write_text(
+        ET.tostring(qsl_xml.getroot(), encoding="unicode")
+    )
+    (exp.root_dir / "tcprotocol.xml").write_text(
+        """<TCProtocol>
+            <ProtocolName>display_approximation</ProtocolName>
+            <CollectionProfile><CollectionCondition>
+                <FilterSet Emission="mm4" Excitation="xquant"/>
+            </CollectionCondition></CollectionProfile>
+        </TCProtocol>"""
+    )
+
+    exp._update_from_tcprotocol_xml()
+    exp._resolve_protocol()
+
+    assert exp.protocol.name == "lossless_qsl_file"
+    assert exp._protocol_from_xml is None
+    assert capsys.readouterr().out == ""
 
 
 def test_fail_plots_temperature():

@@ -48,7 +48,7 @@ from qslib.scpi_commands import AccessLevel
 from ._util import _nowuuid, _pp_seqsliceint, _set_or_create, cached_method
 from ._qslib import RunLogInfo, EdsArchive
 from .processors import PolarsProcessor, polars_process
-from ._qslib import RunStatus
+from ._qslib import CommandError, RunStatus
 from .data import (
     FilterSet,
     _filterdata_df_v2,
@@ -287,8 +287,8 @@ class Experiment:
       and trusts the machine's protocol if at all possible, *even for files written by
       AB D&A* (it is stored in the log if the run has started).
     * QSLib will try to write a reasonable XML protocol for AB D&A to see, but it may
-      by an approximation or simply wrong, if the actual protocol can't be expressed there.
-      It will also store the actual protocol in tcprotocol.xml, and its own representation.
+      be an approximation or simply wrong if the actual protocol can't be expressed there.
+      It stores the lossless machine-language protocol separately in qsl-tcprotocol.xml.
     * By default, creating a step with a per-cycle increment in QSLib starts the change
       *on cycle 2*, not cycle 1, as is the default in the software.
     * Immediate pause/resume, mid-run stage addition, and other functions are not supported
@@ -893,6 +893,14 @@ table, th, td {{
             else machine.ensured_connection(AccessLevel.Observer)
         )
         with context:
+            try:
+                self._protocol_from_machine = machine.get_running_protocol()
+            except (CommandError, ConnectionError, OSError, ServerError, ValueError):
+                log.warning(
+                    "Could not refresh the live SCPI protocol; retaining stored protocol sources",
+                    exc_info=True,
+                )
+
             # Get a list of all the files in the experiment folder
             machine_files = machine.list_files(f"experiments:{self.runtitle_safe}/", verbose=True, recursive=True)
 
@@ -990,9 +998,9 @@ table, th, td {{
             try:
                 server.put_protocol(
                     self.runtitle_safe,
+                    self.protocol.to_scpi_string(),
                     self._sdspath("tcprotocol.xml").read_bytes(),
                     mode="from_now",
-                    force=True,
                 )
                 return
             except ServerUnavailable:
@@ -1012,7 +1020,7 @@ table, th, td {{
 
             self._update_tcprotocol_xml()
 
-            # Push new tcprotocol.xml
+            # Push the display approximation and lossless QSLib protocol.
             with open(self._sdspath("tcprotocol.xml"), "rb") as f:
                 machine.write_file("${LogFolder}/tcprotocol.xml", f.read())
             with open(self._sdspath("qsl-tcprotocol.xml"), "rb") as f:
@@ -1065,9 +1073,9 @@ table, th, td {{
             try:
                 server.put_protocol(
                     self.runtitle_safe,
+                    new_protocol.to_scpi_string(),
                     self._sdspath("tcprotocol.xml").read_bytes(),
                     mode="replace",
-                    force=force,
                 )
                 return
             except ServerUnavailable:
@@ -1096,12 +1104,12 @@ table, th, td {{
             # Make changes.
             machine.define_protocol(new_protocol)
 
-            # Save changes in tcprotocol.xml
+            # Save both the display approximation and lossless QSLib protocol.
             self.protocol = new_protocol
 
             self._update_tcprotocol_xml()
 
-            # Push new tcprotocol.xml
+            # Push the display approximation and lossless QSLib protocol.
             machine.write_file(
                 "${LogFolder}/tcprotocol.xml",
                 self._sdspath("tcprotocol.xml").read_bytes(),
@@ -1235,6 +1243,8 @@ table, th, td {{
         self._protocol_from_qslib: Protocol | None = None
         self._protocol_from_log: Protocol | None = None
         self._protocol_from_xml: Protocol | None = None
+        self._protocol_from_machine: Protocol | None = None
+        self._tcprotocol_xml: str | None = None
         self.runstarttime: datetime | None = None
         self.runendtime: datetime | None = None
         self.activestarttime: datetime | None = None
@@ -1342,15 +1352,21 @@ table, th, td {{
         self._resolve_protocol()
 
     def _resolve_protocol(self) -> None:
-        """Choose the best protocol source."""
-        if self._protocol_from_xml:
-            self.protocol = self._protocol_from_xml
-        if self._protocol_from_log:
-            self.protocol = self._protocol_from_log
-        if self._protocol_from_qslib:
-            self.protocol = self._protocol_from_qslib
-        if self._protocol_from_xml:
-            self.protocol.covertemperature = self._protocol_from_xml.covertemperature
+        """Choose the most authoritative available protocol source.
+
+        ``tcprotocol.xml`` is an Android display approximation and is parsed
+        only when no live, log, or lossless QSLib representation is available.
+        """
+        protocol = self._protocol_from_machine or self._protocol_from_log or self._protocol_from_qslib
+        if protocol is None and self._tcprotocol_xml is not None:
+            if self._protocol_from_xml is None:
+                try:
+                    self._protocol_from_xml = Protocol.from_xml(ET.fromstring(self._tcprotocol_xml))
+                except (ET.ParseError, ValueError):
+                    log.warning("Could not parse fallback tcprotocol.xml", exc_info=True)
+            protocol = self._protocol_from_xml
+        if protocol is not None:
+            self.protocol = protocol
 
     @classmethod
     def from_file(cls, file: str | os.PathLike[str] | IO[bytes]) -> Experiment:
@@ -1430,6 +1446,14 @@ table, th, td {{
 
             if not crt:
                 raise ValueError("Nothing is currently running.")
+
+            try:
+                exp._protocol_from_machine = machine.get_running_protocol()
+            except (CommandError, ConnectionError, OSError, ServerError, ValueError):
+                log.warning(
+                    "Could not read the live SCPI protocol; falling back to stored run sources",
+                    exc_info=True,
+                )
 
             # Prefer qslib-server's raw HTTP directory transfer; fall back to the
             # SCPI ZIPREAD (base64+deflate) path when it is not available.
@@ -1711,6 +1735,9 @@ table, th, td {{
 
         # Parse tcprotocol.xml
         tc_xml = (self.root_dir / "tcprotocol.xml").read_text()
+        self._tcprotocol_xml = tc_xml
+        self._protocol_from_xml = None
+        self._protocol_from_qslib = None
 
         # Parse qsl-tcprotocol.xml if it exists
         if (self.root_dir / "qsl-tcprotocol.xml").is_file():
@@ -1732,11 +1759,8 @@ table, th, td {{
                 except (ValueError, TypeError):
                     pass
 
-        try:
-            self._protocol_from_xml = Protocol.from_xml(ET.fromstring(tc_xml))
-        except Exception as e:
-            print(e)
-            self._protocol_from_xml = None
+        # Do not parse tcprotocol.xml here. It is an approximate Android display
+        # document and _resolve_protocol() consults it only as a final fallback.
 
     def _update_platesetup_xml(self) -> None:
         path = os.path.join(self._dir_eds, "plate_setup.xml")
@@ -2195,6 +2219,7 @@ table, th, td {{
         logpath = self._msglog_path()
         if not logpath.is_file():
             return
+        self._protocol_from_log = None
         msglog = logpath.read_bytes()
 
         ms = RunLogInfo.parse(msglog)
@@ -2250,8 +2275,10 @@ table, th, td {{
                 if rp:
                     pname_u = rp["protoname"].decode("utf-8")
                     prot = Protocol.from_scpi_string(f"PROT {pname_u} {prot_u}")
-                    if rp[1]:
+                    if rp["sv"]:
                         prot.volume = float(rp["sv"])
+                    if rp["ct"]:
+                        prot.covertemperature = float(rp["ct"])
                 else:
                     prot = Protocol.from_scpi_string(f"PROT unknown_name {prot_u}")
                 self._protocol_from_log = prot
@@ -2269,8 +2296,6 @@ table, th, td {{
                     # if newprot.name == prot.name:
                     self._protocol_from_log = newprot
 
-            else:
-                self._protocol_from_log = None
         except ValueError:
             self._protocol_from_log = None
 

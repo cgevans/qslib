@@ -711,11 +711,6 @@ async fn log_server_machine(
             "Time" => time_to_lineprotocol(&message, &config.name, timestamp),
             "LEDStatus" => ledstatus_to_lineprotocol(&message, &config.name, timestamp),
             "Run" => {
-                // Keep the snapshot-derived run title and targets current; the
-                // Run event itself contains the fine-grained action.
-                if let Ok(status) = server.instrument_status().await {
-                    update_state_from_server_status(&mut state, &status);
-                }
                 run_to_lineprotocol(
                     &message,
                     &config.name,
@@ -735,8 +730,8 @@ async fn log_server_machine(
                 }
             }
             Err(error) => error!(
-                "Error converting server event for {}: {}",
-                config.name, error
+                "Error converting server event for {} from {:?}: {}",
+                config.name, message.message, error
             ),
         }
     }
@@ -929,6 +924,29 @@ async fn run_to_lineprotocol(
     let content = OkResponse::parse(&mut remaining.as_bytes())
         .map_err(|e| anyhow::anyhow!("Invalid message: {}", e))?;
 
+    // Server events carry the fine-grained action, while the snapshot carries
+    // the normalized run position and current title. Record whether this
+    // snapshot is fresh so a failed request cannot turn a stale stage into the
+    // numeric POSTRun position.
+    let fresh_server_status = if con.is_none() {
+        if let Some(server) = server {
+            match server.instrument_status().await {
+                Ok(status) => {
+                    update_state_from_server_status(state, &status);
+                    true
+                }
+                Err(error) => {
+                    warn!("Could not refresh status for {machine_name}: {error}");
+                    false
+                }
+            }
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
     // Create base point for run_action
     let ts = timestamp
         .timestamp_nanos_opt()
@@ -949,17 +967,43 @@ async fn run_to_lineprotocol(
     }
 
     match action {
-        "Stage" | "Cycle" | "Step" => {
+        "Stage" => {
+            let stage_name = content
+                .args
+                .first()
+                .ok_or(anyhow::anyhow!("Missing Stage value"))?
+                .to_string();
+            // Run log stage events use names such as PRERUN, Stage1, and
+            // POSTRun. In server mode the status snapshot fetched immediately
+            // before this event supplies the numeric POSTRun position.
+            let postrun_position = fresh_server_status.then_some(state.stage).flatten();
+            let stage = stage_position_from_event(&stage_name, postrun_position);
+
+            point = point.field("stage_name", stage_name.clone());
+            let mut status_point = DataPoint::builder("run_status")
+                .tag("machine", machine_name)
+                .tag("type", action.to_lowercase())
+                .field("stage_name", stage_name)
+                .timestamp(ts);
+            if let Some(stage) = stage {
+                state.stage = Some(stage);
+                point = point.field("stage", stage);
+                status_point = status_point.field("stage", stage);
+            }
+
+            points.push(point.build()?);
+            points.push(status_point.build()?);
+        }
+        "Cycle" | "Step" => {
             let value = content
                 .args
                 .first()
-                .ok_or(anyhow::anyhow!("Missing value"))?
+                .ok_or_else(|| anyhow::anyhow!("Missing {action} value"))?
                 .clone()
                 .try_into_i64()
-                .map_err(|e| anyhow::anyhow!("Missing value: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Invalid {action} value in {:?}: {e}", msg.message))?;
 
             match action {
-                "Stage" => state.stage = Some(value),
                 "Cycle" => state.cycle = Some(value),
                 "Step" => state.step = Some(value),
                 _ => unreachable!(),
@@ -1186,6 +1230,23 @@ async fn run_to_lineprotocol(
 
     debug!("Points: {:?}", points);
     Ok(points)
+}
+
+fn stage_position_from_event(stage_name: &str, postrun_position: Option<i64>) -> Option<i64> {
+    if stage_name.eq_ignore_ascii_case("PRERUN") {
+        return Some(0);
+    }
+    if stage_name.eq_ignore_ascii_case("POSTRun") {
+        return postrun_position;
+    }
+    if let Ok(stage) = stage_name.parse() {
+        return Some(stage);
+    }
+    let (prefix, suffix) = stage_name.split_at_checked(5)?;
+    prefix
+        .eq_ignore_ascii_case("Stage")
+        .then(|| suffix.parse().ok())
+        .flatten()
 }
 
 fn temperature_to_lineprotocol(
@@ -1659,6 +1720,58 @@ mod tests {
         assert!(line.contains("run_status,"));
         assert!(line.contains("type=stage"));
         assert!(line.contains("stage=2"));
+    }
+
+    #[test]
+    fn test_run_named_stage_messages() {
+        let timestamp = chrono::Utc.timestamp_nanos(1_000_000_000);
+        let cases = [
+            ("Stage PRERUN", None, Some(0), "PRERUN"),
+            ("Stage Stage1", None, Some(1), "Stage1"),
+            // Without a fresh qslib-server snapshot the raw name is retained,
+            // but no possibly stale numeric POSTRun position is emitted.
+            ("Stage POSTRun", None, None, "POSTRun"),
+        ];
+
+        for (message, initial_stage, expected_stage, expected_name) in cases {
+            let msg = LogMessage {
+                topic: "Run".to_string(),
+                timestamp: None,
+                message: message.to_string(),
+            };
+            let mut state = MachineState::default_idle();
+            state.stage = initial_stage;
+
+            let points = futures::executor::block_on(run_to_lineprotocol(
+                &msg, "qpcr1", timestamp, None, &mut state, None,
+            ))
+            .unwrap();
+
+            assert_eq!(points.len(), 2, "{message}");
+            assert_eq!(state.stage, expected_stage, "{message}");
+            for point in points {
+                let mut buf = Vec::new();
+                point.write_data_point_to(&mut buf).unwrap();
+                let line = String::from_utf8(buf).unwrap();
+                assert!(line.contains(&format!("stage_name=\"{expected_name}\"")));
+                if let Some(expected_stage) = expected_stage {
+                    assert!(line.contains(&format!("stage={expected_stage}")));
+                } else {
+                    assert!(!line.contains("stage="));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_stage_position_from_event() {
+        assert_eq!(stage_position_from_event("PRERUN", None), Some(0));
+        assert_eq!(stage_position_from_event("Stage12", None), Some(12));
+        assert_eq!(stage_position_from_event("stage3", None), Some(3));
+        assert_eq!(stage_position_from_event("4", None), Some(4));
+        assert_eq!(stage_position_from_event("POSTRun", Some(6)), Some(6));
+        assert_eq!(stage_position_from_event("POSTRun", None), None);
+        assert_eq!(stage_position_from_event("unexpected", None), None);
     }
 
     #[test]

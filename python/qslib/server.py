@@ -348,32 +348,25 @@ class ServerClient:
             state_query=f"/api/v1/runs/{_quote(name)}",
         )
 
-    def get_protocol(self, name: str) -> bytes:
-        with self._request(
-            f"/api/v1/runs/{_quote(name)}/protocol",
-            headers={"Accept": "application/xml"},
-        ) as response:
-            return response.read()
+    def get_running_protocol(self) -> dict[str, Any]:
+        """Return the instrument's authoritative active protocol as SCPI."""
+        return self._json("/api/v1/runs/current/protocol")
 
     def put_protocol(
         self,
         name: str,
-        xml: bytes,
+        scpi: str,
+        tcprotocol_xml: bytes,
         *,
         mode: str = "replace",
-        force: bool = False,
     ) -> dict[str, Any]:
-        query = urllib.parse.urlencode({"mode": mode, "force": str(force).lower()})
-        with self._request(
-            f"/api/v1/runs/{_quote(name)}/protocol?{query}",
+        return self._json(
+            f"/api/v1/runs/{_quote(name)}/protocol?{urllib.parse.urlencode({'mode': mode})}",
             method="PUT",
-            data=xml,
-            headers={"Content-Type": "application/xml"},
+            value={"scpi": scpi, "tcprotocol_xml": tcprotocol_xml.decode("utf-8")},
             mutation=True,
-            state_query=f"/api/v1/runs/{_quote(name)}/protocol",
-        ) as response:
-            body = response.read()
-        return json.loads(body) if body else {}
+            state_query="/api/v1/runs/current/protocol",
+        )
 
     def generate_access_key(self, *, idempotency_key: str | None = None) -> dict[str, Any]:
         return self._json(

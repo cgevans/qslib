@@ -200,7 +200,7 @@ def test_machine_status():
 def test_get_running_protocol_no_run():
     m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
     with m:
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError, match="Nothing is currently running"):
             m.get_running_protocol()
 
 

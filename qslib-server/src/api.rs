@@ -12,7 +12,7 @@ use axum::response::{IntoResponse, Response};
 use axum::Json;
 use futures::Stream;
 use qslib_core::commands::{StatusLedColor, StatusLedMode};
-use qslib_core::protocol::ProtocolModel;
+use qslib_core::protocol::ProtocolDefinition;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -452,6 +452,23 @@ pub async fn current_run(
     }
 }
 
+pub async fn current_protocol(
+    State(state): State<AppState>,
+    Extension(principal): Extension<Principal>,
+) -> Result<Response, ServerError> {
+    require_role(Extension(principal), Role::Observer)?;
+    match state
+        .service
+        .execute(InstrumentOperation::RunningProtocol)
+        .await?
+    {
+        InstrumentResult::RunningProtocol(protocol) => Ok(Json(protocol).into_response()),
+        _ => Err(ServerError::internal(
+            "instrument actor returned wrong response type",
+        )),
+    }
+}
+
 pub async fn get_run(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
@@ -527,7 +544,7 @@ pub async fn start_run(
             staged_root,
             protocol_scpi,
             protocol_name: protocol.name,
-            sample_volume: protocol.volume,
+            sample_volume: protocol.sample_volume,
             run_mode: protocol.run_mode,
         }),
     )
@@ -570,29 +587,18 @@ pub async fn run_action(
     )
 }
 
-pub async fn get_protocol(
-    State(state): State<AppState>,
-    Extension(principal): Extension<Principal>,
-    AxumPath(name): AxumPath<String>,
-) -> Result<Response, ServerError> {
-    require_role(Extension(principal), Role::Observer)?;
-    let working = state.context_root("experiments")?.join(&name);
-    let staged = package::staged_path(state.context_root("experiments")?, &name)?;
-    let path = [working, staged]
-        .into_iter()
-        .map(|root| root.join("apldbio/sds/tcprotocol.xml"))
-        .find(|path| path.is_file())
-        .ok_or_else(|| ServerError::not_found("protocol not found"))?;
-    let bytes = std::fs::read(path)
-        .map_err(|error| ServerError::internal(format!("failed to read protocol: {error}")))?;
-    Ok(([(header::CONTENT_TYPE, "application/xml")], bytes).into_response())
-}
-
 #[derive(Deserialize)]
 pub struct ProtocolQuery {
     mode: Option<String>,
-    #[serde(default)]
-    force: bool,
+}
+
+#[derive(Deserialize)]
+pub struct ProtocolUpdateRequest {
+    /// Exact protocol definition sent to InstrumentServer.
+    scpi: String,
+    /// Approximate Android display document. This is never used to decide what
+    /// protocol the instrument should execute.
+    tcprotocol_xml: String,
 }
 
 pub async fn put_protocol(
@@ -600,17 +606,16 @@ pub async fn put_protocol(
     Extension(principal): Extension<Principal>,
     AxumPath(name): AxumPath<String>,
     Query(query): Query<ProtocolQuery>,
-    body: Bytes,
+    Json(request): Json<ProtocolUpdateRequest>,
 ) -> Result<Response, ServerError> {
     require_controls(&state, principal)?;
     let mode = query.mode.as_deref().unwrap_or("replace");
     if !matches!(mode, "replace" | "from_now") {
         return Err(ServerError::bad_request("mode must be replace or from_now"));
     }
-    let xml = std::str::from_utf8(&body)
-        .map_err(|_| ServerError::bad_request("protocol XML must be UTF-8"))?;
-    let protocol = ProtocolModel::from_xml(xml)
-        .map_err(|error| ServerError::bad_request(format!("invalid protocol XML: {error}")))?;
+    let protocol = ProtocolDefinition::new(request.scpi.clone())
+        .map_err(|error| ServerError::bad_request(format!("invalid protocol SCPI: {error}")))?;
+    package::validate_xml_document(&request.tcprotocol_xml, "tcprotocol_xml")?;
     let root = state
         .context_root("experiments")?
         .join(&name)
@@ -618,31 +623,23 @@ pub async fn put_protocol(
     if !root.is_dir() {
         return Err(ServerError::not_found("working run not found"));
     }
-    let old_xml = std::fs::read_to_string(root.join("tcprotocol.xml"))
-        .map_err(|_| ServerError::not_found("current protocol not found"))?;
-    let old_protocol = ProtocolModel::from_xml(&old_xml).map_err(|error| {
-        ServerError::conflict(format!("current protocol cannot be validated: {error}"))
-    })?;
-    if protocol.name != old_protocol.name {
-        return Err(ServerError::conflict(
-            "replacement protocol name must match the running protocol",
-        ));
-    }
     execute_unit(
         &state,
         InstrumentOperation::ReplaceProtocol {
             name: name.clone(),
-            scpi: protocol.to_scpi(),
-            old: old_protocol,
-            new: protocol.clone(),
-            force: query.force,
+            protocol,
         },
     )
     .await?;
-    // The validated canonical and QSLib representation are replaced together.
-    atomic_write(&root.join("tcprotocol.xml"), &body).map_err(|error| error.outcome("unknown"))?;
-    let escaped = protocol
-        .to_scpi()
+    // Store the exact QSLib definition separately from the Android display
+    // approximation. Only the former is an authoritative protocol source.
+    atomic_write(
+        &root.join("tcprotocol.xml"),
+        request.tcprotocol_xml.as_bytes(),
+    )
+    .map_err(|error| error.outcome("unknown"))?;
+    let escaped = request
+        .scpi
         .replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;");
@@ -654,7 +651,7 @@ pub async fn put_protocol(
         .as_bytes(),
     )
     .map_err(|error| error.outcome("unknown"))?;
-    Ok(Json(json!({"name": name, "mode": mode, "force": query.force})).into_response())
+    Ok(Json(json!({"name": name, "mode": mode})).into_response())
 }
 
 pub async fn get_eds(

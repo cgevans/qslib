@@ -14,7 +14,6 @@ import re
 import shlex
 import time
 import zipfile
-import xml.etree.ElementTree as ET
 from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -1529,19 +1528,33 @@ class Machine:
         return MachineStatus.from_bytes(out)
 
     def get_running_protocol(self) -> Protocol:
+        """Return the protocol for the active run.
+
+        Raises
+        ------
+        ValueError
+            No run is currently active.
+        """
         server = self._semantic_server("runs")
         if server is not None:
             try:
                 run = server.current_run()
                 name = str(run.get("name", "-"))
-                if name != "-":
-                    return Protocol.from_xml(ET.fromstring(server.get_protocol(name)))
-            except (ServerError, OSError, HTTPException, ET.ParseError):
+                if name == "-" or str(run.get("state", "")).lower() == "idle":
+                    raise ValueError("Nothing is currently running.")
+                protocol = server.get_running_protocol()
+                return Protocol.from_scpi_string(str(protocol["scpi"]))
+            except (ServerError, OSError, HTTPException, KeyError):
                 log.debug("semantic protocol query failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
+            metadata = shlex.split(self.run_command("RET ${Protocol} ${SampleVolume} ${RunMode}"))
+            if not metadata:
+                raise ValueError("Nothing is currently running.")
+            if len(metadata) != 3:
+                raise ValueError(f"Unexpected running protocol metadata: {metadata!r}")
+            pn, svs, rm = metadata
             p = _unwrap_tags(self.run_command("PROT? ${Protocol}"))
-            pn, svs, rm = self.run_command("RET ${Protocol} ${SampleVolume} ${RunMode}").split()
-            p = f"PROT -volume={svs} -runmode={rm} {pn} " + p
+            p = f"PROT -volume={svs} -runmode={rm} {shlex.quote(pn)} " + p
             return Protocol.from_scpi_string(p)
 
     def set_access_level(

@@ -1,11 +1,11 @@
 //! Safe, bounded experiment-package staging.
 
 use std::collections::HashSet;
-use std::io::{Cursor, Read, Write};
+use std::io::{BufRead, Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 use axum::body::Bytes;
-use qslib_core::protocol::ProtocolModel;
+use qslib_core::protocol::{ProtocolDefinition, ProtocolModel, ProtocolSettings};
 use serde::Serialize;
 use zip::ZipArchive;
 
@@ -138,13 +138,6 @@ fn stage_package_blocking(
         validate_xml_file(&experiment_path, "experiment.xml")?;
         let protocol_path = find_required_file(&temp, "tcprotocol.xml")?;
         validate_xml_file(&protocol_path, "tcprotocol.xml")?;
-        let protocol_xml = std::fs::read_to_string(&protocol_path).map_err(|error| {
-            ServerError::bad_request(format!("cannot read tcprotocol.xml: {error}"))
-        })?;
-        ProtocolModel::from_xml(&protocol_xml).map_err(|error| {
-            ServerError::bad_request(format!("invalid tcprotocol.xml: {error}"))
-        })?;
-
         let etag = format!("\"sha256{}\"", sha256_hex(&body));
         let mut package_file = std::fs::File::create(temp.join(".qslib-package.zip"))
             .map_err(|error| ServerError::internal(format!("failed to store package: {error}")))?;
@@ -212,20 +205,37 @@ pub fn package_etag(experiments_root: &Path, name: &str) -> Result<String, Serve
 pub fn load_protocol(
     experiments_root: &Path,
     name: &str,
-) -> Result<(ProtocolModel, String), ServerError> {
+) -> Result<(ProtocolSettings, String), ServerError> {
     let root = staged_path(experiments_root, name)?;
+    let qsl_path = find_required_file(&root, "qsl-tcprotocol.xml").ok();
+    let exact_scpi = qsl_path
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|xml| ProtocolModel::scpi_from_qsl_xml(&xml));
+    if let Some(scpi) = exact_scpi {
+        let definition = ProtocolDefinition::new(scpi.clone()).map_err(|error| {
+            ServerError::bad_request(format!("invalid qsl-tcprotocol.xml protocol: {error}"))
+        })?;
+        let settings = definition.settings().map_err(|error| {
+            ServerError::bad_request(format!("invalid qsl-tcprotocol.xml protocol: {error}"))
+        })?;
+        return Ok((settings, scpi));
+    }
+
+    // Vendor XML is only the final fallback when no lossless QSLib definition
+    // is available.
     let tc_path = find_required_file(&root, "tcprotocol.xml")?;
     let tc_xml = std::fs::read_to_string(tc_path).map_err(|error| {
-        ServerError::bad_request(format!("cannot read tcprotocol.xml: {error}"))
+        ServerError::bad_request(format!("cannot read fallback tcprotocol.xml: {error}"))
     })?;
-    let model = ProtocolModel::from_xml(&tc_xml)
-        .map_err(|error| ServerError::bad_request(format!("invalid tcprotocol.xml: {error}")))?;
-    let qsl_path = find_required_file(&root, "qsl-tcprotocol.xml").ok();
-    let scpi = qsl_path
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|xml| ProtocolModel::scpi_from_qsl_xml(&xml))
-        .unwrap_or_else(|| model.to_scpi());
-    Ok((model, scpi))
+    let model = ProtocolModel::from_xml(&tc_xml).map_err(|error| {
+        ServerError::bad_request(format!("invalid fallback tcprotocol.xml: {error}"))
+    })?;
+    let settings = ProtocolSettings {
+        name: model.name.clone(),
+        sample_volume: model.volume,
+        run_mode: model.run_mode.clone(),
+    };
+    Ok((settings, model.to_scpi()))
 }
 
 pub(crate) fn validate_experiment_name(name: &str) -> Result<(), ServerError> {
@@ -295,9 +305,20 @@ fn find_required_file(root: &Path, name: &str) -> Result<PathBuf, ServerError> {
 }
 
 fn validate_xml_file(path: &Path, display_name: &str) -> Result<(), ServerError> {
-    let mut reader = quick_xml::Reader::from_file(path).map_err(|error| {
+    let reader = quick_xml::Reader::from_file(path).map_err(|error| {
         ServerError::bad_request(format!("cannot read {display_name}: {error}"))
     })?;
+    validate_xml_reader(reader, display_name)
+}
+
+pub(crate) fn validate_xml_document(xml: &str, display_name: &str) -> Result<(), ServerError> {
+    validate_xml_reader(quick_xml::Reader::from_str(xml), display_name)
+}
+
+fn validate_xml_reader<R: BufRead>(
+    mut reader: quick_xml::Reader<R>,
+    display_name: &str,
+) -> Result<(), ServerError> {
     let mut buffer = Vec::new();
     let mut elements: Vec<Vec<u8>> = Vec::new();
     let mut root_seen = false;
@@ -434,6 +455,34 @@ mod tests {
             .path()
             .join(".qslib-staging/demo/apldbio/sds/tcprotocol.xml")
             .is_file());
+    }
+
+    #[test]
+    fn lossless_qsl_protocol_precedes_approximate_display_xml() {
+        let root = tempfile::tempdir().unwrap();
+        let display = r#"<TCProtocol><ProtocolName>wrong_display</ProtocolName><CollectionProfile><CollectionCondition><FilterSet Emission="mm4" Excitation="xquant"/></CollectionCondition></CollectionProfile></TCProtocol>"#;
+        let qsl = r#"<QSTCProtocol><QSLibProtocolCommand>PROT -volume=12 -runmode=fast exact_qsl &lt;multiline.protocol&gt;
+	STAGE 1 S &lt;multiline.stage&gt;
+		STEP 1 &lt;multiline.step&gt;
+			RAMP 25
+			HOLD 60
+		&lt;/multiline.step&gt;
+	&lt;/multiline.stage&gt;
+&lt;/multiline.protocol&gt;</QSLibProtocolCommand></QSTCProtocol>"#;
+        let bytes = archive(&[
+            ("apldbio/sds/experiment.xml", "<Experiment/>"),
+            ("apldbio/sds/tcprotocol.xml", display),
+            ("apldbio/sds/qsl-tcprotocol.xml", qsl),
+        ]);
+        stage_package_blocking(root.path().to_path_buf(), "demo".into(), bytes).unwrap();
+
+        let (settings, scpi) = load_protocol(root.path(), "demo").unwrap();
+
+        assert_eq!(settings.name, "exact_qsl");
+        assert_eq!(settings.sample_volume, 12.0);
+        assert_eq!(settings.run_mode, "fast");
+        assert!(scpi.contains("exact_qsl"));
+        assert!(!scpi.contains("wrong_display"));
     }
 
     #[test]

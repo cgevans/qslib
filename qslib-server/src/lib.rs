@@ -74,6 +74,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/api/v1/runs", get(api::list_runs).post(api::start_run))
         .route("/api/v1/runs/current", get(api::current_run))
+        .route("/api/v1/runs/current/protocol", get(api::current_protocol))
         .route("/api/v1/runs/{name}", get(api::get_run))
         .route(
             "/api/v1/runs/{name}/actions/{action}",
@@ -81,9 +82,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/api/v1/runs/{name}/protocol",
-            get(api::get_protocol)
-                .put(api::put_protocol)
-                .layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
+            put(api::put_protocol).layer(DefaultBodyLimit::max(16 * 1024 * 1024)),
         )
         .route("/api/v1/runs/{name}/eds", get(api::get_eds))
         .route(

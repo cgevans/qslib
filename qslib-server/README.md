@@ -29,6 +29,13 @@ The main resources are:
 - `/api/v1/runs/*` for run state, start, actions, protocols, and EDS files;
 - `POST /api/v1/server/upgrade` for Administrator upgrades.
 
+`GET /api/v1/runs/current/protocol` returns the exact protocol currently held
+by InstrumentServer as SCPI. Protocol updates send that exact SCPI separately
+from `tcprotocol_xml`; the latter is only the approximate document consumed by
+the instrument's Android display. For stored packages, `qsl-tcprotocol.xml`
+is preferred and `tcprotocol.xml` is used only when no lossless QSLib protocol
+is present.
+
 The named file contexts are `default`, `experiments`, `runs`, `logs`,
 `templates`, `calibrations`, `public_run_complete`, and
 `private_run_complete`. Arbitrary absolute filesystem paths are not exposed.

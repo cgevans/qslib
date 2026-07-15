@@ -341,7 +341,76 @@ impl ProtocolModel {
 
 /// Validated protocol definition command used by semantic server operations.
 #[derive(Debug, Clone)]
-pub struct ProtocolDefinition(pub String);
+pub struct ProtocolDefinition(String);
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProtocolSettings {
+    pub name: String,
+    pub sample_volume: f64,
+    pub run_mode: String,
+}
+
+impl ProtocolDefinition {
+    /// Validate that `scpi` contains exactly one protocol-definition command.
+    pub fn new(scpi: String) -> Result<Self, ProtocolError> {
+        let mut input = scpi.as_bytes();
+        let command = crate::parser::Command::parse(&mut input).map_err(|error| {
+            ProtocolError::Invalid(format!("invalid SCPI protocol command: {error}"))
+        })?;
+        if !input.iter().all(u8::is_ascii_whitespace) {
+            return Err(ProtocolError::Invalid(
+                "SCPI protocol contains trailing commands".to_string(),
+            ));
+        }
+        let name = String::from_utf8_lossy(&command.command);
+        if !name.eq_ignore_ascii_case("PROT") && !name.eq_ignore_ascii_case("PROTOCOL") {
+            return Err(ProtocolError::Invalid(
+                "SCPI command is not a protocol definition".to_string(),
+            ));
+        }
+        Ok(Self(scpi))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Extract the run-start settings from the exact SCPI definition without
+    /// interpreting or approximating its stage contents.
+    pub fn settings(&self) -> Result<ProtocolSettings, ProtocolError> {
+        let command = crate::parser::Command::try_from(self.0.clone()).map_err(|error| {
+            ProtocolError::Invalid(format!("invalid SCPI protocol command: {error}"))
+        })?;
+        let name = command
+            .args
+            .first()
+            .and_then(|value| String::try_from(value).ok())
+            .ok_or_else(|| ProtocolError::Missing("protocol name"))?;
+        let option = |key: &str| {
+            command
+                .options
+                .iter()
+                .find(|(name, _)| name.eq_ignore_ascii_case(key))
+                .map(|(_, value)| value)
+        };
+        let sample_volume = match option("volume") {
+            Some(crate::parser::Value::Float(value)) => *value,
+            Some(crate::parser::Value::Int(value)) => *value as f64,
+            Some(value) => value.to_string().parse::<f64>().map_err(|_| {
+                ProtocolError::Invalid("protocol volume is not numeric".to_string())
+            })?,
+            None => 50.0,
+        };
+        let run_mode = option("runmode")
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "standard".to_string());
+        Ok(ProtocolSettings {
+            name,
+            sample_volume,
+            run_mode,
+        })
+    }
+}
 
 impl CommandBuilder for ProtocolDefinition {
     type Response = ();
@@ -399,6 +468,17 @@ fn extract_element(xml: &str, target: &str) -> Option<String> {
             Event::Start(event) if event.name().as_ref() == target.as_bytes() => inside = true,
             Event::End(event) if event.name().as_ref() == target.as_bytes() => return Some(output),
             Event::Text(text) if inside => output.push_str(text.decode().ok()?.as_ref()),
+            Event::GeneralRef(reference) if inside => {
+                let name = std::str::from_utf8(reference.as_ref()).ok()?;
+                match name {
+                    "lt" => output.push('<'),
+                    "gt" => output.push('>'),
+                    "amp" => output.push('&'),
+                    "quot" => output.push('"'),
+                    "apos" => output.push('\''),
+                    _ => return None,
+                }
+            }
             _ => {}
         }
     }
@@ -430,6 +510,32 @@ mod tests {
         let protocol = ProtocolModel::from_xml(MINIMAL).unwrap();
         assert_eq!(protocol.name, "demo");
         assert!(protocol.to_scpi().starts_with("PROTOCOL -volume=20"));
+    }
+
+    #[test]
+    fn exact_scpi_definition_provides_run_settings() {
+        let scpi = "PROT -volume=12 -runmode=fast exact <multiline.protocol>\n\tSTAGE 1 S <multiline.stage>\n\t</multiline.stage>\n</multiline.protocol>";
+        let definition = ProtocolDefinition::new(scpi.to_string()).unwrap();
+        let settings = definition.settings().unwrap();
+        assert_eq!(settings.name, "exact");
+        assert_eq!(settings.sample_volume, 12.0);
+        assert_eq!(settings.run_mode, "fast");
+        assert_eq!(definition.as_str(), scpi);
+    }
+
+    #[test]
+    fn exact_scpi_definition_rejects_trailing_commands() {
+        let scpi = "PROT exact <multiline.protocol></multiline.protocol>\nPOW OFF";
+        assert!(ProtocolDefinition::new(scpi.to_string()).is_err());
+    }
+
+    #[test]
+    fn qsl_xml_extracts_entity_escaped_exact_protocol() {
+        let xml = "<QSTCProtocol><QSLibProtocolCommand>PROT exact &lt;multiline.protocol&gt;&lt;/multiline.protocol&gt;</QSLibProtocolCommand></QSTCProtocol>";
+        assert_eq!(
+            ProtocolModel::scpi_from_qsl_xml(xml).as_deref(),
+            Some("PROT exact <multiline.protocol></multiline.protocol>")
+        );
     }
 
     #[test]

@@ -69,6 +69,18 @@ pub struct RunStatusDto {
     pub remaining_time_s: Option<i64>,
 }
 
+/// Exact protocol currently being executed by the instrument.
+///
+/// `scpi` is authoritative. The remaining fields let API clients identify the
+/// protocol without partially parsing the command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunningProtocolDto {
+    pub name: String,
+    pub sample_volume: f64,
+    pub run_mode: String,
+    pub scpi: String,
+}
+
 impl RunStatusDto {
     pub fn from_parts(value: RunStatus, remaining_time_s: Option<i64>) -> Self {
         Self {

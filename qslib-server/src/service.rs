@@ -12,8 +12,9 @@ use qslib_core::commands::{
     DrawerOpen, DrawerStatus, DrawerStatusQuery, ExperimentCollected, ExperimentCompile,
     ExperimentNew, FileMove, MachineStatusQuery, OkParseError, PauseRun, PowerQuery, PowerSet,
     RandomKeyQuery, ReceiveNextResponseError, ReceiveOkResponseError, RemainingTimeQuery,
-    RestartSystem, ResumeRun, RunStart, RunStatusQuery, StatusLedColor, StatusLedMode,
-    StatusLedQuery, StatusLedSet, StopRun, Subscribe,
+    RestartSystem, ResumeRun, RunStart, RunStatusQuery, RunningProtocolBodyQuery,
+    RunningProtocolMetadataQuery, StatusLedColor, StatusLedMode, StatusLedQuery, StatusLedSet,
+    StopRun, Subscribe,
 };
 use qslib_core::parser::{ErrorResponse, OkResponse};
 use serde::Serialize;
@@ -23,7 +24,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamMap;
 use tracing::{debug, info, warn};
 
-use crate::dto::{AccessDto, InstrumentStatusDto, RunStatusDto};
+use crate::dto::{AccessDto, InstrumentStatusDto, RunStatusDto, RunningProtocolDto};
 use crate::error::ServerError;
 use crate::events::EventHub;
 use qslib_core::protocol::ProtocolDefinition;
@@ -54,6 +55,7 @@ pub struct ServiceHealth {
 pub enum InstrumentOperation {
     Status,
     RunStatus,
+    RunningProtocol,
     SetPower(bool),
     SetBlock {
         enabled: bool,
@@ -95,10 +97,7 @@ pub enum InstrumentOperation {
     },
     ReplaceProtocol {
         name: String,
-        scpi: String,
-        old: qslib_core::protocol::ProtocolModel,
-        new: qslib_core::protocol::ProtocolModel,
-        force: bool,
+        protocol: ProtocolDefinition,
     },
     GenerateAccessKey,
     Restart,
@@ -129,7 +128,7 @@ pub struct StartRunInput {
 impl InstrumentOperation {
     fn required_access(&self) -> AccessLevel {
         match self {
-            Self::Status | Self::RunStatus => AccessLevel::Observer,
+            Self::Status | Self::RunStatus | Self::RunningProtocol => AccessLevel::Observer,
             Self::GenerateAccessKey => AccessLevel::Controller,
             Self::Restart => AccessLevel::Administrator,
             _ => AccessLevel::Controller,
@@ -144,12 +143,12 @@ impl InstrumentOperation {
     }
 
     fn read_only(&self) -> bool {
-        matches!(self, Self::Status | Self::RunStatus)
+        matches!(self, Self::Status | Self::RunStatus | Self::RunningProtocol)
     }
 
     fn deadline(&self) -> Duration {
         match self {
-            Self::Status | Self::RunStatus => QUERY_DEADLINE,
+            Self::Status | Self::RunStatus | Self::RunningProtocol => QUERY_DEADLINE,
             Self::StartRun(_) => Duration::from_secs(120),
             Self::Compile { .. } => Duration::from_secs(10 * 60),
             _ => CONTROL_DEADLINE,
@@ -161,6 +160,7 @@ impl InstrumentOperation {
 pub enum InstrumentResult {
     Status(Box<InstrumentStatusDto>),
     RunStatus(RunStatusDto),
+    RunningProtocol(RunningProtocolDto),
     AccessKey(String),
     Unit,
 }
@@ -520,6 +520,33 @@ async fn execute_operation(
                         status, remaining,
                     )))
                 }
+                InstrumentOperation::RunningProtocol => {
+                    let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
+                    if status.name == "-" || status.state.eq_ignore_ascii_case("IDLE") {
+                        return Err(ExecutionFailure::semantic(ServerError::not_found(
+                            "no protocol is currently running",
+                        )));
+                    }
+                    let metadata =
+                        run_command(connection, RunningProtocolMetadataQuery, QUERY_DEADLINE)
+                            .await?;
+                    let body = run_command(connection, RunningProtocolBodyQuery, QUERY_DEADLINE)
+                        .await?
+                        .0;
+                    let scpi = format!(
+                        "PROT -volume={} -runmode={} {} {}",
+                        metadata.sample_volume,
+                        metadata.run_mode,
+                        shell_words::quote(&metadata.name),
+                        body
+                    );
+                    Ok(InstrumentResult::RunningProtocol(RunningProtocolDto {
+                        name: metadata.name,
+                        sample_volume: metadata.sample_volume,
+                        run_mode: metadata.run_mode,
+                        scpi,
+                    }))
+                }
                 InstrumentOperation::SetPower(enabled) => {
                     run_command(
                         connection,
@@ -743,13 +770,7 @@ async fn execute_operation(
                     remove_path_checked(&staged)?;
                     Ok(InstrumentResult::Unit)
                 }
-                InstrumentOperation::ReplaceProtocol {
-                    name,
-                    scpi,
-                    old,
-                    new,
-                    force,
-                } => {
+                InstrumentOperation::ReplaceProtocol { name, protocol } => {
                     let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
                     if status.name != *name || status.state.eq_ignore_ascii_case("IDLE") {
                         return Err(ExecutionFailure::semantic(ServerError::conflict(format!(
@@ -757,20 +778,7 @@ async fn execute_operation(
                             status.name, name
                         ))));
                     }
-                    if !force {
-                        old.check_compatible(new, status.stage, status.cycle)
-                            .map_err(|error| {
-                                ExecutionFailure::semantic(ServerError::conflict(format!(
-                                    "protocol is incompatible with current run state: {error}"
-                                )))
-                            })?;
-                    }
-                    run_command(
-                        connection,
-                        ProtocolDefinition(scpi.clone()),
-                        operation.deadline(),
-                    )
-                    .await?;
+                    run_command(connection, protocol.clone(), operation.deadline()).await?;
                     Ok(InstrumentResult::Unit)
                 }
                 InstrumentOperation::GenerateAccessKey => {
@@ -890,12 +898,12 @@ async fn start_run(
         .await?;
         merge_staged_experiment(&working, &input.staged_root)
             .map_err(ExecutionFailure::semantic)?;
-        run_command(
-            connection,
-            ProtocolDefinition(input.protocol_scpi.clone()),
-            deadline,
-        )
-        .await?;
+        let protocol = ProtocolDefinition::new(input.protocol_scpi.clone()).map_err(|error| {
+            ExecutionFailure::semantic(ServerError::bad_request(format!(
+                "invalid staged QSLib protocol: {error}"
+            )))
+        })?;
+        run_command(connection, protocol, deadline).await?;
         run_ack_command(
             connection,
             RunStart {

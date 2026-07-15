@@ -139,6 +139,14 @@ def test_health_capabilities_and_status(server):
     assert status["run"]["remaining_time_s"] is None
 
 
+def test_machine_get_running_protocol_no_run_server(server):
+    client, _root = server
+    machine = Machine(client.host, server_port=client.port)
+
+    with pytest.raises(ValueError, match="Nothing is currently running"):
+        machine.get_running_protocol()
+
+
 def test_named_file_resources_and_range(server, tmp_path: Path):
     client, root = server
     data = b"0123456789" * 100
@@ -227,6 +235,61 @@ def test_machine_semantic_status_opens_no_scpi(monkeypatch):
     )
     assert machine.machine_status().drawer == "Closed"
     assert machine.get_zone_count() == 6
+
+
+def test_machine_get_running_protocol_idle_uses_server_without_opening_scpi(monkeypatch):
+    class FakeServer:
+        def capabilities(self):
+            return {"api_version": "v1", "resources": ["runs"], "controls": True}
+
+        def current_run(self):
+            return {"name": "-", "state": "idle"}
+
+    machine = Machine("instrument", server_port=7500)
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
+    monkeypatch.setattr(
+        machine,
+        "_direct_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("idle semantic result must not open SCPI")),
+    )
+
+    with pytest.raises(ValueError, match="Nothing is currently running"):
+        machine.get_running_protocol()
+
+
+def test_machine_get_running_protocol_uses_server_scpi_not_display_xml(monkeypatch):
+    scpi = """PROT -volume=35 -runmode=standard exact_protocol <multiline.protocol>
+        STAGE 1 STAGE_1 <multiline.stage>
+            STEP 1 <multiline.step>
+                RAMP 25
+                HOLD 60
+            </multiline.step>
+        </multiline.stage>
+    </multiline.protocol>"""
+
+    class FakeServer:
+        def capabilities(self):
+            return {"api_version": "v1", "resources": ["runs"], "controls": True}
+
+        def current_run(self):
+            return {"name": "active_run", "state": "running"}
+
+        def get_running_protocol(self):
+            return {"name": "exact_protocol", "scpi": scpi}
+
+    machine = Machine("instrument", server_port=7500)
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
+    monkeypatch.setattr(
+        machine,
+        "_direct_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("semantic protocol success must not open SCPI")),
+    )
+
+    protocol = machine.get_running_protocol()
+
+    assert protocol.name == "exact_protocol"
+    assert protocol.volume == 35
+    assert len(protocol.stages) == 1
 
 
 def test_experiment_action_uses_server_without_opening_scpi(monkeypatch):

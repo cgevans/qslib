@@ -24,7 +24,7 @@ async fn spawn_http(state: AppState) -> SocketAddr {
     address
 }
 
-async fn spawn_fake_scpi() -> (SocketAddr, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
+async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let connections = Arc::new(AtomicUsize::new(0));
@@ -82,7 +82,17 @@ async fn spawn_fake_scpi() -> (SocketAddr, Arc<AtomicUsize>, Arc<Mutex<Vec<Strin
                         } else if command.starts_with("LED:STATus?") {
                             "green on".to_string()
                         } else if command.starts_with("RET ${RunTitle") {
-                            "- -1 -1 -1 -1 -1 -1 Idle".to_string()
+                            if running {
+                                "active_run 1 1 1 1 1 1 Running".to_string()
+                            } else {
+                                "- -1 -1 -1 -1 -1 -1 Idle".to_string()
+                            }
+                        } else if command == "RET ${Protocol} ${SampleVolume} ${RunMode}" {
+                            "exact_protocol 35 standard".to_string()
+                        } else if command == "PROT? ${Protocol}" {
+                            "<quote.reply>STAGE 1 STAGE_1 <multiline.stage>\n\tSTEP 1 <multiline.step>\n\t\tRAMP 25\n\t\tHOLD 60\n\t</multiline.step>\n</multiline.stage></quote.reply>".to_string()
+                        } else if command == "REMainingTime?" {
+                            "-".to_string()
                         } else if command.starts_with("RET $(DRAWER?)") {
                             "Closed Down off \"25 25 25 25 25 25\" \"25 25 25 25 25 25\" 30 \"-Zone1=25 -Zone2=25 -Zone3=25 -Zone4=25 -Zone5=25 -Zone6=25\" \"-Zone1=False -Zone2=False -Zone3=False -Zone4=False -Zone5=False -Zone6=False\" 31".to_string()
                         } else {
@@ -145,7 +155,19 @@ async fn setup(
     Arc<AtomicUsize>,
     Arc<Mutex<Vec<String>>>,
 ) {
-    let (scpi, connections, commands) = spawn_fake_scpi().await;
+    setup_with_running(role, false).await
+}
+
+async fn setup_with_running(
+    role: Role,
+    running: bool,
+) -> (
+    SocketAddr,
+    tempfile::TempDir,
+    Arc<AtomicUsize>,
+    Arc<Mutex<Vec<String>>>,
+) {
+    let (scpi, connections, commands) = spawn_fake_scpi(running).await;
     let root = tempfile::tempdir().unwrap();
     for context in [
         "experiments",
@@ -224,6 +246,81 @@ async fn capabilities_and_status_follow_the_v1_contract() {
     let status: serde_json::Value = response.json().await.unwrap();
     assert_eq!(status["zone_count"], 6);
     assert_eq!(status["run"]["state"], "idle");
+}
+
+#[tokio::test]
+async fn current_protocol_is_read_from_managed_scpi_not_tcprotocol_xml() {
+    let (address, root, _connections, commands) = setup_with_running(Role::Observer, true).await;
+    wait_ready(address).await;
+    let display_dir = root.path().join("experiments/active_run/apldbio/sds");
+    std::fs::create_dir_all(&display_dir).unwrap();
+    std::fs::write(
+        display_dir.join("tcprotocol.xml"),
+        "<TCProtocol><ProtocolName>wrong_display_protocol</ProtocolName></TCProtocol>",
+    )
+    .unwrap();
+
+    let response = reqwest::get(format!("http://{address}/api/v1/runs/current/protocol"))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let protocol: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(protocol["name"], "exact_protocol");
+    assert_eq!(protocol["sample_volume"], 35.0);
+    assert_eq!(protocol["run_mode"], "standard");
+    assert!(protocol["scpi"]
+        .as_str()
+        .unwrap()
+        .contains("STAGE 1 STAGE_1"));
+    assert!(!protocol["scpi"]
+        .as_str()
+        .unwrap()
+        .contains("wrong_display_protocol"));
+
+    let commands = commands.lock().unwrap();
+    assert!(commands
+        .iter()
+        .any(|command| command == "RET ${Protocol} ${SampleVolume} ${RunMode}"));
+    assert!(commands
+        .iter()
+        .any(|command| command == "PROT? ${Protocol}"));
+}
+
+#[tokio::test]
+async fn protocol_update_sends_exact_scpi_and_stores_display_xml_separately() {
+    let (address, root, _connections, commands) = setup_with_running(Role::Controller, true).await;
+    wait_ready(address).await;
+    let run_dir = root.path().join("experiments/active_run/apldbio/sds");
+    std::fs::create_dir_all(&run_dir).unwrap();
+    let scpi =
+        "PROT -volume=12 -runmode=fast exact_update <multiline.protocol></multiline.protocol>";
+    let display = r#"<TCProtocol><ProtocolName>display_only</ProtocolName><CollectionProfile><CollectionCondition><FilterSet Emission="mm4" Excitation="xquant"/></CollectionCondition></CollectionProfile></TCProtocol>"#;
+
+    let response = reqwest::Client::new()
+        .put(format!(
+            "http://{address}/api/v1/runs/active_run/protocol?mode=replace"
+        ))
+        .json(&serde_json::json!({
+            "scpi": scpi,
+            "tcprotocol_xml": display,
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        std::fs::read_to_string(run_dir.join("tcprotocol.xml")).unwrap(),
+        display
+    );
+    let qsl = std::fs::read_to_string(run_dir.join("qsl-tcprotocol.xml")).unwrap();
+    assert!(qsl.contains("exact_update"));
+    assert!(!qsl.contains("display_only"));
+    assert!(commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|command| command == scpi));
 }
 
 #[tokio::test]
