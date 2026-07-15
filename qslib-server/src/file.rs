@@ -469,6 +469,7 @@ async fn list_dir_at(
     validate_pattern(pattern_text)?;
     let pattern = Pattern::new(pattern_text)
         .map_err(|error| ServerError::bad_request(format!("invalid glob pattern: {error}")))?;
+    let walk_descendants = query.recursive || pattern_text.contains('/');
     let mut entries = BTreeMap::new();
     let mut visiting = HashSet::new();
     collect_entries(
@@ -478,6 +479,7 @@ async fn list_dir_at(
         &root,
         "",
         query.recursive,
+        walk_descendants,
         &pattern,
         &mut visiting,
         &mut entries,
@@ -496,6 +498,7 @@ fn collect_entries(
     directory: &Path,
     logical_prefix: &str,
     recursive: bool,
+    walk_descendants: bool,
     pattern: &Pattern,
     visiting: &mut HashSet<String>,
     output: &mut BTreeMap<String, ListEntry>,
@@ -569,7 +572,7 @@ fn collect_entries(
                     )
                 });
             }
-            if metadata.is_dir() {
+            if metadata.is_dir() && walk_descendants {
                 collect_entries(
                     state,
                     context,
@@ -577,6 +580,7 @@ fn collect_entries(
                     &path,
                     &relative,
                     recursive,
+                    walk_descendants,
                     pattern,
                     visiting,
                     output,
@@ -628,6 +632,7 @@ fn collect_entries(
                     &target_path,
                     logical_prefix,
                     recursive,
+                    walk_descendants,
                     pattern,
                     visiting,
                     output,

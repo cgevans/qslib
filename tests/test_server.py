@@ -527,6 +527,9 @@ def test_file_listing_emulates_folders_metadata_globs_and_shadows(server):
     (folder / ".attributes").write_text("[.]\nstate = Completed\nrun = -\ncollected = False\nowner_note = retained\n")
     empty = experiments / "empty"
     empty.mkdir()
+    trap = experiments / "trap"
+    trap.mkdir()
+    (trap / "escape").symlink_to(root.parent, target_is_directory=True)
 
     shadow = root / "logs" / "shadow"
     shadow.mkdir()
@@ -539,6 +542,7 @@ def test_file_listing_emulates_folders_metadata_globs_and_shadows(server):
         ("empty", "folder"),
         ("run_a", "folder"),
         ("shadow.txt", "file"),
+        ("trap", "folder"),
     ]
     run_entry = next(entry for entry in immediate if entry["path"] == "run_a")
     assert run_entry["attributes"] == {
@@ -549,6 +553,12 @@ def test_file_listing_emulates_folders_metadata_globs_and_shadows(server):
     }
     assert run_entry["mtime"] == pytest.approx(folder.stat().st_mtime)
     assert client.list_context_dir("experiments", "empty") == []
+
+    # A non-recursive listing must not inspect descendants. In particular, an
+    # unsafe nested symlink is irrelevant until a recursive/glob walk asks the
+    # server to enter this directory.
+    (trap / "escape").unlink()
+    trap.rmdir()
 
     recursive = client.list_context_dir("experiments", recursive=True)
     assert [entry["path"] for entry in recursive] == [
