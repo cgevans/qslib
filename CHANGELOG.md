@@ -10,6 +10,12 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Version 0.16.0
 
+This is a rather large release of new features, primarily for communication, with file handling remaining mostly unchanged.  At its core, it introduces a new, optional communication method, which uses a small, compiled-Rust HTTP server directly on the instrument.  This makes communication much faster and more robust, and allows for much simpler clients.  An important feature here is that qslib-server allows file transfers, especially transfers of large files, outside the machines Python-based SCPI server, which I suspect can risk being overloaded, as it has very high overhead for transfers, has to deal with the Python global interpreter lock, and also directly manages running protocols.  
+
+The new server also allows for better handling of the unsafe and difficult-to-support SSLv3 situation.  It can communicate directly with the local plaintext SCPI interface on the machine, and can then in turn, if security is desired, be put behind a modern reverse proxy with proper encryption support; the server has a token-based access system and can be made to disallow access to the SCPI vulnerabilities of the machine.
+
+(Remainder of changelog entry generated with LLM assistance.)
+
 ### qslib-server and semantic clients
 
 - Added the versioned qslib-server HTTP API for instrument status and controls, run lifecycle and authoritative protocols, contextual file and directory transfer, isolated raw SCPI, and atomic self-upgrade with watchdog rollback.
@@ -26,11 +32,14 @@ SPDX-License-Identifier: EUPL-1.2
 - Added systemd lifecycle/watchdog support, configuration preflight, an exclusive database lock, and checksum-verified deployment bundles with automatic rollback.
 - Added event-time run/position/target replay, dynamic zone counts, server timestamps, estimated remaining time, richer Influx points, and structured HTML/plain-text protocol rendering with the current position highlighted.
 
-### qslib and release engineering
+### qslib
 
 - Added the typed `RemainingTimeQuery`, `QSConnection::get_run_remaining_time`, and semantic-server `remaining_time_s` status field.
 - Added `Protocol::info_lines` and `Protocol::view` (Rust) for flat and structured protocol rendering with the current stage and step flagged.
 - Added commands for querying and setting the status LED.
+
+### Other
+
 - Split the reusable SCPI layer into the publishable `qslib-core` crate and added locked, ordered crate publication.
 - Added tagged ARMv7 musl qslib-server binaries, Linux qs-monitor bundles, checksums, and release-package mirroring.
 - Moved documentation hosting from Read the Docs to Codeberg Pages, built via Forgejo Actions and served at <https://cge.codeberg.page/qslib/>. The Read the Docs site now redirects there.
