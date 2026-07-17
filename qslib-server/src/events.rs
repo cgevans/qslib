@@ -8,13 +8,15 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::broadcast;
+use uuid::Uuid;
 
 pub const EVENT_HISTORY: usize = 4096;
 pub const SUBSCRIBER_BUFFER: usize = 256;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventEnvelope {
-    pub id: u64,
+    /// Opaque SSE cursor. Consumers must not parse or perform arithmetic on it.
+    pub id: String,
     pub event: String,
     pub timestamp: DateTime<Utc>,
     pub data: Value,
@@ -22,6 +24,7 @@ pub struct EventEnvelope {
 
 #[derive(Clone)]
 pub struct EventHub {
+    epoch: Arc<str>,
     next_id: Arc<AtomicU64>,
     history: Arc<Mutex<VecDeque<EventEnvelope>>>,
     sender: broadcast::Sender<EventEnvelope>,
@@ -29,13 +32,17 @@ pub struct EventHub {
 
 pub enum Replay {
     Events(Vec<EventEnvelope>),
-    Expired,
+    Reset {
+        reason: &'static str,
+        cursor: String,
+    },
 }
 
 impl EventHub {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(SUBSCRIBER_BUFFER);
         Self {
+            epoch: Arc::from(Uuid::new_v4().to_string()),
             next_id: Arc::new(AtomicU64::new(1)),
             history: Arc::new(Mutex::new(VecDeque::with_capacity(EVENT_HISTORY))),
             sender,
@@ -43,45 +50,113 @@ impl EventHub {
     }
 
     pub fn publish(&self, event: impl Into<String>, data: Value) -> EventEnvelope {
+        let mut history = self.history.lock().expect("event history poisoned");
+        let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
         let envelope = EventEnvelope {
-            id: self.next_id.fetch_add(1, Ordering::Relaxed),
+            id: self.cursor(sequence),
             event: event.into(),
             timestamp: Utc::now(),
             data,
         };
-        {
-            let mut history = self.history.lock().expect("event history poisoned");
-            if history.len() == EVENT_HISTORY {
-                history.pop_front();
-            }
-            history.push_back(envelope.clone());
+        if history.len() == EVENT_HISTORY {
+            history.pop_front();
         }
+        history.push_back(envelope.clone());
+        // Send while the history lock is held. This lets
+        // replay_and_subscribe establish a boundary with neither a gap nor a
+        // duplicate, and serializes cursor order with history order.
         let _ = self.sender.send(envelope.clone());
         envelope
     }
 
-    pub fn replay_after(&self, last_id: Option<u64>) -> Replay {
+    /// Replay after an opaque cursor. A bare integer is accepted as a legacy
+    /// cursor in the current server epoch.
+    pub fn replay_after(&self, last_id: Option<&str>) -> Replay {
+        let history = self.history.lock().expect("event history poisoned");
+        self.replay_locked(last_id, &history)
+    }
+
+    pub fn replay_and_subscribe(
+        &self,
+        last_id: Option<&str>,
+    ) -> (Replay, broadcast::Receiver<EventEnvelope>) {
+        let history = self.history.lock().expect("event history poisoned");
+        let receiver = self.sender.subscribe();
+        (self.replay_locked(last_id, &history), receiver)
+    }
+
+    fn replay_locked(&self, last_id: Option<&str>, history: &VecDeque<EventEnvelope>) -> Replay {
         let Some(last_id) = last_id else {
             return Replay::Events(Vec::new());
         };
-        let history = self.history.lock().expect("event history poisoned");
+        let Some(last_sequence) = self.parse_cursor(last_id) else {
+            return self.reset("server_epoch_changed");
+        };
         if let Some(oldest) = history.front() {
-            if last_id.saturating_add(1) < oldest.id {
-                return Replay::Expired;
+            let oldest_sequence = cursor_sequence(&oldest.id).expect("server generated cursor");
+            if last_sequence.saturating_add(1) < oldest_sequence {
+                return self.reset("history_expired");
             }
+        }
+        let newest = self.next_id.load(Ordering::Relaxed).saturating_sub(1);
+        if last_sequence > newest {
+            return self.reset("cursor_ahead");
         }
         Replay::Events(
             history
                 .iter()
-                .filter(|event| event.id > last_id)
+                .filter(|event| {
+                    cursor_sequence(&event.id).is_some_and(|sequence| sequence > last_sequence)
+                })
                 .cloned()
                 .collect(),
         )
     }
 
+    /// Build a reset snapshot at the current stream position without adding a
+    /// synthetic item to the shared event history.
+    pub fn reset_envelope(&self, cursor: String, data: Value) -> EventEnvelope {
+        EventEnvelope {
+            id: cursor,
+            event: "reset".to_string(),
+            timestamp: Utc::now(),
+            data,
+        }
+    }
+
+    pub fn epoch(&self) -> &str {
+        &self.epoch
+    }
+
+    fn cursor(&self, sequence: u64) -> String {
+        format!("{}:{sequence}", self.epoch)
+    }
+
+    fn reset(&self, reason: &'static str) -> Replay {
+        let sequence = self.next_id.load(Ordering::Relaxed).saturating_sub(1);
+        Replay::Reset {
+            reason,
+            cursor: self.cursor(sequence),
+        }
+    }
+
+    fn parse_cursor(&self, cursor: &str) -> Option<u64> {
+        if let Ok(sequence) = cursor.parse::<u64>() {
+            return Some(sequence);
+        }
+        let (epoch, sequence) = cursor.rsplit_once(':')?;
+        (epoch == self.epoch.as_ref())
+            .then(|| sequence.parse::<u64>().ok())
+            .flatten()
+    }
+
     pub fn subscribe(&self) -> broadcast::Receiver<EventEnvelope> {
         self.sender.subscribe()
     }
+}
+
+fn cursor_sequence(cursor: &str) -> Option<u64> {
+    cursor.rsplit_once(':')?.1.parse().ok()
 }
 
 impl Default for EventHub {
@@ -100,8 +175,8 @@ mod tests {
         let hub = EventHub::new();
         let first = hub.publish("one", json!({"n": 1}));
         let second = hub.publish("two", json!({"n": 2}));
-        assert!(second.id > first.id);
-        let Replay::Events(replayed) = hub.replay_after(Some(first.id)) else {
+        assert!(cursor_sequence(&second.id) > cursor_sequence(&first.id));
+        let Replay::Events(replayed) = hub.replay_after(Some(&first.id)) else {
             panic!("history unexpectedly expired");
         };
         assert_eq!(replayed.len(), 1);
@@ -114,6 +189,46 @@ mod tests {
         for n in 0..=EVENT_HISTORY {
             hub.publish("event", json!({"n": n}));
         }
-        assert!(matches!(hub.replay_after(Some(0)), Replay::Expired));
+        assert!(matches!(
+            hub.replay_after(Some("0")),
+            Replay::Reset {
+                reason: "history_expired",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn foreign_epoch_resets_and_legacy_numeric_cursors_work() {
+        let hub = EventHub::new();
+        let first = hub.publish("one", json!({"n": 1}));
+        hub.publish("two", json!({"n": 2}));
+
+        assert!(matches!(
+            hub.replay_after(Some("00000000-0000-0000-0000-000000000000:1")),
+            Replay::Reset {
+                reason: "server_epoch_changed",
+                ..
+            }
+        ));
+        let Replay::Events(events) = hub.replay_after(Some("1")) else {
+            panic!("legacy cursor should replay in the current epoch");
+        };
+        assert_eq!(events.len(), 1);
+        assert_ne!(first.id.split_once(':').unwrap().0, "");
+    }
+
+    #[test]
+    fn reset_cursor_is_the_replay_boundary_before_live_events() {
+        let hub = EventHub::new();
+        let first = hub.publish("one", json!({"n": 1}));
+        let (replay, mut live) = hub.replay_and_subscribe(Some("foreign:9"));
+        let Replay::Reset { cursor, .. } = replay else {
+            panic!("foreign epoch should reset");
+        };
+        assert_eq!(cursor, first.id);
+
+        let second = hub.publish("two", json!({"n": 2}));
+        assert_eq!(live.try_recv().unwrap().id, second.id);
     }
 }

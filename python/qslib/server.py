@@ -516,8 +516,11 @@ class ServerClient:
                 )
             time.sleep(0.25)
 
-    def events(self, last_event_id: int | None = None) -> Iterator[dict[str, Any]]:
-        """Yield SSE events, reconnecting with ``Last-Event-ID`` after loss."""
+    def events(self, last_event_id: str | int | None = None) -> Iterator[dict[str, Any]]:
+        """Yield SSE events and resume with their opaque ``Last-Event-ID`` strings.
+
+        Integer cursors remain accepted for compatibility with pre-epoch servers.
+        """
         while True:
             headers = {"Accept": "text/event-stream"}
             if last_event_id is not None:
@@ -535,7 +538,7 @@ class ServerClient:
                         if event is None:
                             continue
                         if event.get("id") is not None:
-                            last_event_id = int(event["id"])
+                            last_event_id = str(event["id"])
                         yield event
             except (ServerError, OSError, HTTPException, UnicodeDecodeError):
                 time.sleep(0.25)

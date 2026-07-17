@@ -49,6 +49,7 @@ pub async fn capabilities(
         file_contexts: state.contexts.keys().cloned().collect(),
         max_access: String::from(state.max_access.clone()).to_ascii_lowercase(),
         sse: true,
+        sse_cursor_format: "epoch-sequence",
         raw_scpi: state.enable_raw_scpi,
         scpi_tunnel: state.enable_scpi_tunnel,
         file_writes: state.allow_file_writes,
@@ -250,42 +251,39 @@ pub async fn events(
     let last_id = headers
         .get("last-event-id")
         .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.parse().ok());
-    let mut initial = match state.events.replay_after(last_id) {
+        .map(str::to_owned);
+    let (replay, receiver) = state.events.replay_and_subscribe(last_id.as_deref());
+    let mut initial = match replay {
         Replay::Events(events) => VecDeque::from(events),
-        Replay::Expired => {
+        Replay::Reset { reason, cursor } => {
             let snapshot = match state.service.execute(InstrumentOperation::Status).await {
                 Ok(InstrumentResult::Status(status)) => json!(status),
                 Err(error) => json!({"unavailable": error.message}),
                 _ => Value::Null,
             };
-            VecDeque::from([state.events.publish(
-                "reset",
-                json!({"reason": "history_expired", "status": snapshot}),
-            )])
+            VecDeque::from([state
+                .events
+                .reset_envelope(cursor, json!({"reason": reason, "status": snapshot}))])
         }
     };
-    let receiver = state.events.subscribe();
     let stream = futures::stream::unfold(
         EventStreamState {
             initial: std::mem::take(&mut initial),
             receiver,
             heartbeat: tokio::time::interval(Duration::from_secs(15)),
-            close_after_reset: false,
         },
         |mut stream| async move {
             if let Some(envelope) = stream.initial.pop_front() {
                 return Some((Ok(to_sse(envelope)), stream));
             }
-            if stream.close_after_reset {
-                return None;
-            }
             tokio::select! {
                 event = stream.receiver.recv() => match event {
                     Ok(envelope) => Some((Ok(to_sse(envelope)), stream)),
                     Err(broadcast::error::RecvError::Lagged(_)) => {
-                        stream.close_after_reset = true;
-                        Some((Ok(Event::default().event("reset").data("{\"reason\":\"subscriber_lag\"}")), stream))
+                        // Closing makes clients reconnect with their last fully
+                        // parsed cursor. The history replay then supplies every
+                        // missed event, or a snapshot reset if it has expired.
+                        None
                     }
                     Err(broadcast::error::RecvError::Closed) => None,
                 },
@@ -302,12 +300,11 @@ struct EventStreamState {
     initial: VecDeque<EventEnvelope>,
     receiver: broadcast::Receiver<EventEnvelope>,
     heartbeat: tokio::time::Interval,
-    close_after_reset: bool,
 }
 
 fn to_sse(envelope: EventEnvelope) -> Event {
     Event::default()
-        .id(envelope.id.to_string())
+        .id(&envelope.id)
         .event(envelope.event)
         .json_data(json!({
             "timestamp": envelope.timestamp,

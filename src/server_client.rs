@@ -71,6 +71,8 @@ pub struct Capabilities {
     pub file_contexts: Vec<String>,
     pub max_access: String,
     pub sse: bool,
+    #[serde(default)]
+    pub sse_cursor_format: Option<String>,
     pub raw_scpi: bool,
     pub scpi_tunnel: bool,
     pub file_writes: bool,
@@ -143,7 +145,8 @@ pub struct OperationRecord {
 
 #[derive(Debug, Clone)]
 pub struct ServerEvent {
-    pub id: Option<u64>,
+    /// Opaque SSE cursor; do not parse or perform arithmetic on it.
+    pub id: Option<String>,
     pub event: String,
     pub data: serde_json::Value,
 }
@@ -627,7 +630,17 @@ impl ServerClient {
         self.list_context_dir(context, &relative).await
     }
 
+    /// Compatibility entry point for pre-epoch qslib-server cursors.
     pub async fn event_stream(&self, last_event_id: Option<u64>) -> ServerEventStream {
+        self.event_stream_from_cursor(last_event_id.map(|id| id.to_string()))
+            .await
+    }
+
+    /// Open a resumable event stream using an opaque SSE cursor.
+    pub async fn event_stream_from_cursor(
+        &self,
+        last_event_id: Option<String>,
+    ) -> ServerEventStream {
         ServerEventStream {
             client: self.clone(),
             last_event_id,
@@ -779,7 +792,7 @@ impl ServerClient {
 
 pub struct ServerEventStream {
     client: ServerClient,
-    last_event_id: Option<u64>,
+    last_event_id: Option<String>,
     stream: Option<EventByteStream>,
     bytes: Vec<u8>,
 }
@@ -788,15 +801,15 @@ impl ServerEventStream {
     pub async fn next(&mut self) -> Result<ServerEvent, ServerError> {
         loop {
             if let Some(event) = take_sse_event(&mut self.bytes)? {
-                self.last_event_id = event.id.or(self.last_event_id);
+                self.last_event_id = event.id.clone().or_else(|| self.last_event_id.clone());
                 return Ok(event);
             }
             if self.stream.is_none() {
                 let mut request = self
                     .client
                     .authorize(self.client.client.get(self.client.url("/api/v1/events")?));
-                if let Some(id) = self.last_event_id {
-                    request = request.header("Last-Event-ID", id.to_string());
+                if let Some(id) = self.last_event_id.as_ref() {
+                    request = request.header("Last-Event-ID", id);
                 }
                 let response = self.client.send(request, false).await?;
                 self.stream = Some(Box::pin(response.bytes_stream()));
@@ -808,6 +821,9 @@ impl ServerEventStream {
                 }
                 Some(Err(_)) | None => {
                     self.stream = None;
+                    // A partial SSE block has no acknowledged cursor and must
+                    // be discarded before replay, never joined to new bytes.
+                    self.bytes.clear();
                     tokio::time::sleep(Duration::from_millis(250)).await;
                 }
             }
@@ -832,7 +848,7 @@ fn take_sse_event(buffer: &mut Vec<u8>) -> Result<Option<ServerEvent>, ServerErr
     let mut data = String::new();
     for line in block.lines() {
         if let Some(value) = line.strip_prefix("id:") {
-            id = value.trim().parse().ok();
+            id = Some(value.trim().to_string());
         } else if let Some(value) = line.strip_prefix("event:") {
             event = value.trim().to_string();
         } else if let Some(value) = line.strip_prefix("data:") {
@@ -927,8 +943,21 @@ mod tests {
     fn parses_sse_event() {
         let mut bytes = b"id: 4\nevent: run\ndata: {\"state\":\"running\"}\n\n".to_vec();
         let event = take_sse_event(&mut bytes).unwrap().unwrap();
-        assert_eq!(event.id, Some(4));
+        assert_eq!(event.id.as_deref(), Some("4"));
         assert_eq!(event.event, "run");
+    }
+
+    #[test]
+    fn parses_opaque_sse_cursor_and_waits_for_complete_event() {
+        let mut bytes =
+            b"id: 4db8d4e9-87a7-4ce7-8f5f-f6718c3887e1:42\nevent: run\ndata: {\"state\"".to_vec();
+        assert!(take_sse_event(&mut bytes).unwrap().is_none());
+        bytes.extend_from_slice(b":\"running\"}\n\n");
+        let event = take_sse_event(&mut bytes).unwrap().unwrap();
+        assert_eq!(
+            event.id.as_deref(),
+            Some("4db8d4e9-87a7-4ce7-8f5f-f6718c3887e1:42")
+        );
     }
 
     #[test]

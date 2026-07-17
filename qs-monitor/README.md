@@ -9,8 +9,10 @@ Relies on [qslib](https://codeberg.org/cge/qslib) for communication with the mac
 - **Multi-machine monitoring**: Monitor multiple QuantStudio instruments simultaneously
 - **Automatic reconnection**: Handles connection failures and automatically reconnects with exponential backoff
 - **Data collection**: Collects temperature, run status, time, and LED status data
-- **InfluxDB integration**: Optional export of metrics to InfluxDB for time-series analysis
-- **Matrix bot**: Optional Matrix bot for notifications and remote machine control
+- **Durable delivery**: SQLite-backed Influx and Matrix work survives restarts and sink outages
+- **InfluxDB integration**: Batched, retrying export of metrics to InfluxDB
+- **Matrix bot**: Idempotent notifications plus optional remote machine control
+- **Graceful lifecycle**: systemd readiness, watchdog, backlog status, and bounded shutdown draining
 - **Robust error handling**: Logs errors without stopping the monitoring tasks
 
 ## Building
@@ -36,13 +38,14 @@ host = "1.2.3.4"
 Direct SCPI subscription mode is the default: omit `server_port` to retain the
 normal status queries, subscriptions, and reconnect behavior. Setting
 `server_port` explicitly selects qslib-server mode, which uses the semantic
-status resource, resumable SSE events, and named file resources without opening
+status resource, durable opaque-cursor SSE events, and named file resources without opening
 a normal client-side SCPI connection. The old `agent_port` key is accepted as
 an alias.
 
 The server is optional. It must be configured with an Observer-or-higher token;
-file collection also requires its named read contexts. Direct mode remains the
-recommended baseline when no service layer is needed.
+file collection also requires its named read contexts. Epoch-capable
+qslib-server mode is required for the stop/start event-preservation guarantee;
+direct mode remains supported when that guarantee is not required.
 
 ### InfluxDB Configuration (Optional)
 
@@ -64,7 +67,7 @@ host = "https://matrix.org"
 user = "qsbot"
 password = "your-secure-password"
 rooms = ["!roomid:matrix.org"]
-session_file = "matrix_session.json"
+session_file = "/var/lib/qs-monitor/matrix_session.json"
 allow_verification = false  # Enable temporarily for session verification
 allow_commands = true       # Allow commands to be sent to the bot
 allow_control = false       # Allow commands that can control the instruments
@@ -75,6 +78,8 @@ allow_control = false       # Allow commands that can control the instruments
 ```toml
 [global]
 reconnect_wait_seconds = 60  # Optional, defaults to 60
+state_database = "/var/lib/qs-monitor/state.sqlite"
+shutdown_drain_seconds = 20  # Capped at 20 so shutdown completes within systemd's 30s timeout
 ```
 
 ## Usage
@@ -85,7 +90,16 @@ qs-monitor [OPTIONS]
 Options:
   -c, --config <PATH>    Configuration file path [default: config.toml]
   -l, --log-level <LEVEL>  Log level [default: info] [possible values: trace, debug, info, warn, error]
+      --check-config       Validate configuration and exit without opening the state database
 ```
+
+Each qslib-server event is converted (including any `Collected` file fetch),
+then its raw JSON, generated sink output, and opaque cursor are committed in one
+SQLite transaction. Influx and Matrix workers acknowledge delivery separately.
+Malformed events become retained dead letters; transient collection failures
+leave the cursor unchanged for replay. Fully delivered records are retained for
+30 days. See [INSTALL.md](INSTALL.md) for the systemd deployment and rollback
+workflow.
 
 ## Matrix Bot Commands
 

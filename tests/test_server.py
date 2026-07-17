@@ -24,7 +24,7 @@ from qslib.experiment import (
     MachineBusyError,
     NotRunningError,
 )
-from qslib.server import ServerClient, ServerError, ServerOutcomeUnknown, ServerUnavailable
+from qslib.server import ServerClient, ServerError, ServerOutcomeUnknown, ServerUnavailable, _parse_sse
 
 BINARY = Path(__file__).parent.parent / "target" / "debug" / "qslib-server"
 
@@ -139,11 +139,24 @@ def test_health_capabilities_and_status(server):
     capabilities = client.capabilities()
     assert capabilities["api_version"] == "v1"
     assert capabilities["sse"] is True
+    assert capabilities["sse_cursor_format"] == "epoch-sequence"
     assert capabilities["raw_scpi"] is False
     status = client.instrument_status()
     assert status["zone_count"] == 6
     assert status["run"]["state"] == "Idle"
     assert status["run"]["remaining_time_s"] is None
+
+
+def test_sse_parser_preserves_opaque_cursor():
+    event = _parse_sse(
+        [
+            "id: 4db8d4e9-87a7-4ce7-8f5f-f6718c3887e1:42",
+            "event: run",
+            'data: {"message":"Starting"}',
+        ]
+    )
+    assert event is not None
+    assert event["id"] == "4db8d4e9-87a7-4ce7-8f5f-f6718c3887e1:42"
 
 
 def test_machine_get_running_protocol_no_run_server(server):

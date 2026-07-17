@@ -1201,7 +1201,7 @@ fn subscription_streams(
     connection: &QSConnection,
 ) -> StreamMap<String, BroadcastStream<qslib_core::parser::LogMessage>> {
     let mut streams = StreamMap::new();
-    for topic in ["Temperature", "Time", "Run", "LEDStatus"] {
+    for topic in ["Temperature", "Time", "Run", "Error", "LEDStatus"] {
         if !connection.logchannels.contains_key(topic) {
             let (sender, _) = tokio::sync::broadcast::channel(100);
             connection.logchannels.insert(topic.to_string(), sender);

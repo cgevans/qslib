@@ -1,0 +1,263 @@
+#!/bin/sh
+set -eu
+
+REPOSITORY_URL=${QS_MONITOR_REPOSITORY_URL:-https://codeberg.org/cge/qslib}
+INSTALL_ROOT=${QS_MONITOR_INSTALL_ROOT:-/opt/qs-monitor}
+RELEASES_DIR=$INSTALL_ROOT/releases
+CURRENT_LINK=$INSTALL_ROOT/current
+CONFIG_FILE=${QS_MONITOR_CONFIG:-/etc/qs-monitor/config.toml}
+UNIT_FILE=${QS_MONITOR_UNIT_FILE:-/etc/systemd/system/qs-monitor.service}
+STATE_ROOT=${QS_MONITOR_STATE_ROOT:-/var/lib/qs-monitor}
+SUCCESS_DIR=$STATE_ROOT/successful-releases
+DEPLOY_COMMAND=${QS_MONITOR_DEPLOY_COMMAND:-/usr/local/sbin/qs-monitor-deploy}
+SYSTEMCTL=${QS_MONITOR_SYSTEMCTL:-systemctl}
+READY_TIMEOUT=${QS_MONITOR_READY_TIMEOUT:-30}
+TARGET=x86_64-unknown-linux-gnu
+
+die() {
+    printf '%s\n' "qs-monitor-deploy: $*" >&2
+    exit 1
+}
+
+require_root() {
+    [ "${QS_MONITOR_TEST_MODE:-0}" = 1 ] && return 0
+    [ "$(id -u)" -eq 0 ] || die "this command must run as root (use sudo)"
+}
+
+active_release() {
+    if [ -L "$CURRENT_LINK" ]; then
+        readlink -f "$CURRENT_LINK"
+    fi
+}
+
+wait_ready() {
+    remaining=$READY_TIMEOUT
+    while [ "$remaining" -gt 0 ]; do
+        if "$SYSTEMCTL" is-active --quiet qs-monitor.service; then
+            return 0
+        fi
+        if "$SYSTEMCTL" is-failed --quiet qs-monitor.service; then
+            return 1
+        fi
+        sleep 1
+        remaining=$((remaining - 1))
+    done
+    return 1
+}
+
+switch_link() {
+    destination=$1
+    temporary=$INSTALL_ROOT/.current.new.$$
+    ln -s "$destination" "$temporary"
+    mv -Tf "$temporary" "$CURRENT_LINK"
+}
+
+restore_release() {
+    previous=$1
+    if [ -n "$previous" ] && [ -d "$previous" ]; then
+        switch_link "$previous"
+        "$SYSTEMCTL" start qs-monitor.service || true
+        wait_ready || true
+    else
+        rm -f "$CURRENT_LINK"
+    fi
+}
+
+activate_release() {
+    release=$1
+    previous=$(active_release || true)
+    unit_backup=$STATE_ROOT/.unit-backup.$$
+    had_unit=0
+    if [ -f "$UNIT_FILE" ]; then
+        cp "$UNIT_FILE" "$unit_backup"
+        had_unit=1
+    fi
+    "$SYSTEMCTL" stop qs-monitor.service || true
+    install -m 0644 "$release/qs-monitor.service" "$UNIT_FILE"
+    switch_link "$release"
+    "$SYSTEMCTL" daemon-reload
+    if "$SYSTEMCTL" start qs-monitor.service \
+        && wait_ready \
+        && "$SYSTEMCTL" enable qs-monitor.service; then
+        mkdir -p "$SUCCESS_DIR"
+        marker=$SUCCESS_DIR/$(basename "$release")
+        : > "$marker"
+        rm -f "$unit_backup"
+        printf '%s\n' "activated $(basename "$release")"
+        retain_releases
+        return 0
+    fi
+
+    printf '%s\n' "new release failed readiness; restoring previous release" >&2
+    "$SYSTEMCTL" stop qs-monitor.service || true
+    if [ "$had_unit" -eq 1 ]; then
+        install -m 0644 "$unit_backup" "$UNIT_FILE"
+    else
+        rm -f "$UNIT_FILE"
+    fi
+    rm -f "$unit_backup"
+    "$SYSTEMCTL" daemon-reload
+    restore_release "$previous"
+    return 1
+}
+
+retain_releases() {
+    current=$(active_release || true)
+    keep_file=$STATE_ROOT/.release-keep.$$
+    : > "$keep_file"
+    if [ -n "$current" ]; then
+        basename "$current" >> "$keep_file"
+    fi
+    retained=$(awk 'END { print NR }' "$keep_file")
+    for marker in $(find "$SUCCESS_DIR" -maxdepth 1 -type f -printf '%T@ %f\n' 2>/dev/null \
+        | sort -rn | awk '{print $2}'); do
+        if ! grep -Fxq "$marker" "$keep_file"; then
+            printf '%s\n' "$marker" >> "$keep_file"
+            retained=$((retained + 1))
+        fi
+        [ "$retained" -ge 4 ] && break
+    done
+    if [ -d "$RELEASES_DIR" ]; then
+        for release in "$RELEASES_DIR"/*; do
+            [ -d "$release" ] || continue
+            name=$(basename "$release")
+            if ! grep -Fxq "$name" "$keep_file"; then
+                if [ "${QS_MONITOR_TEST_MODE:-0}" = 1 ]; then
+                    chmod -R u+w "$release"
+                fi
+                rm -rf "$release"
+                rm -f "$SUCCESS_DIR/$name"
+            fi
+        done
+    fi
+    rm -f "$keep_file"
+}
+
+install_runtime() {
+    if [ "${QS_MONITOR_TEST_MODE:-0}" = 1 ]; then
+        install -d -m 0755 "$INSTALL_ROOT" "$RELEASES_DIR" "$STATE_ROOT" "$SUCCESS_DIR"
+        install -d -m 0750 "$(dirname "$CONFIG_FILE")"
+        install -d -m 0755 "$(dirname "$UNIT_FILE")" "$(dirname "$DEPLOY_COMMAND")"
+        return
+    fi
+    if ! getent group qs-monitor >/dev/null 2>&1; then
+        groupadd --system qs-monitor
+    fi
+    if ! getent passwd qs-monitor >/dev/null 2>&1; then
+        useradd --system --gid qs-monitor --home-dir "$STATE_ROOT" \
+            --no-create-home --shell /usr/sbin/nologin qs-monitor
+    fi
+    install -d -m 0755 "$INSTALL_ROOT" "$RELEASES_DIR"
+    install -d -o qs-monitor -g qs-monitor -m 0750 "$STATE_ROOT"
+    install -d -o root -g root -m 0755 "$SUCCESS_DIR"
+    install -d -o root -g qs-monitor -m 0750 "$(dirname "$CONFIG_FILE")"
+    chown root:qs-monitor "$CONFIG_FILE"
+    chmod 0640 "$CONFIG_FILE"
+}
+
+deploy_tag() {
+    tag=$1
+    case "$tag" in
+        v[0-9]*) ;;
+        *) die "tag must look like v1.2.3" ;;
+    esac
+    [ -f "$CONFIG_FILE" ] || die "configuration does not exist: $CONFIG_FILE"
+
+    version=${tag#v}
+    asset=qs-monitor-$tag-$TARGET.tar.gz
+    download_base=$REPOSITORY_URL/releases/download/$tag
+    temporary=$(mktemp -d)
+    staging=
+    trap 'rm -rf "$temporary"; [ -z "${staging:-}" ] || rm -rf "$staging"' EXIT HUP INT TERM
+
+    curl --fail --location --silent --show-error \
+        --output "$temporary/$asset" "$download_base/$asset"
+    curl --fail --location --silent --show-error \
+        --output "$temporary/$asset.sha256" "$download_base/$asset.sha256"
+    expected=$(awk -v asset="$asset" '$2 == asset || $2 == "*" asset { print $1; exit }' \
+        "$temporary/$asset.sha256")
+    [ -n "$expected" ] || die "checksum manifest does not name $asset"
+    actual=$(sha256sum "$temporary/$asset" | awk '{print $1}')
+    [ "$actual" = "$expected" ] || die "checksum verification failed"
+
+    if tar -tzf "$temporary/$asset" | grep -Eq '(^/|(^|/)\.\.(/|$))'; then
+        die "bundle contains an unsafe path"
+    fi
+    install_runtime
+
+    release=$RELEASES_DIR/$version-$actual
+    if [ ! -d "$release" ]; then
+        staging=$RELEASES_DIR/.staging-$version-$$
+        mkdir "$staging"
+        tar -xzf "$temporary/$asset" -C "$staging"
+        [ -f "$staging/qs-monitor" ] || die "bundle contains no qs-monitor binary"
+        [ -f "$staging/qs-monitor.service" ] || die "bundle contains no systemd unit"
+        [ -f "$staging/qs-monitor-deploy" ] || die "bundle contains no deploy command"
+        [ -x "$staging/qs-monitor" ] || die "qs-monitor artifact is not executable"
+        binary_version=$($staging/qs-monitor --version | awk '{print $2}')
+        [ "$binary_version" = "$version" ] || \
+            die "binary version $binary_version does not match tag $version"
+        "$staging/qs-monitor" --check-config --config "$CONFIG_FILE"
+        mv "$staging" "$release"
+        staging=
+        chmod -R a-w "$release"
+    else
+        "$release/qs-monitor" --check-config --config "$CONFIG_FILE"
+    fi
+    install -m 0755 "$release/qs-monitor-deploy" "$DEPLOY_COMMAND"
+    activate_release "$release"
+}
+
+rollback() {
+    requested=${1:-}
+    current=$(active_release || true)
+    if [ -n "$requested" ]; then
+        requested=${requested#v}
+        candidates=$(find "$RELEASES_DIR" -mindepth 1 -maxdepth 1 -type d \
+            -name "$requested-*" -print 2>/dev/null)
+        count=$(printf '%s\n' "$candidates" | awk 'NF { count++ } END { print count+0 }')
+        [ "$count" -eq 1 ] || die "rollback version must identify exactly one installed release"
+        release=$candidates
+    else
+        release=
+        for marker in $(find "$SUCCESS_DIR" -maxdepth 1 -type f -printf '%T@ %f\n' 2>/dev/null \
+            | sort -rn | awk '{print $2}'); do
+            candidate=$RELEASES_DIR/$marker
+            if [ -d "$candidate" ] && [ "$candidate" != "$current" ]; then
+                release=$candidate
+                break
+            fi
+        done
+        [ -n "$release" ] || die "no previous successful release is installed"
+    fi
+    [ -x "$release/qs-monitor" ] || die "rollback binary is missing or not executable"
+    "$release/qs-monitor" --check-config --config "$CONFIG_FILE"
+    activate_release "$release"
+}
+
+status() {
+    current=$(active_release || true)
+    if [ -n "$current" ]; then
+        printf 'release: %s\n' "$(basename "$current")"
+    else
+        printf '%s\n' 'release: none'
+    fi
+    "$SYSTEMCTL" --no-pager --full status qs-monitor.service || true
+}
+
+require_root
+command=${1:-}
+case "$command" in
+    status)
+        status
+        ;;
+    rollback)
+        rollback "${2:-}"
+        ;;
+    v[0-9]*)
+        deploy_tag "$command"
+        ;;
+    *)
+        die "usage: qs-monitor-deploy <vTAG> | rollback [version] | status"
+        ;;
+esac

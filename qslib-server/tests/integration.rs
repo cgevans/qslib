@@ -275,6 +275,7 @@ async fn capabilities_and_status_follow_the_v1_contract() {
         .unwrap();
     assert_eq!(capabilities["api_version"], "v1");
     assert_eq!(capabilities["sse"], true);
+    assert_eq!(capabilities["sse_cursor_format"], "epoch-sequence");
     assert_eq!(capabilities["raw_scpi"], false);
 
     let response = client

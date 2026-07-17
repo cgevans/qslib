@@ -1,0 +1,43 @@
+[Unit]
+Description=Durable QuantStudio telemetry and notification monitor
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=notify
+NotifyAccess=main
+User=qs-monitor
+Group=qs-monitor
+StateDirectory=qs-monitor
+StateDirectoryMode=0750
+ExecStart=/opt/qs-monitor/current/qs-monitor --config /etc/qs-monitor/config.toml
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=30s
+TimeoutStopSec=30s
+WatchdogSec=30s
+KillSignal=SIGTERM
+
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectSystem=strict
+ReadOnlyPaths=/opt/qs-monitor /etc/qs-monitor
+ReadWritePaths=/var/lib/qs-monitor
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

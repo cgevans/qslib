@@ -8,6 +8,9 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Unreleased
 
+- Changed qslib-server SSE IDs to opaque server-epoch cursors with ordered replay and live status resets for foreign, expired, or ahead cursors; legacy numeric resume headers remain accepted.
+- Updated Rust and Python semantic clients to preserve opaque SSE IDs across reconnects and discard partially received events before replay.
+- Added qs-monitor's WAL-mode durable delivery queue, idempotent Matrix notifications, systemd lifecycle/watchdog support, configuration preflight, and checksum-verified deployment with automatic rollback.
 - Added the typed `RemainingTimeQuery`, `QSConnection::get_run_remaining_time`, and semantic-server `remaining_time_s` status field for querying the machine's estimated remaining run time.
 - Added `Protocol::info_lines` and `Protocol::view` (Rust) for rendering a protocol with the current stage/step flagged: `info_lines` mirrors the flat `Display` output, `view` returns a structured tree for building custom (e.g. HTML) renderings.
 - Added commands for querying and setting the status led.

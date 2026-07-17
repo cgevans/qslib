@@ -160,6 +160,7 @@ pub struct CapabilitiesDto {
     pub file_contexts: Vec<String>,
     pub max_access: String,
     pub sse: bool,
+    pub sse_cursor_format: &'static str,
     pub raw_scpi: bool,
     pub scpi_tunnel: bool,
     pub file_writes: bool,

@@ -6,9 +6,8 @@ use anyhow::Result;
 use clap::Parser;
 use dashmap::DashMap;
 use env_logger::Env;
-use futures::stream;
 use influxdb2::Client;
-use influxdb2::models::DataPoint;
+use influxdb2::models::{DataPoint, WriteDataPoint};
 use log::{debug, error, info, warn};
 use qslib::com_ext::QSConnectionExt;
 use qslib::data::FilterDataCollection;
@@ -25,17 +24,23 @@ use qslib::{
     plate_setup::PlateSetup,
 };
 use serde_derive::Deserialize;
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use thiserror::Error;
 use tokio::select;
-use tokio::sync::mpsc;
 use tokio::task::{Id, JoinSet};
-use tokio::time::{Duration, interval};
+use tokio::time::Duration;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::{StreamExt, StreamMap, wrappers::BroadcastStream};
+use tokio_util::sync::CancellationToken;
 
 mod matrix;
+mod queue;
+mod systemd;
+
+use queue::{Database, DatabaseActor, EventRecord, MatrixOutput};
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -46,6 +51,10 @@ struct Args {
     #[arg(short, long, default_value = "info")]
     #[arg(value_enum)]
     log_level: log::LevelFilter,
+
+    /// Validate configuration and exit without opening the state database.
+    #[arg(long)]
+    check_config: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -61,6 +70,8 @@ struct Config {
 #[derive(Debug, Deserialize)]
 struct GlobalConfig {
     reconnect_wait_seconds: Option<u64>,
+    state_database: Option<PathBuf>,
+    shutdown_drain_seconds: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -325,89 +336,221 @@ fn state_snapshot_points(
     points
 }
 
-async fn write_points_to_influx(
-    mut rx: mpsc::Receiver<(String, DataPoint)>,
-    client: Client,
-    bucket: String,
-    batch_size: usize,
-    flush_interval: Duration,
+fn validate_config(config: &Config) -> Result<()> {
+    if config.machines.is_empty() {
+        anyhow::bail!("configuration must contain at least one machine");
+    }
+    let mut names = HashSet::new();
+    for machine in &config.machines {
+        if machine.name.trim().is_empty() || machine.host.trim().is_empty() {
+            anyhow::bail!("machine name and host must not be empty");
+        }
+        if !names.insert(&machine.name) {
+            anyhow::bail!("duplicate machine name {:?}", machine.name);
+        }
+    }
+    if let Some(influx) = &config.influxdb {
+        if influx.batch_size == Some(0) {
+            anyhow::bail!("influxdb.batch_size must be greater than zero");
+        }
+        if [&influx.url, &influx.org, &influx.bucket, &influx.token]
+            .iter()
+            .any(|value| value.trim().is_empty())
+        {
+            anyhow::bail!("InfluxDB url, org, bucket, and token must not be empty");
+        }
+    }
+    if let Some(matrix) = &config.matrix {
+        if matrix.rooms.is_empty() {
+            anyhow::bail!("matrix.rooms must contain at least one room");
+        }
+        if [&matrix.host, &matrix.user, &matrix.password]
+            .iter()
+            .any(|value| value.trim().is_empty())
+        {
+            anyhow::bail!("Matrix host, user, and password must not be empty");
+        }
+        if matrix.session_file.as_os_str().is_empty() {
+            anyhow::bail!("matrix.session_file must not be empty");
+        }
+    }
+    if state_database_path(config).as_os_str().is_empty() {
+        anyhow::bail!("global.state_database must not be empty");
+    }
+    Ok(())
+}
+
+fn state_database_path(config: &Config) -> PathBuf {
+    config
+        .global
+        .as_ref()
+        .and_then(|global| global.state_database.clone())
+        .unwrap_or_else(|| PathBuf::from("/var/lib/qs-monitor/state.sqlite"))
+}
+
+fn unix_now() -> i64 {
+    chrono::Utc::now().timestamp()
+}
+
+fn points_to_lines(points: Vec<DataPoint>) -> Result<Vec<String>> {
+    points
+        .into_iter()
+        .map(|point| {
+            let mut buffer = Vec::new();
+            point.write_data_point_to(&mut buffer)?;
+            Ok(String::from_utf8(buffer)?.trim_end().to_string())
+        })
+        .collect()
+}
+
+fn matrix_output(
+    machine: &str,
+    cursor: &str,
+    room: Option<&str>,
+    message: &str,
+) -> Option<MatrixOutput> {
+    let interesting = ["Error", "Ended", "Aborted", "Stopped", "Starting"]
+        .iter()
+        .any(|needle| message.contains(needle));
+    let room = room.filter(|_| interesting)?;
+    let mut digest = Sha256::new();
+    digest.update(machine.as_bytes());
+    digest.update([0]);
+    digest.update(cursor.as_bytes());
+    digest.update([0]);
+    digest.update(room.as_bytes());
+    Some(MatrixOutput {
+        room: room.to_string(),
+        body: format!("{machine}: {message}"),
+        transaction_id: format!("qs-monitor-{:x}", digest.finalize()),
+    })
+}
+
+fn raw_log_json(message: &LogMessage) -> String {
+    serde_json::json!({
+        "topic": message.topic,
+        "instrument_timestamp": message.timestamp,
+        "message": message.message,
+    })
+    .to_string()
+}
+
+async fn run_influx_worker(
+    database: Database,
+    config: InfluxDBConfig,
+    cancellation: CancellationToken,
 ) -> Result<()> {
-    let mut interval = interval(flush_interval);
-    let mut points: Vec<DataPoint> = Vec::new();
-    let mut last_flush = tokio::time::Instant::now();
-    let mut batched = 0;
-    let mut to_retry = Vec::new();
-
-    info!("InfluxDB write task started.");
-
+    let client = Client::new(&config.url, &config.org, &config.token);
+    let batch_size = config.batch_size.unwrap_or(100).max(1);
+    let idle = Duration::from_millis(config.flush_interval_ms.unwrap_or(10_000).max(100));
+    let mut consecutive_failures = 0_u32;
+    info!("Influx delivery worker started");
     loop {
-        tokio::select! {
-            // Check for new points
-            point = rx.recv() => {
-                match point {
-                    Some((_machine, point)) => {
-                        points.push(point);
-                        batched += 1;
-                        if batched >= batch_size {
-                            debug!("Flushing {} points to InfluxDB (batch size reached)", points.len());
-                            match client.write(&bucket, stream::iter(points.clone())).await { // FIXME
-                                Ok(_) => {
-                                    points.clear();
-                                    last_flush = tokio::time::Instant::now();
-                                    batched = 0;
-                                }
-                                Err(e) => {
-                                    warn!("Error writing points to InfluxDB, will retry: {}", e);
-                                    to_retry.append(&mut points);
-                                    batched = 0;
-                                }
-                            }
-                        }
-                    }
-                    None => break, // Channel closed
-                }
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
+        let Some(batch) = database.influx_batch(batch_size, unix_now()).await? else {
+            tokio::select! {
+                _ = cancellation.cancelled() => return Ok(()),
+                _ = tokio::time::sleep(idle) => continue,
             }
-            // Flush on interval only if enough time has passed since last flush
-            _ = interval.tick() => {
-                if !points.is_empty() && last_flush.elapsed() >= flush_interval {
-                    debug!("Flushing {} points to InfluxDB (interval reached)", points.len());
-                    match client.write(&bucket, stream::iter(points.clone())).await { // FIXME
-                        Ok(_) => {
-                            points.clear();
-                            last_flush = tokio::time::Instant::now();
-                        }
-                        Err(e) => {
-                            warn!("Error writing points to InfluxDB, will retry: {}", e);
-                            to_retry.append(&mut points);
-                        }
-                    }
-                }
-                if !to_retry.is_empty() {
-                    debug!("Retrying {} points to InfluxDB", to_retry.len());
-                    match client.write(&bucket, stream::iter(to_retry.clone())).await {
-                        Ok(_) => {
-                            to_retry.clear();
-                        }
-                        Err(e) => {
-                            warn!("Error writing points to InfluxDB ({}), lost {} points", e, to_retry.len());
-                            to_retry.clear();
-                        }
-                    }
-                }
+        };
+        match client
+            .write_line_protocol(&config.org, &config.bucket, batch.body)
+            .await
+        {
+            Ok(()) => {
+                consecutive_failures = 0;
+                database
+                    .mark_influx_delivered(batch.ids, unix_now())
+                    .await?;
+            }
+            Err(error) => {
+                consecutive_failures = consecutive_failures.saturating_add(1);
+                let delay = 1_i64 << consecutive_failures.min(8);
+                warn!("Influx delivery failed; retrying durable batch: {error}");
+                database
+                    .mark_influx_failed(
+                        batch.ids,
+                        error.to_string(),
+                        unix_now().saturating_add(delay),
+                    )
+                    .await?;
             }
         }
     }
+}
 
-    // Final flush of any remaining points
-    if !points.is_empty() {
-        debug!("Flushing {} points to InfluxDB (final flush)", points.len());
-        let tosend = std::mem::take(&mut points);
-        client.write(&bucket, stream::iter(tosend)).await?;
+async fn run_status_worker(
+    database: Database,
+    connectivity: Arc<DashMap<String, bool>>,
+    cancellation: CancellationToken,
+) -> Result<()> {
+    let interval = systemd::watchdog_interval().unwrap_or(Duration::from_secs(10));
+    let mut ticker = tokio::time::interval(interval);
+    let mut last_warning = 0_i64;
+    loop {
+        tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            _ = ticker.tick() => {
+                database.ping().await?;
+                let stats = database.stats(unix_now()).await?;
+                let machines_total = connectivity.len();
+                let machines_connected = connectivity.iter().filter(|entry| *entry.value()).count();
+                let status = format!(
+                    "machines_connected={}/{} pending={} oldest_pending_seconds={} retries={} dead_letters={}",
+                    machines_connected,
+                    machines_total,
+                    stats.pending,
+                    stats.oldest_pending_seconds.map_or_else(|| "none".into(), |value| value.to_string()),
+                    stats.retries,
+                    stats.dead_letters,
+                );
+                info!(target: "queue_status", "{status}");
+                let mut notification = format!("STATUS={status}");
+                if systemd::watchdog_interval().is_some() {
+                    notification.push_str("\nWATCHDOG=1");
+                }
+                if let Err(error) = systemd::notify(&notification) {
+                    debug!("systemd notification failed: {error}");
+                }
+                let now = unix_now();
+                if (stats.dead_letters > 0 || stats.oldest_pending_seconds.is_some_and(|age| age > 300))
+                    && now.saturating_sub(last_warning) >= 60
+                {
+                    if stats.dead_letters >= 100
+                        || stats.oldest_pending_seconds.is_some_and(|age| age >= 3600)
+                    {
+                        error!(target: "queue_status", "durable delivery backlog is critical: {status}");
+                    } else {
+                        warn!(target: "queue_status", "durable delivery backlog requires attention: {status}");
+                    }
+                    last_warning = now;
+                }
+                let _ = database.prune(now - 30 * 24 * 60 * 60).await?;
+            }
+        }
     }
+}
 
-    info!("InfluxDB write task completed.");
-
-    Ok(())
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        if let Ok(mut signal) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            signal.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
 }
 
 #[tokio::main]
@@ -418,28 +561,28 @@ async fn main() -> Result<()> {
     env_logger::Builder::from_env(Env::default().default_filter_or(args.log_level.as_str())).init();
 
     let config = load_config(args.config)?;
+    validate_config(&config)?;
+    if args.check_config {
+        println!("configuration is valid");
+        return Ok(());
+    }
 
-    // Set up InfluxDB if configured
-    let (tx, rx) = mpsc::channel(1000);
-    let _influx_task = if let Some(influx_config) = config.influxdb.as_ref() {
-        let client = Client::new(&influx_config.url, &influx_config.org, &influx_config.token);
-        let batch_size = influx_config.batch_size.unwrap_or(100);
-        let flush_interval =
-            Duration::from_millis(influx_config.flush_interval_ms.unwrap_or(10000));
-        let bucket = influx_config.bucket.clone();
+    let (database, actor) = DatabaseActor::open(&state_database_path(&config))?;
+    let mut database_task = tokio::spawn(actor.run());
+    let ingestion_cancellation = CancellationToken::new();
+    let delivery_cancellation = CancellationToken::new();
+    let mut essential_tasks = JoinSet::<Result<()>>::new();
 
-        Some(tokio::spawn(async move {
-            if let Err(e) =
-                write_points_to_influx(rx, client, bucket, batch_size, flush_interval).await
-            {
-                error!("Error writing points to InfluxDB: {}", e);
-            }
-        }))
-    } else {
-        None
-    };
+    if let Some(influx_config) = config.influxdb.clone() {
+        essential_tasks.spawn(run_influx_worker(
+            database.clone(),
+            influx_config,
+            delivery_cancellation.clone(),
+        ));
+    }
 
     let conns = Arc::new(DashMap::new());
+    let connectivity = Arc::new(DashMap::new());
 
     let reconnect_wait = Duration::from_secs(
         config
@@ -449,113 +592,44 @@ async fn main() -> Result<()> {
             .unwrap_or(60),
     );
 
-    for machine_config in config.machines.iter() {
-        let machine_config = machine_config.clone();
-        let conns_clone = conns.clone();
-        let tx_clone = tx.clone();
-        let _reconnect_wait_clone = reconnect_wait;
-
-        tokio::spawn(async move {
-            let mut backoff_secs = 1u64;
-            const MAX_BACKOFF_SECS: u64 = 300;
-            loop {
-                if let Some(server) = build_server_client(&machine_config) {
-                    match log_server_machine(server, &machine_config, tx_clone.clone()).await {
-                        Ok(()) => warn!(
-                            "Server event stream for {} ended; reconnecting",
-                            machine_config.name
-                        ),
-                        Err(error) => error!(
-                            "Server mode for {} failed: {}; retrying in {} seconds",
-                            machine_config.name, error, backoff_secs
-                        ),
-                    }
-                    tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                    backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
-                    continue;
-                }
-                match QSConnection::connect_with_timeout(
-                    &machine_config.host,
-                    7443,
-                    qslib::com::ConnectionType::SSL,
-                    Duration::from_secs(10),
-                )
-                .await
-                {
-                    Ok(con) => {
-                        backoff_secs = 1;
-                        let con = Arc::new(con);
-                        let mut log_tasks = JoinSet::new();
-                        match log_machine(
-                            con.clone(),
-                            &machine_config,
-                            tx_clone.clone(),
-                            &mut log_tasks,
-                        )
-                        .await
-                        {
-                            Ok(_id) => {
-                                conns_clone.insert(
-                                    machine_config.name.clone(),
-                                    (con, machine_config.clone()),
-                                );
-                                info!("Successfully connected to {}", machine_config.name);
-
-                                // Wait for the logging task to complete (connection dropped)
-                                if let Some(result) = log_tasks.join_next().await
-                                    && let Err(e) = result
-                                {
-                                    error!(
-                                        "Logging task for {} ended with error: {}",
-                                        machine_config.name, e
-                                    );
-                                }
-
-                                warn!(
-                                    "Connection to {} dropped, attempting to reconnect",
-                                    machine_config.name
-                                );
-                                if let Some((_, (old_con, _))) =
-                                    conns_clone.remove(&machine_config.name)
-                                {
-                                    old_con.disconnect().await;
-                                }
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Error setting up logging for {}: {}, retrying in {} seconds",
-                                    machine_config.name, e, backoff_secs
-                                );
-                                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                                backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!(
-                            "Error connecting to {}: {}, retrying in {} seconds",
-                            machine_config.name, e, backoff_secs
-                        );
-                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
-                    }
-                }
-            }
-        });
+    let matrix_room = config
+        .matrix
+        .as_ref()
+        .and_then(|matrix| matrix.rooms.first())
+        .cloned();
+    let influx_enabled = config.influxdb.is_some();
+    for machine_config in config.machines.iter().cloned() {
+        connectivity.insert(machine_config.name.clone(), false);
+        essential_tasks.spawn(machine_supervisor(
+            machine_config,
+            conns.clone(),
+            database.clone(),
+            matrix_room.clone(),
+            influx_enabled,
+            connectivity.clone(),
+            ingestion_cancellation.clone(),
+        ));
     }
 
     let conns_clone = conns.clone();
     if let Some(matrix_config) = config.matrix.clone() {
         let _reconnect_wait_matrix = reconnect_wait;
         let machines_for_matrix = config.machines.clone();
-        tokio::spawn(async move {
+        let database_for_matrix = database.clone();
+        let matrix_cancellation = delivery_cancellation.clone();
+        essential_tasks.spawn(async move {
             let mut backoff_secs = 1u64;
             const MAX_BACKOFF_SECS: u64 = 300;
             loop {
+                if matrix_cancellation.is_cancelled() {
+                    return Ok(());
+                }
                 match matrix::setup_matrix(
                     &matrix_config,
                     conns_clone.clone(),
                     machines_for_matrix.clone(),
+                    database_for_matrix.clone(),
+                    matrix_cancellation.clone(),
                 )
                 .await
                 {
@@ -570,23 +644,159 @@ async fn main() -> Result<()> {
                         );
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
+                tokio::select! {
+                    _ = matrix_cancellation.cancelled() => return Ok(()),
+                    _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {},
+                }
                 backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
             }
         });
     }
+    essential_tasks.spawn(run_status_worker(
+        database.clone(),
+        connectivity,
+        delivery_cancellation.clone(),
+    ));
 
-    // Keep the main task alive (all other tasks run in background)
-    // Sleep indefinitely - connections are handled in spawned tasks
+    database.ping().await?;
+    systemd::notify(&format!(
+        "READY=1\nSTATUS=ready; state_database={}",
+        state_database_path(&config).display()
+    ))?;
+
+    tokio::select! {
+        _ = shutdown_signal() => info!("shutdown signal received"),
+        result = &mut database_task => {
+            anyhow::bail!("database actor stopped unexpectedly: {:?}", result);
+        }
+        result = essential_tasks.join_next() => {
+            anyhow::bail!("essential task stopped unexpectedly: {:?}", result);
+        }
+    }
+
+    let _ =
+        systemd::notify("STOPPING=1\nSTATUS=stopping ingestion and draining durable deliveries");
+    ingestion_cancellation.cancel();
+    let drain_seconds = config
+        .global
+        .as_ref()
+        .and_then(|global| global.shutdown_drain_seconds)
+        .unwrap_or(20)
+        .min(20);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(drain_seconds);
+    while tokio::time::Instant::now() < deadline {
+        if database.stats(unix_now()).await?.pending == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    delivery_cancellation.cancel();
+    essential_tasks.abort_all();
+    while essential_tasks.join_next().await.is_some() {}
+    database.shutdown().await?;
+    database_task.await??;
+    Ok(())
+}
+
+async fn machine_supervisor(
+    config: MachineConfig,
+    connections: Arc<DashMap<String, (Arc<QSConnection>, MachineConfig)>>,
+    database: Database,
+    matrix_room: Option<String>,
+    influx_enabled: bool,
+    connectivity: Arc<DashMap<String, bool>>,
+    cancellation: CancellationToken,
+) -> Result<()> {
+    let mut backoff_secs = 1_u64;
     loop {
-        tokio::time::sleep(Duration::from_secs(3600)).await;
+        if cancellation.is_cancelled() {
+            return Ok(());
+        }
+        if let Some(server) = build_server_client(&config) {
+            match log_server_machine(
+                server,
+                &config,
+                database.clone(),
+                matrix_room.as_deref(),
+                influx_enabled,
+                connectivity.clone(),
+                cancellation.clone(),
+            )
+            .await
+            {
+                Ok(()) if cancellation.is_cancelled() => return Ok(()),
+                Ok(()) => warn!("Server event stream for {} ended", config.name),
+                Err(error) => warn!(
+                    "Server ingestion for {} degraded: {}; retrying from durable cursor in {} seconds",
+                    config.name, error, backoff_secs
+                ),
+            }
+            connectivity.insert(config.name.clone(), false);
+        } else {
+            let connection = tokio::select! {
+                _ = cancellation.cancelled() => return Ok(()),
+                result = QSConnection::connect_with_timeout(
+                    &config.host,
+                    7443,
+                    qslib::com::ConnectionType::SSL,
+                    Duration::from_secs(10),
+                ) => result,
+            };
+            match connection {
+                Ok(connection) => {
+                    let connection = Arc::new(connection);
+                    let mut log_tasks = JoinSet::new();
+                    match log_machine(
+                        connection.clone(),
+                        &config,
+                        database.clone(),
+                        matrix_room.clone(),
+                        influx_enabled,
+                        cancellation.clone(),
+                        &mut log_tasks,
+                    )
+                    .await
+                    {
+                        Ok(_) => {
+                            connections
+                                .insert(config.name.clone(), (connection.clone(), config.clone()));
+                            connectivity.insert(config.name.clone(), true);
+                            backoff_secs = 1;
+                            tokio::select! {
+                                _ = cancellation.cancelled() => {},
+                                _ = log_tasks.join_next() => {},
+                            }
+                            log_tasks.abort_all();
+                            connections.remove(&config.name);
+                            connectivity.insert(config.name.clone(), false);
+                            connection.disconnect().await;
+                            if cancellation.is_cancelled() {
+                                return Ok(());
+                            }
+                        }
+                        Err(error) => {
+                            warn!("Direct logging setup failed for {}: {error}", config.name)
+                        }
+                    }
+                }
+                Err(error) => warn!("Direct connection to {} failed: {error}", config.name),
+            }
+        }
+        tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            _ = tokio::time::sleep(Duration::from_secs(backoff_secs)) => {},
+        }
+        backoff_secs = (backoff_secs * 2).min(300);
     }
 }
 
 async fn log_machine(
     con: Arc<QSConnection>,
     config: &MachineConfig,
-    tx: mpsc::Sender<(String, DataPoint)>,
+    database: Database,
+    matrix_room: Option<String>,
+    influx_enabled: bool,
+    cancellation: CancellationToken,
     log_tasks: &mut JoinSet<()>,
 ) -> Result<Id> {
     let access = AccessLevelSet::new(AccessLevel::Observer);
@@ -602,7 +812,7 @@ async fn log_machine(
     };
 
     let mut log_sub = con
-        .subscribe_log_with_options(&["Temperature", "Time", "Run", "LEDStatus"], true)
+        .subscribe_log_with_options(&["Temperature", "Time", "Run", "Error", "LEDStatus"], true)
         .await;
 
     // Initialize machine state
@@ -611,23 +821,37 @@ async fn log_machine(
     let server = build_server_client(config);
     let initial_points =
         refresh_state(&con, &mut state, &config.name, timestamp, server.as_deref()).await;
-    for point in initial_points {
-        if let Err(e) = tx.send((config.name.clone(), point)).await {
-            warn!("Failed to send initial state point: {}", e);
-        }
-    }
+    database
+        .commit(EventRecord {
+            machine: config.name.clone(),
+            cursor: None,
+            raw_json: serde_json::json!({"event": "initial_status"}).to_string(),
+            received_at: unix_now(),
+            influx_lines: if influx_enabled {
+                points_to_lines(initial_points)?
+            } else {
+                Vec::new()
+            },
+            matrix: None,
+            processing_error: None,
+            dead_letter: false,
+        })
+        .await?;
 
     let config_clone = config.clone();
 
     let aborthandle = log_tasks.spawn(async move {
         if let Err(e) = influx_log_loop(
             &mut log_sub,
-            tx,
+            database,
             &config_clone,
             None,
             con.clone(),
             state,
             server,
+            matrix_room,
+            influx_enabled,
+            cancellation,
         )
         .await
         {
@@ -647,41 +871,132 @@ async fn log_machine(
 async fn log_server_machine(
     server: Arc<ServerClient>,
     config: &MachineConfig,
-    tx: mpsc::Sender<(String, DataPoint)>,
+    database: Database,
+    matrix_room: Option<&str>,
+    influx_enabled: bool,
+    connectivity: Arc<DashMap<String, bool>>,
+    cancellation: CancellationToken,
 ) -> Result<()> {
     let capabilities = server.capabilities().await?;
     if !capabilities.sse || !capabilities.supports("instrument") {
         anyhow::bail!("qslib-server does not provide instrument status and SSE");
     }
+    if capabilities.sse_cursor_format.as_deref() != Some("epoch-sequence") {
+        warn!(
+            target: "sse_cursor",
+            "{} is connected to a legacy qslib-server; restart replay guarantees are degraded until it is upgraded",
+            config.name
+        );
+    }
 
     let status = server.instrument_status().await?;
     let mut state = MachineState::new(status.zone_count);
+    let stored_cursor = database.cursor(&config.name).await?;
+    // Rebuild volatile conversion state on every process connection. Only the
+    // initial process connection emits the snapshot; reconnects use it solely
+    // so replayed Temperature/Collected events have correct run and plate data.
     let initial = refresh_state_server(&server, &status, &mut state, &config.name).await;
-    for point in initial {
-        tx.send((config.name.clone(), point)).await?;
+    if stored_cursor.is_none() {
+        database
+            .commit(EventRecord {
+                machine: config.name.clone(),
+                cursor: None,
+                raw_json: serde_json::json!({"event": "initial_status"}).to_string(),
+                received_at: unix_now(),
+                influx_lines: if influx_enabled {
+                    points_to_lines(initial)?
+                } else {
+                    Vec::new()
+                },
+                matrix: None,
+                processing_error: None,
+                dead_letter: false,
+            })
+            .await?;
     }
 
     info!("Server logging task started for {}", config.name);
-    let mut events = server.event_stream(None).await;
+    connectivity.insert(config.name.clone(), true);
+    let mut events = server.event_stream_from_cursor(stored_cursor).await;
     loop {
-        let event = events.next().await?;
+        let event = tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            event = events.next() => event?,
+        };
+        let Some(cursor) = event.id.clone() else {
+            anyhow::bail!("qslib-server returned an SSE event without a cursor");
+        };
+        if !cursor.contains(':') {
+            warn!(
+                target: "sse_cursor",
+                "{} is connected to a legacy numeric-cursor server; restart replay guarantees are degraded",
+                config.name
+            );
+        }
+        let raw_json = serde_json::json!({
+            "id": cursor,
+            "event": event.event,
+            "data": event.data,
+        })
+        .to_string();
         if matches!(event.event.as_str(), "reset" | "connection") {
             if let Ok(status) = server.instrument_status().await {
-                for point in refresh_state_server(&server, &status, &mut state, &config.name).await
-                {
-                    tx.send((config.name.clone(), point)).await?;
-                }
+                let points = refresh_state_server(&server, &status, &mut state, &config.name).await;
+                database
+                    .commit(EventRecord {
+                        machine: config.name.clone(),
+                        cursor: Some(cursor),
+                        raw_json,
+                        received_at: unix_now(),
+                        influx_lines: if influx_enabled {
+                            points_to_lines(points)?
+                        } else {
+                            Vec::new()
+                        },
+                        matrix: None,
+                        processing_error: None,
+                        dead_letter: false,
+                    })
+                    .await?;
+            } else {
+                anyhow::bail!("could not obtain status snapshot for SSE reset");
             }
             continue;
         }
         if event.event == "operation" {
+            database
+                .commit(EventRecord {
+                    machine: config.name.clone(),
+                    cursor: Some(cursor),
+                    raw_json,
+                    received_at: unix_now(),
+                    influx_lines: Vec::new(),
+                    matrix: None,
+                    processing_error: None,
+                    dead_letter: false,
+                })
+                .await?;
             continue;
         }
 
         let payload = event.data.get("data").unwrap_or(&event.data);
         let message = match payload.get("message").and_then(|value| value.as_str()) {
             Some(message) => message.to_string(),
-            None => continue,
+            None => {
+                database
+                    .commit(EventRecord {
+                        machine: config.name.clone(),
+                        cursor: Some(cursor),
+                        raw_json,
+                        received_at: unix_now(),
+                        influx_lines: Vec::new(),
+                        matrix: None,
+                        processing_error: Some("known SSE event has no message".into()),
+                        dead_letter: true,
+                    })
+                    .await?;
+                continue;
+            }
         };
         let instrument_timestamp = payload
             .get("instrument_timestamp")
@@ -697,13 +1012,32 @@ async fn log_server_machine(
             "temperature" => "Temperature",
             "time" => "Time",
             "run" => "Run",
+            "error" => "Run",
             "ledstatus" => "LEDStatus",
-            _ => continue,
+            _ => {
+                database
+                    .commit(EventRecord {
+                        machine: config.name.clone(),
+                        cursor: Some(cursor),
+                        raw_json,
+                        received_at: unix_now(),
+                        influx_lines: Vec::new(),
+                        matrix: None,
+                        processing_error: None,
+                        dead_letter: false,
+                    })
+                    .await?;
+                continue;
+            }
         };
         let message = LogMessage {
             topic: topic.to_string(),
             timestamp: instrument_timestamp,
-            message,
+            message: if event.event == "error" && !message.starts_with("Error") {
+                format!("Error {message}")
+            } else {
+                message
+            },
         };
 
         let points = match topic {
@@ -725,14 +1059,53 @@ async fn log_server_machine(
         };
         match points {
             Ok(points) => {
-                for point in points {
-                    tx.send((config.name.clone(), point)).await?;
-                }
+                let matrix = (topic == "Run")
+                    .then(|| matrix_output(&config.name, &cursor, matrix_room, &message.message))
+                    .flatten();
+                database
+                    .commit(EventRecord {
+                        machine: config.name.clone(),
+                        cursor: Some(cursor),
+                        raw_json,
+                        received_at: unix_now(),
+                        influx_lines: if influx_enabled {
+                            points_to_lines(points)?
+                        } else {
+                            Vec::new()
+                        },
+                        matrix,
+                        processing_error: None,
+                        dead_letter: false,
+                    })
+                    .await?;
             }
-            Err(error) => error!(
-                "Error converting server event for {} from {:?}: {}",
-                config.name, message.message, error
-            ),
+            Err(error)
+                if topic == "Run"
+                    && message.message.starts_with("Collected")
+                    && error.to_string().contains("transient Collected data fetch") =>
+            {
+                // File and collection data may appear shortly after the log
+                // event. Leave the cursor untouched and reconnect from it.
+                anyhow::bail!("transient Collected conversion failure: {error}");
+            }
+            Err(error) => {
+                error!(
+                    "Dead-lettering malformed server event for {} from {:?}: {}",
+                    config.name, message.message, error
+                );
+                database
+                    .commit(EventRecord {
+                        machine: config.name.clone(),
+                        cursor: Some(cursor),
+                        raw_json,
+                        received_at: unix_now(),
+                        influx_lines: Vec::new(),
+                        matrix: None,
+                        processing_error: Some(error.to_string()),
+                        dead_letter: true,
+                    })
+                    .await?;
+            }
         }
     }
 }
@@ -784,14 +1157,18 @@ async fn refresh_state_server(
     state_snapshot_points(state, machine_name, chrono::Utc::now())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn influx_log_loop(
     log_sub: &mut StreamMap<String, BroadcastStream<LogMessage>>,
-    tx: mpsc::Sender<(String, DataPoint)>,
+    database: Database,
     config: &MachineConfig,
     timeout_secs: Option<u64>,
     con: Arc<QSConnection>,
     mut state: MachineState,
     server: Option<Arc<ServerClient>>,
+    matrix_room: Option<String>,
+    influx_enabled: bool,
+    cancellation: CancellationToken,
 ) -> Result<()> {
     let machine_name = config.name.as_ref();
     let mut last_message = tokio::time::Instant::now();
@@ -799,6 +1176,7 @@ async fn influx_log_loop(
     let mut check_interval = tokio::time::interval(Duration::from_secs(5));
     loop {
         select! {
+            _ = cancellation.cancelled() => return Ok(()),
             msg = log_sub.next() => {
                 let (_, msg) = match msg {
                     Some(msg) => msg,
@@ -816,50 +1194,57 @@ async fn influx_log_loop(
                 };
 
                 debug!("Message: {:?}", msg);
+                let raw_json = raw_log_json(&msg);
+                let msg = if msg.topic == "Error" && !msg.message.starts_with("Error") {
+                    LogMessage {
+                        topic: "Run".to_string(),
+                        timestamp: msg.timestamp,
+                        message: format!("Error {}", msg.message),
+                    }
+                } else {
+                    msg
+                };
 
                 // Use server timestamp if available, otherwise fall back to local time
                 let timestamp = msg.timestamp
                     .and_then(|ts| chrono::DateTime::from_timestamp(ts as i64, ((ts % 1.0) * 1e9) as u32))
                     .unwrap_or_else(chrono::Utc::now);
 
-                // Safely convert points, logging errors instead of propagating
-                let points = match msg.topic.as_str() {
-                    "Temperature" => match temperature_to_lineprotocol(&msg, machine_name, timestamp, &state) {
-                        Ok(points) => points,
-                        Err(e) => {
-                            error!("Error converting temperature data for {}: {}", config.name, e);
-                            continue;
-                        }
-                    },
-                    "Time" => match time_to_lineprotocol(&msg, machine_name, timestamp) {
-                        Ok(points) => points,
-                        Err(e) => {
-                            error!("Error converting time data for {}: {}", config.name, e);
-                            continue;
-                        }
-                    },
-                    "Run" => match run_to_lineprotocol(&msg, machine_name, timestamp, Some(con.clone()), &mut state, server.as_deref()).await {
-                        Ok(points) => points,
-                        Err(e) => {
-                            error!("Error converting run data for {}: {}", config.name, e);
-                            continue;
-                        }
-                    },
-                    "LEDStatus" => match ledstatus_to_lineprotocol(&msg, machine_name, timestamp) {
-                        Ok(points) => points,
-                        Err(e) => {
-                            error!("Error converting LED status data for {}: {}", config.name, e);
-                            continue;
-                        }
-                    },
+                let converted = match msg.topic.as_str() {
+                    "Temperature" => temperature_to_lineprotocol(&msg, machine_name, timestamp, &state),
+                    "Time" => time_to_lineprotocol(&msg, machine_name, timestamp),
+                    "Run" => run_to_lineprotocol(&msg, machine_name, timestamp, Some(con.clone()), &mut state, server.as_deref()).await,
+                    "LEDStatus" => ledstatus_to_lineprotocol(&msg, machine_name, timestamp),
                     _ => continue,
                 };
-
-                for point in points {
-                    if let Err(e) = tx.send((config.name.clone(), point)).await {
-                        error!("Failed to send point to InfluxDB for {}: {}", config.name, e);
+                let timestamp_ns = timestamp.timestamp_nanos_opt().unwrap_or_default();
+                let mut digest = Sha256::new();
+                digest.update(raw_json.as_bytes());
+                let cursor = format!("direct:{timestamp_ns}:{:x}", digest.finalize());
+                let (influx_lines, processing_error, dead_letter) = match converted {
+                    Ok(points) => (
+                        if influx_enabled { points_to_lines(points)? } else { Vec::new() },
+                        None,
+                        false,
+                    ),
+                    Err(error) => {
+                        error!("Dead-lettering malformed direct event for {}: {error}", config.name);
+                        (Vec::new(), Some(error.to_string()), true)
                     }
-                }
+                };
+                let matrix = (!dead_letter && msg.topic == "Run")
+                    .then(|| matrix_output(&config.name, &cursor, matrix_room.as_deref(), &msg.message))
+                    .flatten();
+                database.commit(EventRecord {
+                    machine: config.name.clone(),
+                    cursor: None,
+                    raw_json,
+                    received_at: unix_now(),
+                    influx_lines,
+                    matrix,
+                    processing_error,
+                    dead_letter,
+                }).await?;
 
                 last_message = tokio::time::Instant::now();
             }
@@ -1144,7 +1529,7 @@ async fn run_to_lineprotocol(
                     }
                 }
             } else if let Some(server) = server {
-                match docollect_server(
+                let collected_points = docollect_server(
                     stage,
                     cycle,
                     step,
@@ -1155,10 +1540,8 @@ async fn run_to_lineprotocol(
                     state,
                 )
                 .await
-                {
-                    Ok(collected_points) => points.extend(collected_points),
-                    Err(error) => error!("Error collecting data through qslib-server: {error}"),
-                }
+                .map_err(|error| anyhow::anyhow!("transient Collected data fetch: {error}"))?;
+                points.extend(collected_points);
             }
         }
         "Acquiring" => {

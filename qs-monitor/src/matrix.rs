@@ -1,4 +1,5 @@
 use crate::MachineConfig;
+use crate::queue::Database;
 use dashmap::DashMap;
 use futures::StreamExt;
 use log::{debug, error, info, warn};
@@ -29,12 +30,12 @@ use qslib::{
         AccessLevel, CommandBuilder, PossibleRunProgress, PowerStatus, QuickStatusQuery,
         ReceiveOkResponseError,
     },
-    parser::{ErrorResponse, LogMessage},
+    parser::ErrorResponse,
 };
 use serde::{Deserialize, Serialize};
 use std::{io::Write, path::PathBuf, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tokio_util::sync::CancellationToken;
 
 /// The data needed to re-build a client.
 #[derive(Debug, Serialize, Deserialize)]
@@ -1317,6 +1318,8 @@ pub async fn setup_matrix(
     settings: &MatrixSettings,
     qs_connections: Arc<DashMap<String, (Arc<QSConnection>, MachineConfig)>>,
     all_machines: Vec<MachineConfig>,
+    database: Database,
+    cancellation: CancellationToken,
 ) -> Result<(), MatrixError> {
     debug!(
         "Setting up Matrix client with homeserver: {}",
@@ -1422,7 +1425,7 @@ pub async fn setup_matrix(
         client.join_room_by_id(&room_id).await?;
     }
 
-    let log_room = client
+    client
         .get_room(&matrix_sdk::ruma::RoomId::parse(&settings.rooms[0])?)
         .ok_or_else(|| {
             MatrixError::IoError(std::io::Error::new(
@@ -1481,7 +1484,7 @@ pub async fn setup_matrix(
     let matrix_client = client.clone();
     let (sync_error_tx, mut sync_error_rx) = tokio::sync::mpsc::unbounded_channel::<MatrixError>();
 
-    tokio::spawn(async move {
+    let _sync_task = tokio_util::task::AbortOnDropHandle::new(tokio::spawn(async move {
         if let Err(e) = matrix_client
             .sync(SyncSettings::default().token(response.next_batch))
             .await
@@ -1489,139 +1492,12 @@ pub async fn setup_matrix(
             error!("Matrix sync loop error: {}", e);
             let _ = sync_error_tx.send(MatrixError::MatrixErr(e));
         }
-    });
+    }));
 
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<(String, LogMessage)>();
-
-    let qs_connections_for_tasks = qs_connections.clone();
-
-    for machine in all_machines
-        .iter()
-        .filter(|machine| machine.server_port.is_none() || machine.server_port == Some(0))
-    {
-        let name = machine.name.clone();
-        let tx = tx.clone();
-        let qs_connections_clone = qs_connections_for_tasks.clone();
-        let task_name = name.clone();
-        tokio::spawn(async move {
-            let mut backoff_secs = 1u64;
-            const MAX_BACKOFF_SECS: u64 = 60;
-            let mut last_conn_id = None::<usize>;
-            loop {
-                let current_conn = qs_connections_clone.get(&task_name);
-                let (conn, conn_id) = match current_conn {
-                    Some(entry) => {
-                        let conn = entry.value().0.clone();
-                        let conn_id = Arc::as_ptr(&conn) as usize;
-                        (conn, conn_id)
-                    }
-                    None => {
-                        debug!("Machine {} not in connections map, waiting", task_name);
-                        tokio::time::sleep(Duration::from_secs(backoff_secs)).await;
-                        backoff_secs = (backoff_secs * 2).min(MAX_BACKOFF_SECS);
-                        last_conn_id = None;
-                        continue;
-                    }
-                };
-
-                if Some(conn_id) == last_conn_id {
-                    debug!(
-                        "Machine {} connection unchanged, waiting for new connection",
-                        task_name
-                    );
-                    tokio::time::sleep(Duration::from_secs(1)).await;
-                    continue;
-                }
-
-                last_conn_id = Some(conn_id);
-                backoff_secs = 1;
-                let mut inner_sm = conn.subscribe_log(&["Run", "Error"]).await;
-                debug!("Subscribed to log stream for machine {}", task_name);
-
-                loop {
-                    match inner_sm.next().await {
-                        Some((topic, Ok(msg))) => {
-                            if (topic == "Run" || topic == "Error")
-                                && let Err(e) = tx.send((task_name.clone(), msg))
-                            {
-                                error!("Failed to send message for {}: {}", task_name, e);
-                                break;
-                            }
-                        }
-                        Some((topic, Err(BroadcastStreamRecvError::Lagged(n)))) => {
-                            warn!(
-                                "Machine {} topic {} lagged by {} messages",
-                                task_name, topic, n
-                            );
-                        }
-                        None => {
-                            warn!("Stream ended for machine {}, will reconnect", task_name);
-                            last_conn_id = None;
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    for machine in all_machines
-        .iter()
-        .filter(|machine| machine.server_port.is_some_and(|port| port != 0))
-    {
-        let task_name = machine.name.clone();
-        let server = configured_server(&all_machines, &task_name)
-            .expect("filtered qslib-server machine has a client");
-        let tx = tx.clone();
-        tokio::spawn(async move {
-            let mut events = server.event_stream(None).await;
-            loop {
-                match events.next().await {
-                    Ok(event) if event.event == "run" => {
-                        let payload = event.data.get("data").unwrap_or(&event.data);
-                        let Some(message) = payload.get("message").and_then(|value| value.as_str())
-                        else {
-                            continue;
-                        };
-                        let message = LogMessage {
-                            topic: "Run".to_string(),
-                            timestamp: payload
-                                .get("instrument_timestamp")
-                                .and_then(|value| value.as_f64()),
-                            message: message.to_string(),
-                        };
-                        if tx.send((task_name.clone(), message)).is_err() {
-                            break;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(error) => {
-                        warn!(
-                            "qslib-server event stream for {} failed: {}",
-                            task_name, error
-                        );
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                }
-            }
-        });
-    }
-
-    info!("Matrix connected");
-
+    info!("Matrix connected; durable delivery worker started");
     loop {
         tokio::select! {
-            msg_result = rx.recv() => {
-                match msg_result {
-                    Some((name, msg)) => {
-                        handle_run_message(name, msg, &log_room).await;
-                    }
-                    None => {
-                        warn!("Message channel closed, reconnecting");
-                        break;
-                    }
-                }
-            }
+            _ = cancellation.cancelled() => return Ok(()),
             sync_error = sync_error_rx.recv() => {
                 if let Some(e) = sync_error {
                     error!("Matrix sync error received, reconnecting: {}", e);
@@ -1631,26 +1507,49 @@ pub async fn setup_matrix(
                     break;
                 }
             }
+            _ = tokio::time::sleep(Duration::from_millis(250)) => {
+                let Some(delivery) = database
+                    .matrix_delivery(chrono::Utc::now().timestamp())
+                    .await
+                    .map_err(|error| MatrixError::IoError(std::io::Error::other(error.to_string())))?
+                else {
+                    continue;
+                };
+                let room_id = matrix_sdk::ruma::RoomId::parse(&delivery.room)?;
+                let room = client.get_room(&room_id).ok_or_else(|| {
+                    MatrixError::IoError(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("queued Matrix room {} is not joined", delivery.room),
+                    ))
+                })?;
+                let mut content = RoomMessageEventContent::text_html(&delivery.body, &delivery.body);
+                content.mentions = Some(Mentions::with_room_mention());
+                match room
+                    .send(content)
+                    .with_transaction_id(delivery.transaction_id.clone().into())
+                    .await
+                {
+                    Ok(_) => database
+                        .mark_matrix_delivered(delivery.id, chrono::Utc::now().timestamp())
+                        .await
+                        .map_err(|error| MatrixError::IoError(std::io::Error::other(error.to_string())))?,
+                    Err(error) => {
+                        database
+                            .mark_matrix_failed(
+                                delivery.id,
+                                error.to_string(),
+                                chrono::Utc::now().timestamp() + 2,
+                            )
+                            .await
+                            .map_err(|db_error| MatrixError::IoError(std::io::Error::other(db_error.to_string())))?;
+                        return Err(MatrixError::MatrixErr(error));
+                    }
+                }
+            }
         }
     }
 
     Ok(())
-}
-
-async fn handle_run_message(name: String, msg: LogMessage, room: &Room) {
-    // We only want to notify if the message contains: "Error", "Ended", "Aborted", "Stopped", "Starting"
-    if msg.message.contains("Error")
-        || msg.message.contains("Ended")
-        || msg.message.contains("Aborted")
-        || msg.message.contains("Stopped")
-        || msg.message.contains("Starting")
-    {
-        let mm = format!("{}: {}", name, msg.message);
-        match send_matrix_message(room, &mm, true).await {
-            Ok(_) => (),
-            Err(e) => error!("Error sending message: {}", e),
-        }
-    }
 }
 
 #[cfg(test)]

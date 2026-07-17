@@ -29,6 +29,15 @@ The main resources are:
 - `/api/v1/runs/*` for run state, start, actions, protocols, and EDS files;
 - `POST /api/v1/server/upgrade` for Administrator upgrades.
 
+SSE IDs are opaque `<server-epoch>:<sequence>` cursors. Reconnect with the
+last fully processed value in `Last-Event-ID`; do not parse or increment it.
+The server replays same-epoch history in order. A cursor from another process
+epoch, ahead of the live stream, or older than the 4,096-event in-memory
+history receives a `reset` event containing a current instrument status
+snapshot, followed by the live stream. Bare numeric IDs remain accepted for
+older clients, without cross-restart detection. Capability responses advertise
+`"sse_cursor_format": "epoch-sequence"` when these guarantees are available.
+
 `GET /api/v1/runs/current/protocol` returns the exact protocol currently held
 by InstrumentServer as SCPI. Protocol updates send that exact SCPI separately
 from `tcprotocol_xml`; the latter is only the approximate document consumed by

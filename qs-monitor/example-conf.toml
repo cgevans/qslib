@@ -3,6 +3,9 @@
 
 ## Global settings
 [global]
+reconnect_wait_seconds = 10
+state_database = "/var/lib/qs-monitor/state.sqlite"
+shutdown_drain_seconds = 20
 
 
 [[machines]]
@@ -35,7 +38,7 @@ host = "https://matrix.org"
 user = "qsbot"
 password = "your-secure-password"
 rooms = ["!roomid:matrix.org"]
-session_file = "matrix_session.json"
+session_file = "/var/lib/qs-monitor/matrix_session.json"
 allow_verification = false  # Enable temporarily for session verification
 allow_commands = true      # Allow commands to be sent to the bot
 allow_control = false      # Allow commands that can control the instruments
