@@ -9,6 +9,7 @@ use axum::extract::{Extension, Request, State};
 use axum::http::{header, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use hyper_util::rt::TokioIo;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tracing::{debug, warn};
 
@@ -36,9 +37,16 @@ pub async fn tunnel(
             .and_then(|v| v.to_str().ok())
             .map(|v| v.eq_ignore_ascii_case("qslib-scpi"))
             .unwrap_or(false);
-        if !wants_upgrade {
+        let connection_upgrade = req
+            .headers()
+            .get_all(header::CONNECTION)
+            .iter()
+            .filter_map(|value| value.to_str().ok())
+            .flat_map(|value| value.split(','))
+            .any(|token| token.trim().eq_ignore_ascii_case("upgrade"));
+        if !wants_upgrade || !connection_upgrade {
             return Err(ServerError::bad_request(
-                "GET tunnel requires `Upgrade: qslib-scpi`",
+                "GET tunnel requires `Connection: upgrade` and `Upgrade: qslib-scpi`",
             ));
         }
     }
@@ -53,7 +61,18 @@ pub async fn tunnel(
         .map_err(|_| ServerError::unavailable("too many concurrent SCPI tunnels"))?;
 
     // Fail fast if the SCPI server is unreachable, before upgrading.
-    let upstream = TcpStream::connect(state.scpi_target).await.map_err(|e| {
+    let upstream = tokio::time::timeout(
+        Duration::from_secs(10),
+        TcpStream::connect(state.scpi_target),
+    )
+    .await
+    .map_err(|_| {
+        ServerError::unavailable(format!(
+            "timed out connecting to SCPI server at {}",
+            state.scpi_target
+        ))
+    })?
+    .map_err(|e| {
         ServerError::unavailable(format!(
             "cannot connect to SCPI server at {}: {e}",
             state.scpi_target

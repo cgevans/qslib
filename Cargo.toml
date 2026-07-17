@@ -3,7 +3,7 @@ members = [".", "qs-monitor", "qslib-core", "qslib-server"]
 resolver = "2"
 
 [workspace.package]
-version = "0.15.2"
+version = "0.16.0"
 
 # Size-optimized profile for the cross-compiled qslib-server binary. Applied only when
 # built with `--profile min-size` (e.g. the armv7 musl qslib-server build), so the
@@ -28,7 +28,25 @@ license = "EUPL-1.2"
 authors = ["Constantine Evans <qslib@mb.costi.net>"]
 homepage = "https://codeberg.org/cge/qslib"
 repository = "https://codeberg.org/cge/qslib"
-exclude = ["tiff-collection.eds"]
+# Keep the crates.io archive limited to the Rust crate.  This repository also
+# contains the Python package, Sphinx documentation, server/monitor workspace
+# members, and local release tooling; none of those are inputs to this crate.
+# The EDS fixtures below are required by the Rust unit tests.  The much larger
+# optional LFS fixture (tiff-collection.eds) is deliberately not included.
+include = [
+    "/src/*.rs",
+    "/src/analysis_protocol.xml.zz",
+    "/tests/*.rs",
+    "/tests/*.eds",
+    "/tests/*.eds.license",
+    "/benches/*.rs",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/AUTHORS.md",
+    "/CITATION.cff",
+    "/LICENSE.txt",
+    "/LICENSES/EUPL-1.2.txt",
+]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [lib]
@@ -36,7 +54,7 @@ name = "qslib"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-qslib-core = { path = "qslib-core", default-features = false, features = ["tls"] }
+qslib-core = { path = "qslib-core", version = "0.16.0", default-features = false, features = ["tls"] }
 dashmap = "6.1"
 # HTTP client for the on-instrument qslib-server (server_client). Plain HTTP only
 # (qslib-server has no TLS), so no TLS backend is pulled in.

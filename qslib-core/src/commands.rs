@@ -2790,8 +2790,8 @@ mod tests {
 
     #[test]
     fn test_power_status_into_bool() {
-        assert_eq!(bool::from(PowerStatus::On), true);
-        assert_eq!(bool::from(PowerStatus::Off), false);
+        assert!(bool::from(PowerStatus::On));
+        assert!(!bool::from(PowerStatus::Off));
     }
 
     #[test]
@@ -3363,8 +3363,8 @@ mod tests {
         assert!((status.target_temperatures["Zone1"] - 25.0).abs() < 0.01);
         assert!((status.target_temperatures["Fan1"] - 44.0).abs() < 0.01);
         assert_eq!(status.target_controlled.len(), 4);
-        assert_eq!(status.target_controlled["Zone1"], true);
-        assert_eq!(status.target_controlled["Cover"], true);
+        assert!(status.target_controlled["Zone1"]);
+        assert!(status.target_controlled["Cover"]);
         assert!((status.led_temperature - 35.2).abs() < 0.01);
     }
 

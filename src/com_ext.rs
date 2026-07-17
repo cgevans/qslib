@@ -29,7 +29,9 @@ pub const INSTRUMENT_EXPERIMENTS_ROOT: &str = "/data/vendor/IS/experiments";
 /// The `_via` variants take an optional [`ServerClient`]: when present, the
 /// underlying experiment file is fetched from qslib-server's named file
 /// resource (raw off disk, no base64+TLS overhead on the instrument), falling
-/// back to SCPI on a read error. The plain methods are the SCPI-only path
+/// back to SCPI on a read/transport error. An HTTP 401/403 is surfaced instead:
+/// bypassing an explicit server policy decision through direct SCPI would be a
+/// privilege boundary violation. The plain methods are the SCPI-only path
 /// (`server = None`).
 #[allow(async_fn_in_trait)]
 pub trait QSConnectionExt {
@@ -73,8 +75,9 @@ pub trait QSConnectionExt {
 ///
 /// `sds_subpath` is relative to `apldbio/sds/` (e.g. `"plate_setup.xml"` or
 /// `"filter/<name>"`). `scpi_var_path` is the SCPI-side path used when
-/// qslib-server is absent or its fetch fails (using the InstrumentServer's
-/// `${LogFolder}` / `${FilterFolder}` variables for the current run).
+/// qslib-server is absent or its fetch fails without an authorization response
+/// (using the InstrumentServer's `${LogFolder}` / `${FilterFolder}` variables
+/// for the current run).
 async fn fetch_sds_file(
     con: &QSConnection,
     server: Option<&ServerClient>,
@@ -93,6 +96,9 @@ async fn fetch_sds_file(
             let abspath = format!("{INSTRUMENT_EXPERIMENTS_ROOT}/{rt}/apldbio/sds/{sds_subpath}");
             match server.get_abs_file(&abspath).await {
                 Ok(bytes) => return Ok(bytes),
+                Err(error) if error.is_authorization_failure() => {
+                    return Err(CommandError::InternalError(anyhow::Error::new(error)));
+                }
                 Err(e) => {
                     log::debug!(
                         "qslib-server fetch of {abspath} failed ({e}); falling back to SCPI"
@@ -190,5 +196,109 @@ impl QSConnectionExt for QSConnection {
             .next()
             .ok_or_else(|| CommandError::InternalError(anyhow::anyhow!("No PlateData found")))?;
         Ok(plate_data)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+    use tokio::time::{timeout, Duration};
+
+    async fn idle_scpi_connection() -> (QSConnection, tokio::task::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            socket
+                .write_all(
+                    b"READy -session=1 -product=Test -version=1 -build=1 -capabilities=Index\n",
+                )
+                .await
+                .unwrap();
+            let mut buffer = vec![0_u8; 2048];
+            match timeout(Duration::from_millis(250), socket.read(&mut buffer)).await {
+                Ok(Ok(count)) => {
+                    buffer.truncate(count);
+                    buffer
+                }
+                Ok(Err(error)) => panic!("reading mock SCPI connection: {error}"),
+                Err(_) => Vec::new(),
+            }
+        });
+        let connection = QSConnection::connect_tcp("127.0.0.1", address.port())
+            .await
+            .unwrap();
+        (connection, task)
+    }
+
+    async fn rejecting_file_server(
+        status: u16,
+    ) -> (ServerClient, tokio::task::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "client closed before completing HTTP request");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let reason = if status == 401 {
+                "Unauthorized"
+            } else {
+                "Forbidden"
+            };
+            let body = br#"{"error":{"code":"unauthorized","message":"credentials rejected","retryable":false,"outcome":"not_started"}}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(body).await.unwrap();
+            request
+        });
+        (
+            ServerClient::new(
+                "127.0.0.1",
+                address.port(),
+                Some("revoked-token".to_string()),
+            ),
+            task,
+        )
+    }
+
+    #[tokio::test]
+    async fn file_authorization_failure_never_falls_back_to_direct_scpi() {
+        for status in [401, 403] {
+            let (connection, scpi_request) = idle_scpi_connection().await;
+            let (server, http_request) = rejecting_file_server(status).await;
+
+            let error = fetch_sds_file(
+                &connection,
+                Some(&server),
+                &Some("active-run".to_string()),
+                "plate_setup.xml",
+                "${LogFolder}/plate_setup.xml",
+            )
+            .await
+            .unwrap_err();
+
+            let message = error.to_string();
+            assert!(message.contains(&format!("HTTP {status}")), "{message}");
+            let request = http_request.await.unwrap();
+            assert!(request.starts_with(
+                b"GET /api/v1/files/experiments/active-run/apldbio/sds/plate_setup.xml"
+            ));
+            assert_eq!(scpi_request.await.unwrap(), b"");
+        }
     }
 }

@@ -1066,7 +1066,10 @@ impl QSConnection {
             stream_read: r,
             stream_write: w,
             next_ident: 0,
-            receiver: MsgRecv::new(),
+            // Keep any bytes read after the READY line.  TCP/TLS reads are not
+            // message-aligned; discarding this framer could lose the beginning
+            // (or all) of the first post-greeting message.
+            receiver,
             logchannels: logchannels.clone(),
             messagechannels: HashMap::new(),
             commandchannel: com_rx,
@@ -1113,7 +1116,7 @@ impl QSConnection {
         let mut stream = TcpStream::connect((server_host, server_port)).await?;
 
         let mut req = format!(
-            "GET /scpi HTTP/1.1\r\nHost: {server_host}:{server_port}\r\n\
+            "GET /api/v1/scpi/tunnel HTTP/1.1\r\nHost: {server_host}:{server_port}\r\n\
              Connection: Upgrade\r\nUpgrade: qslib-scpi\r\n"
         );
         if let Some(t) = token {
@@ -1218,7 +1221,10 @@ impl QSConnection {
             stream_read: r,
             stream_write: w,
             next_ident: 0,
-            receiver: MsgRecv::new(),
+            // Keep any bytes read after the READY line.  TCP reads are not
+            // message-aligned, so the greeting read may already contain part
+            // of the next message.
+            receiver,
             logchannels: logchannels.clone(),
             messagechannels: HashMap::new(),
             commandchannel: com_rx,
@@ -1255,12 +1261,10 @@ impl QSConnection {
         topics: &[&str],
         timestamp: bool,
     ) -> StreamMap<String, BroadcastStream<LogMessage>> {
-        // Send SUBS+ command to the server for the requested topics
-        if !topics.is_empty() {
-            let cmd = crate::commands::Subscribe::topics(topics).with_timestamp(timestamp);
-            let _ = self.send_command(cmd).await;
-        }
-
+        // Install every local receiver before enabling the corresponding
+        // InstrumentServer subscription. A log message can arrive immediately
+        // after SUBS+ takes effect (and even before its acknowledgement); doing
+        // this in the opposite order creates a small but real ingestion gap.
         let mut s = StreamMap::new();
         for &topic in topics {
             if !self.logchannels.contains_key(topic) {
@@ -1270,6 +1274,10 @@ impl QSConnection {
             if let Some(channel) = self.logchannels.get(topic) {
                 s.insert(topic.to_string(), BroadcastStream::new(channel.subscribe()));
             }
+        }
+        if !topics.is_empty() {
+            let cmd = crate::commands::Subscribe::topics(topics).with_timestamp(timestamp);
+            let _ = self.send_command(cmd).await;
         }
         s
     }
@@ -1765,6 +1773,96 @@ impl std::fmt::Display for FilterSet {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn greeting_read_preserves_following_response_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            stream
+                .write_all(
+                    b"READy -session=1 -product=Test -version=1 -build=1 -capabilities=Index\nOK 0 ",
+                )
+                .await
+                .unwrap();
+
+            let mut command = Vec::new();
+            loop {
+                let mut byte = [0_u8; 1];
+                assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+                command.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            assert_eq!(command, b"0 TEST\n");
+            stream.write_all(b"done\n").await.unwrap();
+        });
+
+        let connection = QSConnection::connect_tcp("127.0.0.1", address.port())
+            .await
+            .unwrap();
+        let mut response = connection.send_command_bytes(b"TEST").await.unwrap();
+        let response = response
+            .get_response_with_timeout(Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.args[0].to_string(), "done");
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_tunnel_uses_the_versioned_authenticated_route() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+                request.push(byte[0]);
+            }
+            let request = String::from_utf8(request).unwrap();
+            assert!(request.starts_with("GET /api/v1/scpi/tunnel HTTP/1.1\r\n"));
+            assert!(request.contains("Authorization: Bearer tunnel-secret\r\n"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 101 Switching Protocols\r\nConnection: upgrade\r\nUpgrade: qslib-scpi\r\n\r\nREADy -session=1 -product=Test -version=1 -build=1 -capabilities=Index\n",
+                )
+                .await
+                .unwrap();
+
+            let mut command = Vec::new();
+            loop {
+                assert_eq!(stream.read(&mut byte).await.unwrap(), 1);
+                command.push(byte[0]);
+                if byte[0] == b'\n' {
+                    break;
+                }
+            }
+            assert_eq!(command, b"0 TEST\n");
+            stream.write_all(b"OK 0 tunnelled\n").await.unwrap();
+        });
+
+        let connection =
+            QSConnection::connect_server_tunnel("127.0.0.1", address.port(), Some("tunnel-secret"))
+                .await
+                .unwrap();
+        let mut response = connection.send_command_bytes(b"TEST").await.unwrap();
+        let response = response
+            .get_response_with_timeout(Duration::from_secs(1))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(response.args[0].to_string(), "tunnelled");
+        connection.close().await;
+        server.await.unwrap();
+    }
 
     #[test]
     fn test_filter_data_filename_roundtrip() {

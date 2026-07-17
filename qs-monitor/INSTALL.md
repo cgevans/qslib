@@ -11,7 +11,7 @@ Install `qs-monitor-deploy` from a release bundle in
 `/usr/local/sbin/qs-monitor-deploy`, then activate a release explicitly:
 
 ```console
-sudo qs-monitor-deploy v0.15.2
+sudo qs-monitor-deploy v0.16.0
 ```
 
 The command downloads the bundle and its SHA-256 manifest over HTTPS, checks
@@ -34,6 +34,9 @@ Fully delivered queue rows are pruned after 30 days; dead letters and every
 undelivered row remain until explicitly inspected or cleared with SQLite
 administration while the service is stopped.
 
-Deploy qslib-server with epoch-capable SSE IDs before upgrading qs-monitor.
-The monitor accepts an older server's numeric IDs, but logs that restart replay
-guarantees are degraded until the server is upgraded.
+Deploy qslib-server 0.16.0 or newer before upgrading qs-monitor. The monitor
+requires epoch-capable SSE IDs, an atomic initial snapshot, and per-event run
+context; these are advertised as `sse_initial_snapshot` and
+`sse_event_context`. It refuses an older server because replaying an old
+Temperature or Collected event against today's instrument status can silently
+mis-tag run positions, targets, or samples.

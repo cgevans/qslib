@@ -2,10 +2,11 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use futures::StreamExt;
 use qslib_core::commands::AccessLevel;
 use qslib_server::auth::{AuthPolicy, Role};
 use qslib_server::config::Config;
@@ -25,6 +26,46 @@ async fn spawn_http(state: AppState) -> SocketAddr {
 }
 
 async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
+    spawn_fake_scpi_with_burst(running, 0).await
+}
+
+#[derive(Default)]
+struct PowerResponseGate {
+    used: AtomicBool,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+
+impl PowerResponseGate {
+    async fn block_first_response(&self) {
+        if !self.used.swap(true, Ordering::SeqCst) {
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+    }
+
+    async fn wait_until_entered(&self) {
+        self.entered.notified().await;
+    }
+
+    fn release(&self) {
+        self.release.notify_one();
+    }
+}
+
+async fn spawn_fake_scpi_with_burst(
+    running: bool,
+    temperature_burst_on_power: usize,
+) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
+    spawn_fake_scpi_with_options(running, temperature_burst_on_power, None, None).await
+}
+
+async fn spawn_fake_scpi_with_options(
+    running: bool,
+    temperature_burst_on_power: usize,
+    power_gate: Option<Arc<PowerResponseGate>>,
+    experiments_root: Option<PathBuf>,
+) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mutex<Vec<String>>>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
     let connections = Arc::new(AtomicUsize::new(0));
@@ -38,6 +79,8 @@ async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mu
             };
             accepted.fetch_add(1, Ordering::SeqCst);
             let recorded = recorded.clone();
+            let power_gate = power_gate.clone();
+            let experiments_root = experiments_root.clone();
             tokio::spawn(async move {
                 if socket
                     .write_all(b"READy -session=1 -product=Test -version=1.0 -build=1 -capabilities=Index\n")
@@ -50,6 +93,7 @@ async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mu
                 let mut access_level = "Observer".to_string();
                 let mut exclusive = false;
                 let mut drawer_open = false;
+                let mut current_run = running.then(|| "active_run".to_string());
                 let mut buffer = [0_u8; 4096];
                 loop {
                     let count = match socket.read(&mut buffer).await {
@@ -93,8 +137,8 @@ async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mu
                         } else if command.eq_ignore_ascii_case("eng?") {
                             "Down".to_string()
                         } else if command.starts_with("RET ${RunTitle") {
-                            if running {
-                                "active_run 1 1 1 1 1 1 Running".to_string()
+                            if let Some(name) = &current_run {
+                                format!("{name} 1 1 1 1 1 1 Running")
                             } else {
                                 "- -1 -1 -1 -1 -1 -1 Idle".to_string()
                             }
@@ -119,6 +163,18 @@ async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mu
                                 drawer_open = true;
                             } else if command == "CLOSE" {
                                 drawer_open = false;
+                            } else if command.starts_with("EXP:NEW ") {
+                                if let (Some(root), Some(name)) =
+                                    (experiments_root.as_ref(), command.split_whitespace().nth(1))
+                                {
+                                    let name = name.trim_matches('"');
+                                    let _ = std::fs::create_dir_all(root.join(name));
+                                }
+                            } else if command.starts_with("RP ") {
+                                current_run = command
+                                    .split_whitespace()
+                                    .next_back()
+                                    .map(|name| name.trim_matches('"').to_string());
                             }
                             String::new()
                         };
@@ -128,6 +184,43 @@ async fn spawn_fake_scpi(running: bool) -> (SocketAddr, Arc<AtomicUsize>, Arc<Mu
                             None if body.is_empty() => "OK\n".to_string(),
                             None => format!("OK {body}\n"),
                         };
+                        if command == "POW ON" {
+                            if temperature_burst_on_power > 0 {
+                                // These messages exercise the event-time
+                                // context carried by later replayed events.
+                                for message in [
+                                    "MESSage Run 1700000000.0 Starting \"burst run\"\n",
+                                    "MESSage Run 1700000000.1 Stage 2\n",
+                                    "MESSage Run 1700000000.2 Cycle 7\n",
+                                    "MESSage Run 1700000000.3 Step 3\n",
+                                    "MESSage Run 1700000000.4 Ramping -zones=Zone1,Zone2,Zone3,Zone4,Zone5,Zone6 -targets=70,71,72,73,74,75 -rates=1.6,1.6,1.6,1.6,1.6,1.6\n",
+                                    "MESSage Run 1700000000.5 Collected -run=\"burst run\" -stage=2 -cycle=7 -step=3 -point=1\n",
+                                ] {
+                                    if socket.write_all(message.as_bytes()).await.is_err() {
+                                        return;
+                                    }
+                                }
+                            }
+                            // A paced burst deterministically exceeds the
+                            // per-topic buffer if the semantic actor stops
+                            // polling subscriptions while a job is in flight.
+                            for index in 0..temperature_burst_on_power {
+                                let message = format!(
+                                    "MESSage Temperature {} -sample={}\n",
+                                    1_700_000_000.0 + index as f64,
+                                    20.0 + index as f64 / 100.0,
+                                );
+                                if socket.write_all(message.as_bytes()).await.is_err() {
+                                    return;
+                                }
+                                tokio::time::sleep(Duration::from_millis(1)).await;
+                            }
+                        }
+                        if command == "POW ON" {
+                            if let Some(gate) = &power_gate {
+                                gate.block_first_response().await;
+                            }
+                        }
                         if socket.write_all(response.as_bytes()).await.is_err() {
                             return;
                         }
@@ -162,6 +255,39 @@ fn test_config(scpi_target: SocketAddr, file_root: PathBuf) -> Config {
     }
 }
 
+fn experiment_package(protocol_name: &str, marker: &str) -> Vec<u8> {
+    let protocol = format!(
+        "<TCProtocol><ProtocolName>{protocol_name}</ProtocolName><SampleVolume>20</SampleVolume><RunMode>Standard</RunMode><TCStage><NumOfRepetitions>1</NumOfRepetitions><TCStep><CollectionFlag>0</CollectionFlag><Temperature>60</Temperature><HoldTime>10</HoldTime></TCStep></TCStage></TCProtocol>"
+    );
+    let cursor = std::io::Cursor::new(Vec::new());
+    let mut archive = zip::ZipWriter::new(cursor);
+    for (name, contents) in [
+        ("apldbio/sds/experiment.xml", "<Experiment/>"),
+        ("apldbio/sds/tcprotocol.xml", protocol.as_str()),
+        ("accepted-marker.txt", marker),
+    ] {
+        archive
+            .start_file(name, zip::write::SimpleFileOptions::default())
+            .unwrap();
+        std::io::Write::write_all(&mut archive, contents.as_bytes()).unwrap();
+    }
+    archive.finish().unwrap().into_inner()
+}
+
+fn create_contexts(root: &std::path::Path) {
+    for context in [
+        "experiments",
+        "runs",
+        "logs",
+        "templates",
+        "calibrations",
+        "public_run_complete",
+        "private_run_complete",
+    ] {
+        std::fs::create_dir_all(root.join(context)).unwrap();
+    }
+}
+
 async fn setup(
     role: Role,
 ) -> (
@@ -184,17 +310,7 @@ async fn setup_with_running(
 ) {
     let (scpi, connections, commands) = spawn_fake_scpi(running).await;
     let root = tempfile::tempdir().unwrap();
-    for context in [
-        "experiments",
-        "runs",
-        "logs",
-        "templates",
-        "calibrations",
-        "public_run_complete",
-        "private_run_complete",
-    ] {
-        std::fs::create_dir_all(root.path().join(context)).unwrap();
-    }
+    create_contexts(root.path());
     let config = test_config(scpi, root.path().to_path_buf());
     let state = AppState::new(&config, AuthPolicy::unauthenticated(role)).unwrap();
     let address = spawn_http(state).await;
@@ -246,9 +362,62 @@ async fn wait_operation(
     panic!("operation did not finish")
 }
 
+async fn wait_operation_as(
+    client: &reqwest::Client,
+    address: SocketAddr,
+    initial: serde_json::Value,
+    token: &str,
+) -> serde_json::Value {
+    let id = initial["id"].as_str().unwrap();
+    for _ in 0..200 {
+        let record: serde_json::Value = client
+            .get(format!("http://{address}/api/v1/operations/{id}"))
+            .bearer_auth(token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        if matches!(
+            record["state"].as_str(),
+            Some("succeeded" | "failed" | "unknown")
+        ) {
+            return record;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    panic!("operation did not finish")
+}
+
+async fn setup_token_acl() -> (SocketAddr, tempfile::TempDir, AppState) {
+    let (scpi, _connections, _commands) = spawn_fake_scpi(false).await;
+    let root = tempfile::tempdir().unwrap();
+    create_contexts(root.path());
+    let auth_path = root.path().join("auth.toml");
+    std::fs::write(
+        &auth_path,
+        format!(
+            "unauthenticated_role = \"observer\"\n\n\
+             [[tokens]]\nname = \"owner\"\nsha256 = \"{}\"\nrole = \"controller\"\n\n\
+             [[tokens]]\nname = \"other\"\nsha256 = \"{}\"\nrole = \"observer\"\n\n\
+             [[tokens]]\nname = \"admin\"\nsha256 = \"{}\"\nrole = \"administrator\"\n",
+            qslib_server::state::sha256_hex(b"owner-token"),
+            qslib_server::state::sha256_hex(b"other-token"),
+            qslib_server::state::sha256_hex(b"admin-token"),
+        ),
+    )
+    .unwrap();
+    let auth = AuthPolicy::from_file(&auth_path).unwrap();
+    let config = test_config(scpi, root.path().to_path_buf());
+    let state = AppState::new(&config, auth).unwrap();
+    let address = spawn_http(state.clone()).await;
+    (address, root, state)
+}
+
 #[tokio::test]
 async fn health_uses_the_single_managed_connection() {
-    let (address, _root, connections, _commands) = setup(Role::Observer).await;
+    let (address, _root, connections, commands) = setup(Role::Observer).await;
     let health = wait_ready(address).await;
     assert_eq!(health["name"], "qslib-server");
     assert_eq!(health["current_access"]["level"], "observer");
@@ -258,6 +427,12 @@ async fn health_uses_the_single_managed_connection() {
             .unwrap();
     }
     assert_eq!(connections.load(Ordering::SeqCst), 1);
+    assert!(commands.lock().unwrap().iter().any(|command| {
+        command.starts_with("SUBS+")
+            && command.contains("Temperature")
+            && command.contains("Error")
+            && command.contains("LEDStatus")
+    }));
 }
 
 #[tokio::test]
@@ -276,6 +451,8 @@ async fn capabilities_and_status_follow_the_v1_contract() {
     assert_eq!(capabilities["api_version"], "v1");
     assert_eq!(capabilities["sse"], true);
     assert_eq!(capabilities["sse_cursor_format"], "epoch-sequence");
+    assert_eq!(capabilities["sse_event_context"], true);
+    assert_eq!(capabilities["sse_initial_snapshot"], true);
     assert_eq!(capabilities["raw_scpi"], false);
 
     let response = client
@@ -288,6 +465,54 @@ async fn capabilities_and_status_follow_the_v1_contract() {
     let status: serde_json::Value = response.json().await.unwrap();
     assert_eq!(status["zone_count"], 6);
     assert_eq!(status["run"]["state"], "Idle");
+}
+
+#[tokio::test]
+async fn run_and_experiment_routes_reject_encoded_unsafe_names() {
+    let (address, _root, _connections, _commands) = setup(Role::Administrator).await;
+    wait_ready(address).await;
+    let client = reqwest::Client::new();
+    let unsafe_name = "bad%5Cname";
+
+    let requests = [
+        client.get(format!("http://{address}/api/v1/experiments/{unsafe_name}")),
+        client.get(format!("http://{address}/api/v1/runs/{unsafe_name}")),
+        client.post(format!(
+            "http://{address}/api/v1/runs/{unsafe_name}/actions/compile"
+        )),
+        client.get(format!("http://{address}/api/v1/runs/{unsafe_name}/eds")),
+        client
+            .put(format!(
+                "http://{address}/api/v1/runs/{unsafe_name}/protocol"
+            ))
+            .json(&serde_json::json!({
+                "scpi": "STAGE 1 STAGE_1\n",
+                "tcprotocol_xml": "<TCProtocol/>"
+            })),
+    ];
+    for request in requests {
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "invalid_input");
+    }
+
+    // Exercise dot-segment decoding without allowing the URL builder to
+    // normalize the request path before it reaches Axum.
+    let mut stream = tokio::net::TcpStream::connect(address).await.unwrap();
+    stream
+        .write_all(
+            format!(
+                "GET /api/v1/experiments/%2E%2E HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let response = String::from_utf8(response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 400 "), "{response}");
 }
 
 #[tokio::test]
@@ -385,6 +610,49 @@ async fn protocol_update_sends_exact_scpi_and_stores_display_xml_separately() {
 }
 
 #[tokio::test]
+async fn protocol_update_requires_file_write_policy_as_well_as_controls() {
+    let (scpi, _connections, commands) = spawn_fake_scpi(true).await;
+    let root = tempfile::tempdir().unwrap();
+    for context in [
+        "experiments",
+        "runs",
+        "logs",
+        "templates",
+        "calibrations",
+        "public_run_complete",
+        "private_run_complete",
+    ] {
+        std::fs::create_dir_all(root.path().join(context)).unwrap();
+    }
+    let mut config = test_config(scpi, root.path().to_path_buf());
+    config.allow_file_writes = false;
+    let state = AppState::new(&config, AuthPolicy::unauthenticated(Role::Controller)).unwrap();
+    let address = spawn_http(state).await;
+    wait_ready(address).await;
+    commands.lock().unwrap().clear();
+
+    let response = reqwest::Client::new()
+        .put(format!(
+            "http://{address}/api/v1/runs/active_run/protocol?mode=replace"
+        ))
+        .json(&serde_json::json!({
+            "scpi": "PROT exact <multiline.protocol></multiline.protocol>",
+            "tcprotocol_xml": "<TCProtocol/>",
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"]["code"], "forbidden");
+    assert!(commands
+        .lock()
+        .unwrap()
+        .iter()
+        .all(|command| !command.starts_with("PROT ")));
+}
+
+#[tokio::test]
 async fn controller_transaction_restores_observer_on_the_managed_connection() {
     let (address, _root, connections, commands) = setup(Role::Controller).await;
     wait_ready(address).await;
@@ -456,11 +724,19 @@ async fn contextual_files_support_ranges_etags_head_and_atomic_put() {
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 201);
+    assert_eq!(response.status(), 200);
     assert_eq!(
         std::fs::read(root.path().join("logs/data.bin")).unwrap(),
         replacement
     );
+
+    let created = client
+        .put(format!("http://{address}/api/v1/files/logs/new.bin"))
+        .body("new")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(created.status(), 201);
 }
 
 #[tokio::test]
@@ -753,6 +1029,245 @@ async fn preflight_and_compile_failures_use_stable_codes_and_details() {
 }
 
 #[tokio::test]
+async fn queued_start_uses_the_exact_package_version_accepted_by_etag() {
+    let root = tempfile::tempdir().unwrap();
+    create_contexts(root.path());
+    let gate = Arc::new(PowerResponseGate::default());
+    let (scpi, _connections, commands) = spawn_fake_scpi_with_options(
+        false,
+        0,
+        Some(gate.clone()),
+        Some(root.path().join("experiments")),
+    )
+    .await;
+    let config = test_config(scpi, root.path().to_path_buf());
+    let state = AppState::new(&config, AuthPolicy::unauthenticated(Role::Controller)).unwrap();
+    let address = spawn_http(state).await;
+    wait_ready(address).await;
+    let client = reqwest::Client::new();
+    let package_url = format!("http://{address}/api/v1/experiments/queued/package");
+
+    let accepted = client
+        .put(&package_url)
+        .header("Content-Type", "application/zip")
+        .body(experiment_package("accepted_protocol", "accepted"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 201);
+    let accepted_etag = accepted.headers()["etag"].to_str().unwrap().to_string();
+
+    // Hold an earlier semantic operation in the actor so the accepted start
+    // remains queued while the public staging slot is replaced.
+    let power_client = client.clone();
+    let power = tokio::spawn(async move {
+        power_client
+            .put(format!("http://{address}/api/v1/instrument/power"))
+            .json(&serde_json::json!({"enabled": true}))
+            .send()
+            .await
+            .unwrap()
+    });
+    gate.wait_until_entered().await;
+
+    let start_request = serde_json::json!({
+        "experiment": "queued",
+        "package_etag": accepted_etag,
+        "overwrite": "false",
+        "require_drawer_check": true,
+    });
+    let initial: serde_json::Value = client
+        .post(format!("http://{address}/api/v1/runs"))
+        .header("Idempotency-Key", "queued-start-accepted-package")
+        .json(&start_request)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(initial["state"], "queued");
+
+    let restaged = client
+        .put(&package_url)
+        .header("Content-Type", "application/zip")
+        .body(experiment_package("restaged_protocol", "restaged"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restaged.status(), 201);
+    let restaged_etag = restaged.headers()["etag"].to_str().unwrap().to_string();
+
+    // Idempotent retries resolve the accepted operation before consulting the
+    // now-different public staging slot.
+    let retry_after_restage: serde_json::Value = client
+        .post(format!("http://{address}/api/v1/runs"))
+        .header("Idempotency-Key", "queued-start-accepted-package")
+        .json(&start_request)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(retry_after_restage["id"], initial["id"]);
+
+    let deleted = client
+        .delete(&package_url)
+        .header("If-Match", restaged_etag)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), 204);
+    let retry_after_delete: serde_json::Value = client
+        .post(format!("http://{address}/api/v1/runs"))
+        .header("Idempotency-Key", "queued-start-accepted-package")
+        .json(&start_request)
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(retry_after_delete["id"], initial["id"]);
+
+    assert!(std::fs::read_dir(root.path()).unwrap().all(|entry| !entry
+        .unwrap()
+        .file_name()
+        .to_string_lossy()
+        .starts_with(".qslib-server-start-input-")));
+    let snapshot = std::fs::read_dir(root.path().parent().unwrap())
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name().is_some_and(|name| {
+                name.to_string_lossy()
+                    .starts_with(".qslib-server-start-input-")
+            }) && path
+                .join(".qslib-staging/queued/accepted-marker.txt")
+                .is_file()
+        })
+        .expect("accepted snapshot was not created outside the default context");
+    let snapshot_name = snapshot.file_name().unwrap().to_string_lossy();
+    let mutation = client
+        .put(format!(
+            "http://{address}/api/v1/files/default/%2E%2E/{snapshot_name}/.qslib-staging/queued/accepted-marker.txt"
+        ))
+        .body("tampered")
+        .send()
+        .await
+        .unwrap();
+    assert!(matches!(mutation.status().as_u16(), 400 | 404));
+    assert_eq!(
+        std::fs::read_to_string(snapshot.join(".qslib-staging/queued/accepted-marker.txt"))
+            .unwrap(),
+        "accepted"
+    );
+
+    gate.release();
+    assert_eq!(power.await.unwrap().status(), 204);
+    let operation = wait_operation(&client, address, initial).await;
+    assert_eq!(operation["state"], "succeeded", "{operation:#}");
+    for _ in 0..20 {
+        if !snapshot.exists() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert!(
+        !snapshot.exists(),
+        "accepted package snapshot was not cleaned"
+    );
+    assert_eq!(
+        std::fs::read_to_string(root.path().join("experiments/queued/accepted-marker.txt"))
+            .unwrap(),
+        "accepted"
+    );
+    let commands = commands.lock().unwrap();
+    assert!(commands
+        .iter()
+        .any(|command| command.contains("accepted_protocol")));
+    assert!(!commands
+        .iter()
+        .any(|command| command.contains("restaged_protocol")));
+}
+
+#[tokio::test]
+async fn compile_quarantines_a_stale_output_and_waits_for_a_new_artifact() {
+    let (address, root, _connections, commands) = setup(Role::Controller).await;
+    wait_ready(address).await;
+    let experiments = root.path().join("experiments");
+    let working = experiments.join("finished");
+    std::fs::create_dir_all(&working).unwrap();
+    std::fs::write(
+        working.join(".attributes"),
+        "[.]\nrun = -\nstate = Completed\ncollected = False\n",
+    )
+    .unwrap();
+    let generated = experiments.join("finished.eds");
+    std::fs::write(&generated, b"stale artifact").unwrap();
+
+    let client = reqwest::Client::new();
+    let initial: serde_json::Value = client
+        .post(format!(
+            "http://{address}/api/v1/runs/finished/actions/compile"
+        ))
+        .header("Idempotency-Key", "compile-requires-fresh-artifact")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+
+    for _ in 0..200 {
+        if commands
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|command| command.starts_with("EXP:RUN"))
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        !generated.exists(),
+        "stale output was accepted without quarantine"
+    );
+    assert!(!commands
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|command| command.starts_with("FILE:MOVE")));
+    let backup = std::fs::read_dir(&experiments)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| {
+            path.file_name()
+                .unwrap()
+                .to_string_lossy()
+                .starts_with(".finished.")
+                && path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .ends_with(".eds.qslib-compile-backup")
+        })
+        .expect("stale generated EDS was not preserved");
+    assert_eq!(std::fs::read(&backup).unwrap(), b"stale artifact");
+
+    std::fs::write(&generated, b"fresh artifact").unwrap();
+    let operation = wait_operation(&client, address, initial).await;
+    assert_eq!(operation["state"], "succeeded", "{operation:#}");
+    assert_eq!(std::fs::read(&generated).unwrap(), b"fresh artifact");
+    assert!(
+        !backup.exists(),
+        "stale-artifact quarantine was not cleaned"
+    );
+}
+
+#[tokio::test]
 async fn staged_package_delete_requires_matching_etag() {
     let (address, root, _connections, _commands) = setup(Role::Controller).await;
     wait_ready(address).await;
@@ -784,4 +1299,378 @@ async fn staged_package_delete_requires_matching_etag() {
         204
     );
     assert!(!staged.exists());
+}
+
+#[tokio::test]
+async fn malformed_credentials_never_inherit_the_unauthenticated_role() {
+    let (address, _root, _state) = setup_token_acl().await;
+    wait_ready(address).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{address}/api/v1/capabilities");
+
+    // Header absence intentionally receives the configured Observer fallback.
+    assert_eq!(client.get(&url).send().await.unwrap().status(), 200);
+    // Authentication schemes are case-insensitive.
+    assert_eq!(
+        client
+            .get(&url)
+            .header("Authorization", "bearer owner-token")
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        200
+    );
+
+    for credential in ["Basic owner-token", "Bearer", "Bearer wrong-token"] {
+        let response = client
+            .get(&url)
+            .header("Authorization", credential)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401, "credential {credential:?}");
+        assert_eq!(
+            response.headers()["www-authenticate"],
+            "Bearer realm=\"qslib-server\""
+        );
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], "unauthorized");
+    }
+}
+
+#[tokio::test]
+async fn operation_results_are_owner_scoped_with_administrator_override() {
+    let (address, _root, _state) = setup_token_acl().await;
+    wait_ready(address).await;
+    let client = reqwest::Client::new();
+    let initial: serde_json::Value = client
+        .post(format!("http://{address}/api/v1/instrument/access-keys"))
+        .bearer_auth("owner-token")
+        .header("Idempotency-Key", "private-access-key")
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let completed = wait_operation_as(&client, address, initial, "owner-token").await;
+    assert_eq!(completed["state"], "succeeded");
+    assert_eq!(completed["result"]["key"], "142371");
+    let id = completed["id"].as_str().unwrap();
+    let url = format!("http://{address}/api/v1/operations/{id}");
+
+    // A different observer sees the same response as for an unknown UUID.
+    let hidden = client
+        .get(&url)
+        .bearer_auth("other-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hidden.status(), 404);
+    let hidden: serde_json::Value = hidden.json().await.unwrap();
+    assert_eq!(hidden["error"]["code"], "not_found");
+
+    let administrator = client
+        .get(&url)
+        .bearer_auth("admin-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(administrator.headers()["cache-control"], "no-store");
+    let administrator: serde_json::Value = administrator.json().await.unwrap();
+    assert_eq!(administrator["result"]["key"], "142371");
+}
+
+#[tokio::test]
+async fn framework_rejections_use_the_structured_error_contract() {
+    let (address, _root, _connections, _commands) = setup(Role::Controller).await;
+    let client = reqwest::Client::new();
+    let url = format!("http://{address}/api/v1/instrument/power");
+    let requests = [
+        (
+            client
+                .put(&url)
+                .header("Content-Type", "application/json")
+                .body("{"),
+            400,
+            "invalid_input",
+        ),
+        (client.put(&url).body("{}"), 415, "unsupported_media_type"),
+        (
+            client
+                .put(&url)
+                .header("Content-Type", "application/json")
+                .body(vec![b' '; 3 * 1024 * 1024]),
+            413,
+            "payload_too_large",
+        ),
+    ];
+
+    for (request, status, code) in requests {
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), status);
+        assert_eq!(response.headers()["content-type"], "application/json");
+        let request_id = response.headers()["x-request-id"]
+            .to_str()
+            .unwrap()
+            .to_string();
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["error"]["code"], code);
+        assert_eq!(body["error"]["outcome"], "not_started");
+        assert_eq!(body["request_id"], request_id);
+    }
+}
+
+#[tokio::test]
+async fn fresh_sse_stream_starts_with_a_status_snapshot_at_an_opaque_cursor() {
+    let (address, _root, _connections, _commands) = setup(Role::Observer).await;
+    wait_ready(address).await;
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}/api/v1/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let mut stream = response.bytes_stream();
+    let mut frame = String::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !frame.contains("\n\n") {
+            let chunk = stream
+                .next()
+                .await
+                .expect("fresh SSE stream ended before its initial snapshot")
+                .unwrap();
+            frame.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    })
+    .await
+    .expect("fresh SSE stream did not emit its initial snapshot");
+
+    assert!(frame.lines().any(|line| line == "event: reset"), "{frame}");
+    let cursor = frame
+        .lines()
+        .find_map(|line| line.strip_prefix("id: "))
+        .expect("initial reset did not carry an SSE cursor");
+    assert!(cursor.contains(':'));
+    let data: serde_json::Value = frame
+        .lines()
+        .find_map(|line| line.strip_prefix("data: "))
+        .map(|line| serde_json::from_str(line).unwrap())
+        .expect("initial reset did not carry JSON data");
+    assert_eq!(data["data"]["reason"], "initial_snapshot");
+    assert_eq!(data["data"]["status"]["run"]["state"], "Idle");
+}
+
+#[tokio::test]
+async fn sse_stream_ends_when_server_shutdown_begins() {
+    let (scpi, _connections, _commands) = spawn_fake_scpi(false).await;
+    let root = tempfile::tempdir().unwrap();
+    for context in [
+        "experiments",
+        "runs",
+        "logs",
+        "templates",
+        "calibrations",
+        "public_run_complete",
+        "private_run_complete",
+    ] {
+        std::fs::create_dir_all(root.path().join(context)).unwrap();
+    }
+    let config = test_config(scpi, root.path().to_path_buf());
+    let state = AppState::new(&config, AuthPolicy::unauthenticated(Role::Observer)).unwrap();
+    let address = spawn_http(state.clone()).await;
+    wait_ready(address).await;
+
+    let response = reqwest::Client::new()
+        .get(format!("http://{address}/api/v1/events"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+    let mut stream = response.bytes_stream();
+    let mut initial = String::new();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while !initial.contains("\n\n") {
+            let chunk = stream
+                .next()
+                .await
+                .expect("SSE stream ended before its initial reset")
+                .expect("SSE initial reset body failed");
+            initial.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    })
+    .await
+    .expect("SSE initial reset was not delivered");
+    assert!(initial.contains("event: reset"));
+    state.service.begin_shutdown();
+    tokio::time::timeout(Duration::from_secs(1), async {
+        // Bytes already accepted by Hyper before shutdown may still be
+        // delivered; the contract is that the body reaches EOF promptly.
+        while let Some(chunk) = stream.next().await {
+            chunk.expect("buffered SSE body failed during shutdown");
+        }
+    })
+    .await
+    .expect("SSE body did not react to shutdown");
+}
+
+#[tokio::test]
+async fn subscriptions_are_drained_while_semantic_operations_run() {
+    const BURST: usize = 120;
+    let (scpi, _connections, _commands) = spawn_fake_scpi_with_burst(false, BURST).await;
+    let root = tempfile::tempdir().unwrap();
+    for context in [
+        "experiments",
+        "runs",
+        "logs",
+        "templates",
+        "calibrations",
+        "public_run_complete",
+        "private_run_complete",
+    ] {
+        std::fs::create_dir_all(root.path().join(context)).unwrap();
+    }
+    let config = test_config(scpi, root.path().to_path_buf());
+    let state = AppState::new(&config, AuthPolicy::unauthenticated(Role::Controller)).unwrap();
+    let address = spawn_http(state).await;
+    wait_ready(address).await;
+    let client = reqwest::Client::new();
+    let response = client
+        .get(format!("http://{address}/api/v1/events"))
+        .send()
+        .await
+        .unwrap();
+    let mut stream = response.bytes_stream();
+
+    let power = client
+        .put(format!("http://{address}/api/v1/instrument/power"))
+        .json(&serde_json::json!({"enabled": true}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(power.status(), 204);
+
+    let mut body = String::new();
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while body.matches("event: temperature").count() < BURST
+            || !body.contains("Collected -run=")
+        {
+            let chunk = stream
+                .next()
+                .await
+                .expect("SSE stream ended during subscription burst")
+                .unwrap();
+            body.push_str(&String::from_utf8_lossy(&chunk));
+        }
+    })
+    .await
+    .expect("subscription events were dropped while an operation was running");
+    assert_eq!(body.matches("event: temperature").count(), BURST);
+
+    let data: Vec<serde_json::Value> = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .map(|data| serde_json::from_str(data).unwrap())
+        .collect();
+    let collected = data
+        .iter()
+        .find(|entry| {
+            entry["data"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("Collected"))
+        })
+        .expect("Run Collected event missing from SSE stream");
+    let collected_context = &collected["data"]["context"];
+    assert_eq!(collected_context["run_name"], "burst run");
+    assert_eq!(collected_context["zone_targets_c"][0], 70.0);
+    assert_eq!(collected_context["zone_targets_c"][5], 75.0);
+    assert_eq!(collected_context["stage"], 2);
+    assert_eq!(collected_context["cycle"], 7);
+    assert_eq!(collected_context["step"], 3);
+
+    let temperature = data
+        .iter()
+        .find(|entry| {
+            entry["data"]["message"]
+                .as_str()
+                .is_some_and(|message| message.starts_with("-sample="))
+        })
+        .expect("Temperature event missing from SSE stream");
+    assert_eq!(temperature["data"]["context"], *collected_context);
+}
+
+#[tokio::test]
+async fn get_scpi_tunnel_upgrades_and_splices_bytes_bidirectionally() {
+    let (scpi, connections, _commands) = spawn_fake_scpi(false).await;
+    let root = tempfile::tempdir().unwrap();
+    for context in [
+        "experiments",
+        "runs",
+        "logs",
+        "templates",
+        "calibrations",
+        "public_run_complete",
+        "private_run_complete",
+    ] {
+        std::fs::create_dir_all(root.path().join(context)).unwrap();
+    }
+    let mut config = test_config(scpi, root.path().to_path_buf());
+    config.enable_scpi_tunnel = true;
+    let state = AppState::new(&config, AuthPolicy::unauthenticated(Role::Administrator)).unwrap();
+    let address = spawn_http(state).await;
+    wait_ready(address).await;
+
+    let ordinary = reqwest::get(format!("http://{address}/api/v1/scpi/tunnel"))
+        .await
+        .unwrap();
+    assert_eq!(ordinary.status(), 400);
+    let incomplete_upgrade = reqwest::Client::new()
+        .get(format!("http://{address}/api/v1/scpi/tunnel"))
+        .header("Upgrade", "qslib-scpi")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(incomplete_upgrade.status(), 400);
+
+    let mut socket = tokio::net::TcpStream::connect(address).await.unwrap();
+    socket
+        .write_all(
+            format!(
+                "GET /api/v1/scpi/tunnel HTTP/1.1\r\nHost: {address}\r\nConnection: Upgrade\r\nUpgrade: qslib-scpi\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+    let mut received = Vec::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut buffer = [0_u8; 1024];
+        while !String::from_utf8_lossy(&received).contains("READy -session=1") {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert!(count > 0, "tunnel closed before SCPI greeting");
+            received.extend_from_slice(&buffer[..count]);
+        }
+    })
+    .await
+    .expect("tunnel did not return an HTTP upgrade and SCPI greeting");
+    let greeting = String::from_utf8_lossy(&received);
+    assert!(greeting.starts_with("HTTP/1.1 101 Switching Protocols\r\n"));
+    assert!(greeting
+        .to_ascii_lowercase()
+        .contains("upgrade: qslib-scpi"));
+
+    socket.write_all(b"ACC?\n").await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(Duration::from_secs(2), async {
+        let mut buffer = [0_u8; 1024];
+        while !response.contains("OK -stealth=False -exclusive=False Observer") {
+            let count = socket.read(&mut buffer).await.unwrap();
+            assert!(count > 0, "tunnel closed before SCPI response");
+            response.push_str(&String::from_utf8_lossy(&buffer[..count]));
+        }
+    })
+    .await
+    .expect("SCPI response did not traverse upgraded tunnel");
+    assert!(connections.load(Ordering::SeqCst) >= 2);
 }

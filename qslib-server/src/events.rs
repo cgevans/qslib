@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, watch};
 use uuid::Uuid;
 
 pub const EVENT_HISTORY: usize = 4096;
@@ -20,6 +20,10 @@ pub struct EventEnvelope {
     pub event: String,
     pub timestamp: DateTime<Utc>,
     pub data: Value,
+    /// Optional identity allowed to receive this event. This is transport
+    /// metadata and is never included in the SSE payload.
+    #[serde(skip)]
+    pub(crate) audience: Option<String>,
 }
 
 #[derive(Clone)]
@@ -28,6 +32,7 @@ pub struct EventHub {
     next_id: Arc<AtomicU64>,
     history: Arc<Mutex<VecDeque<EventEnvelope>>>,
     sender: broadcast::Sender<EventEnvelope>,
+    shutdown: watch::Sender<bool>,
 }
 
 pub enum Replay {
@@ -41,22 +46,46 @@ pub enum Replay {
 impl EventHub {
     pub fn new() -> Self {
         let (sender, _) = broadcast::channel(SUBSCRIBER_BUFFER);
+        let (shutdown, _) = watch::channel(false);
         Self {
             epoch: Arc::from(Uuid::new_v4().to_string()),
             next_id: Arc::new(AtomicU64::new(1)),
             history: Arc::new(Mutex::new(VecDeque::with_capacity(EVENT_HISTORY))),
             sender,
+            shutdown,
         }
     }
 
     pub fn publish(&self, event: impl Into<String>, data: Value) -> EventEnvelope {
+        self.publish_with_audience(None, event.into(), data)
+    }
+
+    /// Publish an event visible only to one authenticated identity (and to
+    /// administrators). Used for operation resources, whose results may
+    /// contain credentials or other caller-private data.
+    pub fn publish_for(
+        &self,
+        audience: impl Into<String>,
+        event: impl Into<String>,
+        data: Value,
+    ) -> EventEnvelope {
+        self.publish_with_audience(Some(audience.into()), event.into(), data)
+    }
+
+    fn publish_with_audience(
+        &self,
+        audience: Option<String>,
+        event: String,
+        data: Value,
+    ) -> EventEnvelope {
         let mut history = self.history.lock().expect("event history poisoned");
         let sequence = self.next_id.fetch_add(1, Ordering::Relaxed);
         let envelope = EventEnvelope {
             id: self.cursor(sequence),
-            event: event.into(),
+            event,
             timestamp: Utc::now(),
             data,
+            audience,
         };
         if history.len() == EVENT_HISTORY {
             history.pop_front();
@@ -82,7 +111,15 @@ impl EventHub {
     ) -> (Replay, broadcast::Receiver<EventEnvelope>) {
         let history = self.history.lock().expect("event history poisoned");
         let receiver = self.sender.subscribe();
-        (self.replay_locked(last_id, &history), receiver)
+        let replay = match last_id {
+            // A fresh consumer needs a baseline just as much as one whose
+            // cursor expired. Establish the live receiver and its cursor under
+            // the same history lock, then let the HTTP handler await Status;
+            // events emitted during that snapshot remain buffered after it.
+            None => self.reset("initial_snapshot"),
+            Some(last_id) => self.replay_locked(Some(last_id), &history),
+        };
+        (replay, receiver)
     }
 
     fn replay_locked(&self, last_id: Option<&str>, history: &VecDeque<EventEnvelope>) -> Replay {
@@ -121,7 +158,16 @@ impl EventHub {
             event: "reset".to_string(),
             timestamp: Utc::now(),
             data,
+            audience: None,
         }
+    }
+
+    pub fn begin_shutdown(&self) {
+        let _ = self.shutdown.send(true);
+    }
+
+    pub fn subscribe_shutdown(&self) -> watch::Receiver<bool> {
+        self.shutdown.subscribe()
     }
 
     pub fn epoch(&self) -> &str {
@@ -218,8 +264,8 @@ mod tests {
         assert_ne!(first.id.split_once(':').unwrap().0, "");
     }
 
-    #[test]
-    fn reset_cursor_is_the_replay_boundary_before_live_events() {
+    #[tokio::test]
+    async fn reset_boundary_buffers_events_while_snapshot_is_built() {
         let hub = EventHub::new();
         let first = hub.publish("one", json!({"n": 1}));
         let (replay, mut live) = hub.replay_and_subscribe(Some("foreign:9"));
@@ -228,7 +274,42 @@ mod tests {
         };
         assert_eq!(cursor, first.id);
 
+        // Model the events handler awaiting its Status snapshot after the
+        // atomic boundary. A concurrent event must remain buffered behind the
+        // reset cursor rather than disappear into a subscription gap.
+        let publisher = tokio::spawn({
+            let hub = hub.clone();
+            async move {
+                tokio::task::yield_now().await;
+                hub.publish("two", json!({"n": 2}))
+            }
+        });
+        tokio::task::yield_now().await;
+        let second = publisher.await.unwrap();
+        assert_eq!(live.recv().await.unwrap().id, second.id);
+    }
+
+    #[tokio::test]
+    async fn fresh_subscription_gets_an_atomic_initial_snapshot_boundary() {
+        let hub = EventHub::new();
+        let first = hub.publish("one", json!({"n": 1}));
+        let (replay, mut live) = hub.replay_and_subscribe(None);
+        let Replay::Reset { reason, cursor } = replay else {
+            panic!("fresh subscription should receive a reset baseline");
+        };
+        assert_eq!(reason, "initial_snapshot");
+        assert_eq!(cursor, first.id);
+
+        // Model an instrument event arriving while the HTTP handler awaits its
+        // Status query. It must follow the reset rather than fall into a gap.
         let second = hub.publish("two", json!({"n": 2}));
-        assert_eq!(live.try_recv().unwrap().id, second.id);
+        assert_eq!(live.recv().await.unwrap().id, second.id);
+    }
+
+    #[test]
+    fn targeted_events_retain_their_transport_audience() {
+        let hub = EventHub::new();
+        let event = hub.publish_for("owner", "operation", json!({"id": "secret"}));
+        assert_eq!(event.audience.as_deref(), Some("owner"));
     }
 }

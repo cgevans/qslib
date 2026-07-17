@@ -59,7 +59,7 @@ pub struct OperationStore {
 
 struct StoreInner {
     records: HashMap<Uuid, OperationRecord>,
-    idempotency: HashMap<String, IdempotencyRecord>,
+    idempotency: HashMap<(String, String), IdempotencyRecord>,
 }
 
 struct IdempotencyRecord {
@@ -98,7 +98,7 @@ impl OperationStore {
         }
         let kind = kind.into();
         let fingerprint = format!("{kind}:{fingerprint}");
-        let scoped_key = format!("{}:{key}", principal.name);
+        let scoped_key = (principal.name.clone(), key.to_string());
         let mut inner = self.inner.lock().expect("operation store poisoned");
         cleanup(&mut inner);
         if let Some(existing) = inner.idempotency.get(&scoped_key) {
@@ -140,6 +140,47 @@ impl OperationStore {
         drop(inner);
         self.publish(&record);
         Ok(CreateOperation::New(record))
+    }
+
+    /// Return an already accepted operation for an identical idempotent
+    /// request without creating a new record.
+    ///
+    /// Handlers use this before consulting mutable request inputs (for
+    /// example, a public experiment-package staging slot).  The subsequent
+    /// [`Self::create`] call remains the authoritative atomic check when no
+    /// record existed at lookup time.
+    pub fn existing(
+        &self,
+        kind: &str,
+        principal: &Principal,
+        idempotency_key: &str,
+        fingerprint: &str,
+    ) -> Result<Option<OperationRecord>, ServerError> {
+        let key = idempotency_key.trim();
+        if key.is_empty() || key.len() > 255 {
+            return Err(ServerError::bad_request(
+                "Idempotency-Key must contain 1 to 255 characters",
+            ));
+        }
+        let fingerprint = format!("{kind}:{fingerprint}");
+        let scoped_key = (principal.name.clone(), key.to_string());
+        let mut inner = self.inner.lock().expect("operation store poisoned");
+        cleanup(&mut inner);
+        let Some(existing) = inner.idempotency.get(&scoped_key) else {
+            return Ok(None);
+        };
+        if existing.fingerprint != fingerprint {
+            return Err(ServerError::conflict(
+                "Idempotency-Key was already used with different input",
+            ));
+        }
+        Ok(Some(
+            inner
+                .records
+                .get(&existing.operation_id)
+                .expect("idempotency record without operation")
+                .clone(),
+        ))
     }
 
     pub fn get(&self, id: Uuid) -> Option<OperationRecord> {
@@ -199,7 +240,8 @@ impl OperationStore {
     }
 
     fn publish(&self, record: &OperationRecord) {
-        self.events.publish(
+        self.events.publish_for(
+            &record.identity,
             "operation",
             json!({
                 "id": record.id,
@@ -214,9 +256,12 @@ impl OperationStore {
 fn cleanup(inner: &mut StoreInner) {
     let cutoff = Utc::now()
         - chrono::Duration::from_std(RETENTION).expect("operation retention fits chrono duration");
-    inner
-        .records
-        .retain(|_, record| record.created_at >= cutoff);
+    inner.records.retain(|_, record| match record.state {
+        OperationState::Queued | OperationState::Running => true,
+        OperationState::Succeeded | OperationState::Failed | OperationState::Unknown => {
+            record.finished_at.unwrap_or(record.created_at) >= cutoff
+        }
+    });
     inner
         .idempotency
         .retain(|_, record| inner.records.contains_key(&record.operation_id));
@@ -251,6 +296,21 @@ mod tests {
             panic!("identical retry did not reuse operation");
         };
         assert_eq!(first.id, second.id);
+        assert_eq!(
+            store
+                .existing("run_start", &owner, "key", "same")
+                .unwrap()
+                .unwrap()
+                .id,
+            first.id
+        );
+        assert!(store
+            .existing("run_start", &owner, "key", "different")
+            .is_err());
+        assert!(store
+            .existing("run_start", &owner, "unused", "same")
+            .unwrap()
+            .is_none());
         assert!(store
             .create("run_start", &owner, "key", "different".to_string())
             .is_err());
@@ -275,5 +335,70 @@ mod tests {
             panic!();
         };
         assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn identity_and_key_delimiter_characters_cannot_collide() {
+        let store = OperationStore::new(EventHub::new());
+        let CreateOperation::New(first) = store
+            .create("run_start", &principal("a"), "b:c", "body".to_string())
+            .unwrap()
+        else {
+            panic!();
+        };
+        let CreateOperation::New(second) = store
+            .create("run_start", &principal("a:b"), "c", "body".to_string())
+            .unwrap()
+        else {
+            panic!();
+        };
+        assert_ne!(first.id, second.id);
+    }
+
+    #[test]
+    fn cleanup_never_discards_active_operations_and_ages_terminal_from_finish() {
+        let store = OperationStore::new(EventHub::new());
+        let owner = principal("controller");
+        let CreateOperation::New(active) = store
+            .create("active", &owner, "active", "body".to_string())
+            .unwrap()
+        else {
+            panic!();
+        };
+        let CreateOperation::New(old_terminal) = store
+            .create("old", &owner, "old", "body".to_string())
+            .unwrap()
+        else {
+            panic!();
+        };
+        let CreateOperation::New(recent_terminal) = store
+            .create("recent", &owner, "recent", "body".to_string())
+            .unwrap()
+        else {
+            panic!();
+        };
+        store.running(active.id);
+        store.succeeded(old_terminal.id, json!({}));
+        store.succeeded(recent_terminal.id, json!({}));
+
+        let old = Utc::now() - chrono::Duration::hours(25);
+        {
+            let mut inner = store.inner.lock().unwrap();
+            inner.records.get_mut(&active.id).unwrap().created_at = old;
+            let old_record = inner.records.get_mut(&old_terminal.id).unwrap();
+            old_record.created_at = old;
+            old_record.finished_at = Some(old);
+            // A long-running operation that was created long ago but only just
+            // finished is retained from its terminal timestamp.
+            inner
+                .records
+                .get_mut(&recent_terminal.id)
+                .unwrap()
+                .created_at = old;
+        }
+
+        assert!(store.get(active.id).is_some());
+        assert!(store.get(old_terminal.id).is_none());
+        assert!(store.get(recent_terminal.id).is_some());
     }
 }

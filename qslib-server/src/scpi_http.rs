@@ -44,8 +44,25 @@ fn is_json(headers: &HeaderMap) -> bool {
     headers
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v.starts_with("application/json"))
-        .unwrap_or(false)
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .is_some_and(|media_type| {
+            media_type.eq_ignore_ascii_case("application/json")
+                || media_type
+                    .to_ascii_lowercase()
+                    .strip_prefix("application/")
+                    .is_some_and(|subtype| subtype.ends_with("+json"))
+        })
+}
+
+fn byte_encoding(encoding: Option<&str>) -> Result<bool, ServerError> {
+    match encoding.unwrap_or("text") {
+        "text" => Ok(false),
+        "bytes" => Ok(true),
+        other => Err(ServerError::bad_request(format!(
+            "invalid SCPI response encoding {other:?} (expected text or bytes)"
+        ))),
+    }
 }
 
 pub async fn post_scpi(
@@ -96,7 +113,7 @@ pub async fn post_scpi(
         None => AccessLevel::Observer,
     };
     let timeout_ms = timeout_ms.unwrap_or(30_000).min(600_000);
-    let want_bytes = matches!(encoding.as_deref(), Some("bytes"));
+    let want_bytes = byte_encoding(encoding.as_deref())?;
 
     let (eff_access, result) = run_oneshot(&state, &command, access, timeout_ms).await?;
 
@@ -126,5 +143,21 @@ pub async fn post_scpi(
                 Ok((StatusCode::OK, resp_headers, ok.to_string()).into_response())
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_encoding_is_validated_instead_of_silently_falling_back() {
+        assert!(!byte_encoding(None).unwrap());
+        assert!(!byte_encoding(Some("text")).unwrap());
+        assert!(byte_encoding(Some("bytes")).unwrap());
+        assert_eq!(
+            byte_encoding(Some("base64")).unwrap_err().status,
+            StatusCode::BAD_REQUEST
+        );
     }
 }

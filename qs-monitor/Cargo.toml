@@ -2,6 +2,7 @@
 name = "qs-monitor"
 edition = "2024"
 version.workspace = true
+publish = false
 
 [dependencies]
 anyhow = "1.0.95"

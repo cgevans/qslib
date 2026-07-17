@@ -1,6 +1,7 @@
 //! Single-connection managed InstrumentServer actor.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::http::StatusCode;
@@ -17,12 +18,11 @@ use qslib_core::commands::{
     RunningProtocolMetadataQuery, StatusLedColor, StatusLedMode, StatusLedOff, StatusLedQuery,
     StatusLedSet, StopRun, Subscribe,
 };
-use qslib_core::parser::{ErrorResponse, OkResponse};
+use qslib_core::parser::{ErrorResponse, LogMessage, OkResponse};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::StreamMap;
 use tracing::{debug, info, warn};
 
 use crate::dto::{AccessDto, InstrumentStatusDto, RunStatusDto, RunningProtocolDto};
@@ -33,6 +33,7 @@ use qslib_core::protocol::ProtocolDefinition;
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
 const QUERY_DEADLINE: Duration = Duration::from_secs(10);
 const CONTROL_DEADLINE: Duration = Duration::from_secs(30);
+const INSTRUMENT_EVENT_BUFFER: usize = 4096;
 
 #[derive(Debug, Clone)]
 pub struct ServiceConfig {
@@ -121,11 +122,51 @@ pub struct StartRunInput {
     pub require_drawer_check: bool,
     pub experiments_root: std::path::PathBuf,
     pub completed_root: std::path::PathBuf,
-    pub staged_root: std::path::PathBuf,
+    pub staged: AcceptedPackageSnapshot,
     pub protocol_scpi: String,
     pub protocol_name: String,
     pub sample_volume: f64,
     pub run_mode: String,
+}
+
+/// An operation-private copy of the exact package bytes accepted by the HTTP
+/// handler. The guard keeps the snapshot alive while a start waits in the
+/// semantic queue, then removes it when the queued operation is discarded or
+/// completed.
+#[derive(Debug, Clone)]
+pub struct AcceptedPackageSnapshot {
+    staged_root: std::path::PathBuf,
+    _cleanup: Arc<AcceptedPackageCleanup>,
+}
+
+impl AcceptedPackageSnapshot {
+    pub fn new(staged_root: std::path::PathBuf, cleanup_root: std::path::PathBuf) -> Self {
+        Self {
+            staged_root,
+            _cleanup: Arc::new(AcceptedPackageCleanup { root: cleanup_root }),
+        }
+    }
+
+    fn staged_root(&self) -> &std::path::Path {
+        &self.staged_root
+    }
+}
+
+#[derive(Debug)]
+struct AcceptedPackageCleanup {
+    root: std::path::PathBuf,
+}
+
+impl Drop for AcceptedPackageCleanup {
+    fn drop(&mut self) {
+        if let Err(error) = remove_path_raw(&self.root) {
+            warn!(
+                path = %self.root.display(),
+                %error,
+                "could not remove accepted package snapshot"
+            );
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -185,8 +226,14 @@ pub enum InstrumentResult {
 
 struct Job {
     operation: InstrumentOperation,
+    started: Option<oneshot::Sender<()>>,
     response: oneshot::Sender<Result<InstrumentResult, ServerError>>,
     attempt: u8,
+}
+
+pub struct EnqueuedOperation {
+    pub started: oneshot::Receiver<()>,
+    pub response: oneshot::Receiver<Result<InstrumentResult, ServerError>>,
 }
 
 /// Cloneable queue handle. Only the actor task ever owns a [`QSConnection`].
@@ -221,11 +268,13 @@ impl InstrumentService {
     pub fn enqueue(
         &self,
         operation: InstrumentOperation,
-    ) -> Result<oneshot::Receiver<Result<InstrumentResult, ServerError>>, ServerError> {
+    ) -> Result<EnqueuedOperation, ServerError> {
+        let (started_sender, started) = oneshot::channel();
         let (response, receiver) = oneshot::channel();
         self.sender
             .try_send(Job {
                 operation,
+                started: Some(started_sender),
                 response,
                 attempt: 0,
             })
@@ -235,7 +284,10 @@ impl InstrumentService {
                     ServerError::unavailable("instrument service is shutting down")
                 }
             })?;
-        Ok(receiver)
+        Ok(EnqueuedOperation {
+            started,
+            response: receiver,
+        })
     }
 
     pub async fn execute(
@@ -243,6 +295,7 @@ impl InstrumentService {
         operation: InstrumentOperation,
     ) -> Result<InstrumentResult, ServerError> {
         self.enqueue(operation)?
+            .response
             .await
             .map_err(|_| ServerError::unavailable("instrument actor dropped the operation"))?
     }
@@ -259,8 +312,16 @@ impl InstrumentService {
         &self.events
     }
 
-    pub async fn shutdown(&self) {
+    /// Stop new event streams and notify the actor without waiting for SCPI
+    /// cleanup. This is separated from [`Self::shutdown`] so the HTTP server
+    /// can stop accepting connections immediately on a process signal.
+    pub fn begin_shutdown(&self) {
+        self.events.begin_shutdown();
         let _ = self.shutdown.send(true);
+    }
+
+    pub async fn shutdown(&self) {
+        self.begin_shutdown();
         let mut health = self.health.clone();
         let _ = tokio::time::timeout(Duration::from_secs(12), async move {
             while health.borrow().ready {
@@ -278,10 +339,230 @@ struct ExecutionFailure {
     reconnect: bool,
 }
 
+/// Instrument state captured at the time a subscription message is received.
+///
+/// Keeping this beside the managed connection makes every persisted SSE event
+/// self-contained. In particular, replay consumers must not query a current
+/// (possibly idle) status snapshot to interpret an older Run/Temperature event.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+struct InstrumentEventContext {
+    run_name: Option<String>,
+    zone_targets_c: Vec<f64>,
+    stage: Option<i64>,
+    cycle: Option<i64>,
+    step: Option<i64>,
+}
+
+impl InstrumentEventContext {
+    fn from_status(status: Option<&InstrumentStatusDto>) -> Self {
+        let Some(status) = status else {
+            return Self::default();
+        };
+        let zone_targets_c = (1..=status.zone_count)
+            .map(|zone| {
+                let expected = format!("Zone{zone}");
+                status
+                    .target_temperatures_c
+                    .get(&expected)
+                    .copied()
+                    .or_else(|| {
+                        status
+                            .target_temperatures_c
+                            .iter()
+                            .find(|(name, _)| name.eq_ignore_ascii_case(&expected))
+                            .map(|(_, target)| *target)
+                    })
+                    .unwrap_or_default()
+            })
+            .collect();
+        Self {
+            run_name: (status.run.name != "-" && !status.run.name.is_empty())
+                .then(|| status.run.name.clone()),
+            zone_targets_c,
+            stage: nonnegative(status.run.stage),
+            cycle: nonnegative(status.run.cycle),
+            step: nonnegative(status.run.step),
+        }
+    }
+
+    /// Update context before serializing the event. Returns true for a run
+    /// terminal: that event carries the final context and later events do not.
+    fn observe(&mut self, topic: &str, message: &str) -> bool {
+        if !topic.eq_ignore_ascii_case("Run") {
+            return false;
+        }
+
+        let mut parts = message.trim().splitn(2, char::is_whitespace);
+        let action = parts.next().unwrap_or_default();
+        let content = parts
+            .next()
+            .and_then(|rest| OkResponse::try_from(rest.trim()).ok());
+
+        if action.eq_ignore_ascii_case("Starting") {
+            self.run_name = content
+                .as_ref()
+                .and_then(|content| content.args.first())
+                .and_then(scpi_string)
+                .filter(|name| name != "-" && !name.is_empty());
+            self.stage = None;
+            self.cycle = None;
+            self.step = None;
+        } else if let Some(run_name) = content
+            .as_ref()
+            .and_then(|content| content.options.get("run"))
+            .and_then(scpi_string)
+            .filter(|name| name != "-" && !name.is_empty())
+        {
+            // Collected messages include -run, so they remain interpretable
+            // even when Starting has fallen out of the replay window.
+            self.run_name = Some(run_name);
+        }
+
+        if action.eq_ignore_ascii_case("Stage") {
+            let observed_stage = content
+                .as_ref()
+                .and_then(|content| content.args.first())
+                .and_then(scpi_string)
+                .and_then(|stage| parse_stage(&stage));
+            // POSTRun has no numeric position in the log message. Preserve
+            // the last known stage rather than erasing useful event-time
+            // context; a numeric Stage/StageN or PRERUN still replaces it.
+            if observed_stage.is_some()
+                || !content.as_ref().is_some_and(|content| {
+                    content.args.first().is_some_and(|stage| {
+                        scpi_string(stage)
+                            .is_some_and(|stage| stage.eq_ignore_ascii_case("POSTRun"))
+                    })
+                })
+            {
+                self.stage = observed_stage;
+            }
+            self.cycle = None;
+            self.step = None;
+        } else if action.eq_ignore_ascii_case("Cycle") {
+            self.cycle = content
+                .as_ref()
+                .and_then(|content| content.args.first())
+                .and_then(scpi_i64);
+            self.step = None;
+        } else if action.eq_ignore_ascii_case("Step") {
+            self.step = content
+                .as_ref()
+                .and_then(|content| content.args.first())
+                .and_then(scpi_i64);
+        } else if action.eq_ignore_ascii_case("Collected") {
+            if let Some(content) = content.as_ref() {
+                self.stage = content.options.get("stage").and_then(scpi_i64);
+                self.cycle = content.options.get("cycle").and_then(scpi_i64);
+                self.step = content.options.get("step").and_then(scpi_i64);
+            }
+        } else if action.eq_ignore_ascii_case("Ramping") {
+            self.observe_ramping(content.as_ref());
+        }
+
+        ["Ended", "Aborted", "Stopped"]
+            .iter()
+            .any(|terminal| action.eq_ignore_ascii_case(terminal))
+    }
+
+    fn observe_ramping(&mut self, content: Option<&OkResponse>) {
+        let Some(content) = content else { return };
+        let Some(zones) = content.options.get("zones").map(ToString::to_string) else {
+            return;
+        };
+        let Some(targets) = content.options.get("targets").map(ToString::to_string) else {
+            return;
+        };
+        for (zone, target) in zones.split(',').zip(targets.split(',')) {
+            let zone = zone.trim();
+            if zone.eq_ignore_ascii_case("Cover") {
+                continue;
+            }
+            let zone = zone
+                .get(..4)
+                .filter(|prefix| prefix.eq_ignore_ascii_case("Zone"))
+                .map_or(zone, |_| &zone[4..]);
+            let Ok(zone) = zone.parse::<usize>() else {
+                continue;
+            };
+            let Ok(target) = target.trim().parse::<f64>() else {
+                continue;
+            };
+            // Six zones are usual. The bound prevents malformed instrument
+            // messages from causing unbounded allocation while allowing future
+            // higher-zone instruments to preserve their event context.
+            if zone == 0 || zone > 96 || !target.is_finite() {
+                continue;
+            }
+            if self.zone_targets_c.len() < zone {
+                self.zone_targets_c.resize(zone, 0.0);
+            }
+            self.zone_targets_c[zone - 1] = target;
+        }
+    }
+
+    fn clear_run(&mut self) {
+        self.run_name = None;
+        self.stage = None;
+        self.cycle = None;
+        self.step = None;
+    }
+}
+
+fn nonnegative(value: i64) -> Option<i64> {
+    (value >= 0).then_some(value)
+}
+
+fn scpi_string(value: &qslib_core::parser::Value) -> Option<String> {
+    value.clone().try_into_string().ok()
+}
+
+fn scpi_i64(value: &qslib_core::parser::Value) -> Option<i64> {
+    value
+        .clone()
+        .try_into_i64()
+        .ok()
+        .or_else(|| value.to_string().parse().ok())
+}
+
+fn parse_stage(value: &str) -> Option<i64> {
+    if value.eq_ignore_ascii_case("PRERUN") {
+        return Some(0);
+    }
+    value.parse().ok().or_else(|| {
+        value
+            .get(..5)
+            .filter(|prefix| prefix.eq_ignore_ascii_case("Stage"))
+            .and_then(|_| value[5..].parse().ok())
+    })
+}
+
+fn publish_instrument_event(
+    events: &EventHub,
+    context: &mut InstrumentEventContext,
+    message: LogMessage,
+) {
+    let topic = message.topic.clone();
+    let terminal = context.observe(&topic, &message.message);
+    events.publish(
+        topic.to_ascii_lowercase(),
+        json!({
+            "instrument_timestamp": message.timestamp,
+            "message": message.message,
+            "context": context,
+        }),
+    );
+    if terminal {
+        context.clear_run();
+    }
+}
+
 impl ExecutionFailure {
     fn transport(message: impl Into<String>) -> Self {
         Self {
-            error: ServerError::unavailable(message),
+            // A transport failure may follow a fully submitted SCPI command;
+            // without its response the mutation outcome cannot be inferred.
+            error: ServerError::unavailable(message).outcome("unknown"),
             reconnect: true,
         }
     }
@@ -309,7 +590,7 @@ async fn run_actor(
         if *shutdown.borrow() {
             return;
         }
-        let connection = match connect_and_initialize(&config).await {
+        let (connection, mut subscriptions) = match connect_and_initialize(&config).await {
             Ok(connection) => connection,
             Err(error) => {
                 health.ready = false;
@@ -335,7 +616,6 @@ async fn run_actor(
         };
 
         backoff = Duration::from_millis(250);
-        let mut subscriptions = subscription_streams(&connection);
         health.ready = true;
         health.generation += 1;
         health.current_access = Some(AccessDto {
@@ -350,12 +630,14 @@ async fn run_actor(
         );
 
         let reset_snapshot = fetch_status(&connection).await.ok();
+        let mut event_context = InstrumentEventContext::from_status(reset_snapshot.as_ref());
         events.publish(
             "reset",
             json!({
                 "generation": health.generation,
                 "connected": true,
                 "status": reset_snapshot,
+                "context": &event_context,
             }),
         );
 
@@ -377,14 +659,68 @@ async fn run_actor(
                         shutdown_connection(connection, &mut health, &health_sender).await;
                         return;
                     };
-                    let result = execute_operation(
-                        &connection,
-                        &config,
-                        &job.operation,
-                        &mut health,
-                        &health_sender,
-                        &mut status_cache,
-                    ).await;
+                    // A disconnected synchronous HTTP caller drops its
+                    // response receiver. Do not execute a stale queued control
+                    // after the caller can no longer observe its outcome.
+                    if job.response.is_closed() {
+                        continue;
+                    }
+                    if let Some(started) = job.started.take() {
+                        let _ = started.send(());
+                    }
+                    let mut subscription_failed = false;
+                    let mut drain_subscriptions = true;
+                    let result = {
+                        let execution = execute_operation(
+                            &connection,
+                            &config,
+                            &job.operation,
+                            &mut health,
+                            &health_sender,
+                            &mut status_cache,
+                        );
+                        tokio::pin!(execution);
+                        loop {
+                            tokio::select! {
+                                biased;
+                                changed = shutdown.changed() => {
+                                    if changed.is_err() || *shutdown.borrow() {
+                                        break None;
+                                    }
+                                }
+                                result = &mut execution => break Some(result),
+                                subscription = subscriptions.next(), if drain_subscriptions => {
+                                    match subscription {
+                                        Some(Ok(message)) => {
+                                            publish_instrument_event(
+                                                &events,
+                                                &mut event_context,
+                                                message,
+                                            );
+                                        }
+                                        Some(Err(_lagged)) => {
+                                            // Continue draining what remains, then reconnect
+                                            // after the operation outcome is known so a reset
+                                            // snapshot repairs the lost subscription history.
+                                            subscription_failed = true;
+                                        }
+                                        None => {
+                                            subscription_failed = true;
+                                            drain_subscriptions = false;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    let Some(result) = result else {
+                        let _ = job.response.send(Err(
+                            ServerError::unavailable("instrument service is shutting down")
+                                .outcome("unknown")
+                        ));
+                        shutdown_connection(connection, &mut health, &health_sender).await;
+                        return;
+                    };
                     match result {
                         Ok(value) => {
                             health.last_successful_command = Some(Utc::now());
@@ -401,16 +737,18 @@ async fn run_actor(
                             reconnect = failure.reconnect;
                         }
                     }
+                    reconnect |= subscription_failed;
                 }
                 subscription = subscriptions.next() => {
                     match subscription {
-                        Some((topic, Ok(message))) => {
-                            events.publish(
-                                topic.to_ascii_lowercase(),
-                                json!({"instrument_timestamp": message.timestamp, "message": message.message}),
+                        Some(Ok(message)) => {
+                            publish_instrument_event(
+                                &events,
+                                &mut event_context,
+                                message,
                             );
                         }
-                        Some((_topic, Err(_lagged))) => {
+                        Some(Err(_lagged)) => {
                             reconnect = true;
                         }
                         None => reconnect = true,
@@ -442,7 +780,9 @@ async fn run_actor(
     }
 }
 
-async fn connect_and_initialize(config: &ServiceConfig) -> Result<QSConnection, String> {
+async fn connect_and_initialize(
+    config: &ServiceConfig,
+) -> Result<(QSConnection, BroadcastStream<LogMessage>), String> {
     if config.max_access < AccessLevel::Observer {
         return Err("--max-access must permit Observer".to_string());
     }
@@ -474,16 +814,19 @@ async fn connect_and_initialize(config: &ServiceConfig) -> Result<QSConnection, 
         ));
     }
 
-    // Establish subscriptions before publishing readiness. The stream objects
-    // are created by the actor loop after this acknowledgement.
+    // Install one local wildcard receiver before enabling remote topics. The
+    // wildcard is local-only (never sent to InstrumentServer), preserves wire
+    // order across topics, and closes the post-SUBS/pre-receiver loss window.
+    let subscriptions = subscription_stream(&connection);
     run_command(
         &connection,
-        Subscribe::topics(&["Temperature", "Time", "Run", "LEDStatus"]).with_timestamp(true),
+        Subscribe::topics(&["Temperature", "Time", "Run", "Error", "LEDStatus"])
+            .with_timestamp(true),
         QUERY_DEADLINE,
     )
     .await
     .map_err(|failure| failure.error.message)?;
-    Ok(connection)
+    Ok((connection, subscriptions))
 }
 
 async fn execute_operation(
@@ -792,57 +1135,130 @@ async fn execute_operation(
                         ));
                     }
 
-                    // EXP:RUN returns NEXT when the compilation is accepted. Release
-                    // Controller while InstrumentServer performs the long-running ZIP
-                    // and poll the file system without semantic-operation interleaving.
-                    run_ack_command(
-                        connection,
-                        ExperimentCompile { name: name.clone() },
-                        CONTROL_DEADLINE,
-                    )
-                    .await?;
-                    set_and_verify_access(connection, AccessLevel::Observer, false).await?;
-                    health.current_access = Some(AccessDto {
-                        level: "observer".to_string(),
-                        exclusive: false,
-                        stealth: false,
-                    });
-                    let _ = health_sender.send(health.clone());
-
-                    let compile_deadline = Instant::now() + operation.deadline();
-                    while !generated.is_file() {
-                        if Instant::now() >= compile_deadline {
-                            return Err(ExecutionFailure::semantic(
-                                ServerError::timeout("EDS compilation deadline exceeded")
-                                    .outcome("unknown"),
-                            ));
-                        }
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    // A previous failed/timed-out compilation may have left an EDS at
+                    // the output path. Quarantine it before submitting EXP:RUN so the
+                    // poll below can only observe an artifact created after this
+                    // operation was accepted.
+                    let generated_backup = experiments_root.join(format!(
+                        ".{name}.{}.eds.qslib-compile-backup",
+                        uuid::Uuid::new_v4()
+                    ));
+                    if path_present(&generated).map_err(|error| {
+                        ExecutionFailure::semantic(ServerError::internal(format!(
+                            "failed to inspect generated EDS before compilation: {error}"
+                        )))
+                    })? {
+                        std::fs::rename(&generated, &generated_backup).map_err(|error| {
+                            ExecutionFailure::semantic(ServerError::internal(format!(
+                                "failed to quarantine preexisting generated EDS: {error}"
+                            )))
+                        })?;
                     }
 
-                    set_and_verify_access(connection, AccessLevel::Controller, false).await?;
-                    health.current_access = Some(AccessDto {
-                        level: "controller".to_string(),
-                        exclusive: false,
-                        stealth: false,
-                    });
-                    let _ = health_sender.send(health.clone());
-                    run_command(
-                        connection,
-                        FileMove {
-                            source: format!("experiments:{name}.eds"),
-                            destination: format!("public_run_complete:{name}.eds"),
+                    let mut possibly_accepted = false;
+                    let compile_result: Result<(), ExecutionFailure> = async {
+                        // EXP:RUN returns NEXT when compilation is accepted. Release
+                        // Controller while InstrumentServer performs the long-running
+                        // ZIP and poll without semantic-operation interleaving.
+                        run_ack_command_tracking_submission(
+                            connection,
+                            ExperimentCompile { name: name.clone() },
+                            CONTROL_DEADLINE,
+                            &mut possibly_accepted,
+                        )
+                        .await?;
+                        set_and_verify_access(connection, AccessLevel::Observer, false).await?;
+                        health.current_access = Some(AccessDto {
+                            level: "observer".to_string(),
+                            exclusive: false,
+                            stealth: false,
+                        });
+                        let _ = health_sender.send(health.clone());
+
+                        let compile_deadline = Instant::now() + operation.deadline();
+                        while !generated.is_file() {
+                            if Instant::now() >= compile_deadline {
+                                return Err(ExecutionFailure::semantic(
+                                    ServerError::timeout("EDS compilation deadline exceeded")
+                                        .outcome("unknown"),
+                                ));
+                            }
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+
+                        set_and_verify_access(connection, AccessLevel::Controller, false).await?;
+                        health.current_access = Some(AccessDto {
+                            level: "controller".to_string(),
+                            exclusive: false,
+                            stealth: false,
+                        });
+                        let _ = health_sender.send(health.clone());
+                        run_command(
+                            connection,
+                            FileMove {
+                                source: format!("experiments:{name}.eds"),
+                                destination: format!("public_run_complete:{name}.eds"),
+                            },
+                            CONTROL_DEADLINE,
+                        )
+                        .await?;
+                        run_command(
+                            connection,
+                            ExperimentCollected { name: name.clone() },
+                            CONTROL_DEADLINE,
+                        )
+                        .await?;
+                        Ok(())
+                    }
+                    .await;
+
+                    match compile_result {
+                        Ok(()) => match remove_path_raw(&generated_backup) {
+                            Ok(()) => Ok(InstrumentResult::Unit),
+                            Err(error) => Err(filesystem_failure(
+                                "EDS compilation succeeded but stale-artifact cleanup was incomplete",
+                                vec![format!(
+                                    "failed to remove quarantined generated EDS: {error}"
+                                )],
+                                [&generated_backup],
+                                None,
+                            )),
                         },
-                        CONTROL_DEADLINE,
-                    )
-                    .await?;
-                    run_command(
-                        connection,
-                        ExperimentCollected { name: name.clone() },
-                        CONTROL_DEADLINE,
-                    )
-                    .await?;
-                    Ok(InstrumentResult::Unit)
+                        Err(mut failure) if possibly_accepted => {
+                            failure.error.outcome = "unknown";
+                            add_preserved_paths(
+                                &mut failure.error,
+                                "EDS compilation may have been accepted; the preexisting artifact remains quarantined",
+                                [&generated_backup],
+                            );
+                            Err(failure)
+                        }
+                        Err(failure) => {
+                            if !path_present(&generated_backup).unwrap_or(true) {
+                                return Err(failure);
+                            }
+                            if path_present(&generated).unwrap_or(true) {
+                                return Err(filesystem_failure(
+                                    "EDS compilation was rejected but the output path changed before rollback",
+                                    vec![
+                                        "refusing to overwrite the unexpected generated EDS"
+                                            .to_string(),
+                                    ],
+                                    [&generated_backup, &generated],
+                                    Some(failure),
+                                ));
+                            }
+                            match restore_path_checked(&generated_backup, &generated) {
+                                Ok(()) => Err(failure),
+                                Err(error) => Err(filesystem_failure(
+                                    "EDS compilation was rejected and stale-artifact restoration was incomplete",
+                                    vec![error],
+                                    [&generated_backup, &generated],
+                                    Some(failure),
+                                )),
+                            }
+                        }
+                    }
                 }
                 InstrumentOperation::DeleteExperiment {
                     name,
@@ -961,15 +1377,25 @@ async fn start_run(
         })?;
     }
     if completed.exists() {
-        std::fs::rename(&completed, &completed_backup).map_err(|error| {
-            restore_path(&working_backup, &working);
-            ExecutionFailure::semantic(ServerError::internal(format!(
+        if let Err(error) = std::fs::rename(&completed, &completed_backup) {
+            let failure = ExecutionFailure::semantic(ServerError::internal(format!(
                 "failed to back up completed run: {error}"
-            )))
-        })?;
+            )));
+            if let Err(restore_error) = restore_path_checked(&working_backup, &working) {
+                return Err(filesystem_failure(
+                    "completed-run backup failed and working-experiment restoration was incomplete",
+                    vec![format!(
+                        "failed to restore working experiment backup: {restore_error}"
+                    )],
+                    [&working_backup, &completed_backup],
+                    Some(failure),
+                ));
+            }
+            return Err(failure);
+        }
     }
 
-    let mut accepted = false;
+    let mut possibly_accepted = false;
     let result: Result<(), ExecutionFailure> = async {
         run_command(connection, PowerSet::on(), deadline).await?;
         run_command(connection, DrawerClose, deadline).await?;
@@ -992,7 +1418,7 @@ async fn start_run(
             deadline,
         )
         .await?;
-        merge_staged_experiment(&working, &input.staged_root)
+        merge_staged_experiment(&working, input.staged.staged_root())
             .map_err(ExecutionFailure::semantic)?;
         let protocol = ProtocolDefinition::new(input.protocol_scpi.clone()).map_err(|error| {
             ExecutionFailure::semantic(ServerError::bad_request(format!(
@@ -1000,7 +1426,7 @@ async fn start_run(
             )))
         })?;
         run_command(connection, protocol, deadline).await?;
-        run_ack_command(
+        run_ack_command_tracking_submission(
             connection,
             RunStart {
                 sample_volume: input.sample_volume,
@@ -1009,9 +1435,9 @@ async fn start_run(
                 experiment: input.experiment.clone(),
             },
             deadline,
+            &mut possibly_accepted,
         )
         .await?;
-        accepted = true;
         let verification_deadline = Instant::now() + deadline;
         loop {
             let status = run_command(connection, RunStatusQuery, QUERY_DEADLINE).await?;
@@ -1035,19 +1461,57 @@ async fn start_run(
 
     match result {
         Ok(()) => {
-            remove_path(&working_backup);
-            remove_path(&completed_backup);
-            Ok(())
+            let cleanup_errors = remove_paths_checked([
+                (&working_backup, "working experiment backup"),
+                (&completed_backup, "completed run backup"),
+            ]);
+            if cleanup_errors.is_empty() {
+                Ok(())
+            } else {
+                Err(filesystem_failure(
+                    "run start succeeded but backup cleanup was incomplete",
+                    cleanup_errors,
+                    [&working_backup, &completed_backup],
+                    None,
+                ))
+            }
         }
-        Err(mut failure) if accepted => {
+        Err(mut failure) if possibly_accepted => {
             failure.error.outcome = "unknown";
+            add_preserved_paths(
+                &mut failure.error,
+                "run start may have been accepted; filesystem rollback was not attempted",
+                [&working_backup, &completed_backup],
+            );
             Err(failure)
         }
         Err(failure) => {
-            remove_path(&working);
-            restore_path(&working_backup, &working);
-            restore_path(&completed_backup, &completed);
-            Err(failure)
+            let mut rollback_errors = Vec::new();
+            match remove_path_raw(&working) {
+                Ok(()) => {
+                    if let Err(error) = restore_path_checked(&working_backup, &working) {
+                        rollback_errors.push(format!(
+                            "failed to restore working experiment backup: {error}"
+                        ));
+                    }
+                }
+                Err(error) => rollback_errors.push(format!(
+                    "failed to remove newly-created working experiment: {error}"
+                )),
+            }
+            if let Err(error) = restore_path_checked(&completed_backup, &completed) {
+                rollback_errors.push(format!("failed to restore completed run backup: {error}"));
+            }
+            if rollback_errors.is_empty() {
+                Err(failure)
+            } else {
+                Err(filesystem_failure(
+                    "run start failed and filesystem rollback was incomplete",
+                    rollback_errors,
+                    [&working_backup, &completed_backup],
+                    Some(failure),
+                ))
+            }
         }
     }
 }
@@ -1108,24 +1572,57 @@ fn merge_staged_experiment(
     let merged = parent.join(format!(".qslib-merge-{}", uuid::Uuid::new_v4()));
     copy_tree(target, &merged, false)?;
     if let Err(error) = copy_tree(staged, &merged, true) {
-        remove_path(&merged);
-        return Err(error);
+        return match remove_path_raw(&merged) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(ServerError::internal(format!(
+                "{}; failed to remove incomplete merge tree {}: {cleanup_error}",
+                error.message,
+                merged.display()
+            ))
+            .outcome("unknown")
+            .details(json!({"preserved_paths": [merged.display().to_string()]}))),
+        };
     }
     for metadata in [".qslib-package.zip", ".qslib-package.etag"] {
-        remove_path(&merged.join(metadata));
+        remove_path_raw(&merged.join(metadata)).map_err(|error| {
+            ServerError::internal(format!(
+                "failed to remove staging metadata from merged experiment: {error}"
+            ))
+            .outcome("unknown")
+            .details(json!({"preserved_paths": [merged.display().to_string()]}))
+        })?;
     }
     let generated = parent.join(format!(".qslib-generated-{}", uuid::Uuid::new_v4()));
     std::fs::rename(target, &generated).map_err(|error| {
         ServerError::internal(format!("failed to preserve generated experiment: {error}"))
     })?;
     if let Err(error) = std::fs::rename(&merged, target) {
-        let _ = std::fs::rename(&generated, target);
-        remove_path(&merged);
-        return Err(ServerError::internal(format!(
-            "failed to install staged experiment: {error}"
-        )));
+        let mut recovery_errors = Vec::new();
+        if let Err(restore_error) = restore_path_checked(&generated, target) {
+            recovery_errors.push(format!(
+                "failed to restore generated experiment: {restore_error}"
+            ));
+        }
+        if let Err(cleanup_error) = remove_path_raw(&merged) {
+            recovery_errors.push(format!("failed to remove merge tree: {cleanup_error}"));
+        }
+        let mut server_error =
+            ServerError::internal(format!("failed to install staged experiment: {error}"));
+        if !recovery_errors.is_empty() {
+            server_error = server_error.outcome("unknown").details(json!({
+                "recovery_errors": recovery_errors,
+                "preserved_paths": existing_paths([generated.as_path(), merged.as_path()]),
+            }));
+        }
+        return Err(server_error);
     }
-    remove_path(&generated);
+    remove_path_raw(&generated).map_err(|error| {
+        ServerError::internal(format!(
+            "staged experiment was installed but generated-tree cleanup failed: {error}"
+        ))
+        .outcome("unknown")
+        .details(json!({"preserved_paths": [generated.display().to_string()]}))
+    })?;
     Ok(())
 }
 
@@ -1165,31 +1662,134 @@ fn copy_tree(
     Ok(())
 }
 
-fn restore_path(backup: &std::path::Path, destination: &std::path::Path) {
-    if backup.exists() {
-        remove_path(destination);
-        let _ = std::fs::rename(backup, destination);
-    }
-}
-
-fn remove_path(path: &std::path::Path) {
-    if path.is_dir() {
-        let _ = std::fs::remove_dir_all(path);
-    } else {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
-fn remove_path_checked(path: &std::path::Path) -> Result<(), ExecutionFailure> {
-    if !path.exists() {
+fn restore_path_checked(
+    backup: &std::path::Path,
+    destination: &std::path::Path,
+) -> Result<(), String> {
+    if !path_present(backup).map_err(|error| {
+        format!(
+            "failed to inspect backup {} before restoration: {error}",
+            backup.display()
+        )
+    })? {
         return Ok(());
     }
-    let result = if path.is_dir() {
+    remove_path_raw(destination).map_err(|error| {
+        format!(
+            "failed to prepare restoration destination {}: {error}",
+            destination.display()
+        )
+    })?;
+    std::fs::rename(backup, destination).map_err(|error| {
+        format!(
+            "failed to rename backup {} to {}: {error}",
+            backup.display(),
+            destination.display()
+        )
+    })
+}
+
+fn path_present(path: &std::path::Path) -> std::io::Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error),
+    }
+}
+
+fn remove_path_raw(path: &std::path::Path) -> std::io::Result<()> {
+    let metadata = match std::fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_dir() {
         std::fs::remove_dir_all(path)
     } else {
         std::fs::remove_file(path)
-    };
-    result.map_err(|error| {
+    }
+}
+
+fn remove_paths_checked<'a, P>(paths: impl IntoIterator<Item = (P, &'a str)>) -> Vec<String>
+where
+    P: AsRef<std::path::Path>,
+{
+    paths
+        .into_iter()
+        .filter_map(|(path, description)| {
+            let path = path.as_ref();
+            remove_path_raw(path)
+                .err()
+                .map(|error| format!("failed to remove {description} {}: {error}", path.display()))
+        })
+        .collect()
+}
+
+fn existing_paths<P>(paths: impl IntoIterator<Item = P>) -> Vec<String>
+where
+    P: AsRef<std::path::Path>,
+{
+    paths
+        .into_iter()
+        .filter_map(|path| {
+            let path = path.as_ref();
+            path_present(path)
+                .unwrap_or(true)
+                .then(|| path.display().to_string())
+        })
+        .collect()
+}
+
+fn filesystem_failure<P>(
+    message: &str,
+    recovery_errors: Vec<String>,
+    possible_backups: impl IntoIterator<Item = P>,
+    cause: Option<ExecutionFailure>,
+) -> ExecutionFailure
+where
+    P: AsRef<std::path::Path>,
+{
+    let preserved_paths = existing_paths(possible_backups);
+    let cause_details = cause.as_ref().map(|failure| {
+        json!({
+            "status": failure.error.status.as_u16(),
+            "code": failure.error.code,
+            "message": failure.error.message,
+            "outcome": failure.error.outcome,
+            "details": failure.error.details,
+        })
+    });
+    let reconnect = cause.is_some_and(|failure| failure.reconnect);
+    ExecutionFailure {
+        error: ServerError::coded(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "filesystem_recovery_failed",
+            format!("{message}: {}", recovery_errors.join("; ")),
+        )
+        .outcome("unknown")
+        .details(json!({
+            "recovery_errors": recovery_errors,
+            "preserved_paths": preserved_paths,
+            "cause": cause_details,
+        })),
+        reconnect,
+    }
+}
+
+fn add_preserved_paths<P>(error: &mut ServerError, note: &str, paths: impl IntoIterator<Item = P>)
+where
+    P: AsRef<std::path::Path>,
+{
+    let previous = error.details.take();
+    error.details = Some(json!({
+        "note": note,
+        "preserved_paths": existing_paths(paths),
+        "cause_details": previous,
+    }));
+}
+
+fn remove_path_checked(path: &std::path::Path) -> Result<(), ExecutionFailure> {
+    remove_path_raw(path).map_err(|error| {
         ExecutionFailure::semantic(
             ServerError::internal(format!("failed to delete experiment resource: {error}"))
                 .outcome("unknown"),
@@ -1197,20 +1797,18 @@ fn remove_path_checked(path: &std::path::Path) -> Result<(), ExecutionFailure> {
     })
 }
 
-fn subscription_streams(
-    connection: &QSConnection,
-) -> StreamMap<String, BroadcastStream<qslib_core::parser::LogMessage>> {
-    let mut streams = StreamMap::new();
-    for topic in ["Temperature", "Time", "Run", "Error", "LEDStatus"] {
-        if !connection.logchannels.contains_key(topic) {
-            let (sender, _) = tokio::sync::broadcast::channel(100);
-            connection.logchannels.insert(topic.to_string(), sender);
-        }
-        if let Some(sender) = connection.logchannels.get(topic) {
-            streams.insert(topic.to_string(), BroadcastStream::new(sender.subscribe()));
-        }
+fn subscription_stream(connection: &QSConnection) -> BroadcastStream<LogMessage> {
+    if !connection.logchannels.contains_key("*") {
+        let (sender, _) = tokio::sync::broadcast::channel(INSTRUMENT_EVENT_BUFFER);
+        connection.logchannels.insert("*".to_string(), sender);
     }
-    streams
+    BroadcastStream::new(
+        connection
+            .logchannels
+            .get("*")
+            .expect("wildcard log channel was just installed")
+            .subscribe(),
+    )
 }
 
 async fn fetch_status(connection: &QSConnection) -> Result<InstrumentStatusDto, ExecutionFailure> {
@@ -1393,6 +1991,45 @@ where
     }
 }
 
+/// RUNStart needs to know whether the command reached the connection's send
+/// queue before a response-side failure. Once submitted, deleting/restoring
+/// its experiment tree is unsafe because the instrument may already be using
+/// the new run even though the acknowledgement was lost.
+async fn run_ack_command_tracking_submission<C>(
+    connection: &QSConnection,
+    command: C,
+    deadline: Duration,
+    possibly_accepted: &mut bool,
+) -> Result<(), ExecutionFailure>
+where
+    C: CommandBuilder<Error = ErrorResponse, Response = ()>,
+{
+    let mut receiver = command.send(connection).await.map_err(|error| {
+        ExecutionFailure::transport(format!("failed to submit SCPI command: {error}"))
+    })?;
+    *possibly_accepted = true;
+    match tokio::time::timeout(deadline, receiver.receive_next()).await {
+        Err(_) | Ok(Err(ReceiveNextResponseError::Timeout)) => Err(ExecutionFailure::transport(
+            "SCPI acknowledgement deadline exceeded",
+        )),
+        Ok(Err(ReceiveNextResponseError::ConnectionClosed)) => Err(ExecutionFailure::transport(
+            "SCPI connection closed before acknowledgement",
+        )),
+        Ok(Ok(Err(error))) => {
+            // An explicit rejection proves RUNStart was not accepted, so the
+            // pre-start filesystem rollback remains safe.
+            *possibly_accepted = false;
+            Err(ExecutionFailure::semantic(
+                ServerError::instrument_rejection(error.to_string()),
+            ))
+        }
+        Ok(Ok(Ok(()))) | Ok(Err(ReceiveNextResponseError::UnexpectedOk(_))) => Ok(()),
+        Ok(Err(error)) => Err(ExecutionFailure::transport(format!(
+            "invalid SCPI acknowledgement: {error}"
+        ))),
+    }
+}
+
 async fn shutdown_connection(
     connection: QSConnection,
     health: &mut ServiceHealth,
@@ -1415,4 +2052,187 @@ fn jitter(base: Duration, generation: u64) -> Duration {
     // old instrument target while preventing synchronized reconnect storms.
     let percent = 85 + ((generation.wrapping_mul(37).wrapping_add(11)) % 31);
     base.mul_f64(percent as f64 / 100.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status_fixture() -> InstrumentStatusDto {
+        InstrumentStatusDto {
+            observed_at: Utc::now(),
+            power_enabled: true,
+            block: crate::dto::BlockDto {
+                enabled: true,
+                target_c: 60.0,
+            },
+            zone_count: 2,
+            drawer: "Closed".to_string(),
+            cover: "Down".to_string(),
+            lamp_status: "Off".to_string(),
+            sample_temperatures_c: vec![25.0, 25.0],
+            block_temperatures_c: vec![25.0, 25.0],
+            cover_temperature_c: 30.0,
+            target_temperatures_c: [("zone1".to_string(), 61.0), ("Zone2".to_string(), 62.0)]
+                .into_iter()
+                .collect(),
+            target_controlled: Default::default(),
+            led_temperature_c: 31.0,
+            indicator: crate::dto::IndicatorDto {
+                color: Some("green".to_string()),
+                mode: "on".to_string(),
+            },
+            run: RunStatusDto {
+                name: "seeded run".to_string(),
+                stage: 2,
+                stage_name: "Stage2".to_string(),
+                num_stages: 4,
+                cycle: 3,
+                num_cycles: 10,
+                step: 1,
+                point: 2,
+                state: "Running".to_string(),
+                remaining_time_s: Some(42),
+            },
+        }
+    }
+
+    #[test]
+    fn transport_failures_are_conservatively_outcome_unknown() {
+        let failure = ExecutionFailure::transport("connection closed after submission");
+        assert!(failure.reconnect);
+        assert_eq!(failure.error.outcome, "unknown");
+    }
+
+    #[test]
+    fn event_context_is_seeded_and_tracks_run_messages() {
+        let status = status_fixture();
+        let mut context = InstrumentEventContext::from_status(Some(&status));
+        assert_eq!(context.run_name.as_deref(), Some("seeded run"));
+        assert_eq!(context.zone_targets_c, vec![61.0, 62.0]);
+        assert_eq!(
+            (context.stage, context.cycle, context.step),
+            (Some(2), Some(3), Some(1))
+        );
+
+        assert!(!context.observe("Run", "Starting \"new run\""));
+        assert_eq!(context.run_name.as_deref(), Some("new run"));
+        assert_eq!(
+            (context.stage, context.cycle, context.step),
+            (None, None, None)
+        );
+
+        assert!(!context.observe("Run", "Stage Stage2"));
+        assert!(!context.observe("Run", "Cycle 7"));
+        assert!(!context.observe("Run", "Step 3"));
+        assert_eq!(
+            (context.stage, context.cycle, context.step),
+            (Some(2), Some(7), Some(3))
+        );
+
+        assert!(!context.observe("Run", "Stage POSTRun"));
+        assert_eq!(context.stage, Some(2));
+        assert_eq!((context.cycle, context.step), (None, None));
+        assert!(!context.observe("Run", "Cycle 7"));
+        assert!(!context.observe("Run", "Step 3"));
+
+        assert!(!context.observe(
+            "Run",
+            "Ramping -zones=Cover,Zone2 -targets=105.0,72.5 -rates=0.1,1.6",
+        ));
+        assert_eq!(context.zone_targets_c, vec![61.0, 72.5]);
+
+        assert!(!context.observe(
+            "Run",
+            "Collected -run=\"new run\" -stage=4 -cycle=8 -step=2 -point=1",
+        ));
+        assert_eq!(context.run_name.as_deref(), Some("new run"));
+        assert_eq!(
+            (context.stage, context.cycle, context.step),
+            (Some(4), Some(8), Some(2))
+        );
+        assert!(context.observe("Run", "Ended"));
+    }
+
+    #[test]
+    fn terminal_event_carries_final_context_then_clears_it() {
+        let events = EventHub::new();
+        let mut receiver = events.subscribe();
+        let mut context = InstrumentEventContext::default();
+        publish_instrument_event(
+            &events,
+            &mut context,
+            LogMessage {
+                topic: "Run".to_string(),
+                timestamp: Some(1_700_000_000.0),
+                message: "Starting \"replay run\"".to_string(),
+            },
+        );
+        receiver.try_recv().unwrap();
+        context.stage = Some(3);
+        context.cycle = Some(4);
+        context.step = Some(2);
+
+        publish_instrument_event(
+            &events,
+            &mut context,
+            LogMessage {
+                topic: "Run".to_string(),
+                timestamp: Some(1_700_000_001.0),
+                message: "Ended".to_string(),
+            },
+        );
+        let ended = receiver.try_recv().unwrap();
+        assert_eq!(ended.data["context"]["run_name"], "replay run");
+        assert_eq!(ended.data["context"]["stage"], 3);
+        assert_eq!(ended.data["context"]["cycle"], 4);
+        assert_eq!(ended.data["context"]["step"], 2);
+        assert_eq!(context.run_name, None);
+        assert_eq!(
+            (context.stage, context.cycle, context.step),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn checked_restore_preserves_the_backup_when_restoration_fails() {
+        let root = tempfile::tempdir().unwrap();
+        let backup = root.path().join("backup");
+        std::fs::write(&backup, b"original").unwrap();
+        let non_directory_parent = root.path().join("not-a-directory");
+        std::fs::write(&non_directory_parent, b"blocker").unwrap();
+        let destination = non_directory_parent.join("destination");
+
+        let error = restore_path_checked(&backup, &destination).unwrap_err();
+
+        assert!(error.contains("failed to prepare restoration destination"));
+        assert_eq!(std::fs::read(&backup).unwrap(), b"original");
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn incomplete_rollback_is_reported_as_unknown_with_preserved_paths() {
+        let root = tempfile::tempdir().unwrap();
+        let backup = root.path().join("preserved-backup");
+        std::fs::write(&backup, b"original").unwrap();
+        let cause = ExecutionFailure::semantic(
+            ServerError::conflict("instrument rejected the operation")
+                .details(json!({"phase": "start"})),
+        );
+
+        let failure = filesystem_failure(
+            "rollback was incomplete",
+            vec!["rename failed".to_string()],
+            [backup.as_path()],
+            Some(cause),
+        );
+
+        assert_eq!(failure.error.code, "filesystem_recovery_failed");
+        assert_eq!(failure.error.outcome, "unknown");
+        let details = failure.error.details.unwrap();
+        assert_eq!(details["recovery_errors"][0], "rename failed");
+        assert_eq!(details["preserved_paths"][0], backup.display().to_string());
+        assert_eq!(details["cause"]["code"], "conflict");
+        assert_eq!(details["cause"]["details"]["phase"], "start");
+    }
 }

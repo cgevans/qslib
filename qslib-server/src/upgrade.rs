@@ -27,6 +27,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use axum::body::Bytes;
 use axum::extract::{Extension, Query, State};
@@ -38,6 +39,8 @@ use serde::Deserialize;
 use crate::auth::{require_role, Principal, Role};
 use crate::error::ServerError;
 use crate::state::{sha256_hex, AppState};
+
+const VERSION_CHECK_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Deserialize)]
 pub struct UpgradeParams {
@@ -175,7 +178,19 @@ pub async fn upgrade(
     }
 
     // At this point the new binary is in place; hand off to the watchdog.
-    spawn_restart_watchdog(&exe, &state.restart_args)?;
+    if let Err(watchdog_error) = spawn_restart_watchdog(&exe, &state.restart_args) {
+        return match restore_backup(&exe).await {
+            Ok(()) => Err(ServerError::internal(format!(
+                "failed to start restart watchdog; restored previous executable: {}",
+                watchdog_error.message
+            ))),
+            Err(restore_error) => Err(ServerError::internal(format!(
+                "failed to start restart watchdog ({}) and failed to restore previous executable ({})",
+                watchdog_error.message, restore_error.message
+            ))
+            .outcome("unknown")),
+        };
+    }
     if let Some(claim) = upgrade_claim.as_mut() {
         claim.keep_until_exit();
     }
@@ -205,19 +220,7 @@ async fn stage_and_maybe_swap(
         .map_err(|e| ServerError::internal(format!("failed to chmod staged binary: {e}")))?;
 
     // Prove it actually runs on this instrument before committing to it.
-    let tmp_owned = tmp.to_path_buf();
-    let version_ok = tokio::task::spawn_blocking(move || {
-        Command::new(&tmp_owned)
-            .arg("--version")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    })
-    .await
-    .map_err(|e| ServerError::internal(format!("version pre-check join error: {e}")))?;
+    let version_ok = check_executable_version(tmp, VERSION_CHECK_TIMEOUT).await?;
     if !version_ok {
         return Err(ServerError::bad_request(
             "uploaded binary failed `--version` (wrong architecture or corrupt); not installed",
@@ -236,6 +239,55 @@ async fn stage_and_maybe_swap(
         .await
         .map_err(|e| ServerError::internal(format!("failed to install new binary: {e}")))?;
     Ok(())
+}
+
+async fn check_executable_version(path: &Path, timeout: Duration) -> Result<bool, ServerError> {
+    let path = path.to_path_buf();
+    tokio::task::spawn_blocking(move || {
+        let mut child = match Command::new(&path)
+            .arg("--version")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+        {
+            Ok(child) => child,
+            Err(_) => return false,
+        };
+        let deadline = Instant::now() + timeout;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => return status.success(),
+                Ok(None) if Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(25));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+                Err(_) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return false;
+                }
+            }
+        }
+    })
+    .await
+    .map_err(|error| ServerError::internal(format!("version pre-check join error: {error}")))
+}
+
+/// Atomically put the pre-upgrade executable back after a post-swap handoff
+/// failure. The backup is on the same filesystem by construction.
+async fn restore_backup(exe: &Path) -> Result<(), ServerError> {
+    let bak = with_suffix(exe, ".bak");
+    tokio::fs::rename(&bak, exe).await.map_err(|error| {
+        ServerError::internal(format!(
+            "failed to restore backup executable {:?} over {:?}: {error}",
+            bak, exe
+        ))
+    })
 }
 
 /// Spawn a detached `sh` watchdog that stops this process, launches the new
@@ -353,5 +405,39 @@ mod tests {
             claim.keep_until_exit();
         }
         assert!(flag.load(Ordering::Acquire));
+    }
+
+    #[tokio::test]
+    async fn backup_restore_replaces_a_swapped_executable() {
+        let directory = tempfile::tempdir().unwrap();
+        let exe = directory.path().join("qslib-server");
+        let bak = with_suffix(&exe, ".bak");
+        tokio::fs::write(&exe, b"new").await.unwrap();
+        tokio::fs::write(&bak, b"old").await.unwrap();
+
+        restore_backup(&exe).await.unwrap();
+
+        assert_eq!(tokio::fs::read(&exe).await.unwrap(), b"old");
+        assert!(!bak.exists());
+    }
+
+    #[tokio::test]
+    async fn version_precheck_terminates_a_hanging_executable() {
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("hangs");
+        tokio::fs::write(&executable, b"#!/bin/sh\nwhile :; do :; done\n")
+            .await
+            .unwrap();
+        tokio::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755))
+            .await
+            .unwrap();
+
+        let started = Instant::now();
+        assert!(
+            !check_executable_version(&executable, Duration::from_millis(50))
+                .await
+                .unwrap()
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

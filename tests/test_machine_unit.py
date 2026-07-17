@@ -16,6 +16,7 @@ from qslib import (
     StatusLedState,
 )
 from qslib.machine import _gen_auth_response
+from qslib.scpi_commands import SCPICommand
 
 
 # --- Machine default params ---
@@ -73,10 +74,11 @@ def test_get_running_protocol_idle_direct_connection(monkeypatch):
 
 
 class _FakeConn:
-    """Stand-in for a QSConnection; ``connected`` is False so Machine.__del__
+    """Stand-in for a QSConnection; ``connected()`` is False so Machine.__del__
     does not try to disconnect a sentinel at teardown."""
 
-    connected = False
+    def connected(self):
+        return False
 
     def disconnect(self):
         pass
@@ -194,6 +196,57 @@ def test_connection_property_raises():
 def test_connected_false_initially():
     m = Machine("example.com")
     assert m.connected is False
+
+
+@pytest.mark.parametrize("state", [False, True])
+def test_connected_calls_underlying_connection(state):
+    class Connection:
+        def connected(self):
+            return state
+
+        def disconnect(self):
+            pass
+
+    m = Machine("example.com")
+    m._connection = Connection()
+    assert m.connected is state
+
+
+def test_command_helpers_convert_scpi_commands_for_rust_binding():
+    submitted: list[tuple[str, object]] = []
+
+    class Response:
+        def get_ack(self):
+            return None
+
+        def get_response_bytes(self):
+            return b"response"
+
+    class Connection:
+        def connected(self):
+            return True
+
+        def run_command(self, command):
+            submitted.append(("command", command))
+            return Response()
+
+        def run_command_bytes(self, command):
+            submitted.append(("bytes", command))
+            return Response()
+
+        def disconnect(self):
+            pass
+
+    command = SCPICommand("TEST", "argument")
+    machine = Machine("example.com", automatic=False)
+    machine._connection = Connection()
+
+    assert machine.run_command_to_ack(command) is None
+    assert machine.run_command_bytes(command) == b"response"
+    assert submitted == [
+        ("command", command.to_string()),
+        ("bytes", command.to_string().encode()),
+    ]
 
 
 def test_disconnect_noop():

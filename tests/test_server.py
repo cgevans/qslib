@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import socket
 import socketserver
 import subprocess
@@ -13,6 +14,7 @@ import threading
 import time
 import urllib.error
 from contextlib import contextmanager, nullcontext
+from http.client import HTTPException
 from pathlib import Path
 
 import pytest
@@ -33,6 +35,24 @@ def _free_port() -> int:
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))
         return int(sock.getsockname()[1])
+
+
+class _MutationResponse:
+    def __init__(self, body: bytes = b"", error: BaseException | None = None):
+        self.body = body
+        self.error = error
+        self.headers: dict[str, str] = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return None
+
+    def read(self) -> bytes:
+        if self.error is not None:
+            raise self.error
+        return self.body
 
 
 class _ScpiHandler(socketserver.StreamRequestHandler):
@@ -159,6 +179,69 @@ def test_sse_parser_preserves_opaque_cursor():
     assert event["id"] == "4db8d4e9-87a7-4ce7-8f5f-f6718c3887e1:42"
 
 
+def test_sse_events_surface_permanent_http_errors(monkeypatch):
+    client = ServerClient("instrument")
+
+    def fail(*_args, **_kwargs):
+        raise ServerError("invalid token", status=401, code="unauthorized")
+
+    monkeypatch.setattr(client, "_request", fail)
+    with pytest.raises(ServerError, match="invalid token") as error:
+        next(client.events())
+    assert error.value.status == 401
+    assert error.value.code == "unauthorized"
+
+
+def test_sse_events_retry_retryable_server_errors(monkeypatch):
+    client = ServerClient("instrument")
+    attempts = 0
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    def request(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ServerError("temporarily unavailable", status=503, retryable=True)
+        return Response(b'id: epoch:1\nevent: run\ndata: {"state":"running"}\n\n')
+
+    monkeypatch.setattr(client, "_request", request)
+    monkeypatch.setattr("qslib.server.time.sleep", lambda _seconds: None)
+    event = next(client.events())
+    assert attempts == 2
+    assert event == {"id": "epoch:1", "event": "run", "data": {"state": "running"}}
+
+
+def test_sse_events_back_off_after_clean_eof(monkeypatch):
+    client = ServerClient("instrument")
+    responses = iter(
+        [
+            b"",
+            b'id: epoch:2\nevent: run\ndata: {"state":"completed"}\n\n',
+        ]
+    )
+    sleeps: list[float] = []
+
+    class Response(io.BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: Response(next(responses)))
+    monkeypatch.setattr("qslib.server.time.sleep", sleeps.append)
+
+    event = next(client.events())
+    assert event["id"] == "epoch:2"
+    assert sleeps == [0.25]
+
+
 def test_machine_get_running_protocol_no_run_server(server):
     client, _root = server
     machine = Machine(client.host, server_port=client.port)
@@ -208,6 +291,55 @@ def test_dead_server_and_negative_capability_cache(monkeypatch):
     assert client.available() is False
 
 
+def test_capabilities_do_not_negative_cache_auth_failures(monkeypatch):
+    client = ServerClient("instrument", token="bad-token")
+    attempts = 0
+
+    def unauthorized(*_args, **_kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise ServerError("invalid token", status=401, code="unauthorized")
+
+    monkeypatch.setattr(client, "_json", unauthorized)
+    for _ in range(2):
+        with pytest.raises(ServerError, match="invalid token") as error:
+            client.capabilities()
+        assert error.value.status == 401
+        assert error.value.code == "unauthorized"
+    assert attempts == 2
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_machine_capability_auth_failure_never_falls_back_to_scpi(monkeypatch, status):
+    class FakeServer:
+        def capabilities(self):
+            raise ServerError("semantic credentials rejected", status=status)
+
+    machine = Machine("instrument", server_port=7500, server_token="wrong-token")
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
+    monkeypatch.setattr(
+        machine,
+        "_direct_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("auth failure must not open direct SCPI")),
+    )
+
+    with pytest.raises(ServerError, match="semantic credentials rejected") as error:
+        machine.drawer_open()
+    assert error.value.status == status
+
+
+def test_directory_listing_rejects_missing_or_invalid_entries(monkeypatch):
+    client = ServerClient("instrument")
+
+    monkeypatch.setattr(client, "_json", lambda *_args, **_kwargs: {"files": []})
+    with pytest.raises(ServerError, match="omitted its entries list"):
+        client.list_context_dir("runs")
+
+    monkeypatch.setattr(client, "_json", lambda *_args, **_kwargs: {"entries": {}})
+    with pytest.raises(ServerError, match="omitted its entries list"):
+        client.list_context_dir("runs")
+
+
 def test_mutation_transport_failure_is_outcome_unknown(monkeypatch):
     client = ServerClient("127.0.0.1", port=1)
 
@@ -220,12 +352,109 @@ def test_mutation_transport_failure_is_outcome_unknown(monkeypatch):
     assert error.value.state_query == "/api/v1/instrument/status"
 
 
+@pytest.mark.parametrize(
+    "response_error",
+    [
+        OSError("response dropped"),
+        HTTPException("response truncated"),
+        ValueError("response closed"),
+    ],
+)
+def test_json_mutation_response_failure_is_outcome_unknown(monkeypatch, response_error):
+    client = ServerClient("instrument")
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *_args, **_kwargs: _MutationResponse(error=response_error),
+    )
+
+    with pytest.raises(ServerOutcomeUnknown) as error:
+        client.set_power(True)
+    assert error.value.state_query == "/api/v1/instrument/status"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _MutationResponse(error=OSError("response dropped")),
+        _MutationResponse(body=b"\xff"),
+    ],
+)
+def test_scpi_response_failure_is_outcome_unknown(monkeypatch, response):
+    client = ServerClient("instrument")
+    monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ServerOutcomeUnknown) as error:
+        client.scpi("POW?")
+    assert error.value.state_query == "/api/v1/instrument/status"
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        _MutationResponse(error=OSError("response dropped")),
+        _MutationResponse(body=b"{"),
+        _MutationResponse(body=b"[]"),
+    ],
+)
+def test_upgrade_response_failure_is_outcome_unknown(monkeypatch, response):
+    client = ServerClient("instrument")
+    monkeypatch.setattr(client, "_request", lambda *_args, **_kwargs: response)
+
+    with pytest.raises(ServerOutcomeUnknown) as error:
+        client.upgrade(b"new binary")
+    assert error.value.state_query == "/health"
+
+
+@pytest.mark.parametrize("delete", ["experiment", "staged-package"])
+def test_delete_response_failure_is_outcome_unknown(monkeypatch, delete):
+    client = ServerClient("instrument")
+    monkeypatch.setattr(
+        client,
+        "_request",
+        lambda *_args, **_kwargs: _MutationResponse(error=OSError("response dropped")),
+    )
+
+    with pytest.raises(ServerOutcomeUnknown) as error:
+        if delete == "experiment":
+            client.delete_experiment("active")
+        else:
+            client.delete_staged_package("active", '"etag"')
+    assert error.value.state_query == "/api/v1/experiments/active"
+
+
 def test_connection_refusal_is_known_not_submitted():
     port = _free_port()
     client = ServerClient("127.0.0.1", port=port, timeout=0.2)
     with pytest.raises(ServerUnavailable) as error:
         client.set_power(True)
     assert error.value.outcome == "not_started"
+
+
+@pytest.mark.parametrize("transport_error", [urllib.error.URLError("offline"), OSError("offline")])
+def test_read_transport_failures_are_server_unavailable(monkeypatch, transport_error):
+    client = ServerClient("instrument")
+
+    def fail(*_args, **_kwargs):
+        raise transport_error
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(ServerUnavailable) as error:
+        client.health()
+    assert error.value.outcome == "not_started"
+    assert error.value.retryable is True
+
+
+def test_malformed_http_response_is_not_classified_as_unavailable(monkeypatch):
+    client = ServerClient("instrument")
+
+    def fail(*_args, **_kwargs):
+        raise HTTPException("malformed response")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(ServerError, match="invalid HTTP response") as error:
+        client.health()
+    assert not isinstance(error.value, ServerUnavailable)
 
 
 def test_machine_semantic_status_opens_no_scpi(monkeypatch):
@@ -387,14 +616,189 @@ def test_machine_upgrade_uses_v1_health_hash(monkeypatch):
     assert current["hash"] == expected
 
 
-def test_ensure_server_rejects_unsafe_exec_values():
+@pytest.mark.parametrize("remote_path", ['/data/x";reboot', "/data/it's-bad"])
+def test_ensure_server_rejects_unsafe_exec_values(remote_path):
     machine = Machine("127.0.0.1", server_port=_free_port())
     with pytest.raises(ValueError, match="unsafe"):
         machine.ensure_server(
             binary=b"stub",
             listen="1.2.3.4:7500",
-            remote_path='/data/x";reboot',
+            remote_path=remote_path,
         )
+
+
+@pytest.mark.parametrize("status", [401, 403, 404, 503])
+def test_ensure_server_does_not_redeploy_over_http_response(monkeypatch, status):
+    class FakeServer:
+        def health(self):
+            raise ServerError("existing server rejected health request", status=status)
+
+    machine = Machine("instrument", server_port=7500, server_token="wrong-token")
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
+    deployments: list[tuple[str, bytes]] = []
+    commands: list[str] = []
+    monkeypatch.setattr(machine, "_deploy_binary", lambda path, data: deployments.append((path, data)))
+    monkeypatch.setattr(machine, "run_command", commands.append)
+
+    with pytest.raises(ServerError, match="existing server rejected") as error:
+        machine.ensure_server(binary=b"replacement", listen="169.254.1.2:7500")
+    assert error.value.status == status
+    assert deployments == []
+    assert commands == []
+
+
+def test_ensure_server_does_not_redeploy_after_malformed_health_response(monkeypatch):
+    class FakeServer:
+        def health(self):
+            raise ServerError("qslib-server returned invalid JSON for /health")
+
+    machine = Machine("instrument", server_port=7500)
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
+    monkeypatch.setattr(
+        machine,
+        "_deploy_binary",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("responding server must not be redeployed")),
+    )
+
+    with pytest.raises(ServerError, match="invalid JSON"):
+        machine.ensure_server(binary=b"replacement", listen="169.254.1.2:7500")
+
+
+def test_ensure_server_waits_for_existing_server_to_be_ready(monkeypatch):
+    health_responses = iter([{"ready": False}, {"ready": True}])
+
+    class FakeServer:
+        def health(self):
+            return next(health_responses)
+
+    machine = Machine("instrument", server_port=7500)
+    fake = FakeServer()
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: fake))
+    monkeypatch.setattr("qslib.machine.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        machine,
+        "_deploy_binary",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("existing server must not be redeployed")),
+    )
+
+    assert machine.ensure_server(binary=b"replacement", listen="169.254.1.2:7500") is fake
+
+
+@pytest.mark.parametrize("health", [{"ready": False}, {}])
+def test_ensure_server_refuses_to_redeploy_over_unready_server(monkeypatch, health):
+    class FakeServer:
+        def health(self):
+            return health
+
+    ticks = iter([0.0, 0.0, 1.0])
+    machine = Machine("instrument", server_port=7500)
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
+    monkeypatch.setattr("qslib.machine.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("qslib.machine.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(
+        machine,
+        "_deploy_binary",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("unready server must not be redeployed")),
+    )
+
+    with pytest.raises(ServerError, match="refusing to redeploy"):
+        machine.ensure_server(binary=b"replacement", listen="169.254.1.2:7500", timeout=0.5)
+
+
+def test_ensure_server_requires_explicit_readiness_after_launch(monkeypatch):
+    health_calls = 0
+
+    class FakeServer:
+        def health(self):
+            nonlocal health_calls
+            health_calls += 1
+            if health_calls == 1:
+                raise ServerUnavailable("not running")
+            return {}
+
+    ticks = iter([0.0, 0.0, 1.0])
+    machine = Machine("instrument", server_port=7500)
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
+    monkeypatch.setattr("qslib.machine.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("qslib.machine.time.sleep", lambda _seconds: None)
+    monkeypatch.setattr(machine, "ensured_connection", lambda *_args, **_kwargs: nullcontext(machine))
+    deployments: list[tuple[str, bytes]] = []
+    monkeypatch.setattr(machine, "_deploy_binary", lambda path, data: deployments.append((path, data)))
+    monkeypatch.setattr(machine, "run_command", lambda _command: None)
+
+    with pytest.raises(ServerError, match="did not become ready after deployment"):
+        machine.ensure_server(binary=b"server", listen="169.254.1.2:7500", timeout=0.5)
+    assert deployments == [("/data/qslib-server", b"server")]
+    assert health_calls == 2
+
+
+def _capture_ensure_server(monkeypatch, machine):
+    health_calls = 0
+
+    class FakeServer:
+        def health(self):
+            nonlocal health_calls
+            health_calls += 1
+            if health_calls == 1:
+                raise ServerUnavailable("not running")
+            return {"ready": True}
+
+    fake = FakeServer()
+    deployments: list[tuple[str, bytes]] = []
+    commands: list[str] = []
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: fake))
+    monkeypatch.setattr(machine, "ensured_connection", lambda *_args, **_kwargs: nullcontext(machine))
+    monkeypatch.setattr(machine, "_deploy_binary", lambda path, data: deployments.append((path, data)))
+    monkeypatch.setattr(machine, "run_command", commands.append)
+    return fake, deployments, commands
+
+
+def test_ensure_server_tokenless_defaults_to_read_only_observer(monkeypatch):
+    machine = Machine("instrument", server_port=7500)
+    fake, deployments, commands = _capture_ensure_server(monkeypatch, machine)
+
+    assert machine.ensure_server(binary=b"server", listen="169.254.1.2:7500") is fake
+    assert deployments == [("/data/qslib-server", b"server")]
+    launch = commands[-1]
+    assert "--no-auth --unauthenticated-role observer" in launch
+    assert "--allow-file-writes" not in launch
+    assert "--allow-controls" not in launch
+
+
+def test_ensure_server_token_enables_authenticated_mutations(monkeypatch):
+    token = "a-high-entropy-bootstrap-token"
+    machine = Machine("instrument", server_port=7500, server_token=token)
+    fake, deployments, commands = _capture_ensure_server(monkeypatch, machine)
+
+    assert machine.ensure_server(binary=b"server", listen="169.254.1.2:7500") is fake
+    assert [path for path, _data in deployments] == [
+        "/data/qslib-server.auth.toml",
+        "/data/qslib-server",
+    ]
+    auth = deployments[0][1].decode()
+    assert hashlib.sha256(token.encode()).hexdigest() in auth
+    assert 'role = "administrator"' in auth
+    assert token not in auth
+    launch = commands[-1]
+    assert "--auth-config /data/qslib-server.auth.toml" in launch
+    assert "--allow-file-writes" in launch
+    assert "--allow-controls" in launch
+    assert "--no-auth" not in launch
+
+
+def test_ensure_server_warns_for_elevated_unauthenticated_role(monkeypatch):
+    machine = Machine("instrument", server_port=7500)
+    _fake, _deployments, commands = _capture_ensure_server(monkeypatch, machine)
+
+    with pytest.warns(RuntimeWarning, match="unauthenticated Administrator"):
+        machine.ensure_server(
+            binary=b"server",
+            listen="169.254.1.2:7500",
+            unauthenticated_role="administrator",
+        )
+    assert "--unauthenticated-role administrator" in commands[-1]
+    assert "--allow-file-writes" not in commands[-1]
+    assert "--allow-controls" not in commands[-1]
 
 
 def test_wait_operation_returns_success_and_raises_structured_failures(monkeypatch):
@@ -650,6 +1054,67 @@ def test_fallback_false_surfaces_capability_http_failure(monkeypatch):
         machine.read_file("logs:value", fallback=False)
 
 
+@pytest.mark.parametrize("status", [401, 403])
+def test_cached_capabilities_cannot_hide_resource_authorization_failure(monkeypatch, status):
+    client = ServerClient("instrument")
+    client._capabilities = {
+        "api_version": "v1",
+        "resources": ["instrument", "files"],
+        "controls": True,
+        "file_writes": True,
+    }
+
+    def denied(*_args, **_kwargs):
+        raise ServerError("credentials were revoked", status=status, code="unauthorized", outcome="not_started")
+
+    monkeypatch.setattr(client, "instrument_status", denied)
+    monkeypatch.setattr(client, "put_abs_file", denied)
+    machine = Machine("instrument", server_port=7500)
+    machine._server = client
+    monkeypatch.setattr(
+        machine,
+        "_direct_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("authorization failure must not open SCPI")),
+    )
+
+    with pytest.raises(ServerError, match="credentials were revoked") as read_error:
+        machine.machine_status()
+    assert read_error.value.status == status
+
+    # Even an explicitly not-started write must not bypass a fresh policy
+    # rejection merely because the capability document was cached earlier.
+    with pytest.raises(ServerError, match="credentials were revoked") as write_error:
+        machine.write_file("logs:value", b"data")
+    assert write_error.value.status == status
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_cached_capabilities_protocol_authorization_failure_never_falls_back(monkeypatch, status):
+    client = ServerClient("instrument")
+    client._capabilities = {
+        "api_version": "v1",
+        "resources": ["runs"],
+        "controls": True,
+    }
+    monkeypatch.setattr(client, "current_run", lambda: {"name": "active", "state": "running"})
+
+    def denied():
+        raise ServerError("protocol access denied", status=status, code="forbidden")
+
+    monkeypatch.setattr(client, "get_running_protocol", denied)
+    machine = Machine("instrument", server_port=7500)
+    machine._server = client
+    monkeypatch.setattr(
+        machine,
+        "_direct_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("authorization failure must not open SCPI")),
+    )
+
+    with pytest.raises(ServerError, match="protocol access denied") as error:
+        machine.get_running_protocol()
+    assert error.value.status == status
+
+
 def test_write_falls_back_only_for_known_not_started(monkeypatch):
     class FakeServer:
         def capabilities(self):
@@ -879,6 +1344,31 @@ def test_run_preflight_translates_without_staging(monkeypatch, code, exception):
     experiment = Experiment("semantic_run")
     with pytest.raises(exception):
         experiment.run(machine)
+    assert experiment.runstate == "INIT"
+    assert fake.staged == 0
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_run_preflight_authorization_failure_does_not_fall_back_to_scpi(monkeypatch, status):
+    fake = _ExperimentServer()
+    fake.preflight_error = ServerError(
+        "run authorization revoked",
+        status=status,
+        code="unauthorized",
+        outcome="not_started",
+    )
+    machine = Machine("instrument", server_port=7500)
+    monkeypatch.setattr(type(machine), "server", property(lambda _self: fake))
+    monkeypatch.setattr(
+        machine,
+        "_direct_connection",
+        lambda: (_ for _ in ()).throw(AssertionError("authorization failure must not open SCPI")),
+    )
+
+    experiment = Experiment("semantic_run")
+    with pytest.raises(ServerError, match="run authorization revoked") as error:
+        experiment.run(machine)
+    assert error.value.status == status
     assert experiment.runstate == "INIT"
     assert fake.staged == 0
 

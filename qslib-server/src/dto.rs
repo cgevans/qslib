@@ -161,6 +161,8 @@ pub struct CapabilitiesDto {
     pub max_access: String,
     pub sse: bool,
     pub sse_cursor_format: &'static str,
+    pub sse_event_context: bool,
+    pub sse_initial_snapshot: bool,
     pub raw_scpi: bool,
     pub scpi_tunnel: bool,
     pub file_writes: bool,

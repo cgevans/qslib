@@ -56,7 +56,7 @@ from .data import (
     _parse_multicomponent_data_v1,
     _parse_multicomponent_data_v2,
 )
-from .machine import AlreadyCollectedError, Machine, RunNotFinishedError
+from .machine import AlreadyCollectedError, Machine, RunNotFinishedError, _raise_if_semantic_auth_error
 from .server import ServerError, ServerOutcomeUnknown, ServerUnavailable
 from .processors import NormRaw
 from .protocol import Protocol, Stage, Step
@@ -694,12 +694,14 @@ table, th, td {{
                 def discard_staged(etag: str) -> None:
                     try:
                         server.delete_staged_package(self.runtitle_safe, etag)
-                    except (ServerError, OSError):
+                    except (ServerError, OSError) as error:
+                        _raise_if_semantic_auth_error(error)
                         log.warning("Could not discard staged package for %s", self.runtitle_safe, exc_info=True)
 
                 try:
                     server.preflight_run(self.runtitle_safe, overwrite=overwrite)
                 except ServerError as error:
+                    _raise_if_semantic_auth_error(error)
                     if error.code in {"machine_busy", "working_exists", "completed_exists"}:
                         raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
                     log.debug("semantic run preflight failed; using direct SCPI", exc_info=True)
@@ -713,7 +715,8 @@ table, th, td {{
                     try:
                         self.save_file(package_stream)
                         package_etag = server.stage_package(self.runtitle_safe, package_stream.getvalue())
-                    except (ServerUnavailable, ServerOutcomeUnknown):
+                    except (ServerUnavailable, ServerOutcomeUnknown) as error:
+                        _raise_if_semantic_auth_error(error)
                         # Package staging cannot start an instrument run. Even
                         # when the upload outcome is unknown, direct fallback is
                         # safe after restoring the client-side state.
@@ -731,7 +734,8 @@ table, th, td {{
                                 require_drawer_check=require_drawer_check,
                             )
                             server.wait_operation(operation, timeout=130.0)
-                        except ServerUnavailable:
+                        except ServerUnavailable as error:
+                            _raise_if_semantic_auth_error(error)
                             restore_local_state()
                             discard_staged(package_etag)
                         except ServerOutcomeUnknown:
@@ -971,7 +975,8 @@ table, th, td {{
         with context:
             try:
                 self._protocol_from_machine = machine.get_running_protocol()
-            except (CommandError, ConnectionError, OSError, ServerError, ValueError):
+            except (CommandError, ConnectionError, OSError, ServerError, ValueError) as error:
+                _raise_if_semantic_auth_error(error)
                 log.warning(
                     "Could not refresh the live SCPI protocol; retaining stored protocol sources",
                     exc_info=True,
@@ -1006,6 +1011,7 @@ table, th, td {{
                         with open(sdspath, "wb") as b:
                             b.write(machine.read_file(f["path"]))
                     except Exception as e:  # Handles race condition where file is deleted. TODO: improve handling.
+                        _raise_if_semantic_auth_error(e)
                         log.warning(f"Error copying {f['path']} to {sdspath}: {e}")
                         continue
                 elif log_method == "eval":
@@ -1079,7 +1085,8 @@ table, th, td {{
                     mode="from_now",
                 )
                 return
-            except ServerUnavailable:
+            except ServerUnavailable as error:
+                _raise_if_semantic_auth_error(error)
                 pass
             except ServerOutcomeUnknown:
                 raise
@@ -1158,7 +1165,8 @@ table, th, td {{
                     mode="replace",
                 )
                 return
-            except ServerUnavailable:
+            except ServerUnavailable as error:
+                _raise_if_semantic_auth_error(error)
                 pass
             except ServerOutcomeUnknown:
                 raise
@@ -1533,7 +1541,8 @@ table, th, td {{
 
             try:
                 exp._protocol_from_machine = machine.get_running_protocol()
-            except (CommandError, ConnectionError, OSError, ServerError, ValueError):
+            except (CommandError, ConnectionError, OSError, ServerError, ValueError) as error:
+                _raise_if_semantic_auth_error(error)
                 log.warning(
                     "Could not read the live SCPI protocol; falling back to stored run sources",
                     exc_info=True,

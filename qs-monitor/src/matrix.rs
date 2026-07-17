@@ -78,6 +78,11 @@ fn configured_server(all_machines: &[MachineConfig], name: &str) -> Option<Serve
     ))
 }
 
+fn parse_server_protocol(scpi: &str) -> Result<qslib::protocol::Protocol, String> {
+    let command = qslib::parser::Command::try_from(scpi).map_err(|error| error.to_string())?;
+    qslib::protocol::Protocol::from_scpicommand(&command).map_err(|error| error.to_string())
+}
+
 async fn server_status_html(server: &ServerClient) -> Result<String, String> {
     let status = server
         .instrument_status()
@@ -905,14 +910,11 @@ async fn handle_message(
                             if run.name == "-" || run.state.eq_ignore_ascii_case("idle") {
                                 return Err("there is no current run".to_string());
                             }
-                            let xml = server
-                                .protocol_xml(&run.name)
+                            let running_protocol = server
+                                .running_protocol()
                                 .await
                                 .map_err(|error| error.to_string())?;
-                            let xml =
-                                std::str::from_utf8(&xml).map_err(|error| error.to_string())?;
-                            let protocol = qslib::protocol::Protocol::from_xml_str(xml)
-                                .map_err(|error| error.to_string())?;
+                            let protocol = parse_server_protocol(&running_protocol.scpi)?;
                             Ok((
                                 protocol,
                                 (run.stage > 0).then_some(run.stage),
@@ -1594,6 +1596,13 @@ mod tests {
         assert!(html.contains("<ol>"));
         assert!(html.contains("<li>"));
         assert!(html.contains("<b>Run Protocol test_protocol</b>"));
+    }
+
+    #[test]
+    fn test_parse_server_protocol_uses_authoritative_scpi() {
+        let protocol = parse_server_protocol(MULTI_STAGE).expect("parse server protocol");
+        assert_eq!(protocol.name, "qpcr");
+        assert_eq!(protocol.stages.len(), 2);
     }
 
     #[test]

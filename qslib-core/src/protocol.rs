@@ -385,7 +385,7 @@ impl ProtocolDefinition {
             .args
             .first()
             .and_then(|value| String::try_from(value).ok())
-            .ok_or_else(|| ProtocolError::Missing("protocol name"))?;
+            .ok_or(ProtocolError::Missing("protocol name"))?;
         let option = |key: &str| {
             command
                 .options

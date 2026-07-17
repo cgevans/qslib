@@ -8,7 +8,13 @@ use thiserror::Error;
 use memchr::memchr3;
 
 static TAG_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^<(/?)([A-Za-z0-9_.-]*)(>|$)").expect("Invalid TAG_REGEX pattern")
+    // InstrumentServer block values are XML-shaped and may contain ordinary
+    // nested XML.  Accept attributes and namespace separators so an opening
+    // element is balanced with its closing element; recognize `/>` separately
+    // because an empty element must not remain on the framing stack.  The final
+    // `$` alternative preserves partial-tag detection across socket reads.
+    Regex::new(r"^<(/?)([A-Za-z0-9_.:-]+)(?:[ \t\r\n]+[^<>]*?)?(/?>|$)")
+        .expect("Invalid TAG_REGEX pattern")
 });
 
 /*
@@ -36,7 +42,19 @@ pub struct MsgRecv {
 #[cfg_attr(coverage_nightly, coverage(off))]
 impl std::fmt::Debug for MsgRecv {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "MsgRecv {{ buf: {:?}, tagstack: {:?}, parttag: {:?}, msg_end: {:?}, msg_error: {:?}, tag_opened_at: {:?} }}", String::from_utf8_lossy(&self.buf), self.tagstack.iter().map(|(tag, _)| String::from_utf8_lossy(tag)).collect::<Vec<_>>(), self.parttag, self.msg_end, self.msg_error, self.tag_opened_at)
+        write!(
+            f,
+            "MsgRecv {{ buf: {:?}, tagstack: {:?}, parttag: {:?}, msg_end: {:?}, msg_error: {:?}, tag_opened_at: {:?} }}",
+            String::from_utf8_lossy(&self.buf),
+            self.tagstack
+                .iter()
+                .map(|(tag, _)| String::from_utf8_lossy(tag))
+                .collect::<Vec<_>>(),
+            self.parttag,
+            self.msg_end,
+            self.msg_error,
+            self.tag_opened_at
+        )
     }
 }
 
@@ -109,7 +127,17 @@ impl MsgRecv {
                     return true;
                 }
             } else if c == b'<' {
-                match TAG_REGEX.captures(&self.buf[idx..]) {
+                let candidate = &self.buf[idx..];
+                // A socket read may end immediately after a tag opener.  The
+                // regular expression deliberately requires a non-empty tag
+                // name so malformed complete values such as `<>` are ignored,
+                // so retain these two valid prefixes explicitly for the next
+                // read instead of scanning past their `<`.
+                if candidate == b"<" || candidate == b"</" {
+                    self.parttag = Some(idx);
+                    return false;
+                }
+                match TAG_REGEX.captures(candidate) {
                     Some(captures) => {
                         let (_a, [close, tag, end]) = captures.extract();
                         match (end, close) {
@@ -117,6 +145,7 @@ impl MsgRecv {
                                 self.parttag = Some(idx);
                                 return false;
                             }
+                            (b"/>", _) => {}
                             (_, b"/") => match self.tagstack.pop() {
                                 Some(old_tag) => {
                                     if old_tag.0 != tag {
@@ -174,13 +203,21 @@ impl MsgRecv {
                     return true;
                 }
             } else if c == b'<' {
-                if let Some(captures) = TAG_REGEX.captures(&self.buf[idx..]) {
+                let candidate = &self.buf[idx..];
+                // See the SIMD branch above: preserve a split `<` or `</`
+                // opener so the tag is re-scanned after the next read.
+                if candidate == b"<" || candidate == b"</" {
+                    self.parttag = Some(idx);
+                    return false;
+                }
+                if let Some(captures) = TAG_REGEX.captures(candidate) {
                     let (_a, [close, tag, end]) = captures.extract();
                     match (end, close) {
                         (b"", _) => {
                             self.parttag = Some(idx);
                             return false;
                         }
+                        (b"/>", _) => {}
                         (_, b"/") => match self.tagstack.pop() {
                             Some(old_tag) => {
                                 if old_tag.0 != tag {
@@ -327,6 +364,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_xml_tag_openers_split_immediately_after_angle_bracket() {
+        let mut receiver = MsgRecv::new();
+        assert!(!receiver.push_data(b"OK 1 <"));
+        assert!(!receiver.push_data(b"quote>line one\nline two</"));
+        assert!(receiver.push_data(b"quote>\n"));
+
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(msg, b"OK 1 <quote>line one\nline two</quote>\n");
+    }
+
     // =====================================================================
     // Additional message receiver tests
     // =====================================================================
@@ -378,6 +426,21 @@ mod tests {
         let msg = receiver.try_get_msg().unwrap().unwrap();
         assert!(String::from_utf8_lossy(&msg)
             .contains("<outer><inner>content\nwith\nnewlines</inner></outer>"));
+    }
+
+    #[test]
+    fn test_nested_xml_attributes_and_empty_elements() {
+        let mut receiver = MsgRecv::new();
+        receiver.push_data(b"OK 1 <quote><TCProtocol version=\"1\"");
+        receiver.push_data(
+            b"><Collection><FilterSet Emission=\"m4\" Excitation=\"x1\"/>\n</Collection></TCProtocol></quote>\n",
+        );
+
+        let msg = receiver.try_get_msg().unwrap().unwrap();
+        assert_eq!(
+            msg,
+            b"OK 1 <quote><TCProtocol version=\"1\"><Collection><FilterSet Emission=\"m4\" Excitation=\"x1\"/>\n</Collection></TCProtocol></quote>\n"
+        );
     }
 
     #[test]

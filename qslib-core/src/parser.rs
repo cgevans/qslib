@@ -342,7 +342,7 @@ impl Value {
                 .context(StrContext::Label("xml")),
             // Handle double-quoted strings with backslash escape support
             parse_quoted_string
-                .map(|val| Value::QuotedString(val))
+                .map(Value::QuotedString)
                 .context(StrContext::Label("quoted")),
             // Handle single-quoted strings (no escape processing)
             delimited(
@@ -2245,14 +2245,14 @@ mod tests {
 
     #[test]
     fn test_scpi_command_with_args() {
-        let mut input = b"CMD arg1 42 3.14\n" as &[u8];
+        let mut input = b"CMD arg1 42 3.125\n" as &[u8];
         let cmd = parse_scpi_command(&mut input).unwrap();
         assert_eq!(cmd.command, "CMD");
         assert_eq!(cmd.args.len(), 3);
         assert!(matches!(&cmd.args[0], SCPIArgValue::Scalar(Value::String(s)) if s == "arg1"));
         assert!(matches!(&cmd.args[1], SCPIArgValue::Scalar(Value::Int(42))));
         assert!(
-            matches!(&cmd.args[2], SCPIArgValue::Scalar(Value::Float(f)) if (*f - 3.14).abs() < 0.001)
+            matches!(&cmd.args[2], SCPIArgValue::Scalar(Value::Float(f)) if (*f - 3.125).abs() < 0.001)
         );
     }
 

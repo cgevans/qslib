@@ -12,7 +12,7 @@ use log::{debug, error, info, warn};
 use qslib::com_ext::QSConnectionExt;
 use qslib::data::FilterDataCollection;
 use qslib::parser::OkResponse;
-use qslib::server_client::{InstrumentStatus, ServerClient};
+use qslib::server_client::{InstrumentStatus, ServerClient, ServerEvent};
 use qslib::{
     com::FilterDataFilename,
     com::QSConnection,
@@ -41,6 +41,10 @@ mod queue;
 mod systemd;
 
 use queue::{Database, DatabaseActor, EventRecord, MatrixOutput};
+
+const COLLECTED_FETCH_ATTEMPTS: usize = 20;
+const COLLECTED_FETCH_RETRY_DELAY: Duration = Duration::from_millis(250);
+const COLLECTED_MANIFEST_STABLE_OBSERVATIONS: usize = 3;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -325,6 +329,20 @@ fn state_snapshot_points(
         Ok(point) => points.push(point),
         Err(error) => warn!("Error building run_state point: {error}"),
     }
+    points.extend(plate_setup_snapshot_points(state, machine_name, timestamp));
+    points
+}
+
+fn plate_setup_snapshot_points(
+    state: &MachineState,
+    machine_name: &str,
+    timestamp: chrono::DateTime<chrono::Utc>,
+) -> Vec<DataPoint> {
+    let mut points = Vec::new();
+    let Some(ts) = timestamp.timestamp_nanos_opt() else {
+        warn!("Timestamp out of range while building plate setup snapshot");
+        return points;
+    };
     if let Some(plate) = &state.plate_setup {
         for line in plate.to_lineprotocol(ts, state.run_name.as_deref(), None) {
             match parse_line_protocol_to_datapoint(&line, machine_name) {
@@ -334,6 +352,28 @@ fn state_snapshot_points(
         }
     }
     points
+}
+
+async fn commit_initial_server_enrichment(
+    database: &Database,
+    machine: &str,
+    influx_lines: Vec<String>,
+) -> Result<()> {
+    if influx_lines.is_empty() {
+        return Ok(());
+    }
+    database
+        .commit(EventRecord {
+            machine: machine.to_string(),
+            cursor: None,
+            raw_json: serde_json::json!({"event": "initial_status_enrichment"}).to_string(),
+            received_at: unix_now(),
+            influx_lines,
+            matrix: None,
+            processing_error: None,
+            dead_letter: false,
+        })
+        .await
 }
 
 fn validate_config(config: &Config) -> Result<()> {
@@ -664,38 +704,62 @@ async fn main() -> Result<()> {
         state_database_path(&config).display()
     ))?;
 
-    tokio::select! {
-        _ = shutdown_signal() => info!("shutdown signal received"),
+    let mut database_stopped = false;
+    let fatal_error = tokio::select! {
+        _ = shutdown_signal() => {
+            info!("shutdown signal received");
+            None
+        },
         result = &mut database_task => {
-            anyhow::bail!("database actor stopped unexpectedly: {:?}", result);
+            database_stopped = true;
+            Some(anyhow::anyhow!("database actor stopped unexpectedly: {:?}", result))
         }
         result = essential_tasks.join_next() => {
-            anyhow::bail!("essential task stopped unexpectedly: {:?}", result);
+            Some(anyhow::anyhow!("essential task stopped unexpectedly: {:?}", result))
         }
-    }
+    };
 
     let _ =
         systemd::notify("STOPPING=1\nSTATUS=stopping ingestion and draining durable deliveries");
     ingestion_cancellation.cancel();
-    let drain_seconds = config
-        .global
-        .as_ref()
-        .and_then(|global| global.shutdown_drain_seconds)
-        .unwrap_or(20)
-        .min(20);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(drain_seconds);
-    while tokio::time::Instant::now() < deadline {
-        if database.stats(unix_now()).await?.pending == 0 {
-            break;
+    let cleanup_result: Result<()> = async {
+        if !database_stopped {
+            let drain_seconds = config
+                .global
+                .as_ref()
+                .and_then(|global| global.shutdown_drain_seconds)
+                .unwrap_or(20)
+                .min(20);
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(drain_seconds);
+            while tokio::time::Instant::now() < deadline {
+                match database.stats(unix_now()).await {
+                    Ok(stats) if stats.pending == 0 => break,
+                    Ok(_) => tokio::time::sleep(Duration::from_millis(200)).await,
+                    Err(error) => {
+                        warn!("could not inspect durable queue during shutdown: {error}");
+                        break;
+                    }
+                }
+            }
         }
-        tokio::time::sleep(Duration::from_millis(200)).await;
+        delivery_cancellation.cancel();
+        essential_tasks.abort_all();
+        while essential_tasks.join_next().await.is_some() {}
+        if !database_stopped {
+            database.shutdown().await?;
+            database_task.await??;
+        }
+        Ok(())
     }
-    delivery_cancellation.cancel();
-    essential_tasks.abort_all();
-    while essential_tasks.join_next().await.is_some() {}
-    database.shutdown().await?;
-    database_task.await??;
-    Ok(())
+    .await;
+
+    match (fatal_error, cleanup_result) {
+        (None, result) => result,
+        (Some(error), Ok(())) => Err(error),
+        (Some(error), Err(cleanup_error)) => Err(anyhow::anyhow!(
+            "{error:#}; shutdown cleanup also failed: {cleanup_error:#}"
+        )),
+    }
 }
 
 async fn machine_supervisor(
@@ -881,30 +945,56 @@ async fn log_server_machine(
     if !capabilities.sse || !capabilities.supports("instrument") {
         anyhow::bail!("qslib-server does not provide instrument status and SSE");
     }
-    if capabilities.sse_cursor_format.as_deref() != Some("epoch-sequence") {
-        warn!(
-            target: "sse_cursor",
-            "{} is connected to a legacy qslib-server; restart replay guarantees are degraded until it is upgraded",
+    if capabilities.sse_cursor_format.as_deref() != Some("epoch-sequence")
+        || !capabilities.sse_event_context
+        || !capabilities.sse_initial_snapshot
+    {
+        anyhow::bail!(
+            "{} requires qslib-server 0.16 or newer with epoch cursors, event-time context, and initial SSE snapshots",
             config.name
         );
     }
 
-    let status = server.instrument_status().await?;
-    let mut state = MachineState::new(status.zone_count);
     let stored_cursor = database.cursor(&config.name).await?;
-    // Rebuild volatile conversion state on every process connection. Only the
-    // initial process connection emits the snapshot; reconnects use it solely
-    // so replayed Temperature/Collected events have correct run and plate data.
-    let initial = refresh_state_server(&server, &status, &mut state, &config.name).await;
-    if stored_cursor.is_none() {
+    let (mut events, mut state) = if let Some(cursor) = stored_cursor {
+        // A durable cursor makes this snapshot/replay ordering safe: every
+        // event after the cursor is replayed with its own event-time context.
+        let status = server.instrument_status().await?;
+        let mut state = MachineState::new(status.zone_count);
+        let _ = refresh_state_server(&server, &status, &mut state, &config.name).await;
+        (server.event_stream_from_cursor(Some(cursor)).await, state)
+    } else {
+        // Establish the live receiver before taking the first snapshot. New
+        // servers emit an atomic reset boundary whose embedded status belongs
+        // to that cursor; events arriving while it is built are buffered.
+        let mut events = server.event_stream_from_cursor(None).await;
+        let boundary = tokio::select! {
+            _ = cancellation.cancelled() => return Ok(()),
+            event = events.next() => event?,
+        };
+        if boundary.event != "reset" {
+            anyhow::bail!("qslib-server did not begin a fresh SSE stream with a reset snapshot");
+        }
+        let cursor = boundary
+            .id
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("initial SSE reset omitted its cursor"))?;
+        let status = status_from_reset_event(&boundary)?;
+        let mut state = MachineState::new(status.zone_count);
+        // Persist the boundary before any secondary HTTP lookup (notably plate
+        // setup). If the process dies during enrichment, reconnecting from this
+        // cursor replays every buffered event instead of opening a newer fresh
+        // boundary and skipping them.
+        update_state_from_server_status(&mut state, &status);
+        let points = state_snapshot_points(&state, &config.name, chrono::Utc::now());
         database
             .commit(EventRecord {
                 machine: config.name.clone(),
-                cursor: None,
-                raw_json: serde_json::json!({"event": "initial_status"}).to_string(),
+                cursor: Some(cursor),
+                raw_json: raw_server_event(&boundary),
                 received_at: unix_now(),
                 influx_lines: if influx_enabled {
-                    points_to_lines(initial)?
+                    points_to_lines(points)?
                 } else {
                     Vec::new()
                 },
@@ -913,11 +1003,24 @@ async fn log_server_machine(
                 dead_letter: false,
             })
             .await?;
-    }
+        if state.run_name.is_some() {
+            ensure_server_plate_setup(&server, &mut state).await;
+            if influx_enabled {
+                let enrichment =
+                    plate_setup_snapshot_points(&state, &config.name, chrono::Utc::now());
+                commit_initial_server_enrichment(
+                    &database,
+                    &config.name,
+                    points_to_lines(enrichment)?,
+                )
+                .await?;
+            }
+        }
+        (events, state)
+    };
 
     info!("Server logging task started for {}", config.name);
     connectivity.insert(config.name.clone(), true);
-    let mut events = server.event_stream_from_cursor(stored_cursor).await;
     loop {
         let event = tokio::select! {
             _ = cancellation.cancelled() => return Ok(()),
@@ -933,34 +1036,30 @@ async fn log_server_machine(
                 config.name
             );
         }
-        let raw_json = serde_json::json!({
-            "id": cursor,
-            "event": event.event,
-            "data": event.data,
-        })
-        .to_string();
+        let raw_json = raw_server_event(&event);
         if matches!(event.event.as_str(), "reset" | "connection") {
-            if let Ok(status) = server.instrument_status().await {
-                let points = refresh_state_server(&server, &status, &mut state, &config.name).await;
-                database
-                    .commit(EventRecord {
-                        machine: config.name.clone(),
-                        cursor: Some(cursor),
-                        raw_json,
-                        received_at: unix_now(),
-                        influx_lines: if influx_enabled {
-                            points_to_lines(points)?
-                        } else {
-                            Vec::new()
-                        },
-                        matrix: None,
-                        processing_error: None,
-                        dead_letter: false,
-                    })
-                    .await?;
+            let status = if event.event == "reset" {
+                status_from_reset_event(&event)?
             } else {
-                anyhow::bail!("could not obtain status snapshot for SSE reset");
-            }
+                server.instrument_status().await?
+            };
+            let points = refresh_state_server(&server, &status, &mut state, &config.name).await;
+            database
+                .commit(EventRecord {
+                    machine: config.name.clone(),
+                    cursor: Some(cursor),
+                    raw_json,
+                    received_at: unix_now(),
+                    influx_lines: if influx_enabled {
+                        points_to_lines(points)?
+                    } else {
+                        Vec::new()
+                    },
+                    matrix: None,
+                    processing_error: None,
+                    dead_letter: false,
+                })
+                .await?;
             continue;
         }
         if event.event == "operation" {
@@ -980,6 +1079,10 @@ async fn log_server_machine(
         }
 
         let payload = event.data.get("data").unwrap_or(&event.data);
+        let run_changed = update_state_from_event_context(&mut state, payload);
+        if run_changed {
+            ensure_server_plate_setup(&server, &mut state).await;
+        }
         let message = match payload.get("message").and_then(|value| value.as_str()) {
             Some(message) => message.to_string(),
             None => {
@@ -1079,15 +1182,6 @@ async fn log_server_machine(
                     })
                     .await?;
             }
-            Err(error)
-                if topic == "Run"
-                    && message.message.starts_with("Collected")
-                    && error.to_string().contains("transient Collected data fetch") =>
-            {
-                // File and collection data may appear shortly after the log
-                // event. Leave the cursor untouched and reconnect from it.
-                anyhow::bail!("transient Collected conversion failure: {error}");
-            }
             Err(error) => {
                 error!(
                     "Dead-lettering malformed server event for {} from {:?}: {}",
@@ -1110,6 +1204,24 @@ async fn log_server_machine(
     }
 }
 
+fn raw_server_event(event: &ServerEvent) -> String {
+    serde_json::json!({
+        "id": event.id.as_deref(),
+        "event": &event.event,
+        "data": &event.data,
+    })
+    .to_string()
+}
+
+fn status_from_reset_event(event: &ServerEvent) -> Result<InstrumentStatus> {
+    let payload = event.data.get("data").unwrap_or(&event.data);
+    let status = payload
+        .get("status")
+        .ok_or_else(|| anyhow::anyhow!("SSE reset omitted its status snapshot"))?;
+    serde_json::from_value(status.clone())
+        .map_err(|error| anyhow::anyhow!("invalid status snapshot in SSE reset: {error}"))
+}
+
 fn update_state_from_server_status(state: &mut MachineState, status: &InstrumentStatus) {
     state.run_name = (status.run.name != "-").then(|| status.run.name.clone());
     state.stage = (status.run.stage >= 0).then_some(status.run.stage);
@@ -1126,6 +1238,74 @@ fn update_state_from_server_status(state: &mut MachineState, status: &Instrument
         .collect();
 }
 
+/// Apply the event-time state attached by qslib-server.  This is deliberately
+/// preferred to a fresh `/instrument/status` query: replayed events must retain
+/// the run and target values that were true when they were emitted, even if the
+/// run has since completed.
+fn update_state_from_event_context(state: &mut MachineState, payload: &serde_json::Value) -> bool {
+    let Some(context) = payload.get("context").and_then(|value| value.as_object()) else {
+        return false;
+    };
+    let previous_run = state.run_name.clone();
+    if let Some(value) = context.get("run_name") {
+        let run_name = value.as_str().map(str::to_string);
+        if state.plate_setup_run.as_deref() != run_name.as_deref() {
+            state.plate_setup = None;
+            state.plate_setup_run = None;
+        }
+        state.run_name = run_name;
+    }
+    if let Some(value) = context.get("stage") {
+        state.stage = value.as_i64();
+    }
+    if let Some(value) = context.get("cycle") {
+        state.cycle = value.as_i64();
+    }
+    if let Some(value) = context.get("step") {
+        state.step = value.as_i64();
+    }
+    if let Some(targets) = context
+        .get("zone_targets_c")
+        .and_then(|value| value.as_array())
+    {
+        let parsed = targets
+            .iter()
+            .map(|value| value.as_f64())
+            .collect::<Option<Vec<_>>>();
+        if let Some(targets) = parsed {
+            state.zone_targets = targets;
+        }
+    }
+    state.run_name != previous_run
+}
+
+async fn ensure_server_plate_setup(server: &ServerClient, state: &mut MachineState) {
+    let Some(run) = state.run_name.clone() else {
+        return;
+    };
+    if state.plate_setup.is_some() && state.plate_setup_run.as_deref() == Some(run.as_str()) {
+        return;
+    }
+    // Never retain samples from a previous run if the new run's plate setup is
+    // temporarily unavailable.
+    state.plate_setup = None;
+    state.plate_setup_run = None;
+    let path = format!("/data/vendor/IS/experiments/{run}/apldbio/sds/plate_setup.xml");
+    match server.get_abs_file(&path).await {
+        Ok(bytes) => match std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|xml| PlateSetup::from_xml(xml).ok())
+        {
+            Some(plate) => {
+                state.plate_setup = Some(plate);
+                state.plate_setup_run = Some(run);
+            }
+            None => warn!("Could not parse plate setup returned by qslib-server"),
+        },
+        Err(error) => warn!("Could not fetch plate setup through qslib-server: {error}"),
+    }
+}
+
 async fn refresh_state_server(
     server: &ServerClient,
     status: &InstrumentStatus,
@@ -1133,23 +1313,8 @@ async fn refresh_state_server(
     machine_name: &str,
 ) -> Vec<DataPoint> {
     update_state_from_server_status(state, status);
-    if let Some(run) = state.run_name.clone() {
-        if state.plate_setup_run.as_deref() != Some(run.as_str()) {
-            let path = format!("/data/vendor/IS/experiments/{run}/apldbio/sds/plate_setup.xml");
-            match server.get_abs_file(&path).await {
-                Ok(bytes) => match std::str::from_utf8(&bytes)
-                    .ok()
-                    .and_then(|xml| PlateSetup::from_xml(xml).ok())
-                {
-                    Some(plate) => {
-                        state.plate_setup = Some(plate);
-                        state.plate_setup_run = Some(run);
-                    }
-                    None => warn!("Could not parse plate setup returned by qslib-server"),
-                },
-                Err(error) => warn!("Could not fetch plate setup through qslib-server: {error}"),
-            }
-        }
+    if state.run_name.is_some() {
+        ensure_server_plate_setup(server, state).await;
     } else {
         state.plate_setup = None;
         state.plate_setup_run = None;
@@ -1309,28 +1474,22 @@ async fn run_to_lineprotocol(
     let content = OkResponse::parse(&mut remaining.as_bytes())
         .map_err(|e| anyhow::anyhow!("Invalid message: {}", e))?;
 
-    // Server events carry the fine-grained action, while the snapshot carries
-    // the normalized run position and current title. Record whether this
-    // snapshot is fresh so a failed request cannot turn a stale stage into the
-    // numeric POSTRun position.
-    let fresh_server_status = if con.is_none() {
-        if let Some(server) = server {
-            match server.instrument_status().await {
-                Ok(status) => {
-                    update_state_from_server_status(state, &status);
-                    true
-                }
-                Err(error) => {
-                    warn!("Could not refresh status for {machine_name}: {error}");
-                    false
-                }
-            }
-        } else {
-            false
+    // New servers attach event-time state to every instrument event.  For a
+    // legacy stream, recover the run name from the Run message itself rather
+    // than querying today's status while replaying yesterday's event.
+    if con.is_none() {
+        if action == "Starting" {
+            state.run_name = content.args.first().map(ToString::to_string);
+        } else if let Some(run) = content.options.get("run") {
+            state.run_name = Some(run.to_string());
         }
-    } else {
-        false
-    };
+        if matches!(action, "Starting" | "Collected")
+            && state.run_name.is_some()
+            && let Some(server) = server
+        {
+            ensure_server_plate_setup(server, state).await;
+        }
+    }
 
     // Create base point for run_action
     let ts = timestamp
@@ -1359,9 +1518,9 @@ async fn run_to_lineprotocol(
                 .ok_or(anyhow::anyhow!("Missing Stage value"))?
                 .to_string();
             // Run log stage events use names such as PRERUN, Stage1, and
-            // POSTRun. In server mode the status snapshot fetched immediately
-            // before this event supplies the numeric POSTRun position.
-            let postrun_position = fresh_server_status.then_some(state.stage).flatten();
+            // POSTRun. In server mode the event-time context supplies the
+            // normalized numeric POSTRun position.
+            let postrun_position = state.stage;
             let stage = stage_position_from_event(&stage_name, postrun_position);
 
             point = point.field("stage_name", stage_name.clone());
@@ -1529,18 +1688,62 @@ async fn run_to_lineprotocol(
                     }
                 }
             } else if let Some(server) = server {
-                let collected_points = docollect_server(
-                    stage,
-                    cycle,
-                    step,
-                    run_point,
-                    server,
-                    timestamp,
-                    machine_name,
-                    state,
-                )
-                .await
-                .map_err(|error| anyhow::anyhow!("transient Collected data fetch: {error}"))?;
+                let run = state
+                    .run_name
+                    .as_deref()
+                    .ok_or_else(|| anyhow::anyhow!("collected event has no current run title"))?;
+                let filter_root = format!("{run}/apldbio/sds/filter");
+                let mut last_error = None;
+                let mut collected_points = None;
+                let mut stability = CollectionManifestStability::default();
+                for attempt in 1..=COLLECTED_FETCH_ATTEMPTS {
+                    match list_collection_filter_paths(
+                        server,
+                        &filter_root,
+                        stage,
+                        cycle,
+                        step,
+                        run_point,
+                    )
+                    .await
+                    {
+                        Ok(paths) if stability.observe(&paths) => {
+                            match docollect_server(
+                                &filter_root,
+                                &paths,
+                                server,
+                                timestamp,
+                                machine_name,
+                                state,
+                            )
+                            .await
+                            {
+                                Ok(points) => {
+                                    collected_points = Some(points);
+                                    break;
+                                }
+                                Err(error) => last_error = Some(error),
+                            }
+                        }
+                        Ok(paths) => {
+                            last_error = Some(anyhow::anyhow!(
+                                "filter data manifest is not yet stable ({} matching files)",
+                                paths.len()
+                            ));
+                        }
+                        Err(error) => last_error = Some(error),
+                    }
+                    if attempt < COLLECTED_FETCH_ATTEMPTS {
+                        tokio::time::sleep(COLLECTED_FETCH_RETRY_DELAY).await;
+                    }
+                }
+                let collected_points = collected_points.ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "Collected data remained unavailable after {} attempts: {:#}",
+                        COLLECTED_FETCH_ATTEMPTS,
+                        last_error.expect("a failed collection attempt records its error")
+                    )
+                })?;
                 points.extend(collected_points);
             }
         }
@@ -1609,6 +1812,17 @@ async fn run_to_lineprotocol(
     if let Some(con) = con.as_ref() {
         let refresh_points = refresh_state(con, state, machine_name, timestamp, server).await;
         points.extend(refresh_points);
+    }
+
+    // Terminal messages carry the just-finished run title and should be tagged
+    // with it, but later legacy events must not inherit that stale run.
+    if con.is_none() && matches!(action, "Ended" | "Aborted" | "Stopped") {
+        state.run_name = None;
+        state.stage = None;
+        state.cycle = None;
+        state.step = None;
+        state.plate_setup = None;
+        state.plate_setup_run = None;
     }
 
     debug!("Points: {:?}", points);
@@ -1951,10 +2165,8 @@ async fn docollect(
 
 #[allow(clippy::too_many_arguments)]
 async fn docollect_server(
-    stage: i64,
-    cycle: i64,
-    step: i64,
-    point: i64,
+    filter_root: &str,
+    filter_paths: &[String],
     server: &ServerClient,
     timestamp: chrono::DateTime<chrono::Utc>,
     machine_name: &str,
@@ -1964,29 +2176,14 @@ async fn docollect_server(
         .run_name
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("collected event has no current run title"))?;
-    let filter_root = format!("{run}/apldbio/sds/filter");
-    let entries = server.list_context_dir("experiments", &filter_root).await?;
     let sample_array = state
         .plate_setup
         .as_ref()
         .map(|plate| plate.well_samples_as_array());
     let mut points = Vec::new();
 
-    for entry in entries {
-        let Some(filename) = entry.path.rsplit('/').next() else {
-            continue;
-        };
-        let Ok(reference) = FilterDataFilename::from_string(filename) else {
-            continue;
-        };
-        if reference.stage as i64 != stage
-            || reference.cycle as i64 != cycle
-            || reference.step as i64 != step
-            || reference.point as i64 != point
-        {
-            continue;
-        }
-        let path = format!("{filter_root}/{}", entry.path);
+    for entry_path in filter_paths {
+        let path = format!("{filter_root}/{entry_path}");
         let bytes = server.get_file("experiments", &path).await?;
         let collection: FilterDataCollection =
             quick_xml::de::from_str(&String::from_utf8_lossy(&bytes))?;
@@ -2018,6 +2215,64 @@ async fn docollect_server(
         }
     }
     Ok(points)
+}
+
+async fn list_collection_filter_paths(
+    server: &ServerClient,
+    filter_root: &str,
+    stage: i64,
+    cycle: i64,
+    step: i64,
+    point: i64,
+) -> Result<Vec<String>> {
+    let entries = server.list_context_dir("experiments", filter_root).await?;
+    let mut paths = entries
+        .into_iter()
+        .filter_map(|entry| {
+            let filename = entry.path.rsplit('/').next()?;
+            let reference = FilterDataFilename::from_string(filename).ok()?;
+            filter_file_matches_collection(&reference, stage, cycle, step, point)
+                .then_some(entry.path)
+        })
+        .collect::<Vec<_>>();
+    paths.sort();
+    Ok(paths)
+}
+
+#[derive(Default)]
+struct CollectionManifestStability {
+    last: Vec<String>,
+    observations: usize,
+}
+
+impl CollectionManifestStability {
+    fn observe(&mut self, paths: &[String]) -> bool {
+        if paths.is_empty() {
+            self.last.clear();
+            self.observations = 0;
+            return false;
+        }
+        if paths == self.last {
+            self.observations += 1;
+        } else {
+            self.last = paths.to_vec();
+            self.observations = 1;
+        }
+        self.observations >= COLLECTED_MANIFEST_STABLE_OBSERVATIONS
+    }
+}
+
+fn filter_file_matches_collection(
+    reference: &FilterDataFilename,
+    stage: i64,
+    cycle: i64,
+    step: i64,
+    point: i64,
+) -> bool {
+    reference.stage as i64 == stage
+        && reference.cycle as i64 == cycle
+        && reference.step as i64 == step
+        && reference.point as i64 == point
 }
 
 #[cfg(test)]
@@ -2155,6 +2410,138 @@ mod tests {
         assert_eq!(stage_position_from_event("POSTRun", Some(6)), Some(6));
         assert_eq!(stage_position_from_event("POSTRun", None), None);
         assert_eq!(stage_position_from_event("unexpected", None), None);
+    }
+
+    #[test]
+    fn initial_reset_supplies_the_atomic_status_boundary() {
+        let event = ServerEvent {
+            id: Some("epoch:0".into()),
+            event: "reset".into(),
+            data: serde_json::json!({
+                "data": {
+                    "reason": "initial_snapshot",
+                    "status": {
+                        "observed_at": "2026-07-17T12:00:00Z",
+                        "power_enabled": false,
+                        "block": {"enabled": false, "target_c": 25.0},
+                        "zone_count": 6,
+                        "drawer": "Closed",
+                        "cover": "Down",
+                        "lamp_status": "off",
+                        "sample_temperatures_c": [25.0, 25.0, 25.0, 25.0, 25.0, 25.0],
+                        "block_temperatures_c": [25.0, 25.0, 25.0, 25.0, 25.0, 25.0],
+                        "cover_temperature_c": 30.0,
+                        "target_temperatures_c": {},
+                        "target_controlled": {},
+                        "led_temperature_c": 31.0,
+                        "indicator": {"color": null, "mode": "off"},
+                        "run": {
+                            "name": "-", "stage": -1, "stage_name": "Idle",
+                            "num_stages": -1, "cycle": -1, "num_cycles": -1,
+                            "step": -1, "point": -1, "state": "Idle"
+                        }
+                    }
+                }
+            }),
+        };
+
+        assert_eq!(status_from_reset_event(&event).unwrap().zone_count, 6);
+    }
+
+    #[tokio::test]
+    async fn initial_enrichment_is_queued_without_advancing_the_sse_cursor() {
+        let temp = tempfile::tempdir().unwrap();
+        let (database, actor) = DatabaseActor::open(&temp.path().join("state.sqlite")).unwrap();
+        let actor_task = tokio::spawn(actor.run());
+        database
+            .commit(EventRecord {
+                machine: "qpcr-test".into(),
+                cursor: Some("epoch:7".into()),
+                raw_json: serde_json::json!({"event": "reset"}).to_string(),
+                received_at: 100,
+                influx_lines: Vec::new(),
+                matrix: None,
+                processing_error: None,
+                dead_letter: false,
+            })
+            .await
+            .unwrap();
+
+        commit_initial_server_enrichment(
+            &database,
+            "qpcr-test",
+            vec!["plate_setup,machine=qpcr-test sample=\"A1\" 101".into()],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            database.cursor("qpcr-test").await.unwrap().as_deref(),
+            Some("epoch:7")
+        );
+        let batch = database
+            .influx_batch(10, 101)
+            .await
+            .unwrap()
+            .expect("cursorless enrichment was not queued");
+        assert!(batch.body.contains("plate_setup,machine=qpcr-test"));
+        database.shutdown().await.unwrap();
+        actor_task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn filter_file_match_requires_the_complete_collection_position() {
+        let reference =
+            FilterDataFilename::from_string("S02_C015_T03_P0042_M4_X1_filterdata.xml").unwrap();
+
+        assert!(filter_file_matches_collection(&reference, 2, 15, 3, 42));
+        assert!(!filter_file_matches_collection(&reference, 2, 15, 3, 43));
+        assert!(!filter_file_matches_collection(&reference, 2, 16, 3, 42));
+    }
+
+    #[test]
+    fn collection_waits_for_a_stable_nonempty_filter_manifest() {
+        let mut stability = CollectionManifestStability::default();
+        let first = vec!["filter-a.xml".to_string()];
+        let complete = vec!["filter-a.xml".to_string(), "filter-b.xml".to_string()];
+
+        assert!(!stability.observe(&[]));
+        assert!(!stability.observe(&first));
+        assert!(!stability.observe(&first));
+        // A staggered second file resets the stability window.
+        assert!(!stability.observe(&complete));
+        assert!(!stability.observe(&complete));
+        assert!(stability.observe(&complete));
+    }
+
+    #[test]
+    fn replay_context_restores_event_time_run_position_and_targets() {
+        let mut state = MachineState::default_idle();
+        state.run_name = Some("current-but-wrong".into());
+        state.plate_setup_run = Some("current-but-wrong".into());
+        let payload = serde_json::json!({
+            "message": "Collected -run=finished -stage=2 -cycle=40 -step=2 -point=1",
+            "context": {
+                "run_name": "finished",
+                "stage": 2,
+                "cycle": 40,
+                "step": 2,
+                "zone_targets_c": [60.0, 60.1, 60.2]
+            }
+        });
+
+        assert!(update_state_from_event_context(&mut state, &payload));
+        assert_eq!(state.run_name.as_deref(), Some("finished"));
+        assert_eq!(
+            (state.stage, state.cycle, state.step),
+            (Some(2), Some(40), Some(2))
+        );
+        assert_eq!(state.zone_targets, vec![60.0, 60.1, 60.2]);
+        assert!(state.plate_setup_run.is_none());
+
+        // Context still updates position and targets for every event, but only
+        // a run-title transition should trigger a plate-setup fetch.
+        assert!(!update_state_from_event_context(&mut state, &payload));
     }
 
     #[test]

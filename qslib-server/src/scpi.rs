@@ -59,15 +59,7 @@ pub async fn run_oneshot(
         {
             Ok(Ok(ok)) => OneShot::Ok(ok),
             Ok(Err(err)) => OneShot::ScpiError(err),
-            Err(ReceiveOkResponseError::Timeout) => {
-                return Err(ServerError::timeout("timed out waiting for SCPI response"))
-            }
-            Err(ReceiveOkResponseError::ConnectionClosed) => {
-                return Err(ServerError::unavailable(
-                    "SCPI connection closed before response",
-                ))
-            }
-            Err(e) => return Err(ServerError::internal(format!("SCPI response error: {e}"))),
+            Err(error) => return Err(map_post_submit_error(error)),
         };
         Ok((access, out))
     }
@@ -77,6 +69,21 @@ pub async fn run_oneshot(
     // and its receive task complete deterministically.
     conn.close().await;
     result
+}
+
+/// Once `send_command_bytes` returns, the instrument may have executed the
+/// command even if its terminal response is lost or malformed. Keep every
+/// response-side failure from inviting an unsafe automatic retry.
+fn map_post_submit_error(error: ReceiveOkResponseError) -> ServerError {
+    match error {
+        ReceiveOkResponseError::Timeout => {
+            ServerError::timeout("timed out waiting for SCPI response")
+        }
+        ReceiveOkResponseError::ConnectionClosed => {
+            ServerError::unavailable("SCPI connection closed before response").outcome("unknown")
+        }
+        error => ServerError::internal(format!("SCPI response error: {error}")).outcome("unknown"),
+    }
 }
 
 /// Establish the loopback plaintext SCPI connection, with a bounded timeout.
@@ -124,5 +131,29 @@ fn map_access_error(target: &AccessLevel, e: CommandError<ErrorResponse>) -> Ser
             ServerError::timeout("timed out setting SCPI access level")
         }
         other => ServerError::unavailable(format!("failed to set SCPI access level: {other}")),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn post_submit_response_failures_have_unknown_outcome() {
+        let closed = map_post_submit_error(ReceiveOkResponseError::ConnectionClosed);
+        assert_eq!(closed.outcome, "unknown");
+        assert!(closed.retryable);
+
+        let unexpected = map_post_submit_error(ReceiveOkResponseError::UnexpectedMessage(
+            qslib_core::parser::LogMessage {
+                topic: "Run".to_string(),
+                timestamp: None,
+                message: "Starting".to_string(),
+            },
+        ));
+        assert_eq!(unexpected.outcome, "unknown");
+
+        let timeout = map_post_submit_error(ReceiveOkResponseError::Timeout);
+        assert_eq!(timeout.outcome, "unknown");
     }
 }

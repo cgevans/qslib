@@ -8,7 +8,10 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  # A called workflow cannot elevate above its caller's token ceiling. The
+  # reusable CI workflow keeps ordinary jobs read-only and grants write only
+  # to its Forgejo release job.
+  contents: write
 
 jobs:
   release:

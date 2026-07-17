@@ -23,10 +23,11 @@ use crate::auth::{require_role, Principal, Role};
 use crate::dto::CapabilitiesDto;
 use crate::error::ServerError;
 use crate::events::{EventEnvelope, Replay};
-use crate::operation::{CreateOperation, OperationRecord};
+use crate::operation::CreateOperation;
 use crate::package;
 use crate::service::{
-    InstrumentOperation, InstrumentResult, OverwriteMode, PreflightRunInput, StartRunInput,
+    AcceptedPackageSnapshot, InstrumentOperation, InstrumentResult, OverwriteMode,
+    PreflightRunInput, StartRunInput,
 };
 use crate::state::AppState;
 
@@ -50,6 +51,8 @@ pub async fn capabilities(
         max_access: String::from(state.max_access.clone()).to_ascii_lowercase(),
         sse: true,
         sse_cursor_format: "epoch-sequence",
+        sse_event_context: true,
+        sse_initial_snapshot: true,
         raw_scpi: state.enable_raw_scpi,
         scpi_tunnel: state.enable_scpi_tunnel,
         file_writes: state.allow_file_writes,
@@ -233,13 +236,18 @@ pub async fn get_operation(
     State(state): State<AppState>,
     Extension(principal): Extension<Principal>,
     AxumPath(id): AxumPath<Uuid>,
-) -> Result<Json<OperationRecord>, ServerError> {
-    require_role(Extension(principal), Role::Observer)?;
-    state
+) -> Result<Response, ServerError> {
+    let principal = require_role(Extension(principal), Role::Observer)?;
+    let record = state
         .operations
         .get(id)
-        .map(Json)
-        .ok_or_else(|| ServerError::not_found("operation not found"))
+        .ok_or_else(|| ServerError::not_found("operation not found"))?;
+    if principal.role != Role::Administrator && record.identity != principal.name {
+        // Do not reveal whether another identity's operation exists. Results
+        // may include generated access keys and other caller-private data.
+        return Err(ServerError::not_found("operation not found"));
+    }
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(record)).into_response())
 }
 
 pub async fn events(
@@ -247,15 +255,32 @@ pub async fn events(
     Extension(principal): Extension<Principal>,
     headers: HeaderMap,
 ) -> Result<Sse<impl Stream<Item = Result<Event, Infallible>>>, ServerError> {
-    require_role(Extension(principal), Role::Observer)?;
-    let last_id = headers
-        .get("last-event-id")
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned);
+    let principal = require_role(Extension(principal), Role::Observer)?;
+    let mut last_ids = headers.get_all("last-event-id").iter();
+    let last_id = match last_ids.next() {
+        Some(value) => {
+            if last_ids.next().is_some() {
+                return Err(ServerError::bad_request(
+                    "multiple Last-Event-ID headers are not supported",
+                ));
+            }
+            Some(
+                value
+                    .to_str()
+                    .map_err(|_| ServerError::bad_request("Last-Event-ID is not valid text"))?
+                    .to_owned(),
+            )
+        }
+        None => None,
+    };
     let (replay, receiver) = state.events.replay_and_subscribe(last_id.as_deref());
     let mut initial = match replay {
         Replay::Events(events) => VecDeque::from(events),
         Replay::Reset { reason, cursor } => {
+            // The live receiver and reset cursor were established atomically
+            // before this snapshot query. Events that arrive while it runs are
+            // buffered and delivered after the reset, so a reset cannot skip
+            // operation or instrument changes.
             let snapshot = match state.service.execute(InstrumentOperation::Status).await {
                 Ok(InstrumentResult::Status(status)) => json!(status),
                 Err(error) => json!({"unavailable": error.message}),
@@ -270,25 +295,38 @@ pub async fn events(
         EventStreamState {
             initial: std::mem::take(&mut initial),
             receiver,
-            heartbeat: tokio::time::interval(Duration::from_secs(15)),
+            shutdown: state.events.subscribe_shutdown(),
+            principal,
         },
         |mut stream| async move {
-            if let Some(envelope) = stream.initial.pop_front() {
-                return Some((Ok(to_sse(envelope)), stream));
-            }
-            tokio::select! {
-                event = stream.receiver.recv() => match event {
-                    Ok(envelope) => Some((Ok(to_sse(envelope)), stream)),
-                    Err(broadcast::error::RecvError::Lagged(_)) => {
-                        // Closing makes clients reconnect with their last fully
-                        // parsed cursor. The history replay then supplies every
-                        // missed event, or a snapshot reset if it has expired.
-                        None
+            loop {
+                if *stream.shutdown.borrow() {
+                    return None;
+                }
+                while let Some(envelope) = stream.initial.pop_front() {
+                    if event_visible_to(&stream.principal, &envelope) {
+                        return Some((Ok(to_sse(envelope)), stream));
                     }
-                    Err(broadcast::error::RecvError::Closed) => None,
-                },
-                _ = stream.heartbeat.tick() => {
-                    Some((Ok(Event::default().comment("heartbeat")), stream))
+                }
+                tokio::select! {
+                    event = stream.receiver.recv() => match event {
+                        Ok(envelope) if event_visible_to(&stream.principal, &envelope) => {
+                            return Some((Ok(to_sse(envelope)), stream));
+                        }
+                        Ok(_) => continue,
+                        Err(broadcast::error::RecvError::Lagged(_)) => {
+                            // Closing makes clients reconnect with their last fully
+                            // parsed cursor. The history replay then supplies every
+                            // missed event, or a snapshot reset if it has expired.
+                            return None;
+                        }
+                        Err(broadcast::error::RecvError::Closed) => return None,
+                    },
+                    changed = stream.shutdown.changed() => {
+                        if changed.is_err() || *stream.shutdown.borrow() {
+                            return None;
+                        }
+                    }
                 }
             }
         },
@@ -299,7 +337,16 @@ pub async fn events(
 struct EventStreamState {
     initial: VecDeque<EventEnvelope>,
     receiver: broadcast::Receiver<EventEnvelope>,
-    heartbeat: tokio::time::Interval,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+    principal: Principal,
+}
+
+fn event_visible_to(principal: &Principal, envelope: &EventEnvelope) -> bool {
+    principal.role == Role::Administrator
+        || envelope
+            .audience
+            .as_deref()
+            .map_or(true, |audience| audience == principal.name)
 }
 
 fn to_sse(envelope: EventEnvelope) -> Event {
@@ -333,6 +380,7 @@ pub async fn get_experiment(
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<Value>, ServerError> {
     require_role(Extension(principal), Role::Observer)?;
+    package::validate_experiment_name(&name)?;
     let root = state.context_root("experiments")?;
     let working = root.join(&name).is_dir();
     let package_etag = package::package_etag(root, &name).ok();
@@ -363,7 +411,11 @@ pub async fn put_package(
         .get(header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
-    if !content_type.starts_with("application/zip") {
+    if !content_type
+        .split(';')
+        .next()
+        .is_some_and(|value| value.trim().eq_ignore_ascii_case("application/zip"))
+    {
         return Err(ServerError::bad_request(
             "Content-Type must be application/zip",
         ));
@@ -504,6 +556,7 @@ pub async fn get_run(
     AxumPath(name): AxumPath<String>,
 ) -> Result<Json<Value>, ServerError> {
     require_role(Extension(principal), Role::Observer)?;
+    package::validate_experiment_name(&name)?;
     let working = state.context_root("experiments")?.join(&name).is_dir();
     let completed = state
         .context_root("public_run_complete")?
@@ -564,25 +617,73 @@ pub async fn start_run(
     Json(request): Json<StartRequest>,
 ) -> Result<Response, ServerError> {
     require_controls(&state, principal.clone())?;
+    let fingerprint_input = serde_json::to_string(&request).map_err(|error| {
+        ServerError::internal(format!("cannot fingerprint start request: {error}"))
+    })?;
+    let key = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| ServerError::bad_request("Idempotency-Key header is required"))?;
+    let fingerprint = format!("{:x}", Sha256::digest(fingerprint_input.as_bytes()));
+    if let Some(record) = state
+        .operations
+        .existing("run_start", &principal, key, &fingerprint)?
+    {
+        return Ok((
+            StatusCode::ACCEPTED,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(record),
+        )
+            .into_response());
+    }
     let experiments_root = state.context_root("experiments")?.to_path_buf();
-    let actual_etag = package::package_etag(&experiments_root, &request.experiment)?;
+    let staged_root = package::staged_path(&experiments_root, &request.experiment)?;
+    // Read one opened package file and derive its ETag from those exact bytes.
+    // Reading the metadata ETag and extracted tree separately would allow a
+    // concurrent package replacement to splice two different versions.
+    let package_bytes = std::fs::read(staged_root.join(".qslib-package.zip"))
+        .map_err(|_| ServerError::not_found("staged experiment package not found"))?;
+    let actual_etag = format!("\"sha256{:x}\"", Sha256::digest(&package_bytes));
     if actual_etag != request.package_etag {
         return Err(ServerError::conflict(format!(
             "package ETag mismatch: current value is {actual_etag}"
         )));
     }
     let overwrite = parse_overwrite(&request.overwrite)?;
-    let (protocol, protocol_scpi) = package::load_protocol(&experiments_root, &request.experiment)?;
-    let staged_root = package::staged_path(&experiments_root, &request.experiment)?;
-    let fingerprint = serde_json::to_string(&request).map_err(|error| {
-        ServerError::internal(format!("cannot fingerprint start request: {error}"))
+    // Re-extract the accepted bytes beneath a UUID-named root outside every
+    // file API context. The queued actor can therefore neither observe a
+    // later PUT/delete nor have its snapshot changed through file routes.
+    let default_root = experiments_root
+        .parent()
+        .ok_or_else(|| ServerError::internal("experiments context has no parent"))?
+        .to_path_buf();
+    let snapshot_parent = default_root.parent().ok_or_else(|| {
+        ServerError::internal(
+            "cannot create a private start snapshot outside the default file context",
+        )
     })?;
+    let snapshot_root =
+        snapshot_parent.join(format!(".qslib-server-start-input-{}", Uuid::new_v4()));
+    let snapshot_package = package::stage_package(
+        snapshot_root.clone(),
+        request.experiment.clone(),
+        Bytes::from(package_bytes),
+    )
+    .await?;
+    let staged_root = package::staged_path(&snapshot_root, &request.experiment)?;
+    let staged = AcceptedPackageSnapshot::new(staged_root, snapshot_root.clone());
+    if snapshot_package.etag != actual_etag {
+        return Err(ServerError::internal(
+            "accepted package snapshot did not retain its content digest",
+        ));
+    }
+    let (protocol, protocol_scpi) = package::load_protocol(&snapshot_root, &request.experiment)?;
     enqueue_operation(
         &state,
         &principal,
         &headers,
         "run_start",
-        &fingerprint,
+        &fingerprint_input,
         InstrumentOperation::StartRun(StartRunInput {
             experiment: request.experiment,
             overwrite,
@@ -590,7 +691,7 @@ pub async fn start_run(
             require_drawer_check: request.require_drawer_check,
             experiments_root,
             completed_root: state.context_root("public_run_complete")?.to_path_buf(),
-            staged_root,
+            staged,
             protocol_scpi,
             protocol_name: protocol.name,
             sample_volume: protocol.sample_volume,
@@ -619,6 +720,7 @@ pub async fn run_action(
     headers: HeaderMap,
 ) -> Result<Response, ServerError> {
     require_controls(&state, principal.clone())?;
+    package::validate_experiment_name(&name)?;
     let operation = match action.as_str() {
         "pause" => InstrumentOperation::Pause {
             name: Some(name.clone()),
@@ -671,6 +773,12 @@ pub async fn put_protocol(
     Json(request): Json<ProtocolUpdateRequest>,
 ) -> Result<Response, ServerError> {
     require_controls(&state, principal)?;
+    if !state.allow_file_writes {
+        return Err(ServerError::forbidden(
+            "file writes are disabled by server policy",
+        ));
+    }
+    package::validate_experiment_name(&name)?;
     let mode = query.mode.as_deref().unwrap_or("replace");
     if !matches!(mode, "replace" | "from_now") {
         return Err(ServerError::bad_request("mode must be replace or from_now"));
@@ -727,6 +835,7 @@ pub async fn get_eds(
     AxumPath(name): AxumPath<String>,
 ) -> Result<Response, ServerError> {
     require_role(Extension(principal), Role::Observer)?;
+    package::validate_experiment_name(&name)?;
     let path = state
         .context_root("public_run_complete")?
         .join(format!("{name}.eds"));
@@ -777,24 +886,27 @@ fn enqueue_operation(
         .ok_or_else(|| ServerError::bad_request("Idempotency-Key header is required"))?;
     let fingerprint = format!("{:x}", Sha256::digest(fingerprint_input.as_bytes()));
     match state.operations.create(kind, principal, key, fingerprint)? {
-        CreateOperation::Existing(record) => {
-            Ok((StatusCode::ACCEPTED, Json(record)).into_response())
-        }
+        CreateOperation::Existing(record) => Ok((
+            StatusCode::ACCEPTED,
+            [(header::CACHE_CONTROL, "no-store")],
+            Json(record),
+        )
+            .into_response()),
         CreateOperation::New(record) => {
-            let receiver = match state.service.enqueue(operation) {
-                Ok(receiver) => receiver,
+            let enqueued = match state.service.enqueue(operation) {
+                Ok(enqueued) => enqueued,
                 Err(error) => {
-                    state
-                        .operations
-                        .failed(record.id, ServerError::queue_full());
+                    state.operations.failed(record.id, error.clone());
                     return Err(error);
                 }
             };
             let store = state.operations.clone();
             let operation_id = record.id;
             tokio::spawn(async move {
-                store.running(operation_id);
-                match receiver.await {
+                if enqueued.started.await.is_ok() {
+                    store.running(operation_id);
+                }
+                match enqueued.response.await {
                     Ok(Ok(InstrumentResult::AccessKey(key))) => {
                         store.succeeded(operation_id, json!({"key": key}))
                     }
@@ -807,7 +919,12 @@ fn enqueue_operation(
                     ),
                 }
             });
-            Ok((StatusCode::ACCEPTED, Json(record)).into_response())
+            Ok((
+                StatusCode::ACCEPTED,
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(record),
+            )
+                .into_response())
         }
     }
 }
@@ -878,4 +995,41 @@ fn atomic_write(path: &std::path::Path, bytes: &[u8]) -> Result<(), ServerError>
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::events::EventHub;
+
+    fn principal(name: &str, role: Role) -> Principal {
+        Principal {
+            name: name.to_string(),
+            role,
+        }
+    }
+
+    #[test]
+    fn targeted_operation_events_are_owner_or_administrator_only() {
+        let event =
+            EventHub::new().publish_for("owner", "operation", json!({"id": "private-operation"}));
+        assert!(event_visible_to(
+            &principal("owner", Role::Observer),
+            &event
+        ));
+        assert!(!event_visible_to(
+            &principal("other", Role::Controller),
+            &event
+        ));
+        assert!(event_visible_to(
+            &principal("admin", Role::Administrator),
+            &event
+        ));
+
+        let public = EventHub::new().publish("status", json!({}));
+        assert!(event_visible_to(
+            &principal("other", Role::Observer),
+            &public
+        ));
+    }
 }

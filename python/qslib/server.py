@@ -88,6 +88,17 @@ _ABSOLUTE_CONTEXTS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _read_mutation_body(response: Any, *, operation: str, state_query: str) -> bytes:
+    """Read a successful mutation response without losing outcome semantics."""
+    try:
+        return response.read()
+    except (OSError, HTTPException, ValueError) as error:
+        raise ServerOutcomeUnknown(
+            f"qslib-server {operation} response failed: {error}",
+            state_query,
+        ) from error
+
+
 @dataclass
 class ServerClient:
     host: str
@@ -167,7 +178,18 @@ class ServerClient:
                     f"qslib-server mutation transport failed: {error}",
                     state_query or "/api/v1/instrument/status",
                 ) from error
-            raise ServerError(f"cannot reach qslib-server at {self.base_url}: {error}") from error
+            # URL/socket failures occurred before a valid HTTP response and
+            # are safe for read-only optional-service fallback. HTTPException
+            # instead indicates a peer sent a malformed HTTP response; keep it
+            # as ServerError so bootstrap will not overwrite a responding
+            # (but incompatible or broken) service.
+            if not isinstance(error, HTTPException):
+                raise ServerUnavailable(
+                    f"cannot reach qslib-server at {self.base_url}: {error}",
+                    retryable=True,
+                    outcome="not_started",
+                ) from error
+            raise ServerError(f"invalid HTTP response from qslib-server at {self.base_url}: {error}") from error
 
     def _json(
         self,
@@ -194,8 +216,16 @@ class ServerClient:
                 mutation=mutation,
                 state_query=state_query,
             ) as response:
-                body = response.read()
-        except (OSError, HTTPException) as error:
+                body = (
+                    _read_mutation_body(
+                        response,
+                        operation=path,
+                        state_query=state_query or "/api/v1/instrument/status",
+                    )
+                    if mutation
+                    else response.read()
+                )
+        except (OSError, HTTPException, ValueError) as error:
             if mutation:
                 raise ServerOutcomeUnknown(
                     f"qslib-server mutation response failed: {error}",
@@ -239,8 +269,13 @@ class ServerClient:
             raise ServerError("qslib-server capability probe is negatively cached")
         try:
             capabilities = self._json("/api/v1/capabilities")
-        except ServerError:
-            self._retry_at = time.monotonic() + 30.0
+        except ServerError as error:
+            # A bad/missing token is a permanent caller configuration error,
+            # not an optional-server outage.  Keeping the structured failure
+            # visible prevents later probes from turning it into a generic
+            # negative-cache result that callers might treat as safe fallback.
+            if error.status not in {401, 403}:
+                self._retry_at = time.monotonic() + 30.0
             raise
         if capabilities.get("api_version") != "v1":
             self._retry_at = time.monotonic() + 30.0
@@ -331,13 +366,14 @@ class ServerClient:
             return response.read(), response.headers.get("ETag")
 
     def delete_experiment(self, name: str) -> None:
+        state_query = f"/api/v1/experiments/{_quote(name)}"
         with self._request(
-            f"/api/v1/experiments/{_quote(name)}",
+            state_query,
             method="DELETE",
             mutation=True,
-            state_query=f"/api/v1/experiments/{_quote(name)}",
+            state_query=state_query,
         ) as response:
-            response.read()
+            _read_mutation_body(response, operation="experiment deletion", state_query=state_query)
 
     def list_runs(self, location: str = "working") -> list[str]:
         query = urllib.parse.urlencode({"location": location})
@@ -366,7 +402,7 @@ class ServerClient:
                 mutation=True,
                 state_query=state_query,
             ) as response:
-                response.read()
+                _read_mutation_body(response, operation="package staging", state_query=state_query)
                 etag = response.headers.get("ETag")
         except (OSError, HTTPException) as error:
             raise ServerOutcomeUnknown("qslib-server package staging response failed", state_query) from error
@@ -375,14 +411,15 @@ class ServerClient:
         return etag
 
     def delete_staged_package(self, name: str, etag: str) -> None:
+        state_query = f"/api/v1/experiments/{_quote(name)}"
         with self._request(
             f"/api/v1/experiments/{_quote(name)}/package",
             method="DELETE",
             headers={"If-Match": etag},
             mutation=True,
-            state_query=f"/api/v1/experiments/{_quote(name)}",
+            state_query=state_query,
         ) as response:
-            response.read()
+            _read_mutation_body(response, operation="staged-package deletion", state_query=state_query)
 
     def preflight_run(self, experiment: str, *, overwrite: bool | str = False) -> None:
         query = urllib.parse.urlencode({"experiment": experiment, "overwrite": str(overwrite).lower()})
@@ -490,24 +527,24 @@ class ServerClient:
             if state == "succeeded":
                 return current
             if state == "failed":
-                error = current.get("error") or {}
+                operation_error = current.get("error") or {}
                 raise ServerError(
-                    str(error.get("message") or f"operation {operation_id} failed"),
-                    status=error.get("status"),
-                    code=error.get("code"),
-                    retryable=bool(error.get("retryable", False)),
-                    outcome=str(error.get("outcome") or current.get("outcome") or "not_started"),
-                    details=error.get("details"),
+                    str(operation_error.get("message") or f"operation {operation_id} failed"),
+                    status=operation_error.get("status"),
+                    code=operation_error.get("code"),
+                    retryable=bool(operation_error.get("retryable", False)),
+                    outcome=str(operation_error.get("outcome") or current.get("outcome") or "not_started"),
+                    details=operation_error.get("details"),
                 )
             if state == "unknown":
-                error = current.get("error") or {}
+                operation_error = current.get("error") or {}
                 raise ServerOutcomeUnknown(
-                    str(error.get("message") or f"operation {operation_id} outcome is unknown"),
+                    str(operation_error.get("message") or f"operation {operation_id} outcome is unknown"),
                     f"/api/v1/operations/{operation_id}",
-                    status=error.get("status"),
-                    code=error.get("code"),
-                    retryable=bool(error.get("retryable", False)),
-                    details=error.get("details"),
+                    status=operation_error.get("status"),
+                    code=operation_error.get("code"),
+                    retryable=bool(operation_error.get("retryable", False)),
+                    details=operation_error.get("details"),
                 )
             if time.monotonic() >= deadline:
                 raise ServerOutcomeUnknown(
@@ -540,7 +577,20 @@ class ServerClient:
                         if event.get("id") is not None:
                             last_event_id = str(event["id"])
                         yield event
-            except (ServerError, OSError, HTTPException, UnicodeDecodeError):
+                    # A clean EOF is still a disconnected event stream.  Back
+                    # off before reopening so an empty 200 response from a
+                    # proxy cannot turn this into a busy loop.
+                    time.sleep(0.25)
+            except ServerError as error:
+                # Authentication, authorization, and other non-retryable HTTP
+                # failures cannot be repaired by reconnecting.  Hiding them in
+                # this loop makes a misconfigured event consumer hang forever.
+                # Transport failures have no HTTP status; explicitly retryable
+                # server failures may also be transient.
+                if error.status is not None and not error.retryable:
+                    raise
+                time.sleep(0.25)
+            except (OSError, HTTPException, UnicodeDecodeError):
                 time.sleep(0.25)
 
     def get_file(
@@ -626,7 +676,11 @@ class ServerClient:
         suffix = f"/{_quote_path(path)}" if path else ""
         query = urllib.parse.urlencode({"pattern": pattern, "recursive": str(recursive).lower()})
         try:
-            return self._json(f"/api/v1/directories/{_quote(context)}{suffix}?{query}").get("entries", [])
+            payload = self._json(f"/api/v1/directories/{_quote(context)}{suffix}?{query}")
+            entries = payload.get("entries")
+            if not isinstance(entries, list):
+                raise ServerError("qslib-server directory response omitted its entries list")
+            return entries
         except ServerError as error:
             if error.status == 404 and error.code != "unknown_context":
                 raise FileNotFoundError(path) from error
@@ -674,7 +728,18 @@ class ServerClient:
             mutation=True,
             state_query="/api/v1/instrument/status",
         ) as response:
-            return response.read().decode()
+            body = _read_mutation_body(
+                response,
+                operation="raw SCPI",
+                state_query="/api/v1/instrument/status",
+            )
+        try:
+            return body.decode()
+        except UnicodeDecodeError as error:
+            raise ServerOutcomeUnknown(
+                "qslib-server raw SCPI response was not valid UTF-8",
+                "/api/v1/instrument/status",
+            ) from error
 
     def upgrade(self, binary: bytes, *, dry_run: bool = False, timeout: float = 120.0) -> dict[str, Any]:
         sha = hashlib.sha256(binary).hexdigest()
@@ -688,7 +753,20 @@ class ServerClient:
             mutation=True,
             state_query="/health",
         ) as response:
-            return json.loads(response.read())
+            body = _read_mutation_body(response, operation="upgrade", state_query="/health")
+        try:
+            result = json.loads(body)
+        except (UnicodeDecodeError, ValueError) as error:
+            raise ServerOutcomeUnknown(
+                "qslib-server upgrade response was not valid JSON",
+                "/health",
+            ) from error
+        if not isinstance(result, dict):
+            raise ServerOutcomeUnknown(
+                "qslib-server upgrade response was not a JSON object",
+                "/health",
+            )
+        return result
 
 
 def _parse_error(body: bytes, default: str) -> dict[str, Any]:

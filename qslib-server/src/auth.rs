@@ -4,7 +4,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use axum::extract::{Extension, State};
-use axum::http::{header, Request};
+use axum::http::{header, HeaderMap, Request};
 use axum::middleware::Next;
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
@@ -77,10 +77,33 @@ impl AuthPolicy {
         let unauthenticated_role = parsed.unauthenticated_role;
         let mut tokens = Vec::with_capacity(parsed.tokens.len());
         for entry in parsed.tokens {
+            if entry.name.is_empty()
+                || entry.name.len() > 128
+                || entry.name.chars().any(char::is_control)
+            {
+                anyhow::bail!(
+                    "token name must contain 1 to 128 non-control characters: {:?}",
+                    entry.name
+                );
+            }
+            if entry.name == "unauthenticated" {
+                anyhow::bail!(
+                    "token name \"unauthenticated\" is reserved for requests without credentials"
+                );
+            }
             let bytes = hex_decode_sha256(&entry.sha256)
                 .map_err(|e| anyhow::anyhow!("invalid sha256 for token {:?}: {e}", entry.name))?;
             if tokens.iter().any(|t: &TokenRecord| t.name == entry.name) {
                 anyhow::bail!("duplicate token name {:?}", entry.name);
+            }
+            if tokens
+                .iter()
+                .any(|token: &TokenRecord| token.sha256 == bytes)
+            {
+                anyhow::bail!(
+                    "duplicate bearer-token digest for token {:?}; each credential must map to exactly one identity and role",
+                    entry.name
+                );
             }
             tokens.push(TokenRecord {
                 name: entry.name,
@@ -133,18 +156,40 @@ pub async fn require_bearer(
     mut req: Request<axum::body::Body>,
     next: Next,
 ) -> Result<Response, ServerError> {
-    let provided = req
-        .headers()
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Bearer "))
-        .map(str::trim);
+    let provided = bearer_token(req.headers())?;
     let principal = state
         .auth
         .authenticate(provided)
         .ok_or_else(|| ServerError::unauthorized("missing or invalid bearer token"))?;
     req.extensions_mut().insert(principal);
     Ok(next.run(req).await)
+}
+
+/// Parse an optional Bearer credential without confusing a malformed supplied
+/// header with an absent credential. The latter may intentionally receive the
+/// configured unauthenticated role; the former must always be rejected.
+fn bearer_token(headers: &HeaderMap) -> Result<Option<&str>, ServerError> {
+    let mut values = headers.get_all(header::AUTHORIZATION).iter();
+    let Some(value) = values.next() else {
+        return Ok(None);
+    };
+    if values.next().is_some() {
+        return Err(ServerError::unauthorized(
+            "multiple Authorization headers are not allowed",
+        ));
+    }
+    let value = value
+        .to_str()
+        .map_err(|_| ServerError::unauthorized("invalid Authorization header"))?;
+    let mut fields = value.split_ascii_whitespace();
+    let scheme = fields.next().unwrap_or_default();
+    let token = fields.next().unwrap_or_default();
+    if !scheme.eq_ignore_ascii_case("Bearer") || token.is_empty() || fields.next().is_some() {
+        return Err(ServerError::unauthorized(
+            "Authorization must contain exactly one Bearer token",
+        ));
+    }
+    Ok(Some(token))
 }
 
 /// Extract a principal and enforce a minimum role in handlers.
@@ -191,6 +236,7 @@ fn hex_decode_sha256(value: &str) -> Result<[u8; 32], &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderValue;
 
     #[test]
     fn hashes_are_compared_and_roles_preserved() {
@@ -257,5 +303,64 @@ mod tests {
             policy.authenticate(Some("admin-secret")).unwrap().role,
             Role::Administrator
         );
+    }
+
+    #[test]
+    fn bearer_parser_distinguishes_absent_and_malformed_credentials() {
+        let mut headers = HeaderMap::new();
+        assert_eq!(bearer_token(&headers).unwrap(), None);
+
+        headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("bearer secret"),
+        );
+        assert_eq!(bearer_token(&headers).unwrap(), Some("secret"));
+
+        for malformed in ["Basic secret", "Bearer", "Bearer one two"] {
+            headers.insert(
+                header::AUTHORIZATION,
+                HeaderValue::from_str(malformed).unwrap(),
+            );
+            assert_eq!(
+                bearer_token(&headers).unwrap_err().status,
+                axum::http::StatusCode::UNAUTHORIZED
+            );
+        }
+    }
+
+    #[test]
+    fn auth_file_rejects_a_digest_assigned_to_multiple_identities() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.toml");
+        let hash = crate::state::sha256_hex(b"shared-secret");
+        std::fs::write(
+            &path,
+            format!(
+                "[[tokens]]\nname = \"observer\"\nsha256 = \"{hash}\"\nrole = \"observer\"\n\n\
+                 [[tokens]]\nname = \"administrator\"\nsha256 = \"{hash}\"\nrole = \"administrator\"\n"
+            ),
+        )
+        .unwrap();
+
+        let error = AuthPolicy::from_file(&path).unwrap_err().to_string();
+        assert!(error.contains("duplicate bearer-token digest"));
+    }
+
+    #[test]
+    fn auth_file_reserves_the_unauthenticated_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("auth.toml");
+        let hash = crate::state::sha256_hex(b"secret");
+        std::fs::write(
+            &path,
+            format!(
+                "unauthenticated_role = \"observer\"\n\n\
+                 [[tokens]]\nname = \"unauthenticated\"\nsha256 = \"{hash}\"\nrole = \"administrator\"\n"
+            ),
+        )
+        .unwrap();
+
+        let error = AuthPolicy::from_file(&path).unwrap_err().to_string();
+        assert!(error.contains("is reserved"));
     }
 }

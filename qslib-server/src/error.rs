@@ -7,7 +7,7 @@ use serde::Serialize;
 use serde_json::Value;
 use uuid::Uuid;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ServerError {
     pub status: StatusCode,
     pub code: &'static str,
@@ -160,6 +160,12 @@ impl IntoResponse for ServerError {
             response
                 .headers_mut()
                 .insert("retry-after", HeaderValue::from_static("1"));
+        }
+        if self.status == StatusCode::UNAUTHORIZED {
+            response.headers_mut().insert(
+                axum::http::header::WWW_AUTHENTICATE,
+                HeaderValue::from_static("Bearer realm=\"qslib-server\""),
+            );
         }
         if self.scpi_error {
             let value = HeaderValue::from_str(&scpi_message)

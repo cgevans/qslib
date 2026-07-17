@@ -11,7 +11,20 @@ python-source = "python"
 module-name = "qslib._qslib"
 bindings = "pyo3"
 features = ["python"]
-exclude = ["tiff-collection.eds"]
+exclude = [
+    "tiff-collection.eds",
+    ".agents",
+    ".agents/**",
+    ".claude",
+    ".claude/**",
+    ".codex",
+    ".codex/**",
+    "code-review.md",
+    "hangs.md",
+    "qs-monitor/various-ideas.md",
+    "coverage-*.lcov",
+    "*.profraw",
+]
 
 [project]
 name = "qslib"
@@ -61,11 +74,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-monitor = [
-    "aiohttp~=3.9.0b0; python_version >= '3.12'",
-    "matrix-nio",
-    "influxdb_client",
-    "lxml"]
 altair = [
     "vegafusion",
     "altair",
@@ -81,7 +89,6 @@ tracker = "https://codeberg.org/cge/qslib/issues"
 download = "https://codeberg.org/cge/qslib/releases"
 
 [project.scripts]
-qs-monitor = "qslib.monitor_cli:run"
 qslib = "qslib.cli:cli"
 
 [dependency-groups]
@@ -91,10 +98,10 @@ dev = [
     "setuptools",
     "pytest-asyncio",
     "hypothesis",
-    "qslib[monitor]",
     "altair>=6.0.0",
     "maturin>=1.12.6",
     "mypy>=1.19.1",
+    "ruff==0.15.1",
 ]
 docs = [
     "myst_parser",
@@ -103,7 +110,6 @@ docs = [
     "sphinx-click",
     "sphinx-autodoc-typehints",
     "sphinx >= 2.4",
-    "qslib[monitor]"
 ]
 
 [tool.pytest.ini_options]

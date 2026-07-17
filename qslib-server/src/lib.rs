@@ -17,8 +17,6 @@ pub mod state;
 pub mod tunnel;
 pub mod upgrade;
 
-use std::io::ErrorKind;
-
 use axum::body::{to_bytes, Body};
 use axum::extract::DefaultBodyLimit;
 use axum::http::{Request, Response, StatusCode};
@@ -146,31 +144,40 @@ async fn request_id(
     request.extensions_mut().insert(request_id.clone());
     let mut response = next.run(request).await;
     if response.status().is_client_error() || response.status().is_server_error() {
+        let status = response.status();
         let is_json = response
             .headers()
             .get(axum::http::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .is_some_and(|value| value.starts_with("application/json"));
-        if is_json {
-            let (mut parts, body) = response.into_parts();
-            match to_bytes(body, 1024 * 1024).await {
-                Ok(bytes) => {
-                    let replacement = serde_json::from_slice::<serde_json::Value>(&bytes)
-                        .ok()
-                        .and_then(|mut value| {
-                            value["request_id"] = serde_json::Value::String(request_id.clone());
-                            serde_json::to_vec(&value).ok()
-                        })
-                        .unwrap_or_else(|| bytes.to_vec());
-                    parts.headers.remove(axum::http::header::CONTENT_LENGTH);
-                    response = Response::from_parts(parts, Body::from(replacement));
-                }
-                Err(error) => {
-                    warn!("could not attach request ID to error response: {error}");
-                    response = Response::from_parts(parts, Body::empty());
-                }
+        let (mut parts, body) = response.into_parts();
+        let bytes = match to_bytes(body, 1024 * 1024).await {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                warn!("could not buffer error response for normalization: {error}");
+                bytes::Bytes::new()
             }
-        }
+        };
+        let replacement = if is_json {
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .ok()
+                .and_then(|mut value| {
+                    value.as_object_mut()?.insert(
+                        "request_id".to_string(),
+                        serde_json::Value::String(request_id.clone()),
+                    );
+                    serde_json::to_vec(&value).ok()
+                })
+                .unwrap_or_else(|| structured_rejection(status, &bytes, &request_id))
+        } else {
+            structured_rejection(status, &bytes, &request_id)
+        };
+        parts.headers.remove(axum::http::header::CONTENT_LENGTH);
+        parts.headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            axum::http::HeaderValue::from_static("application/json"),
+        );
+        response = Response::from_parts(parts, Body::from(replacement));
     }
     if let Ok(value) = request_id.parse() {
         response.headers_mut().insert("x-request-id", value);
@@ -178,18 +185,65 @@ async fn request_id(
     response
 }
 
+/// Convert framework extractor rejections (which Axum otherwise renders as
+/// plain text) into the same stable error envelope as application errors.
+fn structured_rejection(status: StatusCode, body: &[u8], request_id: &str) -> Vec<u8> {
+    let (code, fallback_message) = match status {
+        StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => {
+            ("invalid_input", "request input is invalid")
+        }
+        StatusCode::UNSUPPORTED_MEDIA_TYPE => (
+            "unsupported_media_type",
+            "request Content-Type is not supported",
+        ),
+        StatusCode::PAYLOAD_TOO_LARGE => (
+            "payload_too_large",
+            "request body exceeds the configured limit",
+        ),
+        StatusCode::UNAUTHORIZED => ("unauthorized", "authentication is required"),
+        StatusCode::FORBIDDEN => ("forbidden", "request is forbidden"),
+        StatusCode::NOT_FOUND => ("not_found", "API resource not found"),
+        StatusCode::METHOD_NOT_ALLOWED => ("method_not_allowed", "method not allowed"),
+        _ if status.is_server_error() => ("internal", "internal server error"),
+        _ => ("request_rejected", "request was rejected"),
+    };
+    let message = if status.is_server_error() {
+        fallback_message
+    } else {
+        std::str::from_utf8(body)
+            .ok()
+            .map(str::trim)
+            .filter(|message| !message.is_empty() && message.len() <= 4096)
+            .unwrap_or(fallback_message)
+    };
+    serde_json::to_vec(&serde_json::json!({
+        "error": {
+            "code": code,
+            "message": message,
+            "retryable": false,
+            "outcome": "not_started",
+        },
+        "request_id": request_id,
+    }))
+    .expect("structured rejection is serializable")
+}
+
 pub async fn run(config: Config, state: AppState) -> anyhow::Result<()> {
     let app = build_router(state.clone());
+    // A conflicting listener is not evidence that a healthy qslib-server is
+    // already running. Returning success here can make service managers and
+    // bootstrap tooling silently accept a foreign or wedged process.
     let listener = match bind_reuseaddr(config.listen).await {
         Ok(listener) => listener,
-        Err(error) if error.kind() == ErrorKind::AddrInUse => {
-            info!(
-                "address {} already in use; assuming qslib-server is already running",
+        Err(error) => {
+            // AppState starts the managed actor, so stop it even when HTTP
+            // never starts listening.
+            state.service.shutdown().await;
+            return Err(anyhow::anyhow!(
+                "failed to bind qslib-server to {}: {error}",
                 config.listen
-            );
-            return Ok(());
+            ));
         }
-        Err(error) => return Err(error.into()),
     };
     info!(
         "qslib-server {} listening on {} (managed SCPI target {})",
@@ -198,14 +252,19 @@ pub async fn run(config: Config, state: AppState) -> anyhow::Result<()> {
         config.scpi_target,
     );
     let shutdown_state = state.clone();
-    axum::serve(listener, app)
+    let result = axum::serve(listener, app)
         .with_graceful_shutdown(async move {
             shutdown_signal().await;
-            // Stop semantic intake and return the managed connection to
-            // Observer before HTTP stops accepting/draining requests.
-            shutdown_state.service.shutdown().await;
+            // Signal streams and the SCPI actor, then return immediately so
+            // Axum stops accepting new requests before it drains existing
+            // ones. In particular, SSE bodies observe this signal and end.
+            shutdown_state.service.begin_shutdown();
         })
-        .await?;
+        .await;
+    // Wait for the managed connection to restore Observer (or close) even if
+    // the HTTP serve loop itself failed.
+    state.service.shutdown().await;
+    result?;
     Ok(())
 }
 

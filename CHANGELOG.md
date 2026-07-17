@@ -8,12 +8,31 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Unreleased
 
-- Changed qslib-server SSE IDs to opaque server-epoch cursors with ordered replay and live status resets for foreign, expired, or ahead cursors; legacy numeric resume headers remain accepted.
-- Updated Rust and Python semantic clients to preserve opaque SSE IDs across reconnects and discard partially received events before replay.
-- Added qs-monitor's WAL-mode durable delivery queue, idempotent Matrix notifications, systemd lifecycle/watchdog support, configuration preflight, and checksum-verified deployment with automatic rollback.
-- Added the typed `RemainingTimeQuery`, `QSConnection::get_run_remaining_time`, and semantic-server `remaining_time_s` status field for querying the machine's estimated remaining run time.
-- Added `Protocol::info_lines` and `Protocol::view` (Rust) for rendering a protocol with the current stage/step flagged: `info_lines` mirrors the flat `Display` output, `view` returns a structured tree for building custom (e.g. HTML) renderings.
-- Added commands for querying and setting the status led.
+## Version 0.16.0
+
+### qslib-server and semantic clients
+
+- Added the versioned qslib-server HTTP API for instrument status and controls, run lifecycle and authoritative protocols, contextual file and directory transfer, isolated raw SCPI, and atomic self-upgrade with watchdog rollback.
+- Added tracked operation resources with idempotency keys, owner-scoped results and events, stable structured errors, and explicit unknown-outcome reconciliation so submitted mutations are never repeated through direct SCPI after an ambiguous failure.
+- Added bearer-token ACLs, Observer/Controller/Administrator roles, explicit control and file-write policy gates, constant-time token checks, and read-only Observer defaults for tokenless bootstrap.
+- Changed SSE IDs to opaque server-epoch cursors with ordered replay and atomic status snapshots for fresh, foreign, expired, or ahead cursors; legacy numeric resume headers remain accepted.
+- Added event-time run context to replayed instrument events, including the run name, zone targets, stage, cycle, and step.
+- Added Rust and Python semantic clients and automatic `Machine` dispatch for supported high-level operations, with bounded direct-SCPI fallback only when the optional server is unavailable before submission; HTTP authorization failures remain visible.
+- Added raw HTTP range/file transfer, directory metadata and globbing, exact active-protocol retrieval, and safe experiment-package staging.
+
+### qs-monitor
+
+- Added a WAL-mode durable delivery queue, atomic SSE ingestion, idempotent Matrix notifications, independent per-sink retries, bounded collected-file retry and dead-letter handling, and cursor advancement only after durable ingest.
+- Added systemd lifecycle/watchdog support, configuration preflight, an exclusive database lock, and checksum-verified deployment bundles with automatic rollback.
+- Added event-time run/position/target replay, dynamic zone counts, server timestamps, estimated remaining time, richer Influx points, and structured HTML/plain-text protocol rendering with the current position highlighted.
+
+### qslib and release engineering
+
+- Added the typed `RemainingTimeQuery`, `QSConnection::get_run_remaining_time`, and semantic-server `remaining_time_s` status field.
+- Added `Protocol::info_lines` and `Protocol::view` (Rust) for flat and structured protocol rendering with the current stage and step flagged.
+- Added commands for querying and setting the status LED.
+- Split the reusable SCPI layer into the publishable `qslib-core` crate and added locked, ordered crate publication.
+- Added tagged ARMv7 musl qslib-server binaries, Linux qs-monitor bundles, checksums, and release-package mirroring.
 - Moved documentation hosting from Read the Docs to Codeberg Pages, built via Forgejo Actions and served at <https://cge.codeberg.page/qslib/>. The Read the Docs site now redirects there.
 
 ## Version 0.15.2

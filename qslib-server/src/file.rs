@@ -358,11 +358,26 @@ pub async fn put_file(
         .map_err(|e| ServerError::internal(format!("failed to create context root: {e}")))?;
     let (parent, file_name) = resolve_write_target(&root, &rel).await?;
     let target = parent.join(&file_name);
+    let existed = match tokio::fs::symlink_metadata(&target).await {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => {
+            return Err(ServerError::internal(format!(
+                "failed to inspect upload target: {error}"
+            )))
+        }
+    };
 
-    if let Some(expected) = headers
-        .get(header::IF_MATCH)
-        .and_then(|value| value.to_str().ok())
-    {
+    let mut if_match_values = headers.get_all(header::IF_MATCH).iter();
+    if let Some(expected) = if_match_values.next() {
+        if if_match_values.next().is_some() {
+            return Err(ServerError::bad_request(
+                "multiple If-Match headers are not supported",
+            ));
+        }
+        let expected = expected
+            .to_str()
+            .map_err(|_| ServerError::bad_request("If-Match must be a valid HTTP ETag"))?;
         let current = match tokio::fs::metadata(&target).await {
             Ok(metadata) if metadata.is_file() => etag(metadata.len(), metadata.modified().ok()),
             _ => return Err(ServerError::conflict("If-Match target does not exist")),
@@ -401,14 +416,25 @@ pub async fn put_file(
 
     let metadata = tokio::fs::metadata(&target)
         .await
-        .map_err(|e| ServerError::internal(format!("failed to inspect uploaded file: {e}")))?;
+        .map_err(post_install_metadata_error)?;
     let new_etag = etag(metadata.len(), metadata.modified().ok());
     Ok((
-        StatusCode::CREATED,
+        if existed {
+            StatusCode::OK
+        } else {
+            StatusCode::CREATED
+        },
         [(header::ETAG, new_etag)],
         Json(serde_json::json!({ "context": context, "path": rel, "size": size })),
     )
         .into_response())
+}
+
+fn post_install_metadata_error(error: std::io::Error) -> ServerError {
+    // The atomic rename already committed the new contents. A response-side
+    // metadata failure must not invite a retry under the false claim that the
+    // write was never started.
+    ServerError::internal(format!("failed to inspect uploaded file: {error}")).outcome("unknown")
 }
 
 /// One InstrumentServer-compatible directory entry. Paths are relative to the
@@ -861,6 +887,12 @@ mod tests {
         let t = UNIX_EPOCH + std::time::Duration::from_nanos(123);
         assert_eq!(etag(42, Some(t)), "\"42-123\"");
         assert_eq!(etag(42, None), "\"42-0\"");
+    }
+
+    #[test]
+    fn metadata_failure_after_atomic_install_has_unknown_outcome() {
+        let error = post_install_metadata_error(std::io::Error::other("metadata unavailable"));
+        assert_eq!(error.outcome, "unknown");
     }
 
     async fn tmp_root() -> (tempfile::TempDir, PathBuf) {

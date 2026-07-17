@@ -34,9 +34,21 @@ last fully processed value in `Last-Event-ID`; do not parse or increment it.
 The server replays same-epoch history in order. A cursor from another process
 epoch, ahead of the live stream, or older than the 4,096-event in-memory
 history receives a `reset` event containing a current instrument status
-snapshot, followed by the live stream. Bare numeric IDs remain accepted for
-older clients, without cross-restart detection. Capability responses advertise
-`"sse_cursor_format": "epoch-sequence"` when these guarantees are available.
+snapshot, followed by the live stream. A fresh stream with no cursor also
+begins with an atomic reset snapshot: its live receiver is installed before
+the snapshot is queried, so events arriving during that query follow the reset
+without a gap. Bare numeric IDs remain accepted for older clients, without
+cross-restart detection. Capability responses advertise
+`"sse_cursor_format": "epoch-sequence"`, `"sse_initial_snapshot": true`, and
+`"sse_event_context": true` when these guarantees are available.
+
+Instrument subscription payloads include an event-time `context` object with
+`run_name`, `zone_targets_c`, `stage`, `cycle`, and `step`; the scalar fields
+are nullable. The context is seeded from the connection's reset status and
+updated from Run messages before each event is stored. This lets replay
+consumers interpret an older `Collected` or Temperature event without querying
+the instrument's current status. Terminal Run events carry the final run
+context; subsequent events have a null run and position until the next run.
 
 `GET /api/v1/runs/current/protocol` returns the exact protocol currently held
 by InstrumentServer as SCPI. Protocol updates send that exact SCPI separately
@@ -55,6 +67,10 @@ Non-idempotent run operations require `Idempotency-Key`. They return an
 operation resource with `queued`, `running`, `succeeded`, `failed`, or
 `unknown` state. Clients must inspect that resource after an ambiguous
 transport failure instead of repeating the mutation through SCPI.
+Operation resources and their SSE notifications are visible only to the
+identity that created them; Administrator identities may inspect all
+operations. Terminal records are retained for 24 hours after completion, while
+queued and running records are never expired.
 
 Errors have a stable shape and an `X-Request-ID` header matching the body:
 
@@ -76,7 +92,8 @@ Authentication uses a root-readable TOML file supplied by `--auth-config` or
 `QSLIB_SERVER_AUTH_CONFIG`. Store SHA-256 digests, not bearer tokens:
 
 ```toml
-unauthenticated_role = "controller"
+# Optional read-only fallback; omit this line to require a token.
+unauthenticated_role = "observer"
 
 [[tokens]]
 name = "owner"
@@ -153,12 +170,36 @@ target, then use `Machine.ensure_server(...)`. Bootstrap remains a direct-SCPI
 administrator helper: it uploads the binary and an ACL file and starts the new
 server. It does not migrate historical experimental configurations.
 
+Tagged releases also provide a directly deployable
+`qslib-server-<tag>-armv7-unknown-linux-musleabihf` static binary and matching
+`.sha256` file. Verify the checksum before passing the downloaded binary to
+`Machine.ensure_server(...)`.
+
 ```python
+import secrets
+
+from qslib import Machine
+
+token = secrets.token_urlsafe(32)
+machine = Machine(
+    "instrument.example",
+    password="instrument-password",
+    server_port=7500,
+    server_token=token,
+)
 machine.ensure_server(
     binary="target/armv7-unknown-linux-musleabihf/min-size/qslib-server",
     listen="169.254.217.190:7500",
 )
 ```
+
+With a `server_token`, bootstrap writes a root-readable Administrator ACL and
+enables the standard file-write and control policies for authenticated
+requests. Keep the generated token in the client configuration and bind only a
+trusted private interface: the service uses unencrypted HTTP. Without a token,
+bootstrap defaults to an unauthenticated Observer and leaves file writes and
+controls disabled. Elevated unauthenticated roles and mutation flags require
+explicit opt-in and are intended only for an isolated, trusted network.
 
 Subsequent upgrades use `Machine.upgrade_server(...)`, which uploads to
 `POST /api/v1/server/upgrade`, validates the executable/hash, and uses the

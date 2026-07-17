@@ -42,6 +42,23 @@ pub enum ServerError {
     OutcomeUnknown { state_query: String },
 }
 
+impl ServerError {
+    /// Whether the server reached a policy decision for this identity.
+    ///
+    /// Authorization failures are not optional-service outages: callers must
+    /// surface them instead of negative-caching the probe or falling back to a
+    /// less restricted transport.
+    pub fn is_authorization_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::Http {
+                status: 401 | 403,
+                ..
+            }
+        )
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Health {
     #[serde(default)]
@@ -73,6 +90,10 @@ pub struct Capabilities {
     pub sse: bool,
     #[serde(default)]
     pub sse_cursor_format: Option<String>,
+    #[serde(default)]
+    pub sse_event_context: bool,
+    #[serde(default)]
+    pub sse_initial_snapshot: bool,
     pub raw_scpi: bool,
     pub scpi_tunnel: bool,
     pub file_writes: bool,
@@ -154,9 +175,13 @@ pub struct ServerEvent {
 #[derive(Debug, Clone, Deserialize)]
 pub struct ListEntry {
     pub path: String,
+    #[serde(rename = "type")]
+    pub kind: String,
     pub size: u64,
-    #[serde(default)]
-    pub modified_at: Option<String>,
+    pub mtime: f64,
+    pub atime: f64,
+    pub ctime: f64,
+    pub attributes: HashMap<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -197,6 +222,18 @@ pub struct RunResource {
     pub completed: bool,
 }
 
+/// Exact protocol currently being executed by the instrument.
+///
+/// `scpi` is the authoritative definition.  The other fields are server-parsed
+/// metadata provided so callers do not need to partially parse that command.
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct RunningProtocol {
+    pub name: String,
+    pub sample_volume: f64,
+    pub run_mode: String,
+    pub scpi: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct StartRunRequest {
     pub experiment: String,
@@ -208,8 +245,7 @@ pub struct StartRunRequest {
 
 #[derive(Deserialize)]
 struct ListResponse {
-    #[serde(default)]
-    files: Vec<ListEntry>,
+    entries: Vec<ListEntry>,
 }
 
 #[derive(Debug, Clone)]
@@ -281,11 +317,15 @@ impl ServerClient {
                 )))
             }
             Err(error) => {
+                let retry_at = if error.is_authorization_failure() {
+                    None
+                } else {
+                    Some(Instant::now() + NEGATIVE_CACHE)
+                };
                 *self
                     .retry_at
                     .lock()
-                    .unwrap_or_else(|value| value.into_inner()) =
-                    Some(Instant::now() + NEGATIVE_CACHE);
+                    .unwrap_or_else(|value| value.into_inner()) = retry_at;
                 Err(error)
             }
         }
@@ -418,35 +458,29 @@ impl ServerClient {
         self.send_json(request, true, "/api/v1/runs/current").await
     }
 
-    pub async fn protocol_xml(&self, name: &str) -> Result<Vec<u8>, ServerError> {
-        let path = format!("/api/v1/runs/{}/protocol", encode_segment(name));
-        let response = self
-            .send(self.authorize(self.client.get(self.url(&path)?)), false)
-            .await?;
-        response
-            .bytes()
-            .await
-            .map(|bytes| bytes.to_vec())
-            .map_err(|error| ServerError::Decode(format!("reading protocol XML: {error}")))
+    /// Return the instrument's authoritative active protocol.
+    pub async fn running_protocol(&self) -> Result<RunningProtocol, ServerError> {
+        self.get_json("/api/v1/runs/current/protocol").await
     }
 
     pub async fn replace_protocol(
         &self,
         name: &str,
-        xml: Vec<u8>,
+        scpi: &str,
+        tcprotocol_xml: &str,
         mode: &str,
-        force: bool,
     ) -> Result<(), ServerError> {
-        let mut url = self.url(&format!("/api/v1/runs/{}/protocol", encode_segment(name)))?;
-        url.query_pairs_mut()
-            .append_pair("mode", mode)
-            .append_pair("force", if force { "true" } else { "false" });
         let path = format!("/api/v1/runs/{}/protocol", encode_segment(name));
+        let mut url = self.url(&path)?;
+        url.query_pairs_mut().append_pair("mode", mode);
         let request = self
             .authorize(self.client.put(url))
-            .header(reqwest::header::CONTENT_TYPE, "application/xml")
-            .body(xml);
-        self.send_mutation(request, &path).await?;
+            .json(&serde_json::json!({
+                "scpi": scpi,
+                "tcprotocol_xml": tcprotocol_xml,
+            }));
+        self.send_mutation(request, "/api/v1/runs/current/protocol")
+            .await?;
         Ok(())
     }
 
@@ -501,7 +535,9 @@ impl ServerClient {
         response
             .text()
             .await
-            .map_err(|error| ServerError::Decode(format!("reading raw SCPI response: {error}")))
+            .map_err(|_error| ServerError::OutcomeUnknown {
+                state_query: "/api/v1/instrument/status".to_string(),
+            })
     }
 
     pub async fn run_action(
@@ -600,7 +636,7 @@ impl ServerClient {
             .await
             .map_err(|error| ServerError::Decode(format!("reading directory response: {error}")))?;
         serde_json::from_slice::<ListResponse>(&bytes)
-            .map(|response| response.files)
+            .map(|response| response.entries)
             .map_err(|error| ServerError::Decode(format!("decoding directory response: {error}")))
     }
 
@@ -705,6 +741,12 @@ impl ServerClient {
             Err(ServerError::Unreachable {
                 submitted: true, ..
             }) => Err(ServerError::OutcomeUnknown {
+                state_query: state_query.to_string(),
+            }),
+            Err(ServerError::Http {
+                outcome: Some(outcome),
+                ..
+            }) if outcome == "unknown" => Err(ServerError::OutcomeUnknown {
                 state_query: state_query.to_string(),
             }),
             result => result,
@@ -832,21 +874,19 @@ impl ServerEventStream {
 }
 
 fn take_sse_event(buffer: &mut Vec<u8>) -> Result<Option<ServerEvent>, ServerError> {
-    let Some(end) = buffer.windows(2).position(|window| window == b"\n\n") else {
+    let Some(end) = sse_block_end(buffer) else {
         return Ok(None);
     };
-    let block = String::from_utf8(buffer.drain(..end + 2).collect())
+    let block = String::from_utf8(buffer.drain(..end).collect())
         .map_err(|error| ServerError::Decode(format!("SSE stream is not UTF-8: {error}")))?;
-    if block
-        .lines()
-        .all(|line| line.starts_with(':') || line.is_empty())
-    {
+    let lines = || block.split(['\r', '\n']).filter(|line| !line.is_empty());
+    if lines().all(|line| line.starts_with(':')) {
         return Ok(None);
     }
     let mut id = None;
     let mut event = "message".to_string();
     let mut data = String::new();
-    for line in block.lines() {
+    for line in lines() {
         if let Some(value) = line.strip_prefix("id:") {
             id = Some(value.trim().to_string());
         } else if let Some(value) = line.strip_prefix("event:") {
@@ -861,6 +901,31 @@ fn take_sse_event(buffer: &mut Vec<u8>) -> Result<Option<ServerEvent>, ServerErr
     let data = serde_json::from_str(&data)
         .map_err(|error| ServerError::Decode(format!("invalid SSE JSON: {error}")))?;
     Ok(Some(ServerEvent { id, event, data }))
+}
+
+/// Return the byte after the empty line terminating one SSE event. SSE permits
+/// CRLF, LF, or CR line endings and does not require a stream to use the same
+/// form throughout.
+fn sse_block_end(buffer: &[u8]) -> Option<usize> {
+    let mut line_start = 0usize;
+    let mut index = 0usize;
+    while index < buffer.len() {
+        let terminator_len = match buffer[index] {
+            b'\n' => 1,
+            b'\r' if buffer.get(index + 1) == Some(&b'\n') => 2,
+            b'\r' => 1,
+            _ => {
+                index += 1;
+                continue;
+            }
+        };
+        if index == line_start {
+            return Some(index + terminator_len);
+        }
+        index += terminator_len;
+        line_start = index;
+    }
+    None
 }
 
 fn absolute_context(path: &str) -> Option<(&'static str, String)> {
@@ -925,6 +990,181 @@ impl ValueExt for serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[test]
+    fn sse_capability_extensions_default_false_for_older_servers() {
+        let legacy: Capabilities = serde_json::from_value(serde_json::json!({
+            "api_version": "v1",
+            "resources": ["events"],
+            "file_contexts": [],
+            "max_access": "observer",
+            "sse": true,
+            "sse_cursor_format": "epoch-sequence",
+            "raw_scpi": false,
+            "scpi_tunnel": false,
+            "file_writes": false,
+            "controls": false
+        }))
+        .unwrap();
+        assert!(!legacy.sse_event_context);
+        assert!(!legacy.sse_initial_snapshot);
+
+        let current: Capabilities = serde_json::from_value(serde_json::json!({
+            "api_version": "v1",
+            "max_access": "observer",
+            "sse": true,
+            "sse_event_context": true,
+            "sse_initial_snapshot": true,
+            "raw_scpi": false,
+            "scpi_tunnel": false,
+            "file_writes": false,
+            "controls": false
+        }))
+        .unwrap();
+        assert!(current.sse_event_context);
+        assert!(current.sse_initial_snapshot);
+    }
+
+    async fn response_server(
+        status: &'static str,
+        response: serde_json::Value,
+    ) -> (ServerClient, tokio::task::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response = serde_json::to_vec(&response).unwrap();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let (header_end, content_length) = loop {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0, "client closed before completing HTTP request");
+                request.extend_from_slice(&buffer[..count]);
+                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    break (header_end + 4, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let count = socket.read(&mut buffer).await.unwrap();
+                assert!(count > 0, "client closed before completing HTTP body");
+                request.extend_from_slice(&buffer[..count]);
+            }
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&response).await.unwrap();
+            request
+        });
+        (ServerClient::new("127.0.0.1", address.port(), None), task)
+    }
+
+    async fn json_server(
+        response: serde_json::Value,
+    ) -> (ServerClient, tokio::task::JoinHandle<Vec<u8>>) {
+        response_server("200 OK", response).await
+    }
+
+    async fn repeated_response_server(
+        status: &'static str,
+        response: serde_json::Value,
+        count: usize,
+    ) -> (ServerClient, tokio::task::JoinHandle<usize>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let response = serde_json::to_vec(&response).unwrap();
+        let task = tokio::spawn(async move {
+            for _ in 0..count {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|part| part == b"\r\n\r\n") {
+                    let read = socket.read(&mut buffer).await.unwrap();
+                    assert!(read > 0, "client closed before completing HTTP request");
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            response.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .unwrap();
+                socket.write_all(&response).await.unwrap();
+            }
+            count
+        });
+        (ServerClient::new("127.0.0.1", address.port(), None), task)
+    }
+
+    async fn truncated_response_server() -> (ServerClient, tokio::task::JoinHandle<Vec<u8>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 1024];
+            let (header_end, content_length) = loop {
+                let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "client closed before completing HTTP request");
+                request.extend_from_slice(&buffer[..read]);
+                if let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().unwrap())
+                        })
+                        .unwrap_or(0);
+                    break (header_end + 4, content_length);
+                }
+            };
+            while request.len() < header_end + content_length {
+                let read = socket.read(&mut buffer).await.unwrap();
+                assert!(read > 0, "client closed before completing HTTP body");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 128\r\nConnection: close\r\n\r\npartial",
+                )
+                .await
+                .unwrap();
+            request
+        });
+        (ServerClient::new("127.0.0.1", address.port(), None), task)
+    }
+
+    fn request_body(request: &[u8]) -> &[u8] {
+        let start = request
+            .windows(4)
+            .position(|part| part == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        &request[start..]
+    }
 
     #[test]
     fn absolute_paths_map_to_named_contexts() {
@@ -958,6 +1198,171 @@ mod tests {
             event.id.as_deref(),
             Some("4db8d4e9-87a7-4ce7-8f5f-f6718c3887e1:42")
         );
+    }
+
+    #[test]
+    fn parses_crlf_sse_event() {
+        let mut bytes =
+            b"id: epoch:7\r\nevent: status\r\ndata: {\"ready\":true}\r\n\r\nremaining".to_vec();
+        let event = take_sse_event(&mut bytes).unwrap().unwrap();
+        assert_eq!(event.id.as_deref(), Some("epoch:7"));
+        assert_eq!(event.event, "status");
+        assert_eq!(event.data["ready"], true);
+        assert_eq!(bytes, b"remaining");
+    }
+
+    #[test]
+    fn parses_mixed_and_cr_only_sse_line_endings() {
+        let mut mixed =
+            b"id: epoch:8\nevent: status\r\ndata: {\"ready\":true}\n\r\nremaining".to_vec();
+        let event = take_sse_event(&mut mixed).unwrap().unwrap();
+        assert_eq!(event.id.as_deref(), Some("epoch:8"));
+        assert_eq!(event.data["ready"], true);
+        assert_eq!(mixed, b"remaining");
+
+        let mut cr_only = b"id: epoch:9\revent: status\rdata: {\"ready\":false}\r\r".to_vec();
+        let event = take_sse_event(&mut cr_only).unwrap().unwrap();
+        assert_eq!(event.id.as_deref(), Some("epoch:9"));
+        assert_eq!(event.data["ready"], false);
+    }
+
+    #[test]
+    fn directory_response_uses_entries_contract() {
+        let response: ListResponse = serde_json::from_value(serde_json::json!({
+            "entries": [
+                {
+                    "path": "run/messages.log",
+                    "type": "file",
+                    "size": 42,
+                    "mtime": 1.0,
+                    "atime": 2.0,
+                    "ctime": 3.0,
+                    "attributes": {}
+                }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(response.entries.len(), 1);
+        assert_eq!(response.entries[0].path, "run/messages.log");
+        assert_eq!(response.entries[0].kind, "file");
+        assert_eq!(response.entries[0].size, 42);
+        assert_eq!(response.entries[0].mtime, 1.0);
+        assert_eq!(response.entries[0].atime, 2.0);
+        assert_eq!(response.entries[0].ctime, 3.0);
+        assert!(response.entries[0].attributes.is_empty());
+        assert!(serde_json::from_value::<ListResponse>(serde_json::json!({"files": []})).is_err());
+    }
+
+    #[tokio::test]
+    async fn capability_authorization_failures_are_never_negative_cached() {
+        for (status, expected) in [("401 Unauthorized", 401), ("403 Forbidden", 403)] {
+            let (client, requests) = repeated_response_server(
+                status,
+                serde_json::json!({
+                    "error": {
+                        "code": "unauthorized",
+                        "message": "credentials rejected",
+                        "retryable": false,
+                        "outcome": "not_started"
+                    }
+                }),
+                2,
+            )
+            .await;
+
+            for _ in 0..2 {
+                let error = client.capabilities().await.unwrap_err();
+                assert!(matches!(
+                    error,
+                    ServerError::Http { status, .. } if status == expected
+                ));
+                assert!(!client.probe_suppressed());
+            }
+            assert_eq!(requests.await.unwrap(), 2);
+        }
+    }
+
+    #[tokio::test]
+    async fn running_protocol_uses_current_protocol_resource() {
+        let expected = RunningProtocol {
+            name: "active".to_string(),
+            sample_volume: 35.0,
+            run_mode: "standard".to_string(),
+            scpi: "PROT active <multiline.protocol></multiline.protocol>".to_string(),
+        };
+        let (client, request) = json_server(serde_json::json!({
+            "name": expected.name.clone(),
+            "sample_volume": expected.sample_volume,
+            "run_mode": expected.run_mode.clone(),
+            "scpi": expected.scpi.clone(),
+        }))
+        .await;
+
+        assert_eq!(client.running_protocol().await.unwrap(), expected);
+        let request = request.await.unwrap();
+        assert!(request.starts_with(b"GET /api/v1/runs/current/protocol HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn replace_protocol_sends_exact_scpi_and_display_xml_as_json() {
+        let (client, request) = json_server(serde_json::json!({"name": "active"})).await;
+        let scpi = "PROT -volume=12 exact <multiline.protocol></multiline.protocol>";
+        let display = "<TCProtocol><ProtocolName>display</ProtocolName></TCProtocol>";
+
+        client
+            .replace_protocol("active run", scpi, display, "from_now")
+            .await
+            .unwrap();
+        let request = request.await.unwrap();
+        assert!(request
+            .starts_with(b"PUT /api/v1/runs/active%20run/protocol?mode=from_now HTTP/1.1\r\n"));
+        let body: serde_json::Value = serde_json::from_slice(request_body(&request)).unwrap();
+        assert_eq!(body["scpi"], scpi);
+        assert_eq!(body["tcprotocol_xml"], display);
+    }
+
+    #[tokio::test]
+    async fn mutation_http_unknown_outcome_requires_state_reconciliation() {
+        let (client, request) = response_server(
+            "503 Service Unavailable",
+            serde_json::json!({
+                "error": {
+                    "code": "operation_failed",
+                    "message": "command may have completed",
+                    "retryable": false,
+                    "outcome": "unknown"
+                }
+            }),
+        )
+        .await;
+
+        let error = client
+            .replace_protocol(
+                "active",
+                "PROT active <protocol/>",
+                "<TCProtocol/>",
+                "from_now",
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ServerError::OutcomeUnknown { ref state_query }
+                if state_query == "/api/v1/runs/current/protocol"
+        ));
+        request.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn raw_scpi_truncated_success_body_has_unknown_outcome() {
+        let (client, request) = truncated_response_server().await;
+        let error = client.raw_scpi("POW?").await.unwrap_err();
+        assert!(matches!(
+            error,
+            ServerError::OutcomeUnknown { ref state_query }
+                if state_query == "/api/v1/instrument/status"
+        ));
+        request.await.unwrap();
     }
 
     #[test]

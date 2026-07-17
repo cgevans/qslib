@@ -69,6 +69,7 @@ MANIFEST
 
 target/
 Cargo.lock
+!/Cargo.lock
 apldbio/
 
 /target
@@ -146,7 +147,6 @@ docs/_build/
 # Cargo
 .cargo/*
 !.cargo/config.toml
-Cargo.lock
 *.ipynb
 *.crt
 *.key
@@ -154,5 +154,6 @@ Cargo.lock
 .aider*
 example-eds/
 uv.lock
+!/uv.lock
 CLAUDE.md
 odd-eds

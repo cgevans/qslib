@@ -2,10 +2,13 @@
 
 ## Unreleased
 
+## Version 0.16.0
+
 ### qs-monitor
 
 - Persist SSE cursors, raw events, Influx rows, Matrix notifications, retries, and dead letters in a WAL-mode SQLite queue
 - Replace independent Influx/Matrix SSE consumption with one atomic ingestion path and durable per-sink workers
+- Establish a cursor-bearing initial SSE snapshot before first-run status ingest, and require qslib-server event-time context so replay cannot be tagged with current run state
 - Add deterministic Matrix transaction IDs, bounded signal-driven shutdown, systemd notify/watchdog status, and a single-process database lock
 - Add `--check-config`, a hardened systemd unit, checked/rollback-safe `qs-monitor-deploy`, and tagged Linux release bundles
 - Show estimated time remaining in `!status` (both the single-machine and all-machines forms) for running machines in direct-SCPI and qslib-server modes

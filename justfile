@@ -6,7 +6,7 @@ build:
 
 # Build the HTML documentation
 docs:
-    uv sync --group dev --group docs --no-install-project
+    uv sync --locked --group dev --group docs --no-install-project
     uv run maturin develop --uv
     uv run sphinx-build -b html docs docs/_build/html
 
@@ -15,7 +15,7 @@ test: build test-rust test-python
 
 # Run Rust tests only
 test-rust:
-    cargo test
+    cargo test --locked --workspace
 
 # Run Python tests only (assumes already built)
 test-python:
@@ -26,28 +26,43 @@ coverage: coverage-rust coverage-rust-from-python coverage-python
 
 # Lint Rust code
 clippy:
-    cargo clippy
+    cargo clippy --locked --workspace --all-targets
 
 # Lint Python code
 ruff:
-    uvx ruff check python/qslib
+    uv run --no-sync ruff check python/qslib
 
 # Lint all code
 lint: clippy ruff
 
 # Format all code
 fmt:
-    cargo fmt
-    uv run ruff format
+    cargo fmt --all
+    uv run --no-sync ruff format
 
 # Check formatting without modifying
-fmt-check:
-    cargo fmt --check
-    uv run ruff format --check
+fmt-check: fmt-rust-check fmt-python-check
+
+# Check Rust formatting without requiring the Python toolchain
+fmt-rust-check:
+    cargo fmt --all --check
+
+# Check Python formatting without building the local extension
+fmt-python-check:
+    uv run --no-sync ruff format --check python/qslib tests
+
+# Check formatting for the optional HTTP client/dispatch surface kept clean in CI
+fmt-http-check:
+    uv run --no-sync ruff format --check python/qslib/server.py python/qslib/machine.py tests/test_server.py
 
 # Run mypy type checking
 typecheck:
-    uv run mypy --pretty --show-error-context --ignore-missing-imports python
+    uv run --no-sync mypy --pretty --show-error-context --ignore-missing-imports python
+
+# Type-check the optional HTTP client/dispatch surface kept clean in CI
+typecheck-http:
+    uv run --no-sync mypy --pretty --show-error-context --ignore-missing-imports --follow-imports=skip \
+        python/qslib/server.py python/qslib/machine.py
 
 # Run lint, format check, and tests
 check: lint fmt-check test
@@ -60,12 +75,15 @@ bench:
 coverage-rust:
     #!/usr/bin/env bash
     set -euo pipefail
+    # LLVM coverage uses incremental builds, which rustc wrappers such as
+    # sccache intentionally reject.
+    export RUSTC_WRAPPER=
     source <(cargo llvm-cov show-env --export-prefix --no-cfg-coverage)
     export CARGO_TARGET_DIR=$CARGO_LLVM_COV_TARGET_DIR
     export CARGO_INCREMENTAL=1
     cargo llvm-cov clean --workspace
-    cargo test
-    cargo llvm-cov --no-run --lcov --output-path coverage-rust.lcov
+    cargo test --locked --workspace
+    cargo llvm-cov report --lcov --output-path coverage-rust.lcov
 
 # Rust coverage from Python tests (builds instrumented .so)
 coverage-rust-from-python:

@@ -12,6 +12,7 @@ import random
 import re
 import shlex
 import time
+import warnings
 import zipfile
 from pathlib import Path
 from contextlib import contextmanager
@@ -188,6 +189,18 @@ if TYPE_CHECKING:  # pragma: no cover
 
 
 _NO_SEMANTIC_RESULT = object()
+
+
+def _raise_if_semantic_auth_error(error: BaseException) -> None:
+    """Prevent an HTTP authorization failure from falling through to SCPI.
+
+    Capability data is cached, so credentials can be revoked after backend
+    selection but before the resource request.  A 401/403 is therefore a
+    policy result, not an optional-server outage, and must remain visible to
+    the caller at every semantic fallback boundary.
+    """
+    if isinstance(error, ServerError) and error.status in {401, 403}:
+        raise error
 
 
 def _ensure_connection(level: AccessLevel = AccessLevel.Observer) -> Any:
@@ -394,6 +407,9 @@ class Machine:
             connection_type = "TCP"
         else:
             connection_type = "Auto"
+        # __init__ always resolves an omitted port to the direct TCP or TLS
+        # default before a connection can be opened.
+        assert self.port is not None
         return QSConnection(
             host=self.host,
             port=self.port,
@@ -414,7 +430,7 @@ class Machine:
         if (not hasattr(self, "_connection")) or (self._connection is None):
             return False
         else:
-            return self.connection.connected
+            return self.connection.connected()
 
     def __enter__(self) -> Machine:
         try:
@@ -466,8 +482,8 @@ class Machine:
                 raise ValueError(f"Invalid command: {command}")
 
     @_ensure_connection(AccessLevel.Guest)
-    def run_command_to_ack(self, command: str | SCPICommand) -> str:
-        """Run an SCPI command, and return the response as a string.
+    def run_command_to_ack(self, command: str | SCPICommand) -> None:
+        """Run an SCPI command and wait for its acknowledgement.
         Returns after the command is processed (OK or NEXT), but potentially
         before it has completed (NEXT).
 
@@ -476,11 +492,6 @@ class Machine:
         commands
             command to run
 
-        Returns
-        -------
-        str
-            Response message (after "OK" or "NEXT", likely "" in latter case)
-
         Raises
         ------
         CommandError
@@ -488,8 +499,10 @@ class Machine:
         """
         if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}")
+        if isinstance(command, SCPICommand):
+            command = command.to_string()
         try:
-            return self.connection.run_command(command).get_ack()
+            self.connection.run_command(command).get_ack()
         except ValueError as e:  # FIXME
             e.__traceback__ = None
             raise e
@@ -517,7 +530,9 @@ class Machine:
         """
         if self.connection is None:
             raise ConnectionError(f"Not connected to {self.host}.")
-        if isinstance(command, str):
+        if isinstance(command, SCPICommand):
+            command = command.to_string().encode()
+        elif isinstance(command, str):
             command = command.encode()
         return self.connection.run_command_bytes(command).get_response_bytes()
 
@@ -588,7 +603,8 @@ class Machine:
             # The directory itself is missing (a 404 on the listing): a genuine
             # "not found", which callers use for name probing.
             raise FileNotFoundError(remote_dir) from e
-        except (ServerError, OSError, HTTPException):
+        except (ServerError, OSError, HTTPException) as error:
+            _raise_if_semantic_auth_error(error)
             # A transfer error (network drop, a file removed mid-download, a torn
             # body read) is not a missing directory: fall back to SCPI ZIPREAD
             # rather than report the run as absent.
@@ -733,7 +749,8 @@ class Machine:
                 data = server.get_abs_file(abspath)
                 assert data is not None
                 return data
-            except (ServerError, OSError, HTTPException):
+            except (ServerError, OSError, HTTPException) as error:
+                _raise_if_semantic_auth_error(error)
                 # A ServerError or a transport failure mid-transfer (network
                 # drop, torn body read): fall back to SCPI unless disabled.
                 log.warning("qslib-server file read failed for %r; falling back to SCPI", path, exc_info=True)
@@ -786,9 +803,14 @@ class Machine:
         assert server is not None
         try:
             capabilities = server.capabilities()
-        except ServerError:
+        except ServerError as error:
+            # A configured server rejecting this client's credentials is not
+            # an optional-service outage. Falling through to direct SCPI would
+            # hide the configuration error and could bypass HTTP policy for a
+            # mutation.
             if strict:
                 raise
+            _raise_if_semantic_auth_error(error)
             return None
         if resource not in capabilities.get("resources", []):
             return None
@@ -1074,10 +1096,11 @@ class Machine:
                         atime=datetime.fromtimestamp(float(item["atime"]), tz=timezone.utc),
                         ctime=datetime.fromtimestamp(float(item["ctime"]), tz=timezone.utc),
                     )
-                    info.update(attributes)  # type: ignore[typeddict-unknown-key]
+                    info.update(attributes)  # type: ignore[typeddict-item]
                     result.append(info)
                 return result
-        except ServerUnavailable:
+        except ServerUnavailable as error:
+            _raise_if_semantic_auth_error(error)
             if name in {"read_file", "write_file"} and not bool(kwargs.get("fallback", True)):
                 raise
             return _NO_SEMANTIC_RESULT
@@ -1086,6 +1109,7 @@ class Machine:
         except FileNotFoundError:
             raise
         except (ServerError, OSError, HTTPException) as error:
+            _raise_if_semantic_auth_error(error)
             if name in {"read_file", "write_file"} and not bool(kwargs.get("fallback", True)):
                 raise
             if name == "write_file" and (not isinstance(error, ServerError) or error.outcome != "not_started"):
@@ -1146,15 +1170,23 @@ class Machine:
             Optional HTTP role granted when a request omits its bearer token.
             This can be combined with ``server_token``; a valid token retains
             its configured Administrator role. Invalid supplied tokens are
-            rejected rather than treated as unauthenticated.
+            rejected rather than treated as unauthenticated. Without
+            ``server_token``, the default is Observer. Explicit Controller or
+            Administrator access is unsafe on an untrusted network and emits a
+            warning.
         extra_args
-            Additional qslib-server CLI arguments.
+            Additional qslib-server CLI arguments. A tokenless bootstrap does
+            not enable file writes or controls automatically; those policy
+            flags must be supplied explicitly here if they are really wanted.
 
         Notes
         -----
         Requires ``server_port`` on the :class:`Machine`, and Controller access
         for the push. The exact on-device ``SYST:EXEC`` and path behaviour
-        should be confirmed on the target instrument.
+        should be confirmed on the target instrument. HTTP is unencrypted, so
+        use a high-entropy ``server_token`` and bind only a trusted private
+        interface. A token-authenticated bootstrap enables the standard file
+        write and control policies for its Administrator token.
         """
         if self.server_port is None:
             raise ValueError("server_port must be set on the Machine to use qslib-server")
@@ -1162,10 +1194,34 @@ class Machine:
         assert client is not None
 
         try:
-            client.health()
-            return client
-        except ServerError:
-            pass
+            health = client.health()
+        except ServerError as error:
+            _raise_if_semantic_auth_error(error)
+            # Never deploy over a server that answered HTTP (including one
+            # rejecting our token). Bootstrap only after a transport-level
+            # failure, represented directly as ServerUnavailable or retained
+            # as the cause of the read-only health request.
+            transport_failure = isinstance(error, ServerUnavailable)
+            if not transport_failure:
+                raise
+        else:
+            if health.get("ready") is True:
+                return client
+
+            # A process is already serving this port but has not finished
+            # becoming ready. Give it the caller's readiness window; starting
+            # another copy could overwrite its configuration or race its bind.
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                time.sleep(0.1)
+                try:
+                    health = client.health()
+                except ServerError as error:
+                    _raise_if_semantic_auth_error(error)
+                    continue
+                if health.get("ready") is True:
+                    return client
+            raise ServerError("qslib-server answered /health but did not report ready; refusing to redeploy over it")
 
         if binary is None:
             raise ServerError("qslib-server is not running and no `binary` was provided to deploy")
@@ -1175,7 +1231,7 @@ class Machine:
         # substitution. shlex.quote neutralises the shell layer for each argv
         # element, but characters that break the outer SCPI string or trigger
         # SCPI substitution must be rejected outright.
-        unsafe = set('"\\`$\n\r')
+        unsafe = set("'\"\\`$\n\r")
 
         def _safe(name: str, value: str) -> str:
             bad = unsafe & set(value)
@@ -1191,6 +1247,13 @@ class Machine:
         _safe("file_root", file_root)
         if unauthenticated_role not in {None, "observer", "controller", "administrator"}:
             raise ValueError("unauthenticated_role must be observer, controller, administrator, or None")
+        if unauthenticated_role in {"controller", "administrator"}:
+            warnings.warn(
+                f"qslib-server will grant unauthenticated {unauthenticated_role.title()} "
+                "access; use this only on an explicitly trusted private network",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         if self.server_token:
             _safe("server_token", self.server_token)
         for a in extra_args:
@@ -1205,10 +1268,9 @@ class Machine:
             listen,
             "--file-root",
             file_root,
-            "--allow-file-writes",
-            "--allow-controls",
         ]
         if self.server_token:
+            args += ["--allow-file-writes", "--allow-controls"]
             token_hash = hashlib.sha256(self.server_token.encode()).hexdigest()
             fallback = (
                 f'unauthenticated_role = "{unauthenticated_role}"\n\n' if unauthenticated_role is not None else ""
@@ -1222,7 +1284,7 @@ class Machine:
             args += [
                 "--no-auth",
                 "--unauthenticated-role",
-                unauthenticated_role or "administrator",
+                unauthenticated_role or "observer",
             ]
         args += list(extra_args)
         cmdline = " ".join(shlex.quote(a) for a in args)
@@ -1240,10 +1302,13 @@ class Machine:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             try:
-                client.health()
-                return client
-            except (ServerError, OSError, HTTPException):
-                time.sleep(0.1)
+                health = client.health()
+                if health.get("ready") is True:
+                    return client
+            except (ServerError, OSError, HTTPException) as error:
+                _raise_if_semantic_auth_error(error)
+                pass
+            time.sleep(0.1)
         raise ServerError("qslib-server did not become ready after deployment")
 
     def upgrade_server(
@@ -1299,7 +1364,8 @@ class Machine:
                 if last == new_sha:
                     log.info("qslib-server upgrade confirmed (%s)", new_sha[:12])
                     return client
-            except ServerError:
+            except ServerError as error:
+                _raise_if_semantic_auth_error(error)
                 pass  # server is restarting; keep polling
             time.sleep(poll_interval)
         raise ServerError(
@@ -1382,7 +1448,8 @@ class Machine:
                 return
             except ServerOutcomeUnknown:
                 raise
-            except (ServerError, OSError, HTTPException):
+            except (ServerError, OSError, HTTPException) as error:
+                _raise_if_semantic_auth_error(error)
                 log.warning("qslib-server file write failed for %r; falling back to SCPI", path, exc_info=True)
                 if not fallback:
                     raise
@@ -1574,7 +1641,8 @@ class Machine:
                     raise ValueError("Nothing is currently running.")
                 protocol = server.get_running_protocol()
                 return Protocol.from_scpi_string(str(protocol["scpi"]))
-            except (ServerError, OSError, HTTPException, KeyError):
+            except (ServerError, OSError, HTTPException, KeyError) as error:
+                _raise_if_semantic_auth_error(error)
                 log.debug("semantic protocol query failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             metadata = shlex.split(self.run_command("RET ${Protocol} ${SampleVolume} ${RunMode}"))
@@ -1645,7 +1713,8 @@ class Machine:
                 if not isinstance(key, str) or not key:
                     raise ServerError("access-key operation result omitted key")
                 return key
-            except ServerUnavailable:
+            except ServerUnavailable as error:
+                _raise_if_semantic_auth_error(error)
                 pass
         with self.ensured_connection(AccessLevel.Controller):
             return self.run_command("RAND?")
@@ -1661,7 +1730,8 @@ class Machine:
             self._require_access_cap(AccessLevel.Observer)
             try:
                 return int(server.instrument_status()["zone_count"])
-            except (ServerError, OSError, HTTPException):
+            except (ServerError, OSError, HTTPException) as error:
+                _raise_if_semantic_auth_error(error)
                 log.debug("semantic zone-count query failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             return int(self.run_command("TBC:ControlZones?"))
@@ -1798,7 +1868,8 @@ class Machine:
             self._require_access_cap(AccessLevel.Observer)
             try:
                 return self._run_status_from_server(server.current_run())
-            except ServerError:
+            except ServerError as error:
+                _raise_if_semantic_auth_error(error)
                 log.debug("semantic run status failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             out = self.run_command_bytes(RunStatus.command())
@@ -1812,7 +1883,8 @@ class Machine:
             self._require_access_cap(AccessLevel.Observer)
             try:
                 return cast(DrawerPosition, str(server.instrument_status()["drawer"]))
-            except ServerError:
+            except ServerError as error:
+                _raise_if_semantic_auth_error(error)
                 log.debug("semantic drawer status failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             d = self.run_command("DRAW?")
@@ -1829,7 +1901,8 @@ class Machine:
             self._require_access_cap(AccessLevel.Observer)
             try:
                 return cast(CoverPosition, str(server.instrument_status()["cover"]))
-            except ServerError:
+            except ServerError as error:
+                _raise_if_semantic_auth_error(error)
                 log.debug("semantic cover status failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             f = self.run_command("ENG?")
@@ -1906,7 +1979,8 @@ class Machine:
             self._require_access_cap(AccessLevel.Observer)
             try:
                 return bool(server.instrument_status()["power_enabled"])
-            except ServerError:
+            except ServerError as error:
+                _raise_if_semantic_auth_error(error)
                 log.debug("semantic power query failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             s = self.run_command("POW?").lower()
@@ -1933,7 +2007,8 @@ class Machine:
             try:
                 server.set_power(enabled)
                 return
-            except ServerUnavailable:
+            except ServerUnavailable as error:
+                _raise_if_semantic_auth_error(error)
                 pass
         with self.ensured_connection(AccessLevel.Controller):
             self.run_command(f"POW {'on' if enabled else 'off'}")
@@ -1949,7 +2024,8 @@ class Machine:
                 if str(status.get("state", "")).lower() == "idle" or status.get("name") == "-":
                     return None
                 return str(status["name"])
-            except ServerError:
+            except ServerError as error:
+                _raise_if_semantic_auth_error(error)
                 log.debug("semantic current-run query failed; using direct SCPI", exc_info=True)
         with self.ensured_connection(AccessLevel.Observer):
             out = self.run_command("RUNTitle?")
@@ -1969,7 +2045,8 @@ class Machine:
                 # operation resource is still the only safe result to inspect.
                 server.wait_operation(operation)
                 return
-            except ServerUnavailable:
+            except ServerUnavailable as error:
+                _raise_if_semantic_auth_error(error)
                 pass
         with self.ensured_connection(AccessLevel.Controller):
             self.run_command(SCPICommand("SYST:EXEC", "killall zygote"))

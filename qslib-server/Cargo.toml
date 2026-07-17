@@ -7,6 +7,7 @@ license = "EUPL-1.2"
 authors = ["Constantine Evans <qslib@mb.costi.net>"]
 homepage = "https://codeberg.org/cge/qslib"
 repository = "https://codeberg.org/cge/qslib"
+publish = false
 
 [[bin]]
 name = "qslib-server"
