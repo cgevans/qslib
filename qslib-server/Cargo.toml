@@ -2,7 +2,7 @@
 name = "qslib-server"
 version.workspace = true
 edition = "2021"
-description = "Optional semantic HTTP/SSE service and managed SCPI actor for QuantStudio machines"
+description = "Optional HTTP/SSE API backed by a managed SCPI connection for QuantStudio machines"
 license = "EUPL-1.2"
 authors = ["Constantine Evans <qslib@mb.costi.net>"]
 homepage = "https://codeberg.org/cge/qslib"

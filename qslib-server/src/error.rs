@@ -107,7 +107,7 @@ impl ServerError {
         Self::new(
             StatusCode::SERVICE_UNAVAILABLE,
             "queue_full",
-            "semantic operation queue is full",
+            "server operation queue is full",
         )
         .retryable(true)
     }
@@ -126,8 +126,8 @@ impl ServerError {
         error
     }
 
-    /// Isolated raw-SCPI command rejection. Kept separate from semantic
-    /// instrument rejections so clients cannot mistake the endpoint contract.
+    /// Isolated raw-SCPI command rejection. Kept separate from rejections from
+    /// the instrument API so clients cannot mistake the endpoint contract.
     pub fn scpi(message: impl Into<String>) -> Self {
         let mut error = Self::new(StatusCode::UNPROCESSABLE_ENTITY, "scpi_error", message);
         error.scpi_error = true;

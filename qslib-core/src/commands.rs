@@ -2156,7 +2156,10 @@ pub struct MachineStatus {
 
 impl MachineStatus {
     /// The SCPI command to fetch machine status via compound RET.
-    pub const COMMAND: &'static [u8] = b"RET $(DRAWER?) $[ \"$(ENG?)\" or \"unknown\" ] $(LST?) $(TBC:SampleTemperatures?) $(TBC:BlockTemperatures?) $(TBC:CoverTemperatures?) $(TBC:SETT?) $(TBC:CONT?) $(LED:LEDTemperature?)";
+    // The blank-cover fallback is capitalised to match DRAWER?'s "Unknown";
+    // a lowercase value here made the same status report `drawer: "Unknown"`
+    // alongside `cover: "unknown"`.
+    pub const COMMAND: &'static [u8] = b"RET $(DRAWER?) $[ \"$(ENG?)\" or \"Unknown\" ] $(LST?) $(TBC:SampleTemperatures?) $(TBC:BlockTemperatures?) $(TBC:CoverTemperatures?) $(TBC:SETT?) $(TBC:CONT?) $(LED:LEDTemperature?)";
 
     /// Parse a compound RET response into a MachineStatus.
     pub fn parse(response: &[u8]) -> Result<Self, OkParseError> {

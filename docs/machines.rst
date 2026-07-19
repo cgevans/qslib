@@ -22,25 +22,6 @@ Connections to a machine are handled through the :class:`Machine` class, or a :a
 Connections, Access Levels, and Passwords
 -----------------------------------------
 
-Direct SCPI is the default and permanent transport. A :class:`Machine` created
-without ``server_port`` performs no HTTP probes; automatic methods connect to
-InstrumentServer directly, and manual connection/access contexts preserve one
-SCPI session and its exact access semantics.
-
-An installation may optionally run ``qslib-server`` and opt in with
-``Machine(..., server_port=7500, server_token=...)``. Automatic bounded
-operations then prefer its versioned semantic HTTP API and named file
-resources. Explicit :meth:`Machine.connect`, raw commands, manual access
-contexts, and user subscriptions remain direct SCPI. If the service is absent,
-read operations safely fall back to direct SCPI; mutations whose HTTP outcome
-is uncertain are never repeated automatically.
-
-For bootstrap, configure a high-entropy ``server_token`` before calling
-:meth:`Machine.ensure_server` and bind the service only to a trusted private
-interface because its HTTP transport is unencrypted. A token-authenticated
-bootstrap enables file writes and controls for the generated Administrator
-ACL. A tokenless bootstrap is deliberately read-only: it grants only Observer
-access and leaves both mutation policies disabled unless explicitly overridden.
 
 By default, as of 0.5.0, Machine automatically handles connections, disconnections, and, when possible (eg, for commands
 within qslib, rather than an arbitrary :func:`Machine.run_command`), access levels.

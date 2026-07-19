@@ -15,7 +15,7 @@ Configuration
 
 Each machine uses direct SCPI subscriptions by default. Omit ``server_port``
 for this mode. Setting ``server_port`` explicitly selects the optional
-qslib-server mode, which consumes semantic status and resumable SSE events
+qslib-server mode, which consumes status and resumable SSE events
 without opening a normal client-side SCPI connection. Both modes emit the same
 Influx measurements.
 

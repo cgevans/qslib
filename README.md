@@ -71,7 +71,7 @@ IPython.
 
 Direct SCPI is the standard and fully supported transport. Creating a
 ``Machine`` without ``server_port`` connects directly and performs no HTTP
-discovery. ``qslib-server`` is an optional, explicitly configured semantic API
+discovery. ``qslib-server`` is an optional, explicitly configured HTTP API
 and connection manager; when enabled, automatic high-level operations prefer
 its typed HTTP/SSE resources while manual connection and raw-command workflows
 remain direct SCPI.

@@ -56,7 +56,7 @@ from .data import (
     _parse_multicomponent_data_v1,
     _parse_multicomponent_data_v2,
 )
-from .machine import AlreadyCollectedError, Machine, RunNotFinishedError, _raise_if_semantic_auth_error
+from .machine import AlreadyCollectedError, Machine, RunNotFinishedError, _raise_if_server_auth_error
 from .server import ServerError, ServerOutcomeUnknown, ServerUnavailable
 from .processors import NormRaw
 from .protocol import Protocol, Stage, Step
@@ -679,7 +679,7 @@ table, th, td {{
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         log.info("Attempting to start %s on %s.", self.runtitle_safe, machine.host)
 
-        server = machine._semantic_server("experiments", mutation=True)
+        server = machine._server_for("experiments", mutation=True)
         if server is not None:
             capabilities = server.capabilities()
             if capabilities.get("file_writes", False) and "runs" in capabilities.get("resources", []):
@@ -695,16 +695,16 @@ table, th, td {{
                     try:
                         server.delete_staged_package(self.runtitle_safe, etag)
                     except (ServerError, OSError) as error:
-                        _raise_if_semantic_auth_error(error)
+                        _raise_if_server_auth_error(error)
                         log.warning("Could not discard staged package for %s", self.runtitle_safe, exc_info=True)
 
                 try:
                     server.preflight_run(self.runtitle_safe, overwrite=overwrite)
                 except ServerError as error:
-                    _raise_if_semantic_auth_error(error)
+                    _raise_if_server_auth_error(error)
                     if error.code in {"machine_busy", "working_exists", "completed_exists"}:
                         raise _direct_exception_for_server_error(error, machine, self.runtitle_safe) from error
-                    log.debug("semantic run preflight failed; using direct SCPI", exc_info=True)
+                    log.debug("qslib-server run preflight failed; using direct SCPI", exc_info=True)
                 else:
                     if self.runstate != "INIT":
                         raise AlreadyStartedError(self.runtitle_safe, self.runstate)
@@ -716,7 +716,7 @@ table, th, td {{
                         self.save_file(package_stream)
                         package_etag = server.stage_package(self.runtitle_safe, package_stream.getvalue())
                     except (ServerUnavailable, ServerOutcomeUnknown) as error:
-                        _raise_if_semantic_auth_error(error)
+                        _raise_if_server_auth_error(error)
                         # Package staging cannot start an instrument run. Even
                         # when the upload outcome is unknown, direct fallback is
                         # safe after restoring the client-side state.
@@ -735,7 +735,7 @@ table, th, td {{
                             )
                             server.wait_operation(operation, timeout=130.0)
                         except ServerUnavailable as error:
-                            _raise_if_semantic_auth_error(error)
+                            _raise_if_server_auth_error(error)
                             restore_local_state()
                             discard_staged(package_etag)
                         except ServerOutcomeUnknown:
@@ -821,7 +821,7 @@ table, th, td {{
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         context = (
             nullcontext(machine)
-            if machine._semantic_server("runs", mutation=True) is not None
+            if machine._server_for("runs", mutation=True) is not None
             else machine.ensured_connection(AccessLevel.Controller)
         )
         with context:
@@ -847,7 +847,7 @@ table, th, td {{
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         context = (
             nullcontext(machine)
-            if machine._semantic_server("runs", mutation=True) is not None
+            if machine._server_for("runs", mutation=True) is not None
             else machine.ensured_connection(AccessLevel.Controller)
         )
         with context:
@@ -873,7 +873,7 @@ table, th, td {{
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         context = (
             nullcontext(machine)
-            if machine._semantic_server("runs", mutation=True) is not None
+            if machine._server_for("runs", mutation=True) is not None
             else machine.ensured_connection(AccessLevel.Controller)
         )
         with context:
@@ -899,7 +899,7 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         context = (
             nullcontext(machine)
-            if machine._semantic_server("runs", mutation=True) is not None
+            if machine._server_for("runs", mutation=True) is not None
             else machine.ensured_connection(AccessLevel.Controller)
         )
         with context:
@@ -925,7 +925,7 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         context = (
             nullcontext(machine)
-            if machine._semantic_server("runs") is not None
+            if machine._server_for("runs") is not None
             else machine.ensured_connection(AccessLevel.Observer)
         )
         with context:
@@ -965,18 +965,18 @@ table, th, td {{
         machine = self._ensure_machine(machine)
         self._clear_cache()
 
-        # In semantic mode leave the client-side SCPI socket unopened. In
+        # When qslib-server handles the request, leave the client-side SCPI socket unopened. In
         # direct mode retain the historical single-session synchronization.
         context = (
             nullcontext(machine)
-            if machine._semantic_server("files") is not None
+            if machine._server_for("files") is not None
             else machine.ensured_connection(AccessLevel.Observer)
         )
         with context:
             try:
                 self._protocol_from_machine = machine.get_running_protocol()
             except (CommandError, ConnectionError, OSError, ServerError, ValueError) as error:
-                _raise_if_semantic_auth_error(error)
+                _raise_if_server_auth_error(error)
                 log.warning(
                     "Could not refresh the live SCPI protocol; retaining stored protocol sources",
                     exc_info=True,
@@ -1011,7 +1011,7 @@ table, th, td {{
                         with open(sdspath, "wb") as b:
                             b.write(machine.read_file(f["path"]))
                     except Exception as e:  # Handles race condition where file is deleted. TODO: improve handling.
-                        _raise_if_semantic_auth_error(e)
+                        _raise_if_server_auth_error(e)
                         log.warning(f"Error copying {f['path']} to {sdspath}: {e}")
                         continue
                 elif log_method == "eval":
@@ -1068,7 +1068,7 @@ table, th, td {{
         """
         self._clear_cache()
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
-        server = machine._semantic_server("runs", mutation=True)
+        server = machine._server_for("runs", mutation=True)
         if server is not None:
             self._ensure_running(machine)
             proto = machine.get_running_protocol()
@@ -1086,7 +1086,7 @@ table, th, td {{
                 )
                 return
             except ServerUnavailable as error:
-                _raise_if_semantic_auth_error(error)
+                _raise_if_server_auth_error(error)
                 pass
             except ServerOutcomeUnknown:
                 raise
@@ -1144,7 +1144,7 @@ table, th, td {{
         """
         self._clear_cache()
         machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
-        server = machine._semantic_server("runs", mutation=True)
+        server = machine._server_for("runs", mutation=True)
         if server is not None:
             if not force:
                 self._ensure_running(machine)
@@ -1166,7 +1166,7 @@ table, th, td {{
                 )
                 return
             except ServerUnavailable as error:
-                _raise_if_semantic_auth_error(error)
+                _raise_if_server_auth_error(error)
                 pass
             except ServerOutcomeUnknown:
                 raise
@@ -1531,8 +1531,8 @@ table, th, td {{
 
         machine = exp._ensure_machine(machine)
 
-        semantic = machine._semantic_server("runs") is not None and machine._semantic_server("files") is not None
-        context = nullcontext(machine) if semantic else machine.ensured_connection()
+        using_server = machine._server_for("runs") is not None and machine._server_for("files") is not None
+        context = nullcontext(machine) if using_server else machine.ensured_connection()
         with context:
             crt = machine.current_run_name
 
@@ -1542,7 +1542,7 @@ table, th, td {{
             try:
                 exp._protocol_from_machine = machine.get_running_protocol()
             except (CommandError, ConnectionError, OSError, ServerError, ValueError) as error:
-                _raise_if_semantic_auth_error(error)
+                _raise_if_server_auth_error(error)
                 log.warning(
                     "Could not read the live SCPI protocol; falling back to stored run sources",
                     exc_info=True,
@@ -1585,7 +1585,7 @@ table, th, td {{
         machine = exp._ensure_machine(machine)
 
         context = (
-            nullcontext(machine) if machine._semantic_server("files") is not None else machine.ensured_connection()
+            nullcontext(machine) if machine._server_for("files") is not None else machine.ensured_connection()
         )
         with context:
             if move:
@@ -1644,7 +1644,7 @@ table, th, td {{
         machine = exp._ensure_machine(machine)
 
         context = (
-            nullcontext(machine) if machine._semantic_server("files") is not None else machine.ensured_connection()
+            nullcontext(machine) if machine._server_for("files") is not None else machine.ensured_connection()
         )
         with context:
             o = None
@@ -1694,8 +1694,8 @@ table, th, td {{
 
         safename = _safe_exp_name(name)
 
-        semantic = machine._semantic_server("runs") is not None and machine._semantic_server("files") is not None
-        context = nullcontext(machine) if semantic else machine.ensured_connection()
+        using_server = machine._server_for("runs") is not None and machine._server_for("files") is not None
+        context = nullcontext(machine) if using_server else machine.ensured_connection()
         with context:
             if machine.current_run_name in [safename, name]:
                 exp = cls.from_running(machine)

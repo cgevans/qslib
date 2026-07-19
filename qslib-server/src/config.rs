@@ -8,7 +8,7 @@ use qslib_core::commands::AccessLevel;
 
 use crate::auth::{AuthPolicy, Role};
 
-/// Optional semantic API and connection manager for QuantStudio machines.
+/// Optional HTTP API and connection manager for QuantStudio machines.
 #[derive(Debug, Clone, Parser)]
 #[command(name = "qslib-server", version, about)]
 pub struct Config {
@@ -46,7 +46,7 @@ pub struct Config {
     #[arg(long, env = "QSLIB_SERVER_SCPI_PASSWORD", hide_env_values = true)]
     pub scpi_password: Option<String>,
 
-    /// Bounded semantic-operation queue size.
+    /// Maximum number of queued server operations.
     #[arg(long, default_value_t = 64)]
     pub queue_capacity: usize,
 

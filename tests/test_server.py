@@ -1,12 +1,13 @@
 # SPDX-FileCopyrightText: 2024 - 2026 Constantine Evans <qslib@mb.costi.net>
 # SPDX-License-Identifier: EUPL-1.2
 
-"""Contract tests for the optional v1 semantic client and Python dispatch."""
+"""Contract tests for the optional v1 HTTP client and Python dispatch."""
 
 from __future__ import annotations
 
 import hashlib
 import io
+import os
 import socket
 import socketserver
 import subprocess
@@ -28,7 +29,25 @@ from qslib.experiment import (
 )
 from qslib.server import ServerClient, ServerError, ServerOutcomeUnknown, ServerUnavailable, _parse_sse
 
-BINARY = Path(__file__).parent.parent / "target" / "debug" / "qslib-server"
+
+def _server_binary() -> Path:
+    """Locate the qslib-server binary.
+
+    The coverage recipes redirect CARGO_TARGET_DIR to cargo-llvm-cov's target
+    directory, so the plain ``target/debug`` path is not enough.
+    """
+    override = os.environ.get("QSLIB_SERVER_BINARY")
+    if override:
+        return Path(override)
+    target_dir = os.environ.get("CARGO_TARGET_DIR")
+    if target_dir:
+        candidate = Path(target_dir) / "debug" / "qslib-server"
+        if candidate.exists():
+            return candidate
+    return Path(__file__).parent.parent / "target" / "debug" / "qslib-server"
+
+
+BINARY = _server_binary()
 
 
 def _free_port() -> int:
@@ -96,7 +115,12 @@ class _ScpiHandler(socketserver.StreamRequestHandler):
 @pytest.fixture
 def server(tmp_path: Path):
     if not BINARY.exists():
-        pytest.skip(f"server binary not built ({BINARY})")
+        message = f"server binary not built ({BINARY})"
+        # Skipping this whole file is easy to do by accident, which leaves the
+        # HTTP path untested without any signal. CI sets this to make it loud.
+        if os.environ.get("QSLIB_REQUIRE_SERVER_BINARY") == "1":
+            pytest.fail(message)
+        pytest.skip(message)
     for context in (
         "experiments",
         "runs",
@@ -313,7 +337,7 @@ def test_capabilities_do_not_negative_cache_auth_failures(monkeypatch):
 def test_machine_capability_auth_failure_never_falls_back_to_scpi(monkeypatch, status):
     class FakeServer:
         def capabilities(self):
-            raise ServerError("semantic credentials rejected", status=status)
+            raise ServerError("server credentials rejected", status=status)
 
     machine = Machine("instrument", server_port=7500, server_token="wrong-token")
     monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
@@ -323,7 +347,7 @@ def test_machine_capability_auth_failure_never_falls_back_to_scpi(monkeypatch, s
         lambda: (_ for _ in ()).throw(AssertionError("auth failure must not open direct SCPI")),
     )
 
-    with pytest.raises(ServerError, match="semantic credentials rejected") as error:
+    with pytest.raises(ServerError, match="server credentials rejected") as error:
         machine.drawer_open()
     assert error.value.status == status
 
@@ -457,7 +481,7 @@ def test_malformed_http_response_is_not_classified_as_unavailable(monkeypatch):
     assert not isinstance(error.value, ServerUnavailable)
 
 
-def test_machine_semantic_status_opens_no_scpi(monkeypatch):
+def test_machine_server_status_opens_no_scpi(monkeypatch):
     class FakeServer:
         def capabilities(self):
             return {"api_version": "v1", "resources": ["instrument"], "controls": True}
@@ -483,7 +507,7 @@ def test_machine_semantic_status_opens_no_scpi(monkeypatch):
     monkeypatch.setattr(
         machine,
         "_direct_connection",
-        lambda: (_ for _ in ()).throw(AssertionError("semantic success must not open SCPI")),
+        lambda: (_ for _ in ()).throw(AssertionError("server success must not open SCPI")),
     )
     assert machine.machine_status().drawer == "Closed"
     assert machine.get_zone_count() == 6
@@ -502,7 +526,7 @@ def test_machine_get_running_protocol_idle_uses_server_without_opening_scpi(monk
     monkeypatch.setattr(
         machine,
         "_direct_connection",
-        lambda: (_ for _ in ()).throw(AssertionError("idle semantic result must not open SCPI")),
+        lambda: (_ for _ in ()).throw(AssertionError("idle server result must not open SCPI")),
     )
 
     with pytest.raises(ValueError, match="Nothing is currently running"):
@@ -534,7 +558,7 @@ def test_machine_get_running_protocol_uses_server_scpi_not_display_xml(monkeypat
     monkeypatch.setattr(
         machine,
         "_direct_connection",
-        lambda: (_ for _ in ()).throw(AssertionError("semantic protocol success must not open SCPI")),
+        lambda: (_ for _ in ()).throw(AssertionError("server protocol success must not open SCPI")),
     )
 
     protocol = machine.get_running_protocol()
@@ -553,7 +577,7 @@ def test_experiment_action_uses_server_without_opening_scpi(monkeypatch):
 
         def current_run(self):
             return {
-                "name": "semantic-run",
+                "name": "server-run",
                 "stage": 1,
                 "stage_name": "1",
                 "num_stages": 1,
@@ -579,8 +603,8 @@ def test_experiment_action_uses_server_without_opening_scpi(monkeypatch):
         "_direct_connection",
         lambda: (_ for _ in ()).throw(AssertionError("server action must not open SCPI")),
     )
-    Experiment("semantic-run").pause_now(machine)
-    assert actions == [("semantic-run", "pause")]
+    Experiment("server-run").pause_now(machine)
+    assert actions == [("server-run", "pause")]
 
 
 def test_machine_without_server_configuration_never_probes_http(monkeypatch):
@@ -847,20 +871,20 @@ def test_wait_operation_returns_success_and_raises_structured_failures(monkeypat
 
 
 @pytest.mark.parametrize("value, expected", [(True, True), (False, False), ("ON", True), ("off", False)])
-def test_power_normalization_matches_direct_and_semantic(monkeypatch, value, expected):
-    semantic_values: list[bool] = []
+def test_power_normalization_matches_direct_and_server(monkeypatch, value, expected):
+    server_values: list[bool] = []
 
     class FakeServer:
         def capabilities(self):
             return {"api_version": "v1", "resources": ["instrument"], "controls": True}
 
         def set_power(self, enabled):
-            semantic_values.append(enabled)
+            server_values.append(enabled)
 
-    semantic = Machine("instrument", server_port=7500)
-    monkeypatch.setattr(type(semantic), "server", property(lambda _self: FakeServer()))
-    semantic.power = value
-    assert semantic_values == [expected]
+    server_machine = Machine("instrument", server_port=7500)
+    monkeypatch.setattr(type(server_machine), "server", property(lambda _self: FakeServer()))
+    server_machine.power = value
+    assert server_values == [expected]
 
     commands: list[str] = []
     direct = Machine("instrument")
@@ -875,14 +899,14 @@ def test_invalid_power_values_fail_before_either_backend(monkeypatch, value):
     machine = Machine("instrument", server_port=7500)
     monkeypatch.setattr(
         machine,
-        "_semantic_server",
+        "_server_for",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("backend must not be selected")),
     )
     with pytest.raises(ValueError, match="Power value"):
         machine.power = value
 
 
-def test_semantic_machine_enforces_local_access_cap(monkeypatch):
+def test_server_machine_enforces_local_access_cap(monkeypatch):
     calls: list[str] = []
 
     class FakeServer:
@@ -908,7 +932,7 @@ def test_semantic_machine_enforces_local_access_cap(monkeypatch):
     assert calls == []
 
 
-def test_semantic_status_preserves_raw_scpi_state(monkeypatch):
+def test_server_status_preserves_raw_scpi_state(monkeypatch):
     class FakeServer:
         def capabilities(self):
             return {"api_version": "v1", "resources": ["runs"], "controls": True}
@@ -1081,6 +1105,7 @@ def test_cached_capabilities_cannot_hide_resource_authorization_failure(monkeypa
         machine.machine_status()
     assert read_error.value.status == status
 
+    # (Text below generated by LLM)
     # Even an explicitly not-started write must not bypass a fresh policy
     # rejection merely because the capability document was cached earlier.
     with pytest.raises(ServerError, match="credentials were revoked") as write_error:
@@ -1130,11 +1155,11 @@ def test_write_falls_back_only_for_known_not_started(monkeypatch):
 
     machine = Machine("instrument", server_port=7500)
     monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
-    original_semantic_server = machine._semantic_server
+    original_server_for = machine._server_for
     direct_active = False
 
     def select_server(*args, **kwargs):
-        return None if direct_active else original_semantic_server(*args, **kwargs)
+        return None if direct_active else original_server_for(*args, **kwargs)
 
     @contextmanager
     def direct_context(*_args, **_kwargs):
@@ -1146,7 +1171,7 @@ def test_write_falls_back_only_for_known_not_started(monkeypatch):
             direct_active = False
 
     submitted: list[bytes] = []
-    monkeypatch.setattr(machine, "_semantic_server", select_server)
+    monkeypatch.setattr(machine, "_server_for", select_server)
     monkeypatch.setattr(machine, "ensured_connection", direct_context)
     monkeypatch.setattr(machine, "run_command_bytes", submitted.append)
     machine.write_file("logs:value", b"data")
@@ -1239,7 +1264,7 @@ def test_compile_completed_conflict_uses_direct_exception(monkeypatch):
 
 def test_action_race_translates_not_running(monkeypatch):
     status = {
-        "name": "semantic-run",
+        "name": "server-run",
         "stage_name": "1",
         "num_stages": 1,
         "cycle": 1,
@@ -1270,7 +1295,7 @@ def test_action_race_translates_not_running(monkeypatch):
     machine = Machine("instrument", server_port=7500)
     monkeypatch.setattr(type(machine), "server", property(lambda _self: FakeServer()))
     with pytest.raises(NotRunningError):
-        Experiment("semantic-run").pause_now(machine)
+        Experiment("server-run").pause_now(machine)
 
 
 class _ExperimentServer:
@@ -1341,7 +1366,7 @@ def test_run_preflight_translates_without_staging(monkeypatch, code, exception):
         "_direct_connection",
         lambda: (_ for _ in ()).throw(AssertionError("known preflight errors must not use SCPI")),
     )
-    experiment = Experiment("semantic_run")
+    experiment = Experiment("server_run")
     with pytest.raises(exception):
         experiment.run(machine)
     assert experiment.runstate == "INIT"
@@ -1365,7 +1390,7 @@ def test_run_preflight_authorization_failure_does_not_fall_back_to_scpi(monkeypa
         lambda: (_ for _ in ()).throw(AssertionError("authorization failure must not open SCPI")),
     )
 
-    experiment = Experiment("semantic_run")
+    experiment = Experiment("server_run")
     with pytest.raises(ServerError, match="run authorization revoked") as error:
         experiment.run(machine)
     assert error.value.status == status
@@ -1378,12 +1403,12 @@ def test_run_known_failure_restores_state_and_discards_stage(monkeypatch):
     fake.wait_error = ServerError("conflict", code="working_exists", outcome="not_started")
     machine = Machine("instrument", server_port=7500)
     monkeypatch.setattr(type(machine), "server", property(lambda _self: fake))
-    experiment = Experiment("semantic_run")
+    experiment = Experiment("server_run")
     with pytest.raises(AlreadyExistsWorkingError):
         experiment.run(machine)
     assert experiment.runstate == "INIT"
     assert experiment.runstarttime is None
-    assert fake.deleted == [("semantic_run", '"etag"')]
+    assert fake.deleted == [("server_run", '"etag"')]
 
 
 def test_run_unknown_start_keeps_running_state_and_stage(monkeypatch):
@@ -1391,7 +1416,7 @@ def test_run_unknown_start_keeps_running_state_and_stage(monkeypatch):
     fake.wait_error = ServerOutcomeUnknown("uncertain", "/api/v1/operations/operation")
     machine = Machine("instrument", server_port=7500)
     monkeypatch.setattr(type(machine), "server", property(lambda _self: fake))
-    experiment = Experiment("semantic_run")
+    experiment = Experiment("server_run")
     with pytest.raises(ServerOutcomeUnknown):
         experiment.run(machine)
     assert experiment.runstate == "RUNNING"
@@ -1403,10 +1428,10 @@ def test_run_success_discards_staged_package(monkeypatch):
     fake = _ExperimentServer()
     machine = Machine("instrument", server_port=7500)
     monkeypatch.setattr(type(machine), "server", property(lambda _self: fake))
-    experiment = Experiment("semantic_run")
+    experiment = Experiment("server_run")
     experiment.run(machine)
     assert experiment.runstate == "RUNNING"
-    assert fake.deleted == [("semantic_run", '"etag"')]
+    assert fake.deleted == [("server_run", '"etag"')]
 
 
 def test_staging_transport_failure_restores_before_direct_fallback(monkeypatch):
@@ -1421,7 +1446,7 @@ def test_staging_transport_failure_restores_before_direct_fallback(monkeypatch):
         raise RuntimeError("direct fallback reached")
 
     monkeypatch.setattr(machine, "ensured_connection", stop_before_direct)
-    experiment = Experiment("semantic_run")
+    experiment = Experiment("server_run")
     with pytest.raises(RuntimeError, match="direct fallback reached"):
         experiment.run(machine)
     assert observed == ["INIT"]

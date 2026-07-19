@@ -11,7 +11,7 @@ shutdown_drain_seconds = 20
 [[machines]]
 name = "qpcr1"
 host = "qpcr1"
-## Optional qslib-server semantic status/SSE mode. Omit this setting for the
+## Optional qslib-server HTTP status/SSE mode. Omit this setting for the
 ## default direct-SCPI subscription mode.
 # server_port = 7500
 ## Bearer token for qslib-server. Omit when its ACL grants an unauthenticated

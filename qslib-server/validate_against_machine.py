@@ -62,7 +62,7 @@ def main() -> int:
 
     results: list[tuple[str, bool, str]] = []
     # Keep independent clients so an open direct session cannot intentionally
-    # override semantic dispatch on the server-configured Machine.
+    # override HTTP dispatch on the server-configured Machine.
     direct = Machine(
         host,
         port=port,
@@ -71,7 +71,7 @@ def main() -> int:
         server_port=None,
         tls_server_name="localhost",
     )
-    semantic = Machine(
+    server_machine = Machine(
         host,
         port=port,
         ssl=True,
@@ -83,9 +83,9 @@ def main() -> int:
 
     binary = os.environ.get("QSLIB_SERVER_BINARY")
     if binary:
-        semantic.ensure_server(binary=binary, listen=os.environ["QSLIB_SERVER_LISTEN"])
+        server_machine.ensure_server(binary=binary, listen=os.environ["QSLIB_SERVER_LISTEN"])
 
-    server = semantic.server
+    server = server_machine.server
     assert server is not None
     health = server.health()
     capabilities = server.capabilities()
@@ -120,7 +120,7 @@ def main() -> int:
         for run in run_list:
             truth = fs_md5(f"{exp_root}/{run}")
             with tempfile.TemporaryDirectory() as td:
-                used = semantic.download_dir(run, td, leaf="EXP")
+                used = server_machine.download_dir(run, td, leaf="EXP")
                 got = {
                     f.relative_to(td).as_posix(): hashlib.md5(f.read_bytes()).hexdigest()
                     for f in Path(td).rglob("*")
@@ -141,7 +141,7 @@ def main() -> int:
         disk_match = re.match(r"([0-9a-f]{32})", ex(f"md5sum {prc}"))
         assert disk_match is not None
         disk = disk_match.group(1)
-        http = semantic.read_file("qslib_validate.bin", context="public_run_complete", fast=True)
+        http = server_machine.read_file("qslib_validate.bin", context="public_run_complete", fast=True)
         scpi = direct.read_file("qslib_validate.bin", context="public_run_complete", fast=False)
         ex(f"rm -f {prc}")
         results.append(
@@ -156,7 +156,7 @@ def main() -> int:
             from qslib.experiment import Experiment
 
             try:
-                e = Experiment.from_uncollected(semantic, run_list[0])
+                e = Experiment.from_uncollected(server_machine, run_list[0])
                 n = sum(1 for p in Path(e._dir_base).rglob("*") if p.is_file())
                 results.append((f"from_uncollected {run_list[0]}", n > 0, f"loaded {n} files, name={e.name!r}"))
             except Exception as exc:

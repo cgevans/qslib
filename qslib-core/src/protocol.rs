@@ -339,7 +339,7 @@ impl ProtocolModel {
     }
 }
 
-/// Validated protocol definition command used by semantic server operations.
+/// Validated protocol definition command used by qslib-server operations.
 #[derive(Debug, Clone)]
 pub struct ProtocolDefinition(String);
 

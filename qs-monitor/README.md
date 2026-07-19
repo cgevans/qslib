@@ -37,10 +37,10 @@ host = "1.2.3.4"
 
 Direct SCPI subscription mode is the default: omit `server_port` to retain the
 normal status queries, subscriptions, and reconnect behavior. Setting
-`server_port` explicitly selects qslib-server mode, which uses the semantic
-status resource, durable opaque-cursor SSE events, and named file resources without opening
-a normal client-side SCPI connection. The old `agent_port` key is accepted as
-an alias.
+`server_port` explicitly selects qslib-server mode, which uses its HTTP status
+resource, resumable SSE events, and named file resources without opening a
+normal client-side SCPI connection. The old `agent_port` key is accepted as an
+alias.
 
 The server is optional. It must be configured with an Observer-or-higher token;
 file collection also requires its named read contexts. Epoch-capable

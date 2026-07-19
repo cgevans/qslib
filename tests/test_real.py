@@ -2,14 +2,18 @@
 # SPDX-License-Identifier: EUPL-1.2
 
 import asyncio
+import hashlib
 import os
+import time
 import uuid
+from pathlib import Path
 
 import pytest
 
 from qslib import AccessLevel, Experiment, Machine, PlateSetup, Protocol, Stage
 from qslib.experiment import MachineBusyError
 from qslib.machine import AlreadyCollectedError
+from qslib.server import ServerError, ServerUnavailable
 
 
 # Machine configuration from environment variables
@@ -18,9 +22,165 @@ TEST_PORT = int(os.environ.get("QSLIB_TEST_PORT", "7443"))
 TEST_PASSWORD = os.environ.get("QSLIB_TEST_PASSWORD", "")
 TEST_SSL = os.environ.get("QSLIB_TEST_SSL", "true").lower() in ("true", "1", "yes")
 
+# qslib-server is deployed onto the machine so that it shares the machine's
+# filesystem; without that, the file and experiment resources would read a
+# different tree than SCPI does.
+TEST_SERVER_BINARY = os.environ.get("QSLIB_TEST_SERVER_BINARY")
+TEST_SERVER_PORT = os.environ.get("QSLIB_TEST_SERVER_PORT")
+TEST_SERVER_TOKEN = os.environ.get("QSLIB_TEST_SERVER_TOKEN")
+TEST_SERVER_FILE_ROOT = os.environ.get("QSLIB_TEST_SERVER_FILE_ROOT", "/data/vendor/IS")
+# ensure_server sends the launch line to /dev/null, so the server's own --log
+# is the only way to see why a deployment or a request failed.
+TEST_SERVER_LOG = os.environ.get("QSLIB_TEST_SERVER_LOG", "/data/qslib-server.log")
+TEST_SERVER_SCPI_TARGET = os.environ.get("QSLIB_TEST_SERVER_SCPI_TARGET", "127.0.0.1:7000")
+
 requires_machine = pytest.mark.skipif(
     os.environ.get("QSLIB_TEST_MACHINE") is None, reason="No test machine configured (set QSLIB_TEST_MACHINE env var)"
 )
+
+
+def _machine(*, server: bool = False) -> Machine:
+    kwargs = {}
+    if server:
+        kwargs["server_port"] = int(TEST_SERVER_PORT)
+        kwargs["server_token"] = TEST_SERVER_TOKEN
+    return Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL, **kwargs)
+
+
+def _retire_stale_server(m: Machine, expected_sha: str) -> None:
+    """Stop a deployed qslib-server that is not the binary under test.
+
+    ensure_server refuses to redeploy over anything answering /health, so a
+    server left by an earlier run would otherwise be reused silently, or fail
+    the run outright if it holds a different token.
+    """
+    client = m.server
+    assert client is not None
+    try:
+        health = client.health()
+        # A server that never reaches ready (e.g. launched against the wrong
+        # SCPI target) is useless but still answers /health, which is enough
+        # to make ensure_server refuse to replace it. Retire it too.
+        if health.get("executable_sha256") == expected_sha and health.get("ready") is True:
+            return
+    except ServerUnavailable:
+        return  # nothing listening; ensure_server will deploy
+    except ServerError:
+        pass  # answering but unusable (e.g. a stale token); replace it
+
+    with m.ensured_connection(AccessLevel.Controller):
+        # -x matches the process name, not the command line: `pkill -f
+        # qslib-server` would also match the SYST:EXEC shell running it and
+        # kill itself before the server.
+        m.run_command('SYST:EXEC "pkill -x qslib-server || true"')
+
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        try:
+            client.health()
+        except ServerUnavailable:
+            return
+        except ServerError:
+            pass
+        time.sleep(0.2)
+    raise RuntimeError("stale qslib-server did not stop after pkill")
+
+
+@pytest.fixture(scope="session")
+def deployed_server() -> Machine:
+    """Deploy qslib-server onto the machine and return a Machine using it.
+
+    Deployment is the first assertion: it exercises the SCPI binary push,
+    chmod, and SYST:EXEC launch, which unit tests can only reach with
+    _deploy_binary monkeypatched.
+    """
+    if TEST_SERVER_BINARY is None or TEST_SERVER_PORT is None:
+        pytest.skip("no qslib-server configured (set QSLIB_TEST_SERVER_BINARY and QSLIB_TEST_SERVER_PORT)")
+    if not TEST_SERVER_TOKEN:
+        pytest.skip("QSLIB_TEST_SERVER_TOKEN is required: a token bootstrap is what enables writes and controls")
+
+    m = _machine(server=True)
+    expected_sha = hashlib.sha256(Path(TEST_SERVER_BINARY).read_bytes()).hexdigest()
+    _retire_stale_server(m, expected_sha)
+    m.ensure_server(
+        binary=TEST_SERVER_BINARY,
+        listen=f"0.0.0.0:{TEST_SERVER_PORT}",
+        file_root=TEST_SERVER_FILE_ROOT,
+        extra_args=(
+            "--log",
+            TEST_SERVER_LOG,
+            "--scpi-target",
+            TEST_SERVER_SCPI_TARGET,
+            "--scpi-password",
+            TEST_PASSWORD,
+        ),
+    )
+
+    client = m.server
+    assert client is not None
+    health = client.health()
+    assert health["ready"] is True
+    assert health["executable_sha256"] == expected_sha, "a different qslib-server build answered after deployment"
+
+    # _server_for declines whenever a manual connection is open, so a
+    # connection left behind by the deploy would route every server-variant
+    # test back to SCPI and fail assert_no_scpi with a confusing message.
+    assert not m.connected, "deployment left a SCPI connection open"
+    return m
+
+
+class _ScpiSpy:
+    """Counts the direct SCPI connections a Machine opens."""
+
+    def __init__(self, original):
+        self.original = original
+        self.count = 0
+
+    def __call__(self, *args, **kwargs):
+        self.count += 1
+        return self.original(*args, **kwargs)
+
+
+def _install_spy(m: Machine) -> _ScpiSpy:
+    """Wrap ``m._direct_connection`` with a counter, once per Machine."""
+    spy = getattr(m, "_test_scpi_spy", None)
+    if spy is None:
+        spy = _ScpiSpy(m._direct_connection)
+        m._direct_connection = spy
+        m._test_scpi_spy = spy
+    return spy
+
+
+@pytest.fixture(params=["direct", "server"])
+def machine(request) -> Machine:
+    """A Machine reaching the instrument directly over SCPI, or via qslib-server."""
+    if request.param == "server":
+        m = request.getfixturevalue("deployed_server")
+    else:
+        m = _machine()
+    _install_spy(m).count = 0
+    m._test_transport = request.param
+    return m
+
+
+def reset_scpi_count(m: Machine) -> None:
+    """Restart the SCPI counter, to scope assert_no_scpi to part of a test."""
+    spy = getattr(m, "_test_scpi_spy", None)
+    if spy is not None:
+        spy.count = 0
+
+
+def assert_no_scpi(m: Machine) -> None:
+    """Assert the preceding operation went over HTTP rather than falling back.
+
+    _server_for falls back to direct SCPI on most failures, so without
+    this a broken HTTP path would still pass every assertion in these tests.
+    A no-op for the direct parametrisation.
+    """
+    if getattr(m, "_test_transport", None) != "server":
+        return
+    count = m._test_scpi_spy.count
+    assert count == 0, f"operation opened {count} direct SCPI connection(s) instead of using qslib-server"
 
 
 @requires_machine
@@ -69,12 +229,15 @@ def test_real_invocationerror():
 
 @requires_machine
 @pytest.mark.parametrize("encoding", ["base64", "plain"])
-def test_file_read_write_default(encoding):
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-
+def test_file_read_write_default(machine, encoding):
+    m = machine
     m.write_file("public_run_complete:test.txt", "Hello, world!")
 
     assert "public_run_complete:test.txt" in m.list_files("public_run_complete:")
+
+    # list_files above and run_command below always use SCPI; only the
+    # transfers have an HTTP path, so the guard covers just those.
+    reset_scpi_count(m)
 
     data = m.read_file("public_run_complete:test.txt", encoding=encoding)
     assert data == b"Hello, world!"
@@ -82,10 +245,35 @@ def test_file_read_write_default(encoding):
     assert data == m.read_file("test.txt", context="public_run_complete", encoding=encoding)
     assert data == m.read_file("test.txt", context="public_run_complete:", encoding=encoding)
 
+    assert_no_scpi(m)
+
     with m.at_access(AccessLevel.Controller):
         m.run_command("FILE:REMOVE public_run_complete:test.txt")
 
     assert "public_run_complete:test.txt" not in m.list_files("public_run_complete:")
+
+
+@requires_machine
+def test_file_written_over_scpi_is_readable_over_http(deployed_server):
+    """The deployed server must see the same filesystem the vendor server does."""
+    m = deployed_server
+    name = f"crosstransport-{uuid.uuid4().hex[:8]}.txt"
+    payload = b"shared filesystem check"
+
+    direct = _machine()
+    with direct:
+        with direct.at_access(AccessLevel.Controller):
+            direct.write_file(f"public_run_complete:{name}", payload, fast=False)
+
+    spy = _install_spy(m)
+    try:
+        spy.count = 0
+        assert m.read_file(f"public_run_complete:{name}") == payload
+        assert spy.count == 0, "read fell back to SCPI; the server may not share the filesystem"
+    finally:
+        with direct:
+            with direct.at_access(AccessLevel.Controller):
+                direct.run_command(f"FILE:REMOVE public_run_complete:{name}")
 
 
 # @pytest.mark.asyncio
@@ -103,7 +291,7 @@ def test_file_read_write_default(encoding):
 
 @requires_machine
 @pytest.mark.asyncio
-async def test_real_experiment():
+async def test_real_experiment(machine):
     proto = Protocol(
         [Stage.stepped_ramp(50, [30, 31, 32, 33, 34, 35], 240, n_steps=10, collect=True)],
         filters=["x1-m4", "x3-m5"],
@@ -111,7 +299,7 @@ async def test_real_experiment():
 
     exp = Experiment(uuid.uuid1().hex, proto, PlateSetup({"s": "A1"}))
 
-    m = Machine(TEST_MACHINE, port=TEST_PORT, max_access_level="Controller", password=TEST_PASSWORD, ssl=TEST_SSL)
+    m = machine
 
     exp.run(m, require_drawer_check=False)
 
@@ -142,7 +330,10 @@ async def test_real_experiment():
 
     exp.resume()
 
+    # qslib-server provides a running experiment's status; check it did not fall back.
+    reset_scpi_count(m)
     exp.get_status()
+    assert_no_scpi(m)
 
     exp.sync_from_machine(m)
 
@@ -173,83 +364,73 @@ async def test_real_experiment():
 
 
 @requires_machine
-def test_block_temp():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        assert m.block == (False, 25.0)
+def test_block_temp(machine):
+    assert machine.block == (False, 25.0)
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_run_status_idle():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        rs = m.run_status()
-        assert rs.name == "-"
+def test_run_status_idle(machine):
+    rs = machine.run_status()
+    assert rs.name == "-"
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_machine_status():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        ms = m.machine_status()
-        assert hasattr(ms, "drawer")
-        assert hasattr(ms, "sample_temperatures")
+def test_machine_status(machine):
+    ms = machine.machine_status()
+    assert hasattr(ms, "drawer")
+    assert hasattr(ms, "sample_temperatures")
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_get_running_protocol_no_run():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        with pytest.raises(ValueError, match="Nothing is currently running"):
-            m.get_running_protocol()
+def test_get_running_protocol_no_run(machine):
+    with pytest.raises(ValueError, match="Nothing is currently running"):
+        machine.get_running_protocol()
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_get_zone_count():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        z = m.get_zone_count()
-        assert z >= 1
+def test_get_zone_count(machine):
+    z = machine.get_zone_count()
+    assert z >= 1
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_list_runs_in_storage():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        runs = m.list_runs_in_storage()
-        assert isinstance(runs, list)
+def test_list_runs_in_storage(machine):
+    runs = machine.list_runs_in_storage()
+    assert isinstance(runs, list)
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_list_runs_in_storage_verbose():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        runs = m.list_runs_in_storage(verbose=True)
-        assert isinstance(runs, list)
+def test_list_runs_in_storage_verbose(machine):
+    runs = machine.list_runs_in_storage(verbose=True)
+    assert isinstance(runs, list)
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_power_status():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        p = m.power
-        assert isinstance(p, bool)
+def test_power_status(machine):
+    p = machine.power
+    assert isinstance(p, bool)
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_drawer_position():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        d = m.drawer_position
-        assert d in ("Open", "Closed", "Unknown")
+def test_drawer_position(machine):
+    d = machine.drawer_position
+    assert d in ("Open", "Closed", "Unknown")
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_block_temperature():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        b = m.block
-        assert isinstance(b, tuple) and len(b) == 2
+def test_block_temperature(machine):
+    b = machine.block
+    assert isinstance(b, tuple) and len(b) == 2
+    assert_no_scpi(machine)
 
 
 @requires_machine
@@ -261,40 +442,28 @@ def test_run_command_help():
 
 
 @requires_machine
-def test_cover_position():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        pos = m.cover_position
-        assert pos in ("Up", "Down", "Unknown", "")
+def test_cover_position(machine):
+    pos = machine.cover_position
+    assert pos in ("Up", "Down", "Unknown", "")
+    assert_no_scpi(machine)
 
 
 @requires_machine
 def test_drawer_open_close():
-    m = Machine(
-        TEST_MACHINE,
-        port=TEST_PORT,
-        max_access_level="Controller",
-        password=TEST_PASSWORD,
-        ssl=TEST_SSL,
-    )
+    # Direct only: qslib-server verifies the drawer reaches Open, while the
+    # SCPI path's drawer_open() is a bare OPEN with no check.
+    m = _machine()
     with m:
         m.drawer_open()
         m.drawer_close(lower_cover=False, check=False)
 
 
 @requires_machine
-def test_cover_lower():
-    m = Machine(
-        TEST_MACHINE,
-        port=TEST_PORT,
-        max_access_level="Controller",
-        password=TEST_PASSWORD,
-        ssl=TEST_SSL,
-    )
-    with m:
-        # Close drawer first, then lower cover
-        m.drawer_close(lower_cover=False, check=False)
-        m.cover_lower(check=False)
+def test_cover_lower(machine):
+    # Close drawer first, then lower cover
+    machine.drawer_close(lower_cover=False, check=False)
+    machine.cover_lower(check=False)
+    assert_no_scpi(machine)
 
 
 @requires_machine
@@ -333,6 +502,8 @@ def test_define_protocol():
 
 @requires_machine
 def test_list_files_verbose():
+    # list_files is @_ensure_connection-decorated and has no HTTP path,
+    # so there is nothing for the server parametrisation to exercise.
     m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
     with m:
         result = m.list_files("public_run_complete:", verbose=True)
@@ -344,11 +515,10 @@ def test_list_files_verbose():
 
 
 @requires_machine
-def test_current_run_name_no_run():
-    m = Machine(TEST_MACHINE, port=TEST_PORT, password=TEST_PASSWORD, ssl=TEST_SSL)
-    with m:
-        name = m.current_run_name
-        assert name is None
+def test_current_run_name_no_run(machine):
+    name = machine.current_run_name
+    assert name is None
+    assert_no_scpi(machine)
 
 
 @requires_machine
@@ -364,36 +534,22 @@ def test_at_access_context_manager():
 
 
 @requires_machine
-def test_block_setter_off():
-    m = Machine(
-        TEST_MACHINE,
-        port=TEST_PORT,
-        max_access_level="Controller",
-        password=TEST_PASSWORD,
-        ssl=TEST_SSL,
-    )
-    with m:
-        m.block = False
-        on, temp = m.block
-        assert on is False
+def test_block_setter_off(machine):
+    machine.block = False
+    on, temp = machine.block
+    assert on is False
+    assert_no_scpi(machine)
 
 
 @requires_machine
-def test_block_setter_tuple():
-    m = Machine(
-        TEST_MACHINE,
-        port=TEST_PORT,
-        max_access_level="Controller",
-        password=TEST_PASSWORD,
-        ssl=TEST_SSL,
-    )
-    with m:
-        m.block = (True, 30.0)
-        on, temp = m.block
-        assert on is True
-        assert abs(temp - 30.0) < 1.0
-        # Clean up: turn block off
-        m.block = False
+def test_block_setter_tuple(machine):
+    machine.block = (True, 30.0)
+    on, temp = machine.block
+    assert on is True
+    assert abs(temp - 30.0) < 1.0
+    # Clean up: turn block off
+    machine.block = False
+    assert_no_scpi(machine)
 
 
 @requires_machine
@@ -412,22 +568,15 @@ def test_generate_random_key():
 
 
 @requires_machine
-def test_power_cycle():
-    m = Machine(
-        TEST_MACHINE,
-        port=TEST_PORT,
-        max_access_level="Controller",
-        password=TEST_PASSWORD,
-        ssl=TEST_SSL,
-    )
-    with m:
-        original = m.power
-        m.power = True
-        assert m.power is True
-        m.power = False
-        assert m.power is False
-        # Restore
-        m.power = original
+def test_power_cycle(machine):
+    original = machine.power
+    machine.power = True
+    assert machine.power is True
+    machine.power = False
+    assert machine.power is False
+    # Restore
+    machine.power = original
+    assert_no_scpi(machine)
 
 
 @requires_machine
