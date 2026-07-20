@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
-from http.client import HTTPException
+from http.client import HTTPException, RemoteDisconnected
 from pathlib import Path
 from typing import IO, Any, BinaryIO, Iterator
 from uuid import uuid4
@@ -187,7 +187,13 @@ class ServerClient:
             # instead indicates a peer sent a malformed HTTP response; keep it
             # as ServerError so bootstrap will not overwrite a responding
             # (but incompatible or broken) service.
-            if not isinstance(error, HTTPException):
+            #
+            # RemoteDisconnected is the exception: the peer closed without
+            # sending any response at all, so nothing is serving. A TCP proxy
+            # in front of a stopped server (socat, an nginx stream block, an
+            # SSH forward) accepts and then closes exactly like this, and
+            # reading that as a live service makes bootstrap refuse to deploy.
+            if not isinstance(error, HTTPException) or isinstance(error, RemoteDisconnected):
                 raise ServerUnavailable(
                     f"cannot reach qslib-server at {self.base_url}: {error}",
                     retryable=True,

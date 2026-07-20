@@ -16,7 +16,7 @@ import threading
 import time
 import urllib.error
 from contextlib import contextmanager, nullcontext
-from http.client import HTTPException
+from http.client import HTTPException, RemoteDisconnected
 from pathlib import Path
 
 import pytest
@@ -494,6 +494,23 @@ def test_malformed_http_response_is_not_classified_as_unavailable(monkeypatch):
     with pytest.raises(ServerError, match="invalid HTTP response") as error:
         client.health()
     assert not isinstance(error.value, ServerUnavailable)
+
+
+def test_empty_reply_is_unavailable_not_malformed(monkeypatch):
+    # A TCP proxy in front of a stopped server (socat, nginx stream, an SSH
+    # forward) accepts the connection and closes it without a response. That is
+    # nothing serving, not a broken server, so bootstrap must be free to deploy
+    # over it rather than refusing as it would for a malformed reply.
+    client = ServerClient("instrument")
+
+    def fail(*_args, **_kwargs):
+        raise RemoteDisconnected("Remote end closed connection without response")
+
+    monkeypatch.setattr("urllib.request.urlopen", fail)
+    with pytest.raises(ServerUnavailable) as error:
+        client.health()
+    assert error.value.outcome == "not_started"
+    assert error.value.retryable is True
 
 
 def test_machine_server_status_opens_no_scpi(monkeypatch):
