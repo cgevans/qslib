@@ -1041,7 +1041,7 @@ table, th, td {{
             if path.is_dir():
                 path = path / (self.runtitle_safe + ".eds")
 
-        with zipfile.ZipFile(path, mode) as z:
+        with zipfile.ZipFile(path, mode, compression=zipfile.ZIP_DEFLATED) as z:
             for root, _, files in os.walk(self._dir_base):
                 for file in files:
                     fpath = os.path.join(root, file)

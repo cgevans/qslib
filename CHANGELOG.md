@@ -25,6 +25,7 @@ SPDX-License-Identifier: EUPL-1.2
 - Fixed `Experiment.abort` failing when the experiment already had a machine.
 - Loading an experiment no longer prints a Polars warning about column sortedness.
 - Added commands for querying and setting the status led.
+- Compress EDS archives written by `Experiment.save_file()` with ZIP deflate, including file and in-memory outputs.
 
 ## Version 0.15.2
 

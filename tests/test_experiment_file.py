@@ -3,7 +3,9 @@
 
 
 import datetime
+import io
 from pathlib import Path
+import zipfile
 import numpy as np
 import pytest
 
@@ -36,6 +38,21 @@ def exp_reloaded(exp: Experiment, tmp_path_factory: pytest.TempPathFactory) -> E
     tmp_path = tmp_path_factory.mktemp("exp")
     exp.save_file(tmp_path / "test_loaded.eds")
     return Experiment.from_file(tmp_path / "test_loaded.eds")
+
+
+@pytest.mark.parametrize("use_stream", [False, True], ids=["path", "stream"])
+def test_save_file_uses_deflate(exp: Experiment, tmp_path: Path, use_stream: bool) -> None:
+    output = io.BytesIO() if use_stream else tmp_path / "compressed.eds"
+
+    exp.save_file(output, update_files=False)
+
+    with zipfile.ZipFile(output) as archive:
+        members = [member for member in archive.infolist() if not member.is_dir()]
+        assert members
+        assert {member.compress_type for member in members} == {zipfile.ZIP_DEFLATED}
+
+        messages = archive.getinfo("apldbio/sds/messages.log")
+        assert messages.compress_size < messages.file_size
 
 
 def test_props(exp: Experiment, exp_reloaded: Experiment) -> None:
