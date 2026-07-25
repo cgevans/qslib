@@ -13,7 +13,7 @@ SPDX-License-Identifier: EUPL-1.2
   using Pandas processors, filter_sets could be inadvertently merged together (though not
   different wells). `SmoothEMWMean` also now gives Polars its `min_periods`, `adjust` and
   `ignore_na` settings, which had been silently left at the Polars defaults.
-- Polars 1.21 or later is now required, for `min_samples`.
+- Polars 1.21 or later is now required, for `min_samples` and `check_sortedness`.
 - `Experiment.latest_from_machine` now accepts a host name string, like the other
   methods that take a machine.
 - `Experiment.plot_over_time` now plots lines in the order the samples (or wells) and
@@ -23,6 +23,7 @@ SPDX-License-Identifier: EUPL-1.2
   `Experiment.plot_over_time` does.
 - Removed a stray `print` of the y-axis label from `Experiment.plot_over_time`.
 - Fixed `Experiment.abort` failing when the experiment already had a machine.
+- Loading an experiment no longer prints a Polars warning about column sortedness.
 - Added commands for querying and setting the status led.
 
 ## Version 0.15.2

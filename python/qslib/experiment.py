@@ -1734,10 +1734,14 @@ table, th, td {{
 
         d = (
             d.join_asof(
-                self.temperature_ramps_polars.lazy().select("timestamp", "zone", "from", "to", "rate"),
+                self.temperature_ramps_polars.lazy()
+                .select("timestamp", "zone", "from", "to", "rate")
+                .sort("timestamp"),
                 on="timestamp",
                 by="zone",
                 suffix="_ramp",
+                # Both sides are sorted just above; Polars can't check that itself with `by`.
+                check_sortedness=False,
                 coalesce=False,
             )
             .with_columns(
