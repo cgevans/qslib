@@ -8,6 +8,12 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Unreleased
 
+- Fixed `SmoothWindowMean` and `SmoothEMWMean` bugs.  By default from 0.14.0 these used
+  Polars processors, which smoothed by time without properly grouping.  Pre-0.14.0, and
+  using Pandas processors, filter_sets could be inadvertently merged together (though not
+  different wells). `SmoothEMWMean` also now gives Polars its `min_periods`, `adjust` and 
+  `ignore_na` settings, which had been silently left at the Polars defaults.
+- Polars 1.21 or later is now required, for `min_samples`.
 - Added commands for querying and setting the status led.
 - Moved documentation hosting from Read the Docs to Codeberg Pages, built via Forgejo Actions and served at <https://cge.codeberg.page/qslib/>. The Read the Docs site now redirects there.
 

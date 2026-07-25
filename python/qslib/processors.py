@@ -16,7 +16,7 @@ import re
 from abc import ABCMeta, abstractmethod
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, Sequence, TypedDict, Union
+from typing import TYPE_CHECKING, Any, Callable, ClassVar, Literal, Sequence, TypedDict, Union, overload
 
 import polars as pl
 
@@ -51,6 +51,14 @@ class Processor(metaclass=ABCMeta):
     """
 
     scope: ClassVar[ScopeType] = "limited"
+
+    @overload
+    def process(self, data: pl.LazyFrame) -> pl.LazyFrame:
+        ...
+
+    @overload
+    def process(self, data: pl.DataFrame) -> pl.DataFrame:
+        ...
 
     def process(self, data: DataFrameType) -> DataFrameType:
         """
@@ -169,6 +177,19 @@ def match_expr_single(
 ) -> pl.Expr:
     """Build a Polars filter expression for single values."""
     return match_expr(stage=stage, cycle=cycle, step=step, point=point)
+
+
+def _smooth_pandas_per_filter_set(
+    data: "pd.DataFrame", smooth: "Callable[[pd.DataFrame], pd.DataFrame]"
+) -> "pd.DataFrame":
+    """Apply `smooth` to the fluorescence columns of welldata, within each filter set.
+
+    (Docstring LLM-generated.)
+    """
+    smoothed = data.copy()
+    fluorescence = data.loc[:, (slice(None), "fl")]
+    smoothed.loc[:, (slice(None), "fl")] = fluorescence.groupby(level="filter_set", group_keys=False).apply(smooth)
+    return smoothed
 
 
 class FilterDict(TypedDict, total=False):
@@ -389,21 +410,26 @@ class SmoothWindowMean(Processor):
 
     def _process_polars(self, data: pl.LazyFrame) -> pl.LazyFrame:
         return data.with_columns(
-            pl.col("processed_fluorescence").rolling_mean(
+            pl.col("processed_fluorescence")
+            .rolling_mean(
                 window_size=self.window,
-                min_periods=self.min_periods,
+                min_samples=self.min_periods,
                 center=self.center,
             )
+            .over("well", "filter_set")
         )
 
     def _process_pandas(self, data: "pd.DataFrame") -> "pd.DataFrame":
-        return data.rolling(
-            window=self.window,
-            min_periods=self.min_periods,
-            center=self.center,
-            win_type=self.win_type,
-            closed=self.closed,
-        ).mean()
+        return _smooth_pandas_per_filter_set(
+            data,
+            lambda fl: fl.rolling(
+                window=self.window,
+                min_periods=self.min_periods,
+                center=self.center,
+                win_type=self.win_type,
+                closed=self.closed,
+            ).mean(),
+        )
 
     def ylabel(self, previous_label: str | None = None) -> str:
         if previous_label is None or previous_label == "fluorescence":
@@ -423,32 +449,40 @@ class SmoothEMWMean(Processor):
     halflife: float | str | timedelta | None = None
     alpha: float | None = None
     min_periods: int = 0
-    adjust: bool = True  # Pandas only
-    ignore_na: bool = False  # Pandas only
+    adjust: bool = True
+    ignore_na: bool = False
     scope: ClassVar[ScopeType] = "limited"
 
     def _process_polars(self, data: pl.LazyFrame) -> pl.LazyFrame:
         # Polars ewm_mean uses half_life (with underscore), not halflife
         half_life = self.halflife if not isinstance(self.halflife, timedelta) else None
         return data.with_columns(
-            pl.col("processed_fluorescence").ewm_mean(
+            pl.col("processed_fluorescence")
+            .ewm_mean(
                 com=self.com,
                 span=self.span,
                 half_life=half_life,
                 alpha=self.alpha,
+                min_samples=self.min_periods,
+                adjust=self.adjust,
+                ignore_nulls=self.ignore_na,
             )
+            .over("well", "filter_set")
         )
 
     def _process_pandas(self, data: "pd.DataFrame") -> "pd.DataFrame":
-        return data.ewm(
-            com=self.com,
-            span=self.span,
-            halflife=self.halflife,
-            alpha=self.alpha,
-            min_periods=self.min_periods,
-            adjust=self.adjust,
-            ignore_na=self.ignore_na,
-        ).mean()
+        return _smooth_pandas_per_filter_set(
+            data,
+            lambda fl: fl.ewm(
+                com=self.com,
+                span=self.span,
+                halflife=self.halflife,
+                alpha=self.alpha,
+                min_periods=self.min_periods,
+                adjust=self.adjust,
+                ignore_na=self.ignore_na,
+            ).mean(),
+        )
 
     def ylabel(self, previous_label: str | None = None) -> str:
         if previous_label is None or previous_label == "fluorescence":

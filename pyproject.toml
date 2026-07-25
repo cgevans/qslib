@@ -56,7 +56,7 @@ dependencies = [
     "matplotlib",
     "markdown",
     "dacite",
-    "polars ~= 1.20",
+    "polars ~= 1.21",
     "pyarrow"
 ]
 
