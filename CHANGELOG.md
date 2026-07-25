@@ -22,6 +22,7 @@ SPDX-License-Identifier: EUPL-1.2
 - `Experiment.plot_over_time_altair` now accepts well names as well as sample names, as
   `Experiment.plot_over_time` does.
 - Removed a stray `print` of the y-axis label from `Experiment.plot_over_time`.
+- Fixed `Experiment.abort` failing when the experiment already had a machine.
 - Added commands for querying and setting the status led.
 
 ## Version 0.15.2

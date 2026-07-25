@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: 2021-2023 Constantine Evans <qslib@mb.costi.net>
 # SPDX-License-Identifier: EUPL-1.2
 
+import ast
 from pathlib import Path
 
 import pytest
@@ -311,3 +312,71 @@ def test_latest_from_machine_takes_newest_run_in_storage(monkeypatch):
     assert isinstance(machine, Machine)
     assert machine.host == _HOST
     assert name == "newest"
+
+
+# --- access levels of commands that control the machine ---
+
+
+class _Connecting(Exception):
+    """Raised in place of connecting, recording what the machine would then allow."""
+
+    def __init__(self, max_access_level):
+        self.max_access_level = max_access_level
+        super().__init__(max_access_level)
+
+
+# Every Experiment command that asks for Controller access.
+# test_controller_commands_all_covered checks that this list stays complete.
+CONTROLLER_COMMANDS = {
+    "abort": lambda exp: exp.abort(),
+    "change_protocol": lambda exp: exp.change_protocol(_a_protocol()),
+    "change_protocol_from_now": lambda exp: exp.change_protocol_from_now([Stage([Step(30, 25)])]),
+    "pause_now": lambda exp: exp.pause_now(),
+    "resume": lambda exp: exp.resume(),
+    "run": lambda exp: exp.run(),
+    "stop": lambda exp: exp.stop(),
+}
+
+
+def _controller_commands():
+    """Public Experiment methods whose body asks for Controller access."""
+    import inspect
+
+    import qslib.experiment
+
+    tree = ast.parse(inspect.getsource(qslib.experiment))
+    found = set()
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.ClassDef) and node.name == "Experiment"):
+            continue
+        for method in node.body:
+            if isinstance(method, ast.FunctionDef) and not method.name.startswith("_"):
+                if "AccessLevel.Controller" in ast.unparse(method):
+                    found.add(method.name)
+    return found
+
+
+def test_controller_commands_all_covered():
+    assert _controller_commands() == set(CONTROLLER_COMMANDS)
+
+
+@pytest.mark.parametrize("command", sorted(CONTROLLER_COMMANDS))
+def test_controller_commands_raise_max_access_level(command, monkeypatch):
+    """A command needing Controller raises the cap of a machine kept from a read-only one."""
+    from qslib import AccessLevel
+    from qslib.machine import Machine
+
+    def fake_connect(self):
+        raise _Connecting(self.max_access_level)
+
+    monkeypatch.setattr(Machine, "connect", fake_connect)
+
+    exp = Experiment(protocol=_a_protocol())
+    # A read-only command, such as get_status, leaves behind a machine capped at Observer.
+    exp._ensure_machine("example.invalid")
+    assert exp.machine.max_access_level == AccessLevel.Observer
+
+    with pytest.raises(_Connecting) as connecting:
+        CONTROLLER_COMMANDS[command](exp)
+
+    assert connecting.value.max_access_level >= AccessLevel.Controller

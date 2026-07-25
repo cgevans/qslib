@@ -763,7 +763,7 @@ table, th, td {{
         NotRunningError
             the experiment is not currently running
         """
-        machine = self._ensure_machine(machine)
+        machine = self._ensure_machine(machine, needed_level=AccessLevel.Controller)
         with machine.ensured_connection(AccessLevel.Controller):
             self._ensure_running(machine)
             machine.abort_current_run()
