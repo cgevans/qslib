@@ -1,0 +1,55 @@
+name: Real-machine CI
+
+# This workflow intentionally belongs to git.costi.net only. Codeberg is a
+# passive mirror and has repository Actions disabled.
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: qPCR integration tests
+    if: ${{ forge.server_url == 'https://git.costi.net' || forge.server_url == 'https://git.costi.net/' }}
+    runs-on: self-hosted-qpcr
+    timeout-minutes: 90
+    env:
+      QSLIB_TEST_MACHINE: qpcr-fwd
+      QSLIB_TEST_PORT: "7000"
+      QSLIB_TEST_SSL_PORT: "7443"
+      QSLIB_TEST_PASSWORD: correctpassword
+      QSLIB_TEST_SSL: "false"
+    steps:
+      - name: Check out source
+        uses: https://github.com/actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: https://github.com/dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        with:
+          toolchain: stable
+      - name: Install uv
+        uses: https://github.com/astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0 (Node 20)
+        with:
+          version: "0.9.17"
+          enable-cache: false
+      - name: Check simulator connectivity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import socket
+
+          for port in (7000, 7443):
+              with socket.create_connection(("qpcr-fwd", port), timeout=10):
+                  print(f"qpcr-fwd:{port} is reachable")
+          PY
+      - name: Run Rust integration tests
+        run: cargo test --test real_integration -- --ignored --test-threads=1
+      - name: Set up Python environment
+        run: |
+          uv venv --python 3.13
+          uv sync --group dev --no-install-project
+          uv run maturin develop --uv
+      - name: Run Python integration tests
+        run: uv run pytest tests/test_real.py

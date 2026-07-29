@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+    secrets:
+      CODECOV_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  ruff:
+    name: Python lint
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.17"
+          enable-cache: true
+      - name: Run Ruff
+        run: uvx ruff==0.14.14 check python/qslib
+
+  rust:
+    name: Rust checks and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        with:
+          toolchain: stable
+          components: clippy,llvm-tools,rustfmt
+      - name: Install build tools
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        with:
+          tool: just@1.45.0,cargo-llvm-cov@0.6.22
+      - name: Check Rust formatting
+        run: cargo fmt --check
+      - name: Run Clippy
+        run: just clippy
+      - name: Run Rust tests with coverage
+        run: just coverage-rust
+      - name: Upload Rust coverage
+        continue-on-error: true
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
+        with:
+          files: coverage-rust.lcov
+          name: rust-linux
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  python:
+    name: Python checks and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        with:
+          toolchain: stable
+          components: llvm-tools
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.17"
+          enable-cache: true
+      - name: Install build tools
+        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        with:
+          tool: just@1.45.0,cargo-llvm-cov@0.6.22
+      - name: Set up Python environment
+        run: |
+          uv venv --python 3.13
+          uv sync --group dev --no-install-project
+      - name: Run Python tests with Python and Rust coverage
+        run: just coverage-python-full
+      - name: Upload Python and extension coverage
+        continue-on-error: true
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v6.0.2
+        with:
+          files: coverage-python.xml,coverage-rust-from-python.lcov
+          name: python-linux
+          token: ${{ secrets.CODECOV_TOKEN }}
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0

@@ -1,0 +1,362 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  checks:
+    name: Required checks
+    uses: ./.github/workflows/ci.yml
+    secrets:
+      CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+
+  metadata:
+    name: Validate release metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Validate version and changelog
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.toml", "rb") as file:
+              print(tomllib.load(file)["workspace"]["package"]["version"])
+          PY
+          )"
+          grep -Fqx "## Version ${version}" CHANGELOG.md
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" != "v${version}" ]]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package version ${version}" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+  wheels:
+    name: Wheel (${{ matrix.platform }})
+    needs: [checks, metadata]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+            target: x86_64
+            manylinux: "2_28"
+          - os: windows-2025
+            platform: windows-x86_64
+            target: x64
+            manylinux: ""
+          - os: macos-15
+            platform: macos-arm64
+            target: aarch64
+            manylinux: ""
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.10"
+      - name: Build wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          args: --release --out dist --find-interpreter
+          manylinux: ${{ matrix.manylinux }}
+          maturin-version: v1.12.6
+          rust-toolchain: stable
+          sccache: "false"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.17"
+          enable-cache: false
+      - name: Smoke-test wheel
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          uv venv --python 3.10
+          uv pip install --python .venv/bin/python dist/qslib-*.whl
+          .venv/bin/python -c "import qslib, qslib._qslib"
+      - name: Smoke-test wheel on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          uv venv --python 3.10
+          $wheel = Get-ChildItem dist/qslib-*.whl | Select-Object -First 1 -ExpandProperty FullName
+          uv pip install --python .venv/Scripts/python.exe $wheel
+          .venv/Scripts/python.exe -c "import qslib, qslib._qslib"
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: wheels-${{ matrix.platform }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  free-threaded-wheels:
+    name: Free-threaded wheel (${{ matrix.platform }}, ${{ matrix.python-version }})
+    needs: [checks, metadata]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 75
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+            target: x86_64
+            python-version: 3.13t
+            interpreter: /opt/python/cp313-cp313t/bin/python3
+            manylinux: "2_28"
+          - os: ubuntu-24.04
+            platform: linux-x86_64
+            target: x86_64
+            python-version: 3.14t
+            interpreter: /opt/python/cp314-cp314t/bin/python3
+            manylinux: "2_28"
+          - os: windows-2025
+            platform: windows-x86_64
+            target: x64
+            python-version: 3.13t
+            interpreter: python3
+            manylinux: ""
+          - os: windows-2025
+            platform: windows-x86_64
+            target: x64
+            python-version: 3.14t
+            interpreter: python3
+            manylinux: ""
+          - os: macos-15
+            platform: macos-arm64
+            target: aarch64
+            python-version: 3.13t
+            interpreter: python3
+            manylinux: ""
+          - os: macos-15
+            platform: macos-arm64
+            target: aarch64
+            python-version: 3.14t
+            interpreter: python3
+            manylinux: ""
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install free-threaded Python
+        if: runner.os != 'Linux'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Build free-threaded wheel
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          target: ${{ matrix.target }}
+          args: >-
+            --release --out dist --interpreter ${{ matrix.interpreter }}
+            --no-default-features --features python
+          manylinux: ${{ matrix.manylinux }}
+          maturin-version: v1.12.6
+          rust-toolchain: stable
+          sccache: "false"
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.9.17"
+          enable-cache: false
+      - name: Smoke-test free-threaded wheel
+        if: runner.os != 'Windows'
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        shell: bash
+        run: |
+          uv venv --python "$PYTHON_VERSION"
+          uv pip install --python .venv/bin/python dist/qslib-*.whl
+          .venv/bin/python -c "import qslib, qslib._qslib"
+      - name: Smoke-test free-threaded wheel on Windows
+        if: runner.os == 'Windows'
+        env:
+          PYTHON_VERSION: ${{ matrix.python-version }}
+        shell: pwsh
+        run: |
+          uv venv --python "$env:PYTHON_VERSION"
+          $wheel = Get-ChildItem dist/qslib-*.whl | Select-Object -First 1 -ExpandProperty FullName
+          uv pip install --python .venv/Scripts/python.exe $wheel
+          .venv/Scripts/python.exe -c "import qslib, qslib._qslib"
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: wheels-${{ matrix.platform }}-${{ matrix.python-version }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  sdist:
+    name: Source distribution
+    needs: [checks, metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Build source distribution
+        uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1.51.0
+        with:
+          command: sdist
+          args: --out dist
+          maturin-version: v1.12.6
+          rust-toolchain: stable
+      - name: Upload source distribution
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: wheels-sdist
+          path: dist
+          if-no-files-found: error
+          retention-days: 1
+
+  publish-python:
+    name: Publish to PyPI
+    if: github.ref_type == 'tag'
+    needs: [metadata, wheels, free-threaded-wheels, sdist]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: pypi
+      url: https://pypi.org/project/qslib/${{ needs.metadata.outputs.version }}/
+    permissions:
+      contents: read
+      id-token: write # Exchange GitHub OIDC identity for a PyPI token.
+    steps:
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Publish with PyPI trusted publishing
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist
+          skip-existing: true
+          attestations: true
+
+  publish-rust:
+    name: Publish to crates.io
+    if: github.ref_type == 'tag'
+    needs: [checks, metadata]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment:
+      name: crates-io
+      url: https://crates.io/crates/qslib/${{ needs.metadata.outputs.version }}
+    permissions:
+      contents: read
+      id-token: write # Exchange GitHub OIDC identity for a crates.io token.
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        with:
+          toolchain: stable
+      - name: Request a short-lived crates.io token
+        id: crates-auth
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+      - name: Publish crate
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          if curl --fail --silent --show-error \
+            "https://crates.io/api/v1/crates/qslib/${VERSION}" >/dev/null; then
+            echo "qslib ${VERSION} is already on crates.io; skipping."
+          else
+            cargo publish -p qslib
+          fi
+
+  github-release:
+    name: Create GitHub release
+    if: github.ref_type == 'tag'
+    needs: [metadata, publish-python, publish-rust]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment:
+      name: github-release
+      url: https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}
+    permissions:
+      contents: write # Create the release and upload its wheel assets.
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Download distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: wheels-*
+          merge-multiple: true
+          path: dist
+      - name: Extract release notes
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          awk -v version="$VERSION" '
+            BEGIN { found=0 }
+            /^## Version / {
+              if (found) exit
+              header=$0
+              sub(/^## Version /, "", header)
+              if (header == version) found=1
+              next
+            }
+            found { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+      - name: Create or update GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --notes-file release-notes.md
+            gh release upload "$GITHUB_REF_NAME" --clobber dist/*
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --title "$GITHUB_REF_NAME" \
+              --notes-file release-notes.md \
+              dist/*
+          fi
