@@ -148,3 +148,166 @@ def test_create_384_well_plate():
     ps = PlateSetup(plate_type=384)
     exp = Experiment(protocol=Protocol([Stage([Step(30, 25)])]), plate_setup=ps)
     assert exp.plate_type == 384
+
+
+# --- machine arguments given as host names ---
+
+_HOST = "example.invalid"
+
+
+class _MachineUsed(ValueError):
+    """Raised at the first use of a stand-in machine, recording what was used.
+
+    A ValueError, so that fallback paths taken when a machine is unusable (such
+    as latest_from_machine falling back to storage) are followed rather than
+    cut short.
+
+    (LLM-generated)
+    """
+
+    def __init__(self, host, attr):
+        self.host = host
+        self.attr = attr
+        super().__init__(f"{host}.{attr}")
+
+
+class _SentinelMachine:
+    """A Machine substitute that refuses to do anything but says what was asked.
+
+    (LLM-generated)
+    """
+
+    def __init__(self, host, *args, **kwargs):
+        from qslib import AccessLevel
+
+        self.host = host
+        self.max_access_level = AccessLevel.Controller
+
+    def __getattr__(self, name):
+        raise _MachineUsed(self.host, name)
+
+
+def _exp():
+    return Experiment(protocol=Protocol([Stage([Step(30, 25)])]))
+
+
+def _a_protocol():
+    return Protocol([Stage([Step(30, 25)])])
+
+
+# Every public Experiment method taking a machine, called with a host name.
+# test_machine_methods_all_covered checks that this list stays complete.
+MACHINE_CALLS = {
+    "abort": lambda m: _exp().abort(m),
+    "change_protocol": lambda m: _exp().change_protocol(_a_protocol(), m),
+    "change_protocol_from_now": lambda m: _exp().change_protocol_from_now([Stage([Step(30, 25)])], m),
+    "from_machine": lambda m: Experiment.from_machine(m, "run"),
+    "from_machine_storage": lambda m: Experiment.from_machine_storage(m, "run"),
+    "from_running": lambda m: Experiment.from_running(m),
+    "from_uncollected": lambda m: Experiment.from_uncollected(m, "run"),
+    "get_status": lambda m: _exp().get_status(m),
+    "latest_from_machine": lambda m: Experiment.latest_from_machine(m),
+    "pause_now": lambda m: _exp().pause_now(m),
+    "resume": lambda m: _exp().resume(m),
+    "run": lambda m: _exp().run(m),
+    "stop": lambda m: _exp().stop(m),
+    "sync_from_machine": lambda m: _exp().sync_from_machine(m),
+}
+
+
+def _machine_methods():
+    """Public Experiment methods with a machine parameter, by annotation.
+    (LLM-generated)
+    """
+    found = set()
+    for name, attr in vars(Experiment).items():
+        if name.startswith("_"):
+            continue
+        func = attr.__func__ if isinstance(attr, classmethod) else attr
+        annotation = getattr(func, "__annotations__", {}).get("machine")
+        if annotation is not None and "MachineReference" in str(annotation):
+            found.add(name)
+    return found
+
+
+def test_machine_methods_all_covered():
+    assert _machine_methods() == set(MACHINE_CALLS)
+
+
+@pytest.mark.parametrize("method", sorted(MACHINE_CALLS))
+def test_machine_methods_accept_hostname(method, monkeypatch):
+    """Giving a host name does the same thing as giving the Machine itself.
+    (LLM-generated)
+    """
+    import qslib.experiment
+
+    monkeypatch.setattr(qslib.experiment, "Machine", _SentinelMachine)
+    call = MACHINE_CALLS[method]
+
+    with pytest.raises(_MachineUsed) as from_host:
+        call(_HOST)
+
+    with pytest.raises(_MachineUsed) as from_machine:
+        call(_SentinelMachine(_HOST))
+
+    assert from_host.value.host == from_machine.value.host == _HOST
+    assert from_host.value.attr == from_machine.value.attr
+
+
+def test_latest_from_machine_takes_the_running_experiment(monkeypatch):
+    """With a run in progress, that experiment is used, and storage is not consulted.
+    (LLM-generated)
+    """
+    from qslib.machine import Machine
+
+    running = _exp()
+    seen = []
+
+    def fake_from_running(machine):
+        seen.append(machine)
+        return running
+
+    def no_list_runs_in_storage(self, glob="*", *, verbose=False):
+        raise AssertionError("storage was consulted despite a run being in progress")
+
+    monkeypatch.setattr(Experiment, "from_running", fake_from_running)
+    monkeypatch.setattr(Machine, "list_runs_in_storage", no_list_runs_in_storage)
+
+    assert Experiment.latest_from_machine(_HOST) is running
+
+    assert isinstance(seen[0], Machine)
+    assert seen[0].host == _HOST
+
+
+def test_latest_from_machine_takes_newest_run_in_storage(monkeypatch):
+    """With nothing running, the most recently modified stored run is used.
+    (LLM-generated)
+    """
+    from qslib.machine import Machine
+
+    seen = []
+
+    def fake_from_running(machine):
+        raise ValueError("Nothing is currently running.")
+
+    def fake_list_runs_in_storage(self, glob="*", *, verbose=False):
+        return [
+            {"path": "older", "mtime": 100.0},
+            {"path": "newest", "mtime": 300.0},
+            {"path": "middle", "mtime": 200.0},
+        ]
+
+    def fake_from_machine_storage(machine, name):
+        seen.append((machine, name))
+        return _exp()
+
+    monkeypatch.setattr(Experiment, "from_running", fake_from_running)
+    monkeypatch.setattr(Machine, "list_runs_in_storage", fake_list_runs_in_storage)
+    monkeypatch.setattr(Experiment, "from_machine_storage", fake_from_machine_storage)
+
+    Experiment.latest_from_machine(_HOST)
+
+    machine, name = seen[0]
+    assert isinstance(machine, Machine)
+    assert machine.host == _HOST
+    assert name == "newest"

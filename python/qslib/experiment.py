@@ -1363,6 +1363,21 @@ table, th, td {{
 
     @classmethod
     def latest_from_machine(cls, machine: MachineReference) -> Experiment:
+        """Load the currently running experiment if there is one, or the most recently modified run in the machine's storage.
+
+        Parameters
+        ----------
+        machine : Machine | str
+            the machine to connect to
+
+        Returns
+        -------
+        Experiment
+            a copy of the experiment
+        """
+        if isinstance(machine, str):
+            machine = Machine(machine)
+
         try:
             return Experiment.from_running(machine)
         except ValueError:

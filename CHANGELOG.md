@@ -8,12 +8,14 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Unreleased
 
-- Fixed `SmoothWindowMean` and `SmoothEMWMean` bugs.  By default from 0.14.0 these used
-  Polars processors, which smoothed by time without properly grouping.  Pre-0.14.0, and
+- Fixed `SmoothWindowMean` and `SmoothEMWMean` bugs. By default from 0.14.0 these used
+  Polars processors, which smoothed by time without properly grouping. Pre-0.14.0, and
   using Pandas processors, filter_sets could be inadvertently merged together (though not
-  different wells). `SmoothEMWMean` also now gives Polars its `min_periods`, `adjust` and 
+  different wells). `SmoothEMWMean` also now gives Polars its `min_periods`, `adjust` and
   `ignore_na` settings, which had been silently left at the Polars defaults.
 - Polars 1.21 or later is now required, for `min_samples`.
+- `Experiment.latest_from_machine` now accepts a host name string, like the other
+  methods that take a machine.
 - Added commands for querying and setting the status led.
 - Moved documentation hosting from Read the Docs to Codeberg Pages, built via Forgejo Actions and served at <https://cge.codeberg.page/qslib/>. The Read the Docs site now redirects there.
 
@@ -22,9 +24,11 @@ SPDX-License-Identifier: EUPL-1.2
 (Generated with LLM assistance.)
 
 ### Protocol fixes
+
 - Correct collection-filter attributes in `tcprotocol.xml` for hacform filter strings.
 
 ### Communication fixes
+
 - Treat zero-byte reads as disconnects.
 - Resynchronize malformed messages at newline boundaries.
 - Bound response waits and make Python waits interruptible.
@@ -33,6 +37,7 @@ SPDX-License-Identifier: EUPL-1.2
 - Report response parse failures when their identifier is recoverable.
 
 ### Stage identity fixes
+
 - Add raw stage names to `RunStatus` and distinguish `PRERUN` from `POSTRUN` positions.
 - Use Polars APIs for Altair stage selection.
 - Warn when collected-data stage values are nonnumeric.
@@ -42,6 +47,7 @@ SPDX-License-Identifier: EUPL-1.2
 (LLM-generated descriptions below.)
 
 ### Data fixes
+
 - Fix `welldata` / `filter_data` time columns on v1-spec EDS files. In 0.15.0 the v1 codepath was rewritten to go through `filter_data_polars` (which emits `Datetime[ms, UTC]`) and reformat back to the legacy pandas multi-index; the timestamp conversion assumed `astype("int64")` returned nanoseconds, so it divided by 1e9 and produced timestamps 1e6× too small (and huge negative `seconds`/`hours`). Now uses a time-unit-agnostic subtraction from the Unix epoch.
 - Add `temperatures_polars_wide` for callers that need the 0.14-era wide schema (`timestamp` as `Datetime[ms, UTC]`, one column per `(kind, zone)` — `sample_1..N`, `heatsink`, `cover`, `block_1..N`). `temperatures_polars` itself remains long-format (the intentional 0.15 default), now also with a `time` column derived from `timestamp`.
 
@@ -50,6 +56,7 @@ SPDX-License-Identifier: EUPL-1.2
 Robustness improvements to communication, consolidation of parsing into Rust, and a new quant/calibration data pipeline:
 
 ### Communication fixes
+
 - Fix READY message read to handle partial TCP reads (TCP does not guarantee message boundaries).
 - Fix double newline on command send when content already has a trailing newline.
 - Fix quoted string parser to handle backslash escape sequences (`\"`, `\\`, `\n`, `\t`).
@@ -66,12 +73,14 @@ Robustness improvements to communication, consolidation of parsing into Rust, an
 - Handle `ExclusiveAccess` and `AccessGiven` errors as specific exception subclasses.
 
 ### Data and protocol fixes
+
 - Fix IncrementCycle/IncrementStep defaults to match server (default=2, not 1).
 - Fix SampleTemperatures separator mismatch in multicomponent data parsing.
 - Remove overly strict temperature zone and plate type assertions.
 - Parameterize plate type in `Experiment._new_xml_files` instead of hardcoding 96-well.
 
 ### New features
+
 - Consolidate Python parsing to Rust: `AccessLevel`, `FilterSet`, `SCPICommand`, `PlateSetup` all now handled in Rust; `pyparsing` dependency removed.
 - Add Rust quant/calibration file parsers and filterdata reconstruction from quant + calibrations (matches filterdata.xml to <0.1 error).
 - Add ROI calibration parsing and TIFF-to-quant processing pipeline (exact match to instrument output).
@@ -85,18 +94,22 @@ Robustness improvements to communication, consolidation of parsing into Rust, an
 - Add exclusive and stealth flags to `AccessLevelSet` command.
 
 ### Testing
+
 - ~226 new tests across Rust and Python, covering communication, parsing, plate setup, processors, and machine logic.
 
 ### Security
+
 - Update `rustls-webpki` 0.102 → 0.103 to fix four advisories: CRL distribution-point matching (RUSTSEC-2026-0049), URI name-constraint bypass (RUSTSEC-2026-0098), wildcard name-constraint bypass (RUSTSEC-2026-0099), and reachable panic in CRL parsing (RUSTSEC-2026-0104).
 - Bump `bytes` to 1.11.1 (integer overflow in `BytesMut::reserve`, RUSTSEC-2026-0007), `quinn-proto` to 0.11.14 (QUIC endpoint DoS, RUSTSEC-2026-0037), and `time` to 0.3.47 (stack-exhaustion DoS, RUSTSEC-2026-0009).
 - Port `qs-monitor` from `matrix-sdk` 0.9 to 0.16, fixing three advisories: encrypted-event sender spoofing (RUSTSEC-2025-0041), panic in `RoomMember::normalized_power_level()` (RUSTSEC-2025-0065), and DoS via custom `m.room.join_rules` events (RUSTSEC-2025-0135).
 
 ### Build
+
 - Vendor `matrix-sdk` 0.16 with `#![recursion_limit = "512"]` added to work around [rust-lang/rust#152942](https://github.com/rust-lang/rust/issues/152942) (query-depth overflow on rustc 1.94+ due to matrix-sdk's deeply nested `#[tracing::instrument]` async chain picking up an extra `ManuallyDrop` layer).
 - `qs-monitor/src/main.rs` gets the same attribute to raise the trait-solver limit for `Send`-ness of `Client::sync()` when passed to `tokio::spawn`.
 
 ### CI
+
 - Bump GitHub Actions past the Node.js 20 deprecation: `actions/checkout` v4→v6, `setup-python` v5→v6, `upload-artifact` v4→v7, `download-artifact` v4→v8, `extractions/setup-just` v2→v4, `astral-sh/setup-uv` v7→v8.1.0, `codecov/codecov-action` v5→v6.
 - Fix wheel-test jobs on Linux: `RUSTC_WRAPPER=sccache` was leaking from `maturin-action` into subsequent `uv sync` invocations where sccache isn't on PATH, failing silently on macOS (sccache pre-installed) but breaking Linux. Now overridden per-step.
 - Drop macOS x86_64 (Intel) from the wheel matrix (<8 Darwin downloads/month across all arches on PyPI).
@@ -200,51 +213,55 @@ A significant reorganization:
 
 ## Version 0.7.1
 
- - QSLib-initiated experiments should now be partially compatible with the machine's android interface.  Status, time, and the (possibly approximate) protocol should be displayed.  Data and samples will likely not.  Pause/resume/stop/open/close buttons on the interface should function properly.
- - `Processor` and plotting improvements.
+- QSLib-initiated experiments should now be partially compatible with the machine's android interface. Status, time, and the (possibly approximate) protocol should be displayed. Data and samples will likely not. Pause/resume/stop/open/close buttons on the interface should function properly.
+- `Processor` and plotting improvements.
 
 ## Version 0.7.0
 
- - `Protocol` now has `Protocol.stage`, and Stage now has `Stage.step`, to provide convenient, 1-indexed access,
-   such that `protocol.stage[5]` of is stage 5 of `protocol`, not stage 6.
- - `Protocol` now supports setting PRERUN and POSTRUN stages, as a series of SCPI commands.  This allows
-   the setting of things like idling temperatures and exposure times.  It is not easily usable yet, however.
- - `Experiment.change_protocol_from_now` allows convenient changes to a currently-running experiment.
- - `Normalization` has been renamed to `Processor`.  Plotting functions can take sequences of processors to
-   process data.  These now include:
-     - Normalization as before: `NormByMeanPerWell`, `NormByMaxPerWell`
-     - `SubtractMeanPerWell`: subtracts the mean of a particular region, applied to each well.
-     - `SmoothEMWMean`: smooths data using Pandas' ExponentialMovingWindow.mean.
-     - `SmoothWindowMean`: smooths data using Pandas' Rolling.mean or Window.mean.
- - Some initial implementation changes to allow repeated steps (not stages).
- - Fixes bug that prevented loading of some aborted runs.
- - Fixes monitor's recording of temperatures.
- - Experiment.all_filters uses data if it exists; Experiment.filter_strings as a convenience function alternative.
- - SCPICommand parsing improvements.
- - Protocol printing improvements.
+- `Protocol` now has `Protocol.stage`, and Stage now has `Stage.step`, to provide convenient, 1-indexed access,
+  such that `protocol.stage[5]` of is stage 5 of `protocol`, not stage 6.
+- `Protocol` now supports setting PRERUN and POSTRUN stages, as a series of SCPI commands. This allows
+  the setting of things like idling temperatures and exposure times. It is not easily usable yet, however.
+- `Experiment.change_protocol_from_now` allows convenient changes to a currently-running experiment.
+- `Normalization` has been renamed to `Processor`. Plotting functions can take sequences of processors to
+  process data. These now include:
+  - Normalization as before: `NormByMeanPerWell`, `NormByMaxPerWell`
+  - `SubtractMeanPerWell`: subtracts the mean of a particular region, applied to each well.
+  - `SmoothEMWMean`: smooths data using Pandas' ExponentialMovingWindow.mean.
+  - `SmoothWindowMean`: smooths data using Pandas' Rolling.mean or Window.mean.
+- Some initial implementation changes to allow repeated steps (not stages).
+- Fixes bug that prevented loading of some aborted runs.
+- Fixes monitor's recording of temperatures.
+- Experiment.all_filters uses data if it exists; Experiment.filter_strings as a convenience function alternative.
+- SCPICommand parsing improvements.
+- Protocol printing improvements.
 
 ## Version 0.6.3
- - Fixes drawer check bug.
+
+- Fixes drawer check bug.
 
 ## Version 0.6.2
- - Add checks for cover and drawer position after changing positions.
+
+- Add checks for cover and drawer position after changing positions.
 
 ## Version 0.6.1
- - Fix pyparsing 3.0.7 whitespace parsing problem (pyparsing/pyparsing#359).
- - Use Hypothesis for some tests.
+
+- Fix pyparsing 3.0.7 whitespace parsing problem (pyparsing/pyparsing#359).
+- Use Hypothesis for some tests.
 
 ## Version 0.6.0
- - Improved plots, including new `Experiment.plot_temperatures`.
- - Comments in SCPI commands, allowing save/load of default filters in protocols
- - Licensing switched to AGPL 3.0, CLA in docs.
- - Command comment parsing, also used to store whether steps are using default filters.
- - Example notebook
- - Working parsing of Exposure commands
- - Dependency version fixes
+
+- Improved plots, including new `Experiment.plot_temperatures`.
+- Comments in SCPI commands, allowing save/load of default filters in protocols
+- Licensing switched to AGPL 3.0, CLA in docs.
+- Command comment parsing, also used to store whether steps are using default filters.
+- Example notebook
+- Working parsing of Exposure commands
+- Dependency version fixes
 
 ## Version 0.5.1
 
-- `CustomStep.collect` (and subclasses, including `Step`) is now `CustomStep.collects`.  The `collect` parameter for
+- `CustomStep.collect` (and subclasses, including `Step`) is now `CustomStep.collects`. The `collect` parameter for
   `Step` can now be `None`, which will collect data if the step has a filter setting (ie, if you want to collect the
   default `Protocol` filters, you need to use `collect=True`).
 - `Stage.stepped_ramp` and `Stage.hold_for` are now safer in requiring some keyword arguments, are documented, and
