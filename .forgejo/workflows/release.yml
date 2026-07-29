@@ -14,6 +14,8 @@ jobs:
   release:
     # Exactly one forge is allowed to respond to a release tag. Change this URL
     # when release ownership moves; mirrors will then skip the entire workflow.
-    if: ${{ forge.server_url == 'https://codeberg.org' }}
+    # Codeberg currently includes a trailing slash in this context; accept
+    # either canonical spelling while still rejecting every other forge.
+    if: ${{ forge.server_url == 'https://codeberg.org' || forge.server_url == 'https://codeberg.org/' }}
     uses: ./.forgejo/workflows/ci.yml
     secrets: inherit
