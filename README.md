@@ -4,19 +4,16 @@ SPDX-FileCopyrightText: 2021 - 2023 Constantine Evans <qslib@mb.costi.net>
 SPDX-License-Identifier: EUPL-1.2
 -->
 
-[![Documentation](https://img.shields.io/badge/docs-cge.codeberg.page%2Fqslib-blue)](https://cge.codeberg.page/qslib/)
+[![Documentation](https://img.shields.io/badge/docs-docs.costi.net%2Fqslib-blue)](https://docs.costi.net/qslib/)
 ![Codecov](https://img.shields.io/codecov/c/github/cgevans/qslib)
-[![Forgejo Actions](https://img.shields.io/forgejo/actions/workflow/status/cge/qslib/ci.yml?branch=main&forgejo_url=https%3A%2F%2Fcodeberg.org)](https://codeberg.org/cge/qslib/actions)
 ![PyPI](https://img.shields.io/pypi/v/qslib)
 [![CII Best Practices](https://bestpractices.coreinfrastructure.org/projects/5512/badge)](https://bestpractices.coreinfrastructure.org/projects/5512)
 [![DOI](https://zenodo.org/badge/393710481.svg)](https://zenodo.org/badge/latestdoi/393710481)
 [![PyPI - Python Version](https://img.shields.io/pypi/pyversions/qslib)](https://pypi.org/project/qslib/)
 
-> **Note regarding Codeberg's ToS:** in light of recent ToS changes regarding LLM use, this project may not acceptable to the Codeberg community.  Some code in the project is hand-written, while other parts are LLM-written (and human reviewed).  Additionally, while the project does have users, as an academic project, development and conversations around the project largely do not take place within Codeberg forge-community conventions.  I would ask that the Codeberg community please have patience with me as I migrate the project elsewhere.  I'd additionally ask that the current LLM-written outside PR, which contributes important code and information about support for a particular machine model, be allowed to continue here, as there is no way for me to migrate it.  
-
 [Our DNA 28 poster is available here.](https://costi.eu/dna28/qslib-poster.pdf)
 
-Documentation: [https://cge.codeberg.page/qslib/](https://cge.codeberg.page/qslib/)
+Documentation: [https://docs.costi.net/qslib/](https://docs.costi.net/qslib/)
 
 
 # qslib
@@ -55,13 +52,13 @@ Amongst other features that it has:
 
 ## Installation and Setup
 
-QSLib is pure Python, and can be installed via pip:
+QSLib can be installed via pip:
 
     pip3 install -U qslib
 
-Or, for the current Codeberg version:
+Or, for the current development version:
 
-    pip3 install -U --pre git+https://codeberg.org/cge/qslib.git
+    pip3 install -U --pre git+https://github.com/cgevans/qslib.git
 
 It requires at least version 3.10 of Python. While it uses async code at
 its core for communication, it can be used conveniently in Jupyter or
@@ -81,9 +78,9 @@ connection or port forwarding. See the documentation for more information.
 
 ## Contributing and issue reporting
 
-Issue reports and enhancement requests can be submitted via Codeberg.
+Issue reports and enhancement requests can be submitted via GitHub.
 
-Potential contributions can be submitted via Codeberg.  These should include pytest tests, preferably
+Potential contributions can be submitted via GitHub.  These should include pytest tests, preferably
 both tests that can be run without outside resources, and, if applicable, tests that directly test
 any communication with a QuantStudio SCPI server.  They will also need a Contributor Licence Agreement.
 

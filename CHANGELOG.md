@@ -6,7 +6,7 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
-## Unreleased
+## Version 0.15.3
 
 - Fixed `SmoothWindowMean` and `SmoothEMWMean` bugs. By default from 0.14.0 these used
   Polars processors, which smoothed by time without properly grouping. Pre-0.14.0, and
@@ -26,6 +26,15 @@ SPDX-License-Identifier: EUPL-1.2
 - Loading an experiment no longer prints a Polars warning about column sortedness.
 - Added commands for querying and setting the status led.
 - Compress EDS archives written by `Experiment.save_file()` with ZIP deflate, including file and in-memory outputs.
+- Moved the canonical documentation URL to `https://docs.costi.net/qslib/`
+  and added a GitHub Pages deployment workflow.
+- Made Forgejo runner labels configurable and namespaced persistent caches by
+  forge, preventing the Codeberg and git.costi.net runners from sharing cache
+  volumes.
+- Restricted release publication to one explicitly selected forge, limited
+  intermediate wheel artifacts to one-day retention, and stopped mirroring
+  wheels into Forgejo Packages or attaching them permanently to Forgejo
+  releases.
 
 ## Version 0.15.2
 

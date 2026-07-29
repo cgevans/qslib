@@ -73,12 +73,12 @@ altair = [
 ]
 
 [project.urls]
-homepage = "https://codeberg.org/cge/qslib/"
-documentation = "https://cge.codeberg.page/qslib/"
-source = "https://codeberg.org/cge/qslib/"
-changelog = "https://codeberg.org/cge/qslib/src/branch/main/CHANGELOG.md"
-tracker = "https://codeberg.org/cge/qslib/issues"
-download = "https://codeberg.org/cge/qslib/releases"
+homepage = "https://docs.costi.net/qslib/"
+documentation = "https://docs.costi.net/qslib/"
+source = "https://github.com/cgevans/qslib"
+changelog = "https://github.com/cgevans/qslib/blob/main/CHANGELOG.md"
+tracker = "https://github.com/cgevans/qslib/issues"
+download = "https://pypi.org/project/qslib/#files"
 
 [project.scripts]
 qs-monitor = "qslib.monitor_cli:run"

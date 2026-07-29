@@ -3,7 +3,7 @@ members = [".", "qs-monitor"]
 resolver = "2"
 
 [workspace.package]
-version = "0.15.2"
+version = "0.15.3"
 
 [package]
 name = "qslib"
@@ -12,8 +12,8 @@ edition = "2021"
 description = "QSlib QuantStudio qPCR machine library"
 license = "EUPL-1.2"
 authors = ["Constantine Evans <qslib@mb.costi.net>"]
-homepage = "https://codeberg.org/cge/qslib"
-repository = "https://codeberg.org/cge/qslib"
+homepage = "https://docs.costi.net/qslib/"
+repository = "https://github.com/cgevans/qslib"
 exclude = ["tiff-collection.eds"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

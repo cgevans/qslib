@@ -1,8 +1,16 @@
 name: CI
 
-# Forgejo Actions CI and release workflow for Codeberg.
+# Forgejo Actions CI and release workflow shared by the Codeberg and
+# git.costi.net mirrors.
 #
-# Runner expectations (adjust `runs-on:` labels if your runners use different ones):
+# Runner expectations (set the corresponding repository variable on a forge
+# if its labels differ from the defaults):
+#   - `LINUX_RUNNER_LABEL` (default `docker`)
+#   - `WINDOWS_RUNNER_LABEL` (default `windows`)
+#   - `MACOS_RUNNER_LABEL` (default `macos-arm64`)
+#   - `QPCR_RUNNER_LABEL` (default `self-hosted-qpcr`)
+#
+# Default labels:
 #   - `docker`            : Linux runner that executes jobs inside a container.
 #                           Wheel-build jobs use a manylinux container directly to
 #                           avoid docker-in-docker for the maturin step. The
@@ -18,18 +26,19 @@ name: CI
 #                           removing them or guarding with `if: false` if no
 #                           such runner is registered.
 #
-# Secrets used (set in Codeberg -> repo -> Settings -> Actions -> Secrets):
+# Secrets used (set on the forge selected in release.yml):
 #   - CODECOV_TOKEN    : optional; coverage upload is best-effort.
 #   - PYPI_TOKEN       : required for `python_release` job on tags.
 #   - CRATES_IO_TOKEN  : required for `rust_release` job on tags.
-#   - PACKAGE_TOKEN    : required for mirroring release artifacts to Packages.
 #   - forge.token      : auto-provided by Forgejo (used for the Forgejo release).
 #
 # Caching: the Forgejo runner's built-in cache server (used by
 # `actions/cache` / Swatinem/rust-cache / setup-uv enable-cache) typically
 # isn't reachable from inside the workflow container, so we cache via host
-# volumes mounted on the named volumes below. To allow these mounts the
-# runner's config.yaml must permit them, e.g.:
+# volumes mounted on the named volumes below. Cache volume names include
+# `CI_CACHE_NAMESPACE` when set, otherwise the repository owner. Set a unique
+# `CI_CACHE_NAMESPACE` on each forge if both use the same owner name. To allow
+# these mounts the runner's config.yaml must permit them, e.g.:
 #
 #   container:
 #     valid_volumes:
@@ -76,11 +85,11 @@ jobs:
     name: Ruff
     # Kept separate from `python_checks` so that lint errors don't stop the
     # tests, builds and release jobs from running.
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: docker.io/catthehacker/ubuntu:act-22.04
       volumes:
-        - qslib-uv:/cache/uv
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-uv:/cache/uv
     env:
       UV_CACHE_DIR: /cache/uv
     steps:
@@ -96,12 +105,12 @@ jobs:
 
   rust_checks:
     name: Rust checks
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: docker.io/catthehacker/ubuntu:act-22.04
       volumes:
-        - qslib-cargo:/cache/cargo
-        - qslib-cargo-target:/cache/cargo-target
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo:/cache/cargo
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo-target:/cache/cargo-target
     env:
       CARGO_HOME: /cache/cargo
       CARGO_TARGET_DIR: /cache/cargo-target
@@ -129,13 +138,13 @@ jobs:
 
   python_checks:
     name: Python checks
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: docker.io/catthehacker/ubuntu:act-22.04
       volumes:
-        - qslib-cargo:/cache/cargo
-        - qslib-cargo-target:/cache/cargo-target
-        - qslib-uv:/cache/uv
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo:/cache/cargo
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo-target:/cache/cargo-target
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-uv:/cache/uv
     env:
       CARGO_HOME: /cache/cargo
       CARGO_TARGET_DIR: /cache/cargo-target
@@ -170,13 +179,13 @@ jobs:
 
   docs:
     name: Docs build
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: docker.io/catthehacker/ubuntu:act-22.04
       volumes:
-        - qslib-cargo:/cache/cargo
-        - qslib-cargo-target:/cache/cargo-target
-        - qslib-uv:/cache/uv
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo:/cache/cargo
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo-target:/cache/cargo-target
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-uv:/cache/uv
     env:
       CARGO_HOME: /cache/cargo
       CARGO_TARGET_DIR: /cache/cargo-target
@@ -194,24 +203,17 @@ jobs:
           tool: just
       - name: Build documentation
         run: just docs
-      - name: Deploy to Codeberg Pages
-        if: ${{ forge.event_name == 'push' && forge.ref == 'refs/heads/main' }}
-        uses: https://codeberg.org/git-pages/action@v2
-        with:
-          site: https://cge.codeberg.page/qslib/
-          token: ${{ forge.token }}
-          source: docs/_build/html/
 
   linux:
     name: Python Linux builds
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: quay.io/pypa/manylinux_2_28_x86_64
       volumes:
-        - qslib-cargo:/cache/cargo
-        - qslib-cargo-target:/cache/cargo-target
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo:/cache/cargo
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo-target:/cache/cargo-target
     env:
       CARGO_HOME: /cache/cargo
       CARGO_TARGET_DIR: /cache/cargo-target
@@ -243,17 +245,18 @@ jobs:
         with:
           name: wheels-linux-${{ matrix.target }}
           path: dist
+          retention-days: 1
 
   linux-freethreaded:
     name: Python Linux free-threaded builds
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: quay.io/pypa/manylinux_2_28_x86_64
       volumes:
-        - qslib-cargo:/cache/cargo
-        - qslib-cargo-target:/cache/cargo-target
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo:/cache/cargo
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo-target:/cache/cargo-target
     env:
       CARGO_HOME: /cache/cargo
       CARGO_TARGET_DIR: /cache/cargo-target
@@ -288,12 +291,13 @@ jobs:
         with:
           name: wheels-linux-freethreaded-${{ matrix.python-version }}-${{ matrix.target }}
           path: dist
+          retention-days: 1
 
   windows:
     name: Python Windows builds
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
-    runs-on: windows
+    runs-on: ${{ vars.WINDOWS_RUNNER_LABEL || 'windows' }}
     env:
       UV_CACHE_DIR: .uv-cache
       UV_MANAGED_PYTHON: "1"
@@ -323,12 +327,13 @@ jobs:
         with:
           name: wheels-windows-${{ matrix.target }}
           path: dist
+          retention-days: 1
 
   windows-freethreaded:
     name: Python Windows free-threaded builds
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
-    runs-on: windows
+    runs-on: ${{ vars.WINDOWS_RUNNER_LABEL || 'windows' }}
     env:
       UV_CACHE_DIR: .uv-cache
       UV_MANAGED_PYTHON: "1"
@@ -359,6 +364,7 @@ jobs:
         with:
           name: wheels-windows-freethreaded-${{ matrix.python-version }}-${{ matrix.target }}
           path: dist
+          retention-days: 1
 
   # macOS jobs run on the `macos-arm64` runner. Intel macOS wheels are intentionally deprecated.
   #
@@ -372,7 +378,7 @@ jobs:
     name: Python macOS builds
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
-    runs-on: macos-arm64
+    runs-on: ${{ vars.MACOS_RUNNER_LABEL || 'macos-arm64' }}
     env:
       UV_MANAGED_PYTHON: "1"
     strategy:
@@ -398,12 +404,13 @@ jobs:
         with:
           name: wheels-macos-${{ matrix.target }}
           path: dist
+          retention-days: 1
 
   macos-freethreaded:
     name: Python macOS free-threaded builds
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
-    runs-on: macos-arm64
+    runs-on: ${{ vars.MACOS_RUNNER_LABEL || 'macos-arm64' }}
     env:
       UV_MANAGED_PYTHON: "1"
     strategy:
@@ -429,17 +436,18 @@ jobs:
         with:
           name: wheels-macos-freethreaded-${{ matrix.python-version }}-${{ matrix.target }}
           path: dist
+          retention-days: 1
 
   sdist:
     name: Build sdist
     if: startsWith(forge.ref, 'refs/tags/') || inputs.build_wheels == 'true'
     needs: [python_checks]
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: docker.io/catthehacker/ubuntu:act-22.04
       volumes:
-        - qslib-cargo:/cache/cargo
-        - qslib-cargo-target:/cache/cargo-target
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo:/cache/cargo
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo-target:/cache/cargo-target
     env:
       CARGO_HOME: /cache/cargo
       CARGO_TARGET_DIR: /cache/cargo-target
@@ -459,10 +467,11 @@ jobs:
         with:
           name: wheels-sdist
           path: dist
+          retention-days: 1
 
   python_release:
     name: Python PyPI release
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: docker.io/catthehacker/ubuntu:act-22.04
     if: startsWith(forge.ref, 'refs/tags/')
@@ -493,12 +502,12 @@ jobs:
 
   rust_release:
     name: Rust crates.io release
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: docker.io/catthehacker/ubuntu:act-22.04
       volumes:
-        - qslib-cargo:/cache/cargo
-        - qslib-cargo-target:/cache/cargo-target
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo:/cache/cargo
+        - qslib-${{ vars.CI_CACHE_NAMESPACE || forge.repository_owner }}-cargo-target:/cache/cargo-target
     env:
       CARGO_HOME: /cache/cargo
       CARGO_TARGET_DIR: /cache/cargo-target
@@ -516,29 +525,15 @@ jobs:
 
   forgejo_release:
     name: Forgejo release
-    runs-on: docker
+    runs-on: ${{ vars.LINUX_RUNNER_LABEL || 'docker' }}
     container:
       image: docker.io/catthehacker/ubuntu:act-22.04
     if: startsWith(forge.ref, 'refs/tags/')
-    needs:
-      [
-        linux,
-        linux-freethreaded,
-        windows,
-        windows-freethreaded,
-        macos,
-        macos-freethreaded,
-        sdist,
-      ]
+    needs: [python_release, rust_release]
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: https://code.forgejo.org/forgejo/download-artifact@v4
-        with:
-          pattern: wheels-*
-          merge-multiple: true
-          path: dist
       - name: Extract changelog for this version
         run: |
           TAG="${{ forge.ref_name }}"
@@ -563,44 +558,8 @@ jobs:
           tag: ${{ forge.ref_name }}
           title: ${{ forge.ref_name }}
           release-notes-file: /tmp/release-notes.md
-          release-dir: dist
+          skip-assets: true
           token: ${{ forge.token }}
-
-  package_release:
-    name: Codeberg Packages release mirror
-    runs-on: docker
-    container:
-      image: docker.io/catthehacker/ubuntu:act-22.04
-    if: startsWith(forge.ref, 'refs/tags/')
-    needs:
-      [
-        linux,
-        linux-freethreaded,
-        windows,
-        windows-freethreaded,
-        macos,
-        macos-freethreaded,
-        sdist,
-      ]
-    steps:
-      - uses: https://code.forgejo.org/forgejo/download-artifact@v4
-        with:
-          pattern: wheels-*
-          merge-multiple: true
-          path: dist
-      - name: Upload release files to Generic Packages
-        env:
-          TOKEN: ${{ secrets.PACKAGE_TOKEN }}
-          OWNER: ${{ forge.repository_owner }}
-          VERSION: ${{ forge.ref_name }}
-          SERVER_URL: ${{ forge.server_url }}
-        run: |
-          set -euo pipefail
-          for file in dist/*; do
-            curl --fail --header "Authorization: token ${TOKEN}" \
-              --upload-file "$file" \
-              "${SERVER_URL}/api/packages/${OWNER}/generic/qslib-dist/${VERSION}/$(basename "$file")"
-          done
 
   python_tests_real:
     name: Python tests with machine
@@ -608,7 +567,7 @@ jobs:
     # connected (directly or via tunnel) to a real or simulated QuantStudio
     # machine. Remove this job (and rust_integration_tests below) if no such
     # runner is registered.
-    runs-on: self-hosted-qpcr
+    runs-on: ${{ vars.QPCR_RUNNER_LABEL || 'self-hosted-qpcr' }}
     # Docker-executor runner: reach the simulator via the qpcr-fwd sidecar on the
     # CI network, which serves plain 7000 and TLS 7443 forwarding to simulator:7001.
     env:
@@ -648,7 +607,7 @@ jobs:
 
   rust_integration_tests:
     name: Rust tests with machine
-    runs-on: self-hosted-qpcr
+    runs-on: ${{ vars.QPCR_RUNNER_LABEL || 'self-hosted-qpcr' }}
     # Docker-executor runner: reach the simulator via the qpcr-fwd sidecar on the
     # CI network, which serves plain 7000 and TLS 7443 forwarding to simulator:7001.
     env:
