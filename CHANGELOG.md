@@ -16,8 +16,13 @@ SPDX-License-Identifier: EUPL-1.2
 - Polars 1.21 or later is now required, for `min_samples`.
 - `Experiment.latest_from_machine` now accepts a host name string, like the other
   methods that take a machine.
+- `Experiment.plot_over_time` now plots lines in the order the samples (or wells) and
+  filter sets were given, so that colors follow that order and match between plots. This was a
+  0.14.0 regression.
+- `Experiment.plot_over_time_altair` now accepts well names as well as sample names, as
+  `Experiment.plot_over_time` does.
+- Removed a stray `print` of the y-axis label from `Experiment.plot_over_time`.
 - Added commands for querying and setting the status led.
-- Moved documentation hosting from Read the Docs to Codeberg Pages, built via Forgejo Actions and served at <https://cge.codeberg.page/qslib/>. The Read the Docs site now redirects there.
 
 ## Version 0.15.2
 

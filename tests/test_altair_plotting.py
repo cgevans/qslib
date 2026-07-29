@@ -192,6 +192,58 @@ def test_altair_chart_data_structure(exp: Experiment) -> None:
     assert data["filter_set"].dtype == pl.String
 
 
+@pytest.fixture
+def exp_samples(exp: Experiment) -> Experiment:
+    """The test experiment, with the sample arrangement used for ordering tests."""
+    exp.sample_wells["Sample 1"] = ["A7", "A8"]
+    exp.sample_wells["Sample 2"] = ["A9", "A10"]
+    return exp
+
+
+def test_plot_over_time_altair_sample_order(exp_samples: Experiment) -> None:
+    """A list of samples sets the color scale domain, fixing which sample gets which color."""
+    pytest.importorskip("altair")
+
+    samples = ["Sample 2", "Sample 1"]
+    color = exp_samples.plot_over_time_altair(samples=samples).encoding.color.to_dict()
+
+    assert color["scale"]["domain"] == samples
+    # Setting the scale leaves the legend as it was.
+    assert color["legend"] == {"title": "Sample"}
+    no_legend = exp_samples.plot_over_time_altair(samples=samples, show_legend=False)
+    assert no_legend.encoding.color.to_dict()["legend"] is None
+
+
+def test_plot_over_time_altair_well_order(exp_samples: Experiment) -> None:
+    """A list of wells selects those wells, ordered by the sample each one stands for."""
+    import polars as pl
+
+    pytest.importorskip("altair")
+
+    chart = exp_samples.plot_over_time_altair(samples=["A9", "A7"])
+
+    assert chart.encoding.color.to_dict()["scale"]["domain"] == ["Sample 2", "Sample 1"]
+    assert set(pl.DataFrame(chart.data)["well"].unique()) == {"A9", "A7"}
+
+
+def test_plot_over_time_altair_unknown_sample(exp_samples: Experiment) -> None:
+    """A name matching nothing is left out of the domain rather than given a color."""
+    pytest.importorskip("altair")
+
+    chart = exp_samples.plot_over_time_altair(samples=["nosuchthing", "Sample 1"])
+
+    assert chart.encoding.color.to_dict()["scale"]["domain"] == ["Sample 1"]
+
+
+def test_plot_over_time_altair_no_sample_order(exp: Experiment) -> None:
+    """Without a list of samples there is no order to respect, and no domain is set."""
+    pytest.importorskip("altair")
+
+    chart = exp.plot_over_time_altair()
+
+    assert "scale" not in chart.encoding.color.to_dict()
+
+
 def test_altair_imports_and_setup(exp: Experiment) -> None:
     """Test that Altair plotting properly sets up data transformers."""
     try:

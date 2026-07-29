@@ -2737,11 +2737,27 @@ table, th, td {{
 
         reduceddata, ylabel = polars_process(reduceddata, process, ylabel="fluorescence")
 
-        print(ylabel)
-
         lines = []
         reduceddata = reduceddata.collect()
-        for (filter, sample, well), group in reduceddata.group_by(["filter_set", "sample", "well"]):
+
+        # Polars does not order its groups, so put them in the order asked for.  Samples
+        # may be given as well names, in which case that is what a group is placed by.
+        from .plate_setup import _WELLNAMES_96, _WELLNAMES_384
+
+        wellnames = _WELLNAMES_96 if (self.plate_type or 96) == 96 else _WELLNAMES_384
+        filter_strings = [f.lowerform for f in filters]
+
+        def plot_order(group: tuple[tuple[Any, ...], pl.DataFrame]) -> tuple[int, int, int]:
+            filter, sample, well = group[0]
+            # A line is placed by whichever of its sample and well name came first in the
+            # list, so that a well asked for by name keeps its place even when its sample
+            # was also asked for.
+            asked_for = [samples.index(name) for name in (sample, well) if name in samples]
+            return (filter_strings.index(filter), min(asked_for), wellnames.index(well))
+
+        for (filter, sample, well), group in sorted(
+            reduceddata.group_by(["filter_set", "sample", "well"]), key=plot_order
+        ):
             label = _gen_label(
                 sample,  # self.plate_setup.get_descriptive_string(sample), # FIXME
                 well,
@@ -3161,13 +3177,15 @@ table, th, td {{
 
         d, ylabel = polars_process(d, process, ylabel)
 
+        asked_for: list[str] | None = None
         match samples:
             case None:
                 pass
             case str():
                 d = d.filter(pl.col("sample").str.count_matches(samples) > 0)
             case x if isinstance(x, Sequence):
-                d = d.filter(pl.col("sample").is_in(x))
+                asked_for = list(x)
+                d = d.filter(pl.col("sample").is_in(x) | pl.col("well").is_in(x))
             case _:
                 raise ValueError(f"Invalid samples: {samples}")
 
@@ -3235,6 +3253,17 @@ table, th, td {{
 
         d = d.collect()
 
+        color = alt.Color("sample:N", legend=alt.Legend(title="Sample") if show_legend else None)
+        if asked_for is not None:
+            # Vega-Lite sorts the sample names itself, so give it the order asked for.  Lines
+            # are colored by sample, so a well asked for by name stands for its sample, and a
+            # name matching nothing is left out.
+            domain: dict[Any, None] = {}
+            for name in asked_for:
+                for sample in d.filter((pl.col("sample") == name) | (pl.col("well") == name))["sample"].unique():
+                    domain.setdefault(sample)
+            color = color.scale(domain=list(domain))
+
         return (
             alt.Chart(d)
             .mark_line(point=True)
@@ -3243,7 +3272,7 @@ table, th, td {{
                     "time_since_mark_float:Q", axis=alt.Axis(title=f"Time since {start_time_descr} ({duration_units})")
                 ),
                 alt.Y("processed_fluorescence:Q", axis=alt.Axis(title="Fluorescence")).scale(zero=False),
-                color=alt.Color("sample:N", legend=alt.Legend(title="Sample") if show_legend else None),
+                color=color,
                 tooltip=[
                     "time_since_mark_float",
                     "fluorescence",

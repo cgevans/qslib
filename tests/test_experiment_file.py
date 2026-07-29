@@ -110,6 +110,95 @@ def test_plot_emw_maxperwell(exp: Experiment) -> None:
     assert axf.get_ylabel() == "fluorescence (EMW-smoothed, norm. to max)"
 
 
+@pytest.mark.parametrize("wells", [["A3", "A1", "A2"], ["A2", "A3", "A1"]])
+def test_plot_over_time_line_order(exp: Experiment, wells) -> None:
+    """Lines are plotted, and so colored, in the order the wells were given."""
+    import polars as pl
+
+    ax = exp.plot_over_time(
+        samples=wells,
+        filters="x1-m1",
+        temperatures=False,
+        stage_lines=False,
+        annotate_stage_lines=False,
+        annotate_events=False,
+    )
+
+    data = exp.filter_data_polars.filter(pl.col("filter_set") == "x1-m1").sort("timestamp")
+    expected = [data.filter(pl.col("well") == well)["fluorescence"][0] for well in wells]
+
+    assert [line.get_ydata()[0] for line in ax[0].get_lines()] == expected
+
+
+def test_plot_over_time_sample_order(exp: Experiment) -> None:
+    """Lines follow the order of the samples, with wells in plate order within each."""
+    import polars as pl
+
+    ax = exp.plot_over_time(
+        samples=["Sample 2", "Sample 1"],
+        filters="x1-m1",
+        temperatures=False,
+        stage_lines=False,
+        annotate_stage_lines=False,
+        annotate_events=False,
+    )
+
+    data = exp.filter_data_polars.filter(pl.col("filter_set") == "x1-m1").sort("timestamp")
+    # Sample 2 is A9 and A10, Sample 1 is A7 and A8.
+    expected = [data.filter(pl.col("well") == well)["fluorescence"][0] for well in ["A9", "A10", "A7", "A8"]]
+
+    assert [line.get_ydata()[0] for line in ax[0].get_lines()] == expected
+
+
+@pytest.mark.parametrize(
+    "samples,order",
+    [
+        # Sample 1 is A7 and A8, so A8 is named twice over: it keeps the earlier place.
+        (["A8", "Sample 1"], ["A8", "A7"]),
+        (["Sample 1", "A8"], ["A7", "A8"]),
+        # Sample 2 is A9 and A10, named here only by its wells.
+        (["A10", "Sample 1", "A9"], ["A10", "A7", "A8", "A9"]),
+    ],
+)
+def test_plot_over_time_mixed_order(exp: Experiment, samples, order) -> None:
+    """Samples and wells together are plotted in the order given, each by its first mention."""
+    import polars as pl
+
+    ax = exp.plot_over_time(
+        samples=samples,
+        filters="x1-m1",
+        temperatures=False,
+        stage_lines=False,
+        annotate_stage_lines=False,
+        annotate_events=False,
+    )
+
+    data = exp.filter_data_polars.filter(pl.col("filter_set") == "x1-m1").sort("timestamp")
+    expected = [data.filter(pl.col("well") == well)["fluorescence"][0] for well in order]
+
+    assert [line.get_ydata()[0] for line in ax[0].get_lines()] == expected
+
+
+def test_plot_over_time_filter_order(exp: Experiment) -> None:
+    """With several filter sets, lines follow the order the filters were given."""
+    import polars as pl
+
+    filters = ["x3-m3", "x1-m1"]
+    ax = exp.plot_over_time(
+        samples=["A1"],
+        filters=filters,
+        temperatures=False,
+        stage_lines=False,
+        annotate_stage_lines=False,
+        annotate_events=False,
+    )
+
+    data = exp.filter_data_polars.filter(pl.col("well") == "A1").sort("timestamp")
+    expected = [data.filter(pl.col("filter_set") == f)["fluorescence"][0] for f in filters]
+
+    assert [line.get_ydata()[0] for line in ax[0].get_lines()] == expected
+
+
 def test_plot_subtrbymean(exp: Experiment) -> None:
     axf, axt = exp.plot_over_time(process=SubtractByMeanPerWell(2), annotate_stage_lines=False)
     assert axf.get_ylabel() == "fluorescence (subtr. by mean)"
