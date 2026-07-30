@@ -1,0 +1,77 @@
+name: Documentation host
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: docs-host-${{ forge.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: docker
+    container:
+      image: code.forgejo.org/oci/node:22-bookworm
+    steps:
+      - uses: https://github.com/actions/checkout@v6
+
+      - uses: https://github.com/dtolnay/rust-toolchain@stable
+
+      - uses: https://github.com/astral-sh/setup-uv@v7
+        with:
+          python-version: "3.13"
+          enable-cache: true
+
+      - name: Install just
+        env:
+          JUST_VERSION: "1.50.0"
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl --proto '=https' --tlsv1.2 -fsSL \
+            -o /tmp/just.tar.gz \
+            "https://github.com/casey/just/releases/download/${JUST_VERSION}/just-${JUST_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          tar -xzf /tmp/just.tar.gz -C "$HOME/.local/bin" just
+          chmod +x "$HOME/.local/bin/just"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Build HTML documentation
+        run: just docs
+
+      - name: Install SSH client
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends openssh-client
+
+      - name: Configure project deployment key
+        env:
+          DOCS_DEPLOY_KEY: ${{ secrets.DOCS_DEPLOY_KEY }}
+          DOCS_DEPLOY_KNOWN_HOSTS: ${{ secrets.DOCS_DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 0700 "$HOME/.ssh"
+          umask 077
+          printf '%s\n' "$DOCS_DEPLOY_KEY" > "$HOME/.ssh/docs_deploy"
+          printf '%s\n' "$DOCS_DEPLOY_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+
+      - name: Deploy atomically to docs.costi.net
+        env:
+          RELEASE_SHA: ${{ forge.sha }}
+          RELEASE_RUN: ${{ forge.run_number }}
+          RELEASE_ATTEMPT: ${{ forge.run_attempt }}
+        run: |
+          set -euo pipefail
+          release="${RELEASE_SHA}.${RELEASE_RUN}.${RELEASE_ATTEMPT}"
+          tar -C docs/_build/html \
+            --exclude=./.doctrees \
+            --exclude=./.buildinfo.bak \
+            -czf - . |
+            ssh -i "$HOME/.ssh/docs_deploy" \
+              -o BatchMode=yes \
+              -o IdentitiesOnly=yes \
+              -o StrictHostKeyChecking=yes \
+              docs-deploy@45.150.240.178 "deploy ${release}"
