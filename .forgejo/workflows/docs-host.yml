@@ -17,7 +17,9 @@ jobs:
   build-and-deploy:
     runs-on: docker
     container:
-      image: code.forgejo.org/oci/node:22-bookworm
+      image: >-
+        code.forgejo.org/oci/node@sha256:7725a5c2c83eed1d36258c66efae14b1ceccd021db9ed1d9559d3335ed3d68ed
+      # 22-bookworm, resolved 2026-07-30.
     steps:
       - uses: https://github.com/actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
