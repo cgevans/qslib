@@ -14,6 +14,9 @@ on:
       - README.md
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   integration:
     name: qPCR integration tests
@@ -30,6 +33,7 @@ jobs:
       - name: Check out mirrored source
         env:
           SOURCE_SHA: ${{ forge.sha }}
+          SOURCE_TOKEN: ${{ forge.token }}
         shell: bash
         run: |
           set -euo pipefail
@@ -39,7 +43,13 @@ jobs:
           fi
           git init .
           git remote add origin https://git.costi.net/constantine/qslib.git
-          git fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          source_authorization=$(
+            printf 'x-access-token:%s' "$SOURCE_TOKEN" | base64 --wrap=0
+          )
+          git \
+            -c "http.extraHeader=Authorization: Basic $source_authorization" \
+            fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          unset source_authorization SOURCE_TOKEN
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
       - name: Install Rust
