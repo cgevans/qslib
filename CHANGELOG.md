@@ -6,6 +6,18 @@ SPDX-License-Identifier: EUPL-1.2
 
 # Changelog
 
+## Unreleased
+
+- Moved ordinary and release CI to GitHub Actions. Third-party actions are
+  pinned to full commit SHAs, automated action updates are enabled, release
+  jobs use least-privilege permissions, and PyPI/crates.io publication uses
+  short-lived OIDC credentials.
+- Limited intermediate release artifacts to one-day retention. Published
+  distributions remain attached to the corresponding GitHub release.
+- Made Codeberg a passive mirror with Actions disabled. Real-machine
+  integration tests now run only on a serialized, repository-scoped
+  git.costi.net runner.
+
 ## Version 0.15.3
 
 - Fixed `SmoothWindowMean` and `SmoothEMWMean` bugs. By default from 0.14.0 these used

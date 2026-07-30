@@ -1,0 +1,108 @@
+name: Real-machine CI
+
+# This workflow intentionally belongs to git.costi.net only. Codeberg is a
+# passive mirror and has repository Actions disabled.
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - ".github/**"
+      - "docs/**"
+      - CHANGELOG.md
+      - README.md
+  workflow_dispatch:
+
+jobs:
+  integration:
+    name: qPCR integration tests
+    if: ${{ forge.server_url == 'https://git.costi.net' || forge.server_url == 'https://git.costi.net/' }}
+    runs-on: qslib-qpcr
+    timeout-minutes: 90
+    env:
+      QSLIB_TEST_MACHINE: ${{ secrets.QSLIB_TEST_MACHINE }}
+      QSLIB_TEST_PORT: ${{ secrets.QSLIB_TEST_PORT }}
+      QSLIB_TEST_SSL_PORT: ${{ secrets.QSLIB_TEST_SSL_PORT }}
+      QSLIB_TEST_PASSWORD: ${{ secrets.QSLIB_TEST_PASSWORD }}
+      QSLIB_TEST_SSL: ${{ secrets.QSLIB_TEST_SSL }}
+    steps:
+      - name: Check out mirrored source
+        env:
+          SOURCE_SHA: ${{ forge.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Invalid source commit: $SOURCE_SHA" >&2
+            exit 1
+          fi
+          git init .
+          git remote add origin https://github.com/cgevans/qslib.git
+          git fetch --no-tags --depth=1 origin "$SOURCE_SHA"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+      - name: Install Rust
+        uses: https://github.com/dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        with:
+          toolchain: stable
+      - name: Install uv
+        uses: https://github.com/astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0 (Node 20)
+        with:
+          version: "0.9.17"
+          enable-cache: false
+      - name: Check qPCR test machine connectivity
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os
+          import socket
+
+          host = os.environ["QSLIB_TEST_MACHINE"]
+          ports = (
+              int(os.environ["QSLIB_TEST_PORT"]),
+              int(os.environ["QSLIB_TEST_SSL_PORT"]),
+          )
+          for port in ports:
+              with socket.create_connection((host, port), timeout=10):
+                  pass
+          print("qPCR test machine is reachable")
+          PY
+      - name: Run Rust integration tests
+        run: >-
+          cargo test --test real_integration --
+          --ignored --test-threads=1
+          --skip test_real_log_subscription
+          --skip test_real_subscribe_temperature
+          --skip test_real_subscribe_multiple
+      - name: Set up Python environment
+        run: |
+          uv venv --python 3.13
+          uv sync --group dev --no-install-project
+          uv run maturin develop --uv
+      - name: Verify qPCR test machine is idle
+        shell: bash
+        run: |
+          uv run python - <<'PY'
+          import os
+
+          from qslib import Machine
+
+          machine = Machine(
+              os.environ["QSLIB_TEST_MACHINE"],
+              port=int(os.environ["QSLIB_TEST_PORT"]),
+              password=os.environ["QSLIB_TEST_PASSWORD"],
+              ssl=os.environ["QSLIB_TEST_SSL"].lower() in {"1", "true", "yes"},
+          )
+          with machine:
+              status = machine.run_status()
+          if status.state.upper() != "IDLE":
+              raise SystemExit(
+                  "qPCR test machine is not idle before Python tests. "
+                  "Reset it before retrying."
+              )
+          print("qPCR test machine is idle")
+          PY
+      - name: Run Python integration tests
+        # A stateful failure can otherwise cascade into misleading assertions
+        # and leave a later machine command waiting indefinitely.
+        run: uv run pytest -x tests/test_real.py
