@@ -30,8 +30,9 @@ jobs:
       QSLIB_TEST_PASSWORD: ${{ secrets.QSLIB_TEST_PASSWORD }}
       QSLIB_TEST_SSL: ${{ secrets.QSLIB_TEST_SSL }}
     steps:
-      - name: Check out mirrored source
+      - name: Check out source
         env:
+          GIT_LFS_SKIP_SMUDGE: "1"
           SOURCE_SHA: ${{ forge.sha }}
           SOURCE_TOKEN: ${{ forge.token }}
         shell: bash
