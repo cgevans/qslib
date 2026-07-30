@@ -4,6 +4,9 @@ on:
   push:
     branches:
       - main
+    paths-ignore:
+      - ".forgejo/**"
+      - ".github/**"
   workflow_dispatch:
 
 permissions:
