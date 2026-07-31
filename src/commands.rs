@@ -1,6 +1,6 @@
 use std::{collections::VecDeque, future::Future, io::Write, marker::PhantomData};
 
-use log::{info, warn};
+use log::warn;
 use thiserror::Error;
 
 #[cfg(feature = "python")]
@@ -1230,7 +1230,6 @@ impl TryFrom<OkResponse> for QuickStatus {
 
         let args = value.args.into_iter();
         let mut args_deque = args.into_iter().collect::<VecDeque<_>>();
-        info!("args_deque: {:?}", args_deque);
 
         fn into_okresponse(value: Value) -> Result<OkResponse, OkParseError> {
             // Convert the value to a string for re-parsing as an OkResponse.

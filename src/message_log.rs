@@ -86,7 +86,7 @@ impl RunLogInfo {
                     info.runendtime = Some(timestamp);
                     info.activeendtime.get_or_insert(timestamp);
                     info.runstate = RUNSTATE_COMPLETE.to_string();
-                    if info.stage_start_times.len() > 1 {
+                    if info.stage_end_times.len() < info.stage_start_times.len() {
                         info.stage_end_times.push(Some(timestamp));
                     }
                     break 'cap;
@@ -95,7 +95,7 @@ impl RunLogInfo {
                     info.runstate = RUNSTATE_ABORTED.to_string();
                     info.activeendtime.get_or_insert(timestamp);
                     info.runendtime = Some(timestamp);
-                    if info.stage_start_times.len() > 1 {
+                    if info.stage_end_times.len() < info.stage_start_times.len() {
                         info.stage_end_times.push(Some(timestamp));
                     }
                     break 'cap;
@@ -104,7 +104,7 @@ impl RunLogInfo {
                     info.runstate = RUNSTATE_STOPPED.to_string();
                     info.activeendtime.get_or_insert(timestamp);
                     info.runendtime = Some(timestamp);
-                    if info.stage_start_times.len() > 1 {
+                    if info.stage_end_times.len() < info.stage_start_times.len() {
                         info.stage_end_times.push(Some(timestamp));
                     }
                     break 'cap;
@@ -489,6 +489,37 @@ Temperature 1739920069.921 -sample=36.6,35.9,36.0,36.1,35.9,36.5 -heatsink=35.7 
             info.stage_end_times,
             vec![Some(110.0), Some(200.0), Some(300.0), Some(310.0)]
         );
+    }
+
+    /// A run that finishes while its first stage is still open must still record an
+    /// end time for that stage.
+    #[test]
+    fn test_run_log_info_single_stage_gets_end_time() {
+        for (msg, state) in [
+            ("Ended", RUNSTATE_COMPLETE),
+            ("Aborted", RUNSTATE_ABORTED),
+            ("Stopped", RUNSTATE_STOPPED),
+        ] {
+            let log = format!(
+                "Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 150.0 {}",
+                msg
+            );
+            let info = RunLogInfo::parse(log.as_bytes()).unwrap();
+            assert_eq!(info.runstate, state);
+            assert_eq!(info.stage_names, vec!["PRERUN"]);
+            assert_eq!(info.stage_start_times, vec![101.0]);
+            assert_eq!(info.stage_end_times, vec![Some(150.0)], "for {}", msg);
+        }
+    }
+
+    /// A run still in progress has no end time for its last stage.
+    #[test]
+    fn test_run_log_info_running_last_stage_has_no_end() {
+        let log = b"Run 100.0 Starting\nRun 101.0 Stage PRERUN\nRun 110.0 Stage Stage1";
+        let info = RunLogInfo::parse(log).unwrap();
+        assert_eq!(info.runstate, RUNSTATE_RUNNING);
+        assert_eq!(info.stage_start_times, vec![101.0, 110.0]);
+        assert_eq!(info.stage_end_times, vec![Some(110.0), None]);
     }
 
     #[test]

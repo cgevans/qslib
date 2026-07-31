@@ -122,8 +122,15 @@ ignore_missing_imports = true
 line-length = 120
 
 [tool.ruff.lint]
-# selectors to match the pre-0.16 defaults.
-select = ["E4", "E7", "E9", "F"]
+# selectors to match the pre-0.16 defaults, plus T20 (print) to keep debugging
+# output out of the library.
+select = ["E4", "E7", "E9", "F", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+"python/qslib/cli.py" = ["T20"]
+"tests/*" = ["T20"]
+"examples/*" = ["T20"]
+"docs/*" = ["T20"]
 
 [tool.hatch.envs.hatch-test]
 skip-install = false

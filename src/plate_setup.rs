@@ -837,6 +837,7 @@ impl PlateSetup {
         })
     }
 
+    /// Print the plate setup's full debug representation, for interactive use.
     fn print_debug(&self) {
         println!("{:?}", self);
     }

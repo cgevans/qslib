@@ -105,6 +105,25 @@ log = logging.getLogger(__name__)
 MachineReference = Union[str, Machine]
 
 
+_STAGES_SCHEMA: dict[str, Any] = {
+    "stage": pl.String,
+    "stage_name": pl.String,
+    "start_time": pl.Datetime("us", "UTC"),
+    "end_time": pl.Datetime("us", "UTC"),
+}
+
+
+def _empty_stages() -> pl.DataFrame:
+    return (
+        pl.DataFrame(schema=_STAGES_SCHEMA)
+        .with_row_index("stage_index")
+        .with_columns(
+            start_seconds=pl.lit(None, dtype=pl.Float64),
+            end_seconds=pl.lit(None, dtype=pl.Float64),
+        )
+    )
+
+
 @dataclass
 class AlreadyStartedError(ValueError):
     """The experiment has already been started."""
@@ -1121,8 +1140,10 @@ table, th, td {{
         self._protocol_from_xml: Protocol | None = None
         self.runstarttime: datetime | None = None
         self.runendtime: datetime | None = None
+        self.prerunstart: datetime | None = None
         self.activestarttime: datetime | None = None
         self.activeendtime: datetime | None = None
+        self.stages: pl.DataFrame = _empty_stages()
 
         self.machine: Machine | None = None
 
@@ -1605,8 +1626,8 @@ table, th, td {{
 
         try:
             self._protocol_from_xml = Protocol.from_xml(ET.fromstring(tc_xml))
-        except Exception as e:
-            print(e)
+        except Exception:
+            log.warning("Could not parse protocol from experiment XML.", exc_info=True)
             self._protocol_from_xml = None
 
     def _update_platesetup_xml(self) -> None:
@@ -2091,16 +2112,22 @@ table, th, td {{
                 ],
                 "end_time": [
                     datetime.fromtimestamp(x, tz=timezone.utc) if x is not None else None for x in ms.stage_end_times
-                ]
-                + ([None] if len(ms.stage_end_times) < len(ms.stage_start_times) else []),  # FIXME
-            }
+                ],
+            },
+            schema=_STAGES_SCHEMA,
         ).with_row_index("stage_index")
 
+        # A stage that has not finished has no end time, so these can be null.
         if self.activestarttime:
             self.stages = self.stages.with_columns(
                 start_seconds=(pl.col("start_time") - self.activestarttime).dt.total_milliseconds().cast(pl.Float64)
                 / 1000,
                 end_seconds=(pl.col("end_time") - self.activestarttime).dt.total_milliseconds().cast(pl.Float64) / 1000,
+            )
+        else:
+            self.stages = self.stages.with_columns(
+                start_seconds=pl.lit(None, dtype=pl.Float64),
+                end_seconds=pl.lit(None, dtype=pl.Float64),
             )
 
         try:
@@ -2695,6 +2722,7 @@ table, th, td {{
         """
 
         import matplotlib.pyplot as plt
+        from matplotlib.axes import Axes
 
         if process is None:
             process = [normalization or NormRaw()]
@@ -2827,23 +2855,23 @@ table, th, td {{
             t_sl = stage_lines
             fl_sl = stage_lines
 
-        self._annotate_stages(ax[0], fl_sl, fl_asl, (xlims[1] - xlims[0]) * 3600.0, stages=stages)
+        self._annotate_stages(ax[0], fl_sl, fl_asl, xlims[1] - xlims[0], stages=stages, x_units=time_units)
 
         if annotate_events:
-            self._annotate_events(ax[0], stages=stages)
+            self._annotate_events(ax[0], stages=stages, x_units=time_units)
 
         if temperatures == "axes":
             if len(ax) < 2:
                 raise ValueError("Temperature axes requires at least two axes in ax")
 
             xlims = ax[0].get_xlim()
-            tmin, tmax = np.inf, 0.0
 
             tmin = reduceddata.select(pl.col("time")).min()["time"][0]
             tmax = reduceddata.select(pl.col("time")).max()["time"][0]
 
             self.plot_temperatures(
-                times=(tmin, tmax),
+                # No selected data means no range to restrict the temperatures to.
+                times=None if (tmin is None or tmax is None) else (tmin, tmax),
                 ax=ax[1],
                 stage_lines=t_sl,
                 annotate_stage_lines=t_asl,
@@ -2961,12 +2989,13 @@ table, th, td {{
                     **(line_kw or {}),
                 )
 
-            tot_time = temps["time"].max() - temps["time"].min()
+            tmax, tmin = temps["time"].max(), temps["time"].min()
+            tot_time = (tmax - tmin) if (tmax is not None and tmin is not None) else 0.0
 
-            self._annotate_stages(ax, stage_lines, annotate_stage_lines, tot_time, stages=False)
+            self._annotate_stages(ax, stage_lines, annotate_stage_lines, tot_time, stages=False, x_units=time_units)
 
             if annotate_events:
-                self._annotate_events(ax, stages=False)
+                self._annotate_events(ax, stages=False, x_units=time_units)
 
             ax.set_ylabel("temperature (°C)")
             ax.set_xlabel(f"time ({time_units})")
@@ -3036,21 +3065,25 @@ table, th, td {{
 
             xlim = ax.get_xlim()
 
-            stages = self.stages.with_columns(
+            stagetimes = self.stages.with_columns(
                 start_time=self._time_after_activestart_pl("start_time", x_units),
                 end_time=self._time_after_activestart_pl("end_time", x_units),
             )
 
-            for s in stages.iter_rows(named=True):
-                if s["start_time"] < xlim[0] or s["end_time"] > xlim[1]:
+            for s in stagetimes.iter_rows(named=True):
+                start = s["start_time"]
+                if (start is None) or not (xlim[0] <= start <= xlim[1]):
                     continue
+                # A stage that has not finished, in a run still in progress, has no end
+                # time.  Take it as running to the right edge of the plot.
+                end = s["end_time"] if s["end_time"] is not None else xlim[1]
                 vline = ax.axvline(
-                    s["start_time"],
+                    start,
                     linestyle="dotted",
                     color="black",
                     linewidth=0.5,
                 )
-                durfrac = (s["end_time"] - s["start_time"]) / tot_time
+                durfrac = (end - start) / tot_time if tot_time else 0.0
                 if annotate_stage_lines and (durfrac > annotate_frac):
                     ax.annotate(
                         f"stage {s['stage']}",
@@ -3111,6 +3144,11 @@ table, th, td {{
         )
 
     def _time_after_activestart_pl(self, col: str = "time", units: Literal["h", "m", "s", "ms"] = "h") -> pl.Expr:
+        if self.activestarttime is None:
+            raise DataNotAvailableError(
+                "time since the start of the run",
+                "the run has no active start time",
+            )
         match units:
             case "h":
                 return (pl.col(col) - pl.lit(self.activestarttime)).dt.total_microseconds() / 3600000000.0
@@ -3126,35 +3164,22 @@ table, th, td {{
     def _annotate_events(
         self, ax, stages: slice | Sequence[int] | bool = slice(None), x_units: Literal["h", "m", "s"] = "h"
     ):
-        open_ranges = (
-            self._open_ranges()
-            .with_columns(
-                pl.col("open_time").fill_null(pl.lit(self.activestarttime)),
-                pl.col("close_time").fill_null(pl.lit(self.activeendtime)),
-            )
-            .with_columns(
-                open_time=self._time_after_activestart_pl("open_time", x_units),
-                close_time=self._time_after_activestart_pl("close_time", x_units),
-            )
+        open_ranges = self._open_ranges().with_columns(
+            open_time=self._time_after_activestart_pl("open_time", x_units),
+            close_time=self._time_after_activestart_pl("close_time", x_units),
         )
 
         xlim = ax.get_xlim()
 
-        for ev in open_ranges.filter(pl.col("type") == "Cover").iter_rows(named=True):
-            ax.axvspan(
-                ev["open_time"],
-                ev["close_time"],
-                alpha=0.5,
-                color="yellow",
-            )
-
-        for ev in open_ranges.filter(pl.col("type") == "Drawer").iter_rows(named=True):
-            ax.axvspan(
-                ev["open_time"],
-                ev["close_time"],
-                alpha=0.5,
-                color="red",
-            )
+        for kind, color in (("Cover", "yellow"), ("Drawer", "red")):
+            for ev in open_ranges.filter(pl.col("type") == kind).iter_rows(named=True):
+                # A range that was already open at the start of the log, or is still
+                # open at its end, has no time on that side: take it to the plot edge.
+                start = ev["open_time"] if ev["open_time"] is not None else xlim[0]
+                end = ev["close_time"] if ev["close_time"] is not None else xlim[1]
+                if end <= start:
+                    continue
+                ax.axvspan(start, end, alpha=0.5, color=color)
 
         ax.set_xlim(xlim)
 

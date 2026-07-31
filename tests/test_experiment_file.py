@@ -355,3 +355,61 @@ def test_mid_run_eds():
 
     with pytest.raises(DataNotAvailableError):
         exp.amplification_data
+
+
+def _stage_lines(ax) -> list:
+    return [ln for ln in ax.lines if ln.get_linestyle() == ":" and ln.get_color() == "black"]
+
+
+@pytest.fixture(scope="module")
+def midrun_exp() -> Experiment:
+    return Experiment.from_file(_TESTS_DIR / "mid-run.eds")
+
+
+def test_mid_run_plots(midrun_exp: Experiment) -> None:
+    """Plotting a run still in progress should work: its last stage has no end time."""
+    midrun_exp.plot_over_time()
+    midrun_exp.plot_anneal_melt()
+
+    ax = midrun_exp.plot_temperatures(stage_lines=True, annotate_stage_lines=True)
+    assert len(_stage_lines(ax)) == 2
+    # The unfinished stage should still be annotated.
+    assert [t.get_text() for t in ax.texts] == ["stage PRERUN", "stage 1"]
+
+
+def test_mid_run_plots_with_events(midrun_exp: Experiment) -> None:
+    midrun_exp.plot_over_time(annotate_events=True)
+    midrun_exp.plot_temperatures(annotate_events=True)
+
+
+@pytest.mark.parametrize("time_units", ["h", "m", "s"])
+def test_stage_lines_follow_time_units(exp: Experiment, time_units) -> None:
+    """Stage lines and annotations should be placed correctly whatever the units are."""
+    ax = exp.plot_temperatures(stage_lines=True, annotate_stage_lines=True, time_units=time_units)
+    assert len(_stage_lines(ax)) == 4
+    assert [t.get_text() for t in ax.texts] == ["stage 1", "stage 2", "stage POSTRun"]
+
+
+def test_stages_without_log() -> None:
+    """An experiment with no message log still has a stages frame."""
+    exp = Experiment("test-no-log")
+    assert exp.stages.is_empty()
+    assert exp.stages.columns == [
+        "stage_index",
+        "stage",
+        "stage_name",
+        "start_time",
+        "end_time",
+        "start_seconds",
+        "end_seconds",
+    ]
+
+
+def test_plot_over_time_accepts_given_axes(exp: Experiment) -> None:
+    """A sequence of axes can be passed in, as `temperatures="axes"` needs."""
+    import matplotlib.pyplot as plt
+
+    _, axs = plt.subplots(2, 1)
+    assert len(exp.plot_over_time(ax=list(axs))) == 2
+    assert len(exp.plot_over_time(ax=axs)) == 2
+    assert len(exp.plot_over_time(ax=axs[0], temperatures=False)) == 1

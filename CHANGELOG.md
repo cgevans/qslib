@@ -8,8 +8,20 @@ SPDX-License-Identifier: EUPL-1.2
 
 ## Unreleased
 
-- Removed stray debug `print`s from `Experiment.plot_over_time` and stage
-  annotation.
+- Fixed plotting of a run that is still in progress: its last stage has no end time,
+  which raised a `TypeError`.
+- Stage lines are now drawn whenever the stage boundary is in view, rather than only
+  when the whole stage is.  Their annotations now appear in `plot_over_time`, and both
+  are placed correctly for time units other than hours.
+- `Experiment.stages` now always has the same columns, and exists for an experiment
+  with no message log.
+- A run that ended, was aborted or was stopped during its first stage now records an
+  end time for that stage.
+- Fixed `Experiment.plot_over_time` raising `NameError` when given a sequence of axes,
+  which is how the temperature axes are supplied.
+- Removed stray debug `print`s from `Experiment.plot_over_time` and stage annotation,
+  and from a failed protocol XML parse, and stopped logging the arguments of every
+  machine status at INFO.
 
 ## Version 0.15.3
 
