@@ -2842,8 +2842,6 @@ table, th, td {{
             tmin = reduceddata.select(pl.col("time")).min()["time"][0]
             tmax = reduceddata.select(pl.col("time")).max()["time"][0]
 
-            print(tmin, tmax)
-
             self.plot_temperatures(
                 times=(tmin, tmax),
                 ax=ax[1],
@@ -3044,7 +3042,6 @@ table, th, td {{
             )
 
             for s in stages.iter_rows(named=True):
-                print(s)
                 if s["start_time"] < xlim[0] or s["end_time"] > xlim[1]:
                     continue
                 vline = ax.axvline(
