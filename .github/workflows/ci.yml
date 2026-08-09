@@ -49,12 +49,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-07-30
         with:
           toolchain: stable
           components: clippy,llvm-tools,rustfmt
       - name: Install build tools
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2
         with:
           tool: just@1.45.0,cargo-llvm-cov@0.6.22
       - name: Check Rust formatting
@@ -81,7 +81,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-07-30
         with:
           toolchain: stable
           components: llvm-tools
@@ -91,7 +91,7 @@ jobs:
           version: "0.9.17"
           enable-cache: true
       - name: Install build tools
-        uses: taiki-e/install-action@065d6a08a14e61e89fb0a4c10eecdbdef39c7d8e # v2
+        uses: taiki-e/install-action@91ddec75689c4c78665b598d188dc821c5a43e5c # v2
         with:
           tool: just@1.45.0,cargo-llvm-cov@0.6.22
       - name: Set up Python environment
