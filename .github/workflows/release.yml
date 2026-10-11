@@ -104,7 +104,7 @@ jobs:
           rust-toolchain: stable
           sccache: "false"
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.9.17"
           enable-cache: false
@@ -124,7 +124,7 @@ jobs:
           uv pip install --python .venv/Scripts/python.exe $wheel
           .venv/Scripts/python.exe -c "import qslib, qslib._qslib"
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wheels-${{ matrix.platform }}
           path: dist
@@ -207,7 +207,7 @@ jobs:
           rust-toolchain: stable
           sccache: "false"
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           version: "0.9.17"
           enable-cache: false
@@ -231,7 +231,7 @@ jobs:
           uv pip install --python .venv/Scripts/python.exe --no-deps $wheel
           .venv/Scripts/python.exe -c 'import importlib.util, pathlib; extension=next(pathlib.Path(".venv").rglob("_qslib*.pyd")); spec=importlib.util.spec_from_file_location("qslib._qslib", extension); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); assert hasattr(module, "CommandError")'
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wheels-${{ matrix.platform }}-${{ matrix.python-version }}
           path: dist
@@ -256,7 +256,7 @@ jobs:
           maturin-version: v1.12.6
           rust-toolchain: stable
       - name: Upload source distribution
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wheels-sdist
           path: dist
@@ -277,7 +277,7 @@ jobs:
       id-token: write # Exchange GitHub OIDC identity for a PyPI token.
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: wheels-*
           merge-multiple: true
@@ -309,7 +309,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        uses: dtolnay/rust-toolchain@e2a55d2ffb04f378e9626c28d38b36d230d1e12f # master, 2026-07-30
         with:
           toolchain: stable
       - name: Request a short-lived crates.io token
@@ -345,7 +345,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download distributions
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: wheels-*
           merge-multiple: true
