@@ -86,7 +86,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: "3.10"
       - name: Build wheel
@@ -104,7 +104,7 @@ jobs:
           rust-toolchain: stable
           sccache: "false"
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.9.17"
           enable-cache: false
@@ -124,7 +124,7 @@ jobs:
           uv pip install --python .venv/Scripts/python.exe $wheel
           .venv/Scripts/python.exe -c "import qslib, qslib._qslib"
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wheels-${{ matrix.platform }}
           path: dist
@@ -191,7 +191,7 @@ jobs:
           persist-credentials: false
       - name: Install free-threaded Python
         if: runner.os != 'Linux'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Build free-threaded wheel
@@ -207,7 +207,7 @@ jobs:
           rust-toolchain: stable
           sccache: "false"
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
         with:
           version: "0.9.17"
           enable-cache: false
@@ -231,7 +231,7 @@ jobs:
           uv pip install --python .venv/Scripts/python.exe --no-deps $wheel
           .venv/Scripts/python.exe -c 'import importlib.util, pathlib; extension=next(pathlib.Path(".venv").rglob("_qslib*.pyd")); spec=importlib.util.spec_from_file_location("qslib._qslib", extension); module=importlib.util.module_from_spec(spec); spec.loader.exec_module(module); assert hasattr(module, "CommandError")'
       - name: Upload wheel
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wheels-${{ matrix.platform }}-${{ matrix.python-version }}
           path: dist
@@ -256,7 +256,7 @@ jobs:
           maturin-version: v1.12.6
           rust-toolchain: stable
       - name: Upload source distribution
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wheels-sdist
           path: dist
@@ -277,13 +277,13 @@ jobs:
       id-token: write # Exchange GitHub OIDC identity for a PyPI token.
     steps:
       - name: Download distributions
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: wheels-*
           merge-multiple: true
           path: dist
       - name: Publish with PyPI trusted publishing
-        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
         with:
           packages-dir: dist
           skip-existing: true
@@ -309,12 +309,12 @@ jobs:
         with:
           persist-credentials: false
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, 2026-07-30
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # master, 2026-07-30
         with:
           toolchain: stable
       - name: Request a short-lived crates.io token
         id: crates-auth
-        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        uses: rust-lang/crates-io-auth-action@3268eb413133e2960fa4ae0e963ca76380c54cd9 # v1.0.6
       - name: Publish crate
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.crates-auth.outputs.token }}
@@ -345,7 +345,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Download distributions
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
           pattern: wheels-*
           merge-multiple: true
